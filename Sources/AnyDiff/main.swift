@@ -6,8 +6,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var window: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.regular)
+
         let mainWindow = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1100, height: 750),
+            contentRect: NSRect(x: 100, y: 100, width: 1100, height: 750),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -21,6 +23,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.window = mainWindow
 
         setupMainMenu()
+
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     private func setupMainMenu() {
@@ -74,4 +78,5 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate
+app.setActivationPolicy(.regular)
 app.run()
