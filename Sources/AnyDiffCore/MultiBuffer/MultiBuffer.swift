@@ -1,0 +1,208 @@
+import Foundation
+
+/// One or more Buffers and Excerpts composed into a unified virtual document
+public final class MultiBuffer: ObservableObject, @unchecked Sendable {
+    public private(set) var buffers: [BufferId: Buffer] = [:]
+    public private(set) var excerpts: [Excerpt] = []
+    public let undoManager: MultiBufferUndoManager
+
+    /// Incremented on each content or excerpt change to trigger layout updates
+    @Published public private(set) var version: Int = 0
+
+    public init(undoManager: MultiBufferUndoManager = MultiBufferUndoManager()) {
+        self.undoManager = undoManager
+    }
+
+    // MARK: - Buffer & Excerpt Management
+
+    public func addBuffer(_ buffer: Buffer) {
+        buffers[buffer.id] = buffer
+    }
+
+    public func buffer(for id: BufferId) -> Buffer? {
+        buffers[id]
+    }
+
+    public func setExcerpts(_ newExcerpts: [Excerpt]) {
+        self.excerpts = newExcerpts
+        version &+= 1
+    }
+
+    public func addExcerpt(_ excerpt: Excerpt) {
+        self.excerpts.append(excerpt)
+        version &+= 1
+    }
+
+    public func clear() {
+        buffers.removeAll()
+        excerpts.removeAll()
+        undoManager.clear()
+        version &+= 1
+    }
+
+    // MARK: - Coordinate Translation & Rows
+
+    /// Total continuous logical rows across all active excerpts
+    public var lineCount: Int {
+        excerpts.reduce(0) { $0 + $1.lineCount }
+    }
+
+    /// Resolves a MultiBufferRow to its corresponding Excerpt and row within the underlying Buffer
+    public func location(for mbRow: MultiBufferRow) -> ExcerptLocation? {
+        guard mbRow >= 0 else { return nil }
+        var currentMBRow = 0
+
+        for (idx, excerpt) in excerpts.enumerated() {
+            let count = excerpt.lineCount
+            if mbRow >= currentMBRow && mbRow < (currentMBRow + count) {
+                let offsetInExcerpt = mbRow - currentMBRow
+                let bufferRow = excerpt.bufferRange.lowerBound + offsetInExcerpt
+                return ExcerptLocation(
+                    excerptIndex: idx,
+                    bufferId: excerpt.bufferId,
+                    filePath: excerpt.filePath,
+                    bufferRow: bufferRow,
+                    bufferColumn: 0
+                )
+            }
+            currentMBRow += count
+        }
+
+        return nil
+    }
+
+    /// Resolves a MultiBufferPoint to an ExcerptLocation with column precision
+    public func location(for point: MultiBufferPoint) -> ExcerptLocation? {
+        guard var loc = location(for: point.row) else { return nil }
+        loc.bufferColumn = point.column
+        return loc
+    }
+
+    /// Converts an Excerpt and BufferRow to the continuous MultiBufferRow
+    public func multiBufferRow(excerptIndex: ExcerptIndex, bufferRow: BufferRow) -> MultiBufferRow? {
+        guard excerptIndex >= 0 && excerptIndex < excerpts.count else { return nil }
+        var currentMBRow = 0
+
+        for i in 0..<excerptIndex {
+            currentMBRow += excerpts[i].lineCount
+        }
+
+        let excerpt = excerpts[excerptIndex]
+        guard excerpt.bufferRange.contains(bufferRow) else { return nil }
+
+        let offsetInExcerpt = bufferRow - excerpt.bufferRange.lowerBound
+        return currentMBRow + offsetInExcerpt
+    }
+
+    /// Retrieves text of a single line at the given MultiBufferRow
+    public func line(at mbRow: MultiBufferRow) -> String {
+        guard let loc = location(for: mbRow),
+              let buf = buffers[loc.bufferId],
+              let text = buf.line(at: loc.bufferRow) else {
+            return ""
+        }
+        return text
+    }
+
+    public func lineLength(at mbRow: MultiBufferRow) -> Int {
+        line(at: mbRow).count
+    }
+
+    // MARK: - Live Text Editing
+
+    /// Replaces text in the MultiBuffer, executing the edit in the corresponding underlying Buffer
+    @discardableResult
+    public func replace(range: Range<MultiBufferPoint>, with newText: String, recordUndo: Bool = true) -> Range<MultiBufferPoint> {
+        guard let startLoc = location(for: range.lowerBound),
+              let endLoc = location(for: range.upperBound),
+              startLoc.bufferId == endLoc.bufferId,
+              let buf = buffers[startLoc.bufferId] else {
+            return range
+        }
+
+        let oldStartPt = BufferPoint(row: startLoc.bufferRow, column: startLoc.bufferColumn)
+        let oldEndPt = BufferPoint(row: endLoc.bufferRow, column: endLoc.bufferColumn)
+
+        // Capture exact old text for undo
+        let oldExactText = buf.text(in: oldStartPt..<oldEndPt)
+
+        // Perform edit on the buffer
+        let newBufRange = buf.replace(start: oldStartPt, end: oldEndPt, with: newText)
+
+        // Update excerpt range if the line count changed
+        let lineDelta = (newBufRange.upperBound.row - oldEndPt.row)
+        if lineDelta != 0 {
+            let excerptIdx = startLoc.excerptIndex
+            var excerpt = excerpts[excerptIdx]
+            let newUpper = max(excerpt.bufferRange.lowerBound + 1, excerpt.bufferRange.upperBound + lineDelta)
+            excerpt.bufferRange = excerpt.bufferRange.lowerBound..<newUpper
+            excerpts[excerptIdx] = excerpt
+        }
+
+        if recordUndo {
+            let edit = TextEdit(
+                bufferId: startLoc.bufferId,
+                range: oldStartPt..<newBufRange.upperBound,
+                oldText: oldExactText,
+                newText: newText
+            )
+            let transaction = EditTransaction(
+                edits: [edit],
+                selectionBefore: range,
+                selectionAfter: nil
+            )
+            undoManager.push(transaction: transaction)
+        }
+
+        version &+= 1
+
+        let newEndMBRow = multiBufferRow(excerptIndex: startLoc.excerptIndex, bufferRow: newBufRange.upperBound.row) ?? range.lowerBound.row
+        let newEndPoint = MultiBufferPoint(row: newEndMBRow, column: newBufRange.upperBound.column)
+        return range.lowerBound..<newEndPoint
+    }
+
+    /// Inserts text at a point
+    @discardableResult
+    public func insert(text: String, at point: MultiBufferPoint) -> Range<MultiBufferPoint> {
+        replace(range: point..<point, with: text)
+    }
+
+    /// Deletes text in a range
+    @discardableResult
+    public func delete(range: Range<MultiBufferPoint>) -> MultiBufferPoint {
+        let res = replace(range: range, with: "")
+        return res.lowerBound
+    }
+
+    // MARK: - Context Expansion
+
+    public func expandExcerpt(at index: ExcerptIndex, up: Int = 0, down: Int = 0) {
+        guard index >= 0 && index < excerpts.count else { return }
+        var excerpt = excerpts[index]
+        guard let buf = buffers[excerpt.bufferId] else { return }
+
+        if up > 0 {
+            excerpt.expandUp(by: up)
+        }
+        if down > 0 {
+            excerpt.expandDown(by: down, bufferTotalRows: buf.lineCount)
+        }
+        excerpts[index] = excerpt
+        version &+= 1
+    }
+
+    public func expandExcerptAll(at index: ExcerptIndex) {
+        guard index >= 0 && index < excerpts.count else { return }
+        var excerpt = excerpts[index]
+        guard let buf = buffers[excerpt.bufferId] else { return }
+        excerpt.expandAll(bufferTotalRows: buf.lineCount)
+        excerpts[index] = excerpt
+        version &+= 1
+    }
+
+    public func toggleCollapse(at index: ExcerptIndex) {
+        guard index >= 0 && index < excerpts.count else { return }
+        excerpts[index].isCollapsed.toggle()
+        version &+= 1
+    }
+}
