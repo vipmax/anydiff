@@ -34,6 +34,8 @@ public struct MainWindowView: View {
         case hasChanges
     }
 
+    @State private var currentPath: String? = nil
+    @State private var isReloading: Bool = false
     @State private var repoStatus: RepoStatus = .clean
     @State private var fileDiffs: [FileDiff] = []
     @State private var selectedFilePath: String? = nil
@@ -78,6 +80,7 @@ public struct MainWindowView: View {
                 fileDiffs: fileDiffs,
                 theme: activeTheme,
                 emptyMessage: repoStatus == .notGitRepository ? "Not a Git repository" : "No changed files",
+                isReloading: isReloading,
                 reviewManager: reviewManager,
                 selectedFilePath: $selectedFilePath,
                 onReload: { loadCurrentDirectoryDiff() }
@@ -153,11 +156,20 @@ public struct MainWindowView: View {
                                 .controlSize(.small)
 
                                 Button(action: { loadCurrentDirectoryDiff() }) {
-                                    Label("Reload Diff", systemImage: "arrow.clockwise")
-                                        .font(.system(size: 12, weight: .medium))
+                                    HStack(spacing: 6) {
+                                        if isReloading {
+                                            ProgressView()
+                                                .controlSize(.small)
+                                        } else {
+                                            Image(systemName: "arrow.clockwise")
+                                        }
+                                        Text(isReloading ? "Reloading..." : "Reload Diff")
+                                    }
+                                    .font(.system(size: 12, weight: .medium))
                                 }
                                 .buttonStyle(.bordered)
                                 .controlSize(.small)
+                                .disabled(isReloading)
                             }
                             .padding(.top, 4)
                         }
@@ -199,7 +211,6 @@ public struct MainWindowView: View {
                 }
             }
             .background(
-                // Global keyboard shortcuts (Cmd+R reload, Cmd+O open folder, Cmd+-/Cmd+= zoom)
                 Group {
                     Button(action: { loadCurrentDirectoryDiff() }) {}
                         .keyboardShortcut("r", modifiers: .command)
@@ -207,6 +218,8 @@ public struct MainWindowView: View {
                         .keyboardShortcut("o", modifiers: .command)
                     Button(action: { fontSize = max(9, fontSize - 1) }) {}
                         .keyboardShortcut("-", modifiers: .command)
+                    Button(action: { fontSize = min(28, fontSize + 1) }) {}
+                        .keyboardShortcut("+", modifiers: .command)
                     Button(action: { fontSize = min(28, fontSize + 1) }) {}
                         .keyboardShortcut("=", modifiers: .command)
                 }
@@ -264,24 +277,36 @@ public struct MainWindowView: View {
     // MARK: - Current Directory Diff Loading
 
     public func loadCurrentDirectoryDiff() {
-        let currentDir = initialPath ?? FileManager.default.currentDirectoryPath
+        guard !isReloading else { return }
+        isReloading = true
+        let currentDir = currentPath ?? initialPath ?? FileManager.default.currentDirectoryPath
         multiBuffer.baseDirectory = currentDir
         let folderName = (currentDir as NSString).lastPathComponent
         self.currentFolderName = folderName
         DispatchQueue.main.async {
             NSApp.windows.first?.title = "\(folderName)"
         }
-        guard isGitRepository(at: currentDir) else {
-            self.repoStatus = .notGitRepository
-            loadDiff(text: "")
-            return
-        }
-        if let diff = fetchGitDiff(at: currentDir), !diff.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            self.repoStatus = .hasChanges
-            loadDiff(text: diff)
-        } else {
-            self.repoStatus = .clean
-            loadDiff(text: "")
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            let isGit = self.isGitRepository(at: currentDir)
+            let diff = isGit ? self.fetchGitDiff(at: currentDir) : nil
+
+            DispatchQueue.main.async {
+                guard isGit else {
+                    self.repoStatus = .notGitRepository
+                    self.loadDiff(text: "")
+                    self.isReloading = false
+                    return
+                }
+                if let diff = diff, !diff.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    self.repoStatus = .hasChanges
+                    self.loadDiff(text: diff)
+                } else {
+                    self.repoStatus = .clean
+                    self.loadDiff(text: "")
+                }
+                self.isReloading = false
+            }
         }
     }
 
@@ -485,24 +510,8 @@ public struct MainWindowView: View {
 
         if panel.runModal() == .OK, let url = panel.url {
             let path = url.path
-            let folderName = (path as NSString).lastPathComponent
-            self.currentFolderName = folderName
-            self.multiBuffer.baseDirectory = path
-            DispatchQueue.main.async {
-                NSApp.windows.first?.title = "\(folderName)"
-            }
-            guard isGitRepository(at: path) else {
-                self.repoStatus = .notGitRepository
-                loadDiff(text: "")
-                return
-            }
-            if let diff = fetchGitDiff(at: path), !diff.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                self.repoStatus = .hasChanges
-                loadDiff(text: diff)
-            } else {
-                self.repoStatus = .clean
-                loadDiff(text: "")
-            }
+            self.currentPath = path
+            loadCurrentDirectoryDiff()
         }
     }
 

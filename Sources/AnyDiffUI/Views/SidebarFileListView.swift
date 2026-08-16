@@ -5,6 +5,7 @@ public struct SidebarFileListView: View {
     public var fileDiffs: [FileDiff]
     public var theme: Theme
     public var emptyMessage: String
+    public var isReloading: Bool
     @ObservedObject public var reviewManager: ReviewManager
     @Binding public var selectedFilePath: String?
     public var onReload: () -> Void
@@ -15,6 +16,7 @@ public struct SidebarFileListView: View {
         fileDiffs: [FileDiff],
         theme: Theme,
         emptyMessage: String = "No changed files",
+        isReloading: Bool = false,
         reviewManager: ReviewManager,
         selectedFilePath: Binding<String?>,
         onReload: @escaping () -> Void
@@ -22,6 +24,7 @@ public struct SidebarFileListView: View {
         self.fileDiffs = fileDiffs
         self.theme = theme
         self.emptyMessage = emptyMessage
+        self.isReloading = isReloading
         self.reviewManager = reviewManager
         self._selectedFilePath = selectedFilePath
         self.onReload = onReload
@@ -69,11 +72,20 @@ public struct SidebarFileListView: View {
                     .foregroundColor(.secondary)
 
                 Button(action: onReload) {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 9.5, weight: .bold))
-                        .foregroundColor(.secondary)
+                    ZStack {
+                        if isReloading {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .frame(width: 14, height: 14)
                 }
                 .buttonStyle(ToolbarHoverButtonStyle())
+                .disabled(isReloading)
                 .help("Reload Git Diff (Cmd+R)")
 
                 Spacer()
@@ -83,8 +95,9 @@ public struct SidebarFileListView: View {
                     .font(.system(size: 10))
                     .foregroundColor(.secondary)
             }
+            .frame(height: 24)
             .padding(.horizontal, 12)
-            .padding(.vertical, 6)
+            .padding(.vertical, 4)
 
             // Files List
             if filteredFiles.isEmpty {
