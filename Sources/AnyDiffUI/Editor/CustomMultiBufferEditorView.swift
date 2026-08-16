@@ -77,8 +77,12 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
 
     // Hover State
     private var hoveredGutterLineIndex: Int? = nil
-    private var hoveredFoldGapIndex: Int? = nil
     private var trackingArea: NSTrackingArea?
+
+    // Scrollbar Auto-Hide Animation
+    private var scrollbarAlpha: CGFloat = 0.0
+    private var scrollbarFadeTimer: Timer?
+    private var fadeAnimationTimer: Timer?
 
     public override var isFlipped: Bool { true }
     public override var acceptsFirstResponder: Bool { true }
@@ -103,6 +107,31 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
 
     deinit {
         cursorTimer?.invalidate()
+        scrollbarFadeTimer?.invalidate()
+        fadeAnimationTimer?.invalidate()
+    }
+
+    private func showScrollbarsWithAutohide() {
+        scrollbarFadeTimer?.invalidate()
+        fadeAnimationTimer?.invalidate()
+        scrollbarAlpha = 1.0
+        scrollbarFadeTimer = Timer.scheduledTimer(withTimeInterval: 0.8, repeats: false) { [weak self] _ in
+            self?.startScrollbarFadeOut()
+        }
+        needsDisplay = true
+    }
+
+    private func startScrollbarFadeOut() {
+        fadeAnimationTimer?.invalidate()
+        fadeAnimationTimer = Timer.scheduledTimer(withTimeInterval: 0.03, repeats: true) { [weak self] timer in
+            guard let self = self else { timer.invalidate(); return }
+            self.scrollbarAlpha -= 0.12
+            if self.scrollbarAlpha <= 0 {
+                self.scrollbarAlpha = 0
+                timer.invalidate()
+            }
+            self.needsDisplay = true
+        }
     }
 
     private func updateFontMetrics() {
@@ -192,6 +221,8 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
 
         scrollOffsetY = max(0, min(maxScrollY, scrollOffsetY - dy))
         scrollOffsetX = max(0, min(maxScrollX, scrollOffsetX - dx))
+
+        showScrollbarsWithAutohide()
     }
 
     public override func setFrameSize(_ newSize: NSSize) {
@@ -385,32 +416,36 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
             }
         }
 
-        // 4. Draw Overlay Scrollbars (Vertical & Horizontal)
-        if totalDocumentHeight > bounds.height {
-            let maxScrollY = totalDocumentHeight - bounds.height
-            let progress = maxScrollY > 0 ? (scrollOffsetY / maxScrollY) : 0
-            let thumbHeight = max(30, (bounds.height / totalDocumentHeight) * bounds.height)
-            let thumbY = progress * (bounds.height - thumbHeight)
-            let thumbRect = CGRect(x: bounds.width - 7, y: thumbY, width: 4, height: thumbHeight)
+        // 4. Draw Overlay Scrollbars with Auto-Hide Fade (Vertical & Horizontal)
+        if scrollbarAlpha > 0.01 {
+            let thumbColor = theme.gutterForeground.withAlphaComponent(0.45 * scrollbarAlpha)
 
-            context.setFillColor(theme.gutterForeground.withAlphaComponent(0.4).cgColor)
-            let path = CGPath(roundedRect: thumbRect, cornerWidth: 2, cornerHeight: 2, transform: nil)
-            context.addPath(path)
-            context.fillPath()
-        }
+            if totalDocumentHeight > bounds.height {
+                let maxScrollY = totalDocumentHeight - bounds.height
+                let progress = maxScrollY > 0 ? (scrollOffsetY / maxScrollY) : 0
+                let thumbHeight = max(30, (bounds.height / totalDocumentHeight) * bounds.height)
+                let thumbY = progress * (bounds.height - thumbHeight)
+                let thumbRect = CGRect(x: bounds.width - 7, y: thumbY, width: 4, height: thumbHeight)
 
-        if totalDocumentWidth > bounds.width {
-            let maxScrollX = totalDocumentWidth - bounds.width
-            let progress = maxScrollX > 0 ? (scrollOffsetX / maxScrollX) : 0
-            let scrollableWidth = bounds.width - gutterWidth - 10
-            let thumbWidth = max(40, (scrollableWidth / totalDocumentWidth) * scrollableWidth)
-            let thumbX = gutterWidth + progress * (scrollableWidth - thumbWidth)
-            let thumbRect = CGRect(x: thumbX, y: bounds.height - 6, width: thumbWidth, height: 4)
+                context.setFillColor(thumbColor.cgColor)
+                let path = CGPath(roundedRect: thumbRect, cornerWidth: 2, cornerHeight: 2, transform: nil)
+                context.addPath(path)
+                context.fillPath()
+            }
 
-            context.setFillColor(theme.gutterForeground.withAlphaComponent(0.4).cgColor)
-            let path = CGPath(roundedRect: thumbRect, cornerWidth: 2, cornerHeight: 2, transform: nil)
-            context.addPath(path)
-            context.fillPath()
+            if totalDocumentWidth > bounds.width {
+                let maxScrollX = totalDocumentWidth - bounds.width
+                let progress = maxScrollX > 0 ? (scrollOffsetX / maxScrollX) : 0
+                let scrollableWidth = bounds.width - gutterWidth - 10
+                let thumbWidth = max(40, (scrollableWidth / totalDocumentWidth) * scrollableWidth)
+                let thumbX = gutterWidth + progress * (scrollableWidth - thumbWidth)
+                let thumbRect = CGRect(x: thumbX, y: bounds.height - 6, width: thumbWidth, height: 4)
+
+                context.setFillColor(thumbColor.cgColor)
+                let path = CGPath(roundedRect: thumbRect, cornerWidth: 2, cornerHeight: 2, transform: nil)
+                context.addPath(path)
+                context.fillPath()
+            }
         }
 
         context.restoreGState()
