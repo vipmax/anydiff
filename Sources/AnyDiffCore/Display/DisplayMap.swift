@@ -33,18 +33,39 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
 
             let isFirstExcerptOfFile = excerpt.isFileStart || excerptIdx == 0
 
-            // 1. Excerpt Header
-            if isFirstExcerptOfFile {
-                let fileExcerpts = multiBuffer.excerpts.filter { $0.filePath == excerpt.filePath }
-                let adds = buffer.totalAdditions > 0 ? buffer.totalAdditions : fileExcerpts.reduce(0) { $0 + ($1.hunk?.addedLineCount ?? 0) }
-                let dels = buffer.totalDeletions > 0 ? buffer.totalDeletions : fileExcerpts.reduce(0) { $0 + ($1.hunk?.deletedLineCount ?? 0) }
+            // 1. Dynamic Diff Calculation: compute live diff lines and file additions/deletions
+            let diffLinesToRender: [(line: DiffLine, bufferRow: Int)]
+            if !buffer.baselineLines.isEmpty && (buffer.baselineLines != buffer.lines || excerpt.hunk != nil || buffer.fullDiskPath != nil) {
+                let sliceResult = LineDiffEngine.shared.diffLinesForSlice(
+                    oldLines: buffer.baselineLines,
+                    newLines: buffer.lines,
+                    oldStartLine: buffer.startLineNumber,
+                    newStartLine: buffer.startLineNumber,
+                    targetRange: excerpt.bufferRange
+                )
+                diffLinesToRender = sliceResult.lines
+                buffer.totalAdditions = sliceResult.additions
+                buffer.totalDeletions = sliceResult.deletions
+            } else {
+                let range = excerpt.bufferRange
+                let clamped = max(0, min(buffer.lineCount, range.lowerBound))..<max(0, min(buffer.lineCount, range.upperBound))
+                diffLinesToRender = clamped.map { r in
+                    let num = buffer.startLineNumber + r
+                    let dLine = DiffLine(kind: .unchanged, text: buffer.lines[r], oldLineNumber: num, newLineNumber: num)
+                    return (line: dLine, bufferRow: r)
+                }
+                buffer.totalAdditions = 0
+                buffer.totalDeletions = 0
+            }
 
+            // 2. Excerpt Header (with live updated additions & deletions)
+            if isFirstExcerptOfFile {
                 let header = ExcerptHeaderInfo(
                     excerptIndex: excerptIdx,
                     filePath: excerpt.filePath,
                     fileStatus: excerpt.fileStatus,
-                    additions: adds,
-                    deletions: dels,
+                    additions: buffer.totalAdditions,
+                    deletions: buffer.totalDeletions,
                     isCollapsed: excerpt.isCollapsed
                 )
                 lines.append(.excerptHeader(header))
@@ -54,31 +75,11 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
                 continue
             }
 
-            // 2. Top Fold Gap (if first excerpt starts > 1)
+            // 3. Top Fold Gap (if first excerpt starts > 1)
             if isFirstExcerptOfFile {
                 let topHidden = buffer.startLineNumber > 1 ? (buffer.startLineNumber - 1 + excerpt.bufferRange.lowerBound) : excerpt.bufferRange.lowerBound
                 if topHidden >= 3 {
                     lines.append(.foldGap(DisplayFoldGapInfo(excerptIndex: excerptIdx, hiddenCount: topHidden, isTopGap: true)))
-                }
-            }
-
-            // 3. Dynamic Diff Calculation: compute live diff lines only for the current excerpt's bufferRange
-            let diffLinesToRender: [(line: DiffLine, bufferRow: Int)]
-            if !buffer.baselineLines.isEmpty && (buffer.baselineLines != buffer.lines || excerpt.hunk != nil || buffer.fullDiskPath != nil) {
-                diffLinesToRender = LineDiffEngine.shared.diffLinesForSlice(
-                    oldLines: buffer.baselineLines,
-                    newLines: buffer.lines,
-                    oldStartLine: buffer.startLineNumber,
-                    newStartLine: buffer.startLineNumber,
-                    targetRange: excerpt.bufferRange
-                )
-            } else {
-                let range = excerpt.bufferRange
-                let clamped = max(0, min(buffer.lineCount, range.lowerBound))..<max(0, min(buffer.lineCount, range.upperBound))
-                diffLinesToRender = clamped.map { r in
-                    let num = buffer.startLineNumber + r
-                    let dLine = DiffLine(kind: .unchanged, text: buffer.lines[r], oldLineNumber: num, newLineNumber: num)
-                    return (line: dLine, bufferRow: r)
                 }
             }
 

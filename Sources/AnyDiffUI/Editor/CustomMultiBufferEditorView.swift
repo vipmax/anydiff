@@ -716,17 +716,11 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         ]
         let pathStr = NSAttributedString(string: info.filePath, attributes: pathAttr)
         let ctLine = CTLineCreateWithAttributedString(pathStr)
+        let titleWidth = CGFloat(CTLineGetTypographicBounds(ctLine, nil, nil, nil))
+        let titleStartX: CGFloat = 28
+        let titleEndX = titleStartX + titleWidth
 
-        context.saveGState()
-        context.textMatrix = .identity
-        context.translateBy(x: 28, y: rect.minY + 22)
-        context.scaleBy(x: 1.0, y: -1.0)
-        CTLineDraw(ctLine, context)
-        context.restoreGState()
-
-        // Diff Badges (+N -M) floated to the right edge of header
-        var rightBadgeX = bounds.width + scrollOffsetX - 20
-
+        // Diff Badges (+N -M) floated to the right edge of visible viewport
         var delLine: CTLine?
         var delWidth: CGFloat = 0
         if info.deletions > 0 {
@@ -753,25 +747,49 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             addLine = line
         }
 
-        if let delLine = delLine {
-            rightBadgeX -= delWidth
-            context.saveGState()
-            context.textMatrix = .identity
-            context.translateBy(x: rightBadgeX, y: rect.minY + 22)
-            context.scaleBy(x: 1.0, y: -1.0)
-            CTLineDraw(delLine, context)
-            context.restoreGState()
-            rightBadgeX -= 12 // Spacing between + and - badges
-        }
+        let badgeRightMargin: CGFloat = 16
+        let badgeSpacing: CGFloat = 10
+        var totalBadgeWidth: CGFloat = 0
+        if delLine != nil { totalBadgeWidth += delWidth }
+        if addLine != nil { totalBadgeWidth += addWidth }
+        if delLine != nil && addLine != nil { totalBadgeWidth += badgeSpacing }
 
-        if let addLine = addLine {
-            rightBadgeX -= addWidth
-            context.saveGState()
-            context.textMatrix = .identity
-            context.translateBy(x: rightBadgeX, y: rect.minY + 22)
-            context.scaleBy(x: 1.0, y: -1.0)
-            CTLineDraw(addLine, context)
-            context.restoreGState()
+        let badgeStartX = bounds.width - badgeRightMargin - totalBadgeWidth
+        let minBadgeGap: CGFloat = 20
+        let shouldDrawBadges = totalBadgeWidth > 0 && (badgeStartX >= titleEndX + minBadgeGap)
+
+        // Draw title
+        context.saveGState()
+        context.textMatrix = .identity
+        context.translateBy(x: titleStartX, y: rect.minY + 22)
+        context.scaleBy(x: 1.0, y: -1.0)
+        CTLineDraw(ctLine, context)
+        context.restoreGState()
+
+        // Draw badges (pinned to right edge of viewport, hidden if title is too long)
+        if shouldDrawBadges {
+            var rightBadgeX = bounds.width - badgeRightMargin
+
+            if let delLine = delLine {
+                rightBadgeX -= delWidth
+                context.saveGState()
+                context.textMatrix = .identity
+                context.translateBy(x: rightBadgeX, y: rect.minY + 22)
+                context.scaleBy(x: 1.0, y: -1.0)
+                CTLineDraw(delLine, context)
+                context.restoreGState()
+                rightBadgeX -= badgeSpacing // Spacing between + and - badges
+            }
+
+            if let addLine = addLine {
+                rightBadgeX -= addWidth
+                context.saveGState()
+                context.textMatrix = .identity
+                context.translateBy(x: rightBadgeX, y: rect.minY + 22)
+                context.scaleBy(x: 1.0, y: -1.0)
+                CTLineDraw(addLine, context)
+                context.restoreGState()
+            }
         }
     }
 

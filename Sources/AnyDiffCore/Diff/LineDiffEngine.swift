@@ -47,13 +47,14 @@ public final class LineDiffEngine: Sendable {
 
     /// Computes diff lines ONLY for the specified slice of the new buffer (targetRange in 0-based buffer rows),
     /// avoiding allocation and materialization of DiffLines for rows outside targetRange.
+    /// Returns the slice's DiffLines along with the total file-level additions and deletions counts.
     public func diffLinesForSlice(
         oldLines: [String],
         newLines: [String],
         oldStartLine: Int = 1,
         newStartLine: Int = 1,
         targetRange: Range<Int>
-    ) -> [(line: DiffLine, bufferRow: Int)] {
+    ) -> (lines: [(line: DiffLine, bufferRow: Int)], additions: Int, deletions: Int) {
         let n = oldLines.count
         let m = newLines.count
 
@@ -67,7 +68,7 @@ public final class LineDiffEngine: Sendable {
                 let dLine = DiffLine(kind: .unchanged, text: newLines[r], oldLineNumber: num, newLineNumber: num)
                 result.append((line: dLine, bufferRow: r))
             }
-            return result
+            return (lines: result, additions: 0, deletions: 0)
         }
 
         // 2. Common Prefix in O(N)
@@ -84,6 +85,8 @@ public final class LineDiffEngine: Sendable {
         }
 
         var result: [(line: DiffLine, bufferRow: Int)] = []
+        var additions = 0
+        var deletions = 0
 
         // A. Process Prefix region intersection with targetRange
         let prefixEnd = prefixCount
@@ -118,6 +121,7 @@ public final class LineDiffEngine: Sendable {
             for dLine in middleDiff {
                 let row = curBRow
                 if dLine.kind == .deleted {
+                    deletions += 1
                     // Deleted line attached to current buffer row
                     if targetRange.isEmpty {
                         if row == targetRange.lowerBound {
@@ -126,6 +130,12 @@ public final class LineDiffEngine: Sendable {
                     } else if targetRange.contains(row) || (row == targetRange.upperBound && targetRange.upperBound == m) {
                         result.append((line: dLine, bufferRow: row))
                     }
+                } else if dLine.kind == .added {
+                    additions += 1
+                    if targetRange.contains(row) {
+                        result.append((line: dLine, bufferRow: row))
+                    }
+                    curBRow += 1
                 } else {
                     if targetRange.contains(row) {
                         result.append((line: dLine, bufferRow: row))
@@ -148,7 +158,7 @@ public final class LineDiffEngine: Sendable {
             result.append((line: dLine, bufferRow: r))
         }
 
-        return result
+        return (lines: result, additions: additions, deletions: deletions)
     }
 
     /// Computes unified diff hunks with word-level highlights between old text and new text

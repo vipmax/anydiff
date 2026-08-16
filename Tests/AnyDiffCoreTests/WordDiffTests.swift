@@ -281,4 +281,23 @@ final class WordDiffTests: XCTestCase {
 
         XCTAssertLessThan(timeSlice, timeFull)
     }
+
+    func testSliceDiffAdditionsAndDeletionsCounters() {
+        let oldLines = ["line 1", "line 2", "line 3", "line 4", "line 5"]
+        let newLines = ["line 1", "line 2 modified", "line 2.5 new", "line 4", "line 5", "line 6 new"]
+
+        let result = LineDiffEngine.shared.diffLinesForSlice(
+            oldLines: oldLines,
+            newLines: newLines,
+            targetRange: 0..<newLines.count
+        )
+
+        // Modified line 2 replaced: 1 deletion ("line 2"), 1 addition ("line 2 modified")
+        // "line 2.5 new": 1 addition
+        // "line 3": 1 deletion
+        // "line 6 new": 1 addition
+        // Total additions = 3, deletions = 2
+        XCTAssertEqual(result.additions, 3)
+        XCTAssertEqual(result.deletions, 2)
+    }
 }
