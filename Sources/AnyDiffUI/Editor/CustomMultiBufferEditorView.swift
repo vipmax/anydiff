@@ -128,10 +128,64 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
         self.trackingArea = area
     }
 
+    // Zed-style Axis Lock & Ongoing Scroll Filter
+    private enum ScrollAxis {
+        case vertical
+        case horizontal
+    }
+    private var scrollLockAxis: ScrollAxis? = nil
+    private var lastScrollEventTime: Date = .distantPast
+
     public override func scrollWheel(with event: NSEvent) {
         let mult: CGFloat = event.hasPreciseScrollingDeltas ? 1.0 : 24.0
-        let dy = event.scrollingDeltaY * mult
-        let dx = event.scrollingDeltaX * mult
+        var dy = event.scrollingDeltaY * mult
+        var dx = event.scrollingDeltaX * mult
+
+        let now = Date()
+        let timeSinceLastEvent = now.timeIntervalSince(lastScrollEventTime)
+        lastScrollEventTime = now
+
+        let isNewGesture = event.phase == .began || event.phase == .mayBegin || timeSinceLastEvent > 0.20
+        let absX = abs(dx)
+        let absY = abs(dy)
+
+        if isNewGesture {
+            // Determine dominant direction at start of gesture (Zed style)
+            if absY >= absX {
+                scrollLockAxis = .vertical
+            } else {
+                scrollLockAxis = .horizontal
+            }
+        } else if max(absX, absY) >= 6.0 {
+            // Check if user deliberately switched direction with strong intent (>1.9x threshold)
+            let unlockPercent: CGFloat = 1.9
+            switch scrollLockAxis {
+            case .vertical:
+                if absX > absY && absX >= absY * unlockPercent {
+                    scrollLockAxis = .horizontal
+                }
+            case .horizontal:
+                if absY > absX && absY >= absX * unlockPercent {
+                    scrollLockAxis = .vertical
+                }
+            case .none:
+                break
+            }
+        }
+
+        // Apply axis lock to completely eliminate accidental diagonal drifting
+        switch scrollLockAxis {
+        case .vertical:
+            dx = 0
+        case .horizontal:
+            dy = 0
+        case .none:
+            break
+        }
+
+        if event.phase == .ended || event.phase == .cancelled {
+            scrollLockAxis = nil
+        }
 
         let maxScrollY = max(0, totalDocumentHeight - bounds.height)
         let maxScrollX = max(0, totalDocumentWidth - bounds.width)
