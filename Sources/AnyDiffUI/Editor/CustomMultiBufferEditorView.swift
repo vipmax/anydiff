@@ -239,6 +239,9 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
             return
         }
 
+        context.saveGState()
+        context.clip(to: bounds)
+
         // 1. Draw Canvas Background
         context.setFillColor(theme.background.cgColor)
         context.fill(bounds)
@@ -358,6 +361,8 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
             context.addPath(path)
             context.fillPath()
         }
+
+        context.restoreGState()
     }
 
     // MARK: - Excerpt Header Drawing

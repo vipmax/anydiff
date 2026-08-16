@@ -54,6 +54,9 @@ public struct MainWindowView: View {
                     onExpandAll: { expandAllExcerpts() },
                     onCollapseAll: { collapseAllExcerpts() }
                 )
+                .zIndex(10)
+
+                Divider()
 
                 // Custom CoreText MultiBuffer Editor Canvas
                 EditorHostView(
@@ -68,7 +71,10 @@ public struct MainWindowView: View {
                         commentTarget = (filePath: path, lineNumber: line)
                     }
                 )
+                .clipped()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                Divider()
 
                 // Bottom Status Bar
                 StatusBarView(
@@ -80,6 +86,7 @@ public struct MainWindowView: View {
                     totalComments: reviewManager.comments.count,
                     theme: selectedTheme
                 )
+                .zIndex(10)
             }
         }
         .sheet(isPresented: $showPasteModal) {
