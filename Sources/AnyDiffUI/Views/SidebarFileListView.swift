@@ -3,16 +3,19 @@ import AnyDiffCore
 
 public struct SidebarFileListView: View {
     public var fileDiffs: [FileDiff]
+    public var theme: Theme
     @ObservedObject public var reviewManager: ReviewManager
     @Binding public var selectedFilePath: String?
     @State private var searchText: String = ""
 
     public init(
         fileDiffs: [FileDiff],
+        theme: Theme,
         reviewManager: ReviewManager,
         selectedFilePath: Binding<String?>
     ) {
         self.fileDiffs = fileDiffs
+        self.theme = theme
         self.reviewManager = reviewManager
         self._selectedFilePath = selectedFilePath
     }
@@ -42,12 +45,13 @@ public struct SidebarFileListView: View {
                 }
             }
             .padding(8)
-            .background(Color(NSColor.controlBackgroundColor).opacity(0.6))
+            .background(Color(theme.gutterBackground))
             .cornerRadius(8)
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
 
             Divider()
+                .overlay(Color(theme.excerptHeaderBorder).opacity(0.65))
 
             // Header info
             HStack {
@@ -76,8 +80,13 @@ public struct SidebarFileListView: View {
                     .tag(file.displayPath)
                 }
             }
-            .listStyle(.sidebar)
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .background(Color(theme.background))
         }
+        .background(Color(theme.background).ignoresSafeArea())
+        .toolbarBackground(.hidden, for: .windowToolbar)
+        .toolbarColorScheme(theme.isDark ? .dark : .light, for: .windowToolbar)
     }
 }
 

@@ -19,6 +19,16 @@ build:
 build-debug:
     swift build -c debug
 
+# Remove Swift Package Manager build artifacts.
+clean:
+    swift package clean
+
+# Clean and rebuild both Debug and Release configurations.
+rebuild:
+    just clean
+    just build-debug
+    just build
+
 # Run the test suite in Debug configuration.
 test:
     swift test -c debug

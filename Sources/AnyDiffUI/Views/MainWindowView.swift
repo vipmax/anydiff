@@ -1,5 +1,24 @@
 import SwiftUI
+import AppKit
 import AnyDiffCore
+
+private final class SystemAppearanceObserver: ObservableObject {
+    @Published private(set) var isDark: Bool
+    private var appearanceObservation: NSKeyValueObservation?
+
+    init() {
+        self.isDark = Self.readIsDark()
+        self.appearanceObservation = NSApp.observe(\NSApplication.effectiveAppearance, options: [.new]) { [weak self] _, _ in
+            DispatchQueue.main.async {
+                self?.isDark = Self.readIsDark()
+            }
+        }
+    }
+
+    private static func readIsDark() -> Bool {
+        NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+    }
+}
 
 public struct MainWindowView: View {
     public var initialPath: String?
@@ -7,10 +26,12 @@ public struct MainWindowView: View {
     @StateObject private var multiBuffer = MultiBuffer()
     @StateObject private var reviewManager = ReviewManager()
     @StateObject private var displayMap: DisplayMap
+    @StateObject private var systemAppearance = SystemAppearanceObserver()
 
     @State private var fileDiffs: [FileDiff] = []
     @State private var selectedFilePath: String? = nil
     @State private var selectedTheme: Theme = .unifiedDark
+    @State private var followsSystemAppearance: Bool = true
     @State private var viewMode: DiffViewMode = .unified
     @State private var contextLines: Int = 3
     @State private var fontSize: CGFloat = 13
@@ -33,10 +54,22 @@ public struct MainWindowView: View {
         self._displayMap = StateObject(wrappedValue: dm)
     }
 
+    private var activeTheme: Theme {
+        guard followsSystemAppearance == false else {
+            return systemAppearance.isDark ? .unifiedDark : .macOSLight
+        }
+        return selectedTheme
+    }
+
+    private var activeThemeName: String {
+        followsSystemAppearance ? "System (\(systemAppearance.isDark ? "Dark" : "Light"))" : selectedTheme.name
+    }
+
     public var body: some View {
         NavigationSplitView {
             SidebarFileListView(
                 fileDiffs: fileDiffs,
+                theme: activeTheme,
                 reviewManager: reviewManager,
                 selectedFilePath: $selectedFilePath
             )
@@ -67,7 +100,7 @@ public struct MainWindowView: View {
                                 .opacity(0.85)
                         }
                         .buttonStyle(.plain)
-                        .help("Select Color Theme (\(selectedTheme.name))")
+                        .help("Select Color Theme (\(activeThemeName))")
                         .popover(isPresented: $showThemePicker, arrowEdge: .bottom) {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text("COLOR THEME")
@@ -76,16 +109,37 @@ public struct MainWindowView: View {
                                     .padding(.horizontal, 8)
                                     .padding(.top, 6)
                                 Divider()
+                                Button(action: {
+                                    followsSystemAppearance = true
+                                    showThemePicker = false
+                                }) {
+                                    HStack {
+                                        Text("System")
+                                            .font(.system(size: 12))
+                                        Spacer()
+                                        if followsSystemAppearance {
+                                            Image(systemName: "checkmark")
+                                                .font(.system(size: 10, weight: .bold))
+                                                .foregroundColor(.accentColor)
+                                        }
+                                    }
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                Divider()
                                 ForEach(Theme.allThemes, id: \.id) { theme in
                                     Button(action: {
                                         selectedTheme = theme
+                                        followsSystemAppearance = false
                                         showThemePicker = false
                                     }) {
                                         HStack {
                                             Text(theme.name)
                                                 .font(.system(size: 12))
                                             Spacer()
-                                            if selectedTheme.id == theme.id {
+                                            if followsSystemAppearance == false && selectedTheme.id == theme.id {
                                                 Image(systemName: "checkmark")
                                                     .font(.system(size: 10, weight: .bold))
                                                     .foregroundColor(.accentColor)
@@ -107,7 +161,7 @@ public struct MainWindowView: View {
         } detail: {
             EditorHostView(
                 displayMap: displayMap,
-                theme: selectedTheme,
+                theme: activeTheme,
                 fontSize: fontSize,
                 onCursorChange: { loc, pt in
                     cursorLocation = loc
@@ -134,6 +188,9 @@ public struct MainWindowView: View {
                 .opacity(0)
             )
         }
+        .toolbarBackground(.hidden, for: .windowToolbar)
+        .toolbarColorScheme(activeTheme.isDark ? .dark : .light, for: .windowToolbar)
+        .background(Color(activeTheme.background).ignoresSafeArea())
         .sheet(isPresented: $showPasteModal) {
             PasteDiffModal(
                 onLoadDiff: { text in

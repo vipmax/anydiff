@@ -235,15 +235,47 @@ public struct Theme: Identifiable, Sendable {
         diffModifiedGutter: NSColor(red: 0.38, green: 0.68, blue: 0.96, alpha: 1.0)
     )
 
+    public static let macOSLight = Theme(
+        id: "macos-light",
+        name: "macOS Light",
+        isDark: false,
+        background: NSColor(red: 0.98, green: 0.98, blue: 0.99, alpha: 1.0),
+        gutterBackground: NSColor(red: 0.94, green: 0.95, blue: 0.97, alpha: 1.0),
+        currentLineBackground: NSColor(red: 0.93, green: 0.95, blue: 0.98, alpha: 1.0),
+        selectionBackground: NSColor(red: 0.24, green: 0.48, blue: 0.88, alpha: 0.24),
+        excerptHeaderBackground: NSColor(red: 0.95, green: 0.96, blue: 0.98, alpha: 1.0),
+        excerptHeaderBorder: NSColor(red: 0.82, green: 0.84, blue: 0.88, alpha: 1.0),
+        foreground: NSColor(red: 0.12, green: 0.14, blue: 0.18, alpha: 1.0),
+        gutterForeground: NSColor(red: 0.40, green: 0.44, blue: 0.52, alpha: 1.0),
+        gutterActiveForeground: NSColor(red: 0.12, green: 0.24, blue: 0.48, alpha: 1.0),
+        foldPlaceholderForeground: NSColor(red: 0.38, green: 0.43, blue: 0.52, alpha: 1.0),
+        keyword: NSColor(red: 0.70, green: 0.14, blue: 0.28, alpha: 1.0),
+        type: NSColor(red: 0.58, green: 0.34, blue: 0.04, alpha: 1.0),
+        function: NSColor(red: 0.08, green: 0.30, blue: 0.68, alpha: 1.0),
+        string: NSColor(red: 0.08, green: 0.42, blue: 0.20, alpha: 1.0),
+        number: NSColor(red: 0.72, green: 0.31, blue: 0.08, alpha: 1.0),
+        comment: NSColor(red: 0.40, green: 0.44, blue: 0.50, alpha: 1.0),
+        property: NSColor(red: 0.10, green: 0.34, blue: 0.62, alpha: 1.0),
+        operator: NSColor(red: 0.34, green: 0.36, blue: 0.44, alpha: 1.0),
+        punctuation: NSColor(red: 0.30, green: 0.33, blue: 0.40, alpha: 1.0),
+        diffAddedGutter: NSColor(red: 0.10, green: 0.55, blue: 0.24, alpha: 1.0),
+        diffAddedBackground: NSColor(red: 0.72, green: 0.94, blue: 0.76, alpha: 0.62),
+        diffAddedWordHighlight: NSColor(red: 0.36, green: 0.78, blue: 0.44, alpha: 0.52),
+        diffDeletedGutter: NSColor(red: 0.78, green: 0.16, blue: 0.20, alpha: 1.0),
+        diffDeletedBackground: NSColor(red: 0.98, green: 0.78, blue: 0.80, alpha: 0.62),
+        diffDeletedWordHighlight: NSColor(red: 0.92, green: 0.38, blue: 0.42, alpha: 0.50),
+        diffModifiedGutter: NSColor(red: 0.12, green: 0.42, blue: 0.82, alpha: 1.0)
+    )
+
     public static let unifiedDark = Theme(
         id: "unified-dark",
         name: "macOS Window Unified",
         isDark: true,
-        background: NSColor(red: 0.145, green: 0.145, blue: 0.152, alpha: 1.0),
-        gutterBackground: NSColor(red: 0.130, green: 0.130, blue: 0.136, alpha: 1.0),
+        background: NSColor(red: 43.0 / 255.0, green: 41.0 / 255.0, blue: 40.0 / 255.0, alpha: 1.0),
+        gutterBackground: NSColor(red: 43.0 / 255.0, green: 41.0 / 255.0, blue: 40.0 / 255.0, alpha: 1.0),
         currentLineBackground: NSColor(red: 0.182, green: 0.184, blue: 0.194, alpha: 1.0),
         selectionBackground: NSColor(red: 0.260, green: 0.350, blue: 0.500, alpha: 0.65),
-        excerptHeaderBackground: NSColor(red: 0.145, green: 0.145, blue: 0.152, alpha: 1.0),
+        excerptHeaderBackground: NSColor(red: 43.0 / 255.0, green: 41.0 / 255.0, blue: 40.0 / 255.0, alpha: 1.0),
         excerptHeaderBorder: NSColor(red: 0.200, green: 0.205, blue: 0.215, alpha: 1.0),
         foreground: NSColor(red: 0.92, green: 0.93, blue: 0.96, alpha: 1.0),
         gutterForeground: NSColor(red: 0.46, green: 0.48, blue: 0.54, alpha: 1.0),
@@ -268,6 +300,7 @@ public struct Theme: Identifiable, Sendable {
     )
 
     public static let allThemes: [Theme] = [
+        .macOSLight,
         .unifiedDark,
         .zedGray,
         .zedDark,

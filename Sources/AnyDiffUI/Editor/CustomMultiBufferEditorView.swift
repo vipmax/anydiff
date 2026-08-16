@@ -20,6 +20,9 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
     public var theme: Theme = .zedGray {
         didSet {
+            // CTLine stores resolved foreground colors, so cached lines must be
+            // discarded when the palette changes (including system appearance changes).
+            LineLayoutCache.shared.clear()
             needsDisplay = true
         }
     }
@@ -598,10 +601,13 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         let headerRect = CGRect(x: 0, y: rect.minY, width: fullWidth, height: rect.height)
 
         if isSticky {
-            // Drop shadow under sticky header for elevated visual layering
+            // Keep the sticky header separation subtle in both appearances.
             context.saveGState()
-            context.setFillColor(NSColor.black.withAlphaComponent(0.35).cgColor)
-            context.fill(CGRect(x: 0, y: rect.maxY, width: fullWidth, height: 3))
+            let shadowColor = theme.isDark
+                ? NSColor.black.withAlphaComponent(0.22)
+                : NSColor.black.withAlphaComponent(0.08)
+            context.setFillColor(shadowColor.cgColor)
+            context.fill(CGRect(x: 0, y: rect.maxY, width: fullWidth, height: 1))
             context.restoreGState()
         }
 
@@ -722,7 +728,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     // MARK: - Code Line Drawing
 
     private func drawCodeLine(info: DisplayCodeLineInfo, lineIdx: Int, in rect: CGRect, context: CGContext) {
-        let isCurrentCursorLine = (info.multiBufferRow == cursorPoint.row)
+        let isCurrentCursorLine = window?.firstResponder === self && info.multiBufferRow == cursorPoint.row
         let fullLineWidth = max(rect.width, bounds.width + scrollOffsetX, totalDocumentWidth)
 
         // 1. Line Background (Diff Tint or Current Line Highlight)
@@ -787,7 +793,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             let clampedCol = min(info.text.count, max(0, cursorPoint.column))
             let cursorX = codeStartX + LineLayoutCache.shared.xOffset(in: ctLine, for: clampedCol)
             let cursorRect = CGRect(x: cursorX, y: rect.minY + 2, width: 2, height: rect.height - 4)
-            context.setFillColor(theme.foreground.cgColor)
+            context.setFillColor(theme.diffModifiedGutter.cgColor)
             context.fill(cursorRect)
         }
     }
@@ -847,17 +853,25 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
         if isHovered {
             let bgPath = CGPath(roundedRect: btnRect, cornerWidth: 3.5, cornerHeight: 3.5, transform: nil)
-            context.setFillColor(NSColor(white: 1.0, alpha: 0.12).cgColor)
+            let hoverBackground = theme.isDark
+                ? NSColor.white.withAlphaComponent(0.12)
+                : NSColor.black.withAlphaComponent(0.08)
+            let hoverBorder = theme.isDark
+                ? NSColor.white.withAlphaComponent(0.22)
+                : NSColor.black.withAlphaComponent(0.16)
+            context.setFillColor(hoverBackground.cgColor)
             context.addPath(bgPath)
             context.fillPath()
 
-            context.setStrokeColor(NSColor(white: 1.0, alpha: 0.22).cgColor)
+            context.setStrokeColor(hoverBorder.cgColor)
             context.setLineWidth(0.75)
             context.addPath(bgPath)
             context.strokePath()
         }
 
-        let iconColor: NSColor = isHovered ? .white : theme.gutterForeground.withAlphaComponent(0.7)
+        let iconColor: NSColor = isHovered
+            ? (theme.isDark ? .white : theme.foreground)
+            : theme.gutterForeground.withAlphaComponent(0.7)
         context.setStrokeColor(iconColor.cgColor)
         context.setLineWidth(1.2)
         context.setLineCap(.round)
