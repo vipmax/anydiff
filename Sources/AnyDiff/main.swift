@@ -15,7 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             defer: false
         )
         mainWindow.center()
-        mainWindow.title = "AnyDiff - MultiBuffer Code Reviewer"
+        mainWindow.title = "AnyDiff"
         mainWindow.titlebarAppearsTransparent = true
         mainWindow.toolbarStyle = .unified
         mainWindow.isReleasedWhenClosed = false

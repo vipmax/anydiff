@@ -20,6 +20,7 @@ public struct MainWindowView: View {
 
     @State private var showPasteModal: Bool = false
     @State private var commentTarget: (filePath: String, lineNumber: Int)? = nil
+    @State private var currentFolderName: String = ""
 
     public init(initialPath: String? = nil) {
         self.initialPath = initialPath
@@ -78,22 +79,31 @@ public struct MainWindowView: View {
                         }
                     }
                 } label: {
-                    Label(selectedTheme.name, systemImage: "paintpalette")
+                    Image(systemName: "paintpalette")
+                        .font(.system(size: 11, weight: .semibold))
                 }
-                .help("Select Color Theme")
+                .menuStyle(.borderlessButton)
+                .controlSize(.small)
+                .help("Select Color Theme (\(selectedTheme.name))")
             }
 
             ToolbarItem(placement: .automatic) {
                 Button(action: { loadCurrentDirectoryDiff() }) {
                     Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 11, weight: .semibold))
                 }
+                .buttonStyle(.plain)
+                .controlSize(.small)
                 .help("Reload Git Diff (Cmd+R)")
             }
 
             ToolbarItem(placement: .automatic) {
                 Button(action: { openGitRepositoryFolder() }) {
                     Image(systemName: "folder")
+                        .font(.system(size: 11, weight: .semibold))
                 }
+                .buttonStyle(.plain)
+                .controlSize(.small)
                 .help("Open Git Repository (Cmd+O)")
             }
         }
@@ -135,6 +145,11 @@ public struct MainWindowView: View {
     public func loadCurrentDirectoryDiff() {
         let currentDir = initialPath ?? FileManager.default.currentDirectoryPath
         multiBuffer.baseDirectory = currentDir
+        let folderName = (currentDir as NSString).lastPathComponent
+        self.currentFolderName = folderName
+        DispatchQueue.main.async {
+            NSApp.windows.first?.title = "\(folderName)"
+        }
         if let diff = fetchGitDiff(at: currentDir), !diff.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             loadDiff(text: diff)
         } else {
@@ -230,6 +245,11 @@ public struct MainWindowView: View {
 
         if panel.runModal() == .OK, let url = panel.url {
             let path = url.path
+            let folderName = (path as NSString).lastPathComponent
+            self.currentFolderName = folderName
+            DispatchQueue.main.async {
+                NSApp.windows.first?.title = "\(folderName)"
+            }
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
             process.arguments = ["-C", path, "diff", "HEAD"]
