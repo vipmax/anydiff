@@ -76,7 +76,7 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
             }
 
             // 3. Top Fold Gap (if first excerpt starts > 1)
-            if isFirstExcerptOfFile {
+            if isFirstExcerptOfFile && excerpt.fileStatus != .deleted {
                 let topHidden = buffer.startLineNumber > 1 ? (buffer.startLineNumber - 1 + excerpt.bufferRange.lowerBound) : excerpt.bufferRange.lowerBound
                 if topHidden >= 3 {
                     lines.append(.foldGap(DisplayFoldGapInfo(excerptIndex: excerptIdx, hiddenCount: topHidden, isTopGap: true)))
@@ -85,7 +85,9 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
 
             let totalDiffLines = diffLinesToRender.count
             let canExpandUp: Bool
-            if buffer.startLineNumber > 1 || excerpt.bufferRange.lowerBound > 0 {
+            if excerpt.fileStatus == .deleted {
+                canExpandUp = false
+            } else if buffer.startLineNumber > 1 || excerpt.bufferRange.lowerBound > 0 {
                 canExpandUp = true
             } else if excerptIdx > 0 && multiBuffer.excerpts[excerptIdx - 1].filePath == excerpt.filePath {
                 canExpandUp = true
@@ -94,7 +96,9 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
             }
 
             let canExpandDown: Bool
-            if let diskCount = buffer.diskFileLineCount {
+            if excerpt.fileStatus == .deleted {
+                canExpandDown = false
+            } else if let diskCount = buffer.diskFileLineCount {
                 let currentEndLine = buffer.startLineNumber - 1 + excerpt.bufferRange.upperBound
                 canExpandDown = (currentEndLine < diskCount)
             } else if excerpt.bufferRange.upperBound < buffer.lineCount {
@@ -181,7 +185,7 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
                 if hiddenBetween >= 3 {
                     lines.append(.foldGap(DisplayFoldGapInfo(excerptIndex: excerptIdx, nextExcerptIndex: excerptIdx + 1, hiddenCount: hiddenBetween, isTopGap: false, isBottomGap: false)))
                 }
-            } else if isLastExcerptOfFile {
+            } else if isLastExcerptOfFile && excerpt.fileStatus != .deleted {
                 let totalLines = buffer.diskFileLineCount ?? (buffer.startLineNumber - 1 + buffer.lineCount)
                 let currentEnd = (buffer.startLineNumber - 1) + excerpt.bufferRange.upperBound
                 let remaining = max(0, totalLines - currentEnd)

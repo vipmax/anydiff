@@ -123,7 +123,9 @@ public final class LineDiffEngine: Sendable {
                 if dLine.kind == .deleted {
                     deletions += 1
                     // Deleted line attached to current buffer row
-                    if targetRange.isEmpty {
+                    if m == 0 {
+                        result.append((line: dLine, bufferRow: 0))
+                    } else if targetRange.isEmpty {
                         if row == targetRange.lowerBound {
                             result.append((line: dLine, bufferRow: row))
                         }

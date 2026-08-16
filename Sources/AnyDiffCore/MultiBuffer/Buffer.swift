@@ -105,11 +105,17 @@ public final class Buffer: Identifiable, @unchecked Sendable {
         self.fullDiskPath = fullDiskPath
         self.diskFileLineCount = diskFileLineCount
 
-        let split = text.components(separatedBy: "\n")
-        self._lines = split.isEmpty ? [""] : split
+        if text.isEmpty {
+            self._lines = []
+        } else {
+            self._lines = text.components(separatedBy: "\n")
+        }
 
-        let baseSplit = baselineText.isEmpty ? split : baselineText.components(separatedBy: "\n")
-        self.baselineLines = baseSplit.isEmpty ? [""] : baseSplit
+        if baselineText.isEmpty {
+            self.baselineLines = text.isEmpty ? [] : text.components(separatedBy: "\n")
+        } else {
+            self.baselineLines = baselineText.components(separatedBy: "\n")
+        }
     }
 
     public static func detectLanguage(for path: String) -> String {

@@ -28,4 +28,79 @@ index 1111111..2222222 100644
         XCTAssertEqual(hunk.addedLineCount, 2)
         XCTAssertEqual(hunk.deletedLineCount, 1)
     }
+
+    func testDeletedFileParsingAndDisplayMap() {
+        let diff = """
+diff --git a/OldFile.swift b/OldFile.swift
+deleted file mode 100644
+index 1111111..0000000
+--- a/OldFile.swift
++++ /dev/null
+@@ -1,5 +0,0 @@
+-import SwiftUI
+-import AnyDiffCore
+-
+-public struct OldFile {
+-}
+"""
+        let files = GitDiffParser.shared.parse(diffText: diff)
+        XCTAssertEqual(files.count, 1)
+        let file = files[0]
+        XCTAssertEqual(file.status, .deleted)
+        XCTAssertEqual(file.displayPath, "OldFile.swift")
+        XCTAssertEqual(file.hunks.count, 1)
+        XCTAssertEqual(file.hunks[0].lines.count, 5)
+
+        // Test DisplayMap generation for this deleted file
+        let multiBuffer = MultiBuffer()
+        let oldLines = file.hunks.flatMap { $0.lines.filter { $0.kind == .deleted || $0.kind == .unchanged }.map(\.text) }
+        let buffer = Buffer(
+            filePath: file.displayPath,
+            text: "",
+            language: Buffer.detectLanguage(for: file.displayPath),
+            baselineText: oldLines.joined(separator: "\n"),
+            totalAdditions: 0,
+            totalDeletions: 5,
+            startLineNumber: 1,
+            fullDiskPath: nil,
+            diskFileLineCount: 0
+        )
+        multiBuffer.addBuffer(buffer)
+
+        let excerpt = Excerpt(
+            bufferId: buffer.id,
+            filePath: file.displayPath,
+            fileStatus: .deleted,
+            bufferRange: 0..<0,
+            hunk: file.hunks.first,
+            isCollapsed: false,
+            isFileStart: true
+        )
+        multiBuffer.addExcerpt(excerpt)
+
+        let reviewManager = ReviewManager()
+        let displayMap = DisplayMap(multiBuffer: multiBuffer, reviewManager: reviewManager)
+
+        // Must have: 1 header + 5 code lines = 6 display lines (no fold gaps)
+        XCTAssertEqual(displayMap.displayLines.count, 6)
+
+        if case .excerptHeader(let header) = displayMap.displayLines[0] {
+            XCTAssertEqual(header.fileStatus, .deleted)
+            XCTAssertEqual(header.deletions, 5)
+            XCTAssertEqual(header.additions, 0)
+        } else {
+            XCTFail("First line must be excerpt header")
+        }
+
+        for i in 1...5 {
+            if case .code(let code) = displayMap.displayLines[i] {
+                XCTAssertEqual(code.diffKind, DiffLineKind.deleted)
+                XCTAssertEqual(code.oldLineNumber, i)
+                XCTAssertNil(code.newLineNumber)
+                XCTAssertNil(code.expandInfo)
+            } else {
+                XCTFail("Line \(i) must be deleted code line")
+            }
+        }
+    }
 }
