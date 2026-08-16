@@ -238,12 +238,19 @@ public struct MainWindowView: View {
 
         for file in parsedFiles {
             for (hIdx, hunk) in file.hunks.enumerated() {
-                // Build excerpt text from hunk lines
-                let linesText = hunk.lines.map(\.text).joined(separator: "\n")
+                // New file text for the working buffer (unchanged + added lines)
+                let newFileLines = hunk.lines.filter { $0.kind == .added || $0.kind == .unchanged }.map(\.text)
+                let linesText = newFileLines.joined(separator: "\n")
+
+                // Old baseline text (deleted + unchanged lines)
+                let oldBaselineLines = hunk.lines.filter { $0.kind == .deleted || $0.kind == .unchanged }.map(\.text)
+                let baselineText = oldBaselineLines.joined(separator: "\n")
+
                 let buffer = Buffer(
                     filePath: file.displayPath,
                     text: linesText,
-                    language: Buffer.detectLanguage(for: file.displayPath)
+                    language: Buffer.detectLanguage(for: file.displayPath),
+                    baselineText: baselineText
                 )
                 multiBuffer.addBuffer(buffer)
 

@@ -416,6 +416,11 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
             }
         }
 
+        // 3.5. Draw Sticky Excerpt Header (pinned to top while scrolling through file contents)
+        if let (stickyInfo, stickyFrame) = currentStickyHeader() {
+            drawExcerptHeader(info: stickyInfo, in: stickyFrame, isSticky: true, context: context)
+        }
+
         // 4. Draw Overlay Scrollbars with Auto-Hide Fade (Vertical & Horizontal)
         if scrollbarAlpha > 0.01 {
             let thumbColor = theme.gutterForeground.withAlphaComponent(0.45 * scrollbarAlpha)
@@ -451,11 +456,85 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
         context.restoreGState()
     }
 
+    // MARK: - Sticky Excerpt Header Computation
+
+    private struct FileSection {
+        let info: ExcerptHeaderInfo
+        let headerMinY: CGFloat
+        var contentMaxY: CGFloat
+    }
+
+    private func computeFileSections() -> [FileSection] {
+        guard let displayMap = displayMap else { return [] }
+        var sections: [FileSection] = []
+        var currentY: CGFloat = 0
+
+        for line in displayMap.displayLines {
+            let height: CGFloat
+            switch line {
+            case .excerptHeader: height = excerptHeaderHeight
+            case .code: height = lineHeight
+            case .foldGap: height = foldGapHeight
+            case .inlineComment: height = commentHeight
+            }
+
+            let lineMinY = currentY
+            currentY += height
+
+            switch line {
+            case .excerptHeader(let info):
+                if let lastIdx = sections.indices.last {
+                    sections[lastIdx].contentMaxY = lineMinY
+                }
+                sections.append(FileSection(info: info, headerMinY: lineMinY, contentMaxY: currentY))
+            default:
+                if let lastIdx = sections.indices.last {
+                    sections[lastIdx].contentMaxY = currentY
+                }
+            }
+        }
+        return sections
+    }
+
+    private func currentStickyHeader() -> (info: ExcerptHeaderInfo, frame: CGRect)? {
+        guard scrollOffsetY > 0 else { return nil }
+        let sections = computeFileSections()
+        for (i, section) in sections.enumerated() {
+            // Check if scrollOffsetY is within this file section and past its original header position
+            if scrollOffsetY > section.headerMinY && scrollOffsetY < section.contentMaxY {
+                // If the entire section is just the header (e.g. collapsed), no sticky needed
+                guard section.contentMaxY - section.headerMinY > excerptHeaderHeight else { continue }
+
+                let nextHeaderMinY: CGFloat? = (i + 1 < sections.count) ? sections[i + 1].headerMinY : nil
+
+                // Pinned at y = 0, but if the next header is approaching, smoothly push this one up
+                var stickyScreenY: CGFloat = 0
+                if let nextMinY = nextHeaderMinY {
+                    let nextScreenY = nextMinY - scrollOffsetY
+                    if nextScreenY < excerptHeaderHeight {
+                        stickyScreenY = nextScreenY - excerptHeaderHeight
+                    }
+                }
+                let stickyFrame = CGRect(x: 0, y: stickyScreenY, width: bounds.width, height: excerptHeaderHeight)
+                return (section.info, stickyFrame)
+            }
+        }
+        return nil
+    }
+
     // MARK: - Excerpt Header Drawing
 
-    private func drawExcerptHeader(info: ExcerptHeaderInfo, in rect: CGRect, context: CGContext) {
+    private func drawExcerptHeader(info: ExcerptHeaderInfo, in rect: CGRect, isSticky: Bool = false, context: CGContext) {
         let fullWidth = bounds.width
         let headerRect = CGRect(x: 0, y: rect.minY, width: fullWidth, height: rect.height)
+
+        if isSticky {
+            // Drop shadow under sticky header for elevated visual layering
+            context.saveGState()
+            context.setFillColor(NSColor.black.withAlphaComponent(0.35).cgColor)
+            context.fill(CGRect(x: 0, y: rect.maxY, width: fullWidth, height: 3))
+            context.restoreGState()
+        }
 
         // Header background spanning sticky width
         context.setFillColor(theme.excerptHeaderBackground.cgColor)
@@ -809,6 +888,17 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
         let docX = screenPoint.x + scrollOffsetX
         guard let displayMap = displayMap else { return }
 
+        // 1. Check sticky file header interaction first
+        if let (stickyHeader, stickyFrame) = currentStickyHeader(), stickyFrame.contains(screenPoint) {
+            if screenPoint.x > bounds.width - 80 {
+                displayMap.multiBuffer.toggleCollapse(at: stickyHeader.excerptIndex)
+                displayMap.rebuild()
+                invalidateLayout()
+                return
+            }
+            return
+        }
+
         var currentY: CGFloat = 0
         for line in displayMap.displayLines {
             let height: CGFloat
@@ -1020,11 +1110,47 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
             return
         }
 
-        let newRange = mb.replace(range: rangeToReplace, with: text)
-        cursorPoint = newRange.upperBound
-        selectionAnchor = cursorPoint
+        guard let startLoc = displayMap.bufferLocation(for: rangeToReplace.lowerBound),
+              let endLoc = displayMap.bufferLocation(for: rangeToReplace.upperBound),
+              !startLoc.isDeleted && !endLoc.isDeleted else {
+            NSSound.beep()
+            return
+        }
+
+        let buf = startLoc.buffer
+        let oldStart = min(startLoc.point, endLoc.point)
+        let oldEnd = max(startLoc.point, endLoc.point)
+        let oldExactText = (oldStart < oldEnd) ? buf.text(in: oldStart..<oldEnd) : ""
+
+        let newBufRange = buf.replace(start: oldStart, end: oldEnd, with: text)
+
+        let edit = TextEdit(
+            bufferId: buf.id,
+            range: oldStart..<newBufRange.upperBound,
+            oldText: oldExactText,
+            newText: text
+        )
+        let transaction = EditTransaction(
+            edits: [edit],
+            selectionBefore: rangeToReplace,
+            selectionAfter: nil
+        )
+        mb.undoManager.push(transaction: transaction)
+
+        if let base = mb.baseDirectory {
+            try? buf.saveToFile(baseDirectory: base)
+        }
+
         displayMap.rebuild()
         invalidateLayout()
+
+        if let newVisualPt = displayMap.visualPoint(for: buf.id, bufferPoint: newBufRange.upperBound) {
+            cursorPoint = newVisualPt
+        } else {
+            cursorPoint = MultiBufferPoint(row: rangeToReplace.lowerBound.row, column: newBufRange.upperBound.column)
+        }
+        selectionAnchor = cursorPoint
+        needsDisplay = true
     }
 
     public override func deleteBackward(_ sender: Any?) {
@@ -1037,31 +1163,54 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
                 NSSound.beep()
                 return
             }
-            let pt = mb.delete(range: sel)
-            cursorPoint = pt
-            selectionAnchor = cursorPoint
-        } else if cursorPoint.column > 0 {
-            if displayMap.isDeleted(multiBufferRow: cursorPoint.row) {
-                NSSound.beep()
-                return
-            }
-            let start = MultiBufferPoint(row: cursorPoint.row, column: cursorPoint.column - 1)
-            let pt = mb.delete(range: start..<cursorPoint)
-            cursorPoint = pt
-            selectionAnchor = cursorPoint
-        } else if cursorPoint.row > 0 {
-            if displayMap.isDeleted(multiBufferRow: cursorPoint.row) || displayMap.isDeleted(multiBufferRow: cursorPoint.row - 1) {
-                NSSound.beep()
-                return
-            }
-            let prevLen = mb.lineLength(at: cursorPoint.row - 1)
-            let start = MultiBufferPoint(row: cursorPoint.row - 1, column: prevLen)
-            let pt = mb.delete(range: start..<cursorPoint)
-            cursorPoint = pt
-            selectionAnchor = cursorPoint
+            insertText("", replacementRange: NSRange(location: NSNotFound, length: 0))
+            return
         }
-        displayMap.rebuild()
-        invalidateLayout()
+
+        guard let loc = displayMap.bufferLocation(for: cursorPoint), !loc.isDeleted else {
+            NSSound.beep()
+            return
+        }
+
+        let buf = loc.buffer
+        let bPt = loc.point
+
+        if bPt.column > 0 {
+            let start = BufferPoint(row: bPt.row, column: bPt.column - 1)
+            let oldExact = buf.text(in: start..<bPt)
+            let newRange = buf.replace(start: start, end: bPt, with: "")
+            let edit = TextEdit(bufferId: buf.id, range: start..<newRange.upperBound, oldText: oldExact, newText: "")
+            let tx = EditTransaction(edits: [edit], selectionBefore: cursorPoint..<cursorPoint, selectionAfter: nil)
+            mb.undoManager.push(transaction: tx)
+            if let base = mb.baseDirectory { try? buf.saveToFile(baseDirectory: base) }
+            displayMap.rebuild()
+            invalidateLayout()
+            if let vPt = displayMap.visualPoint(for: buf.id, bufferPoint: newRange.upperBound) {
+                cursorPoint = vPt
+            } else {
+                cursorPoint = MultiBufferPoint(row: cursorPoint.row, column: max(0, cursorPoint.column - 1))
+            }
+            selectionAnchor = cursorPoint
+            needsDisplay = true
+        } else if bPt.row > 0 {
+            let prevLen = buf.lineLength(at: bPt.row - 1)
+            let start = BufferPoint(row: bPt.row - 1, column: prevLen)
+            let oldExact = buf.text(in: start..<bPt)
+            let newRange = buf.replace(start: start, end: bPt, with: "")
+            let edit = TextEdit(bufferId: buf.id, range: start..<newRange.upperBound, oldText: oldExact, newText: "")
+            let tx = EditTransaction(edits: [edit], selectionBefore: cursorPoint..<cursorPoint, selectionAfter: nil)
+            mb.undoManager.push(transaction: tx)
+            if let base = mb.baseDirectory { try? buf.saveToFile(baseDirectory: base) }
+            displayMap.rebuild()
+            invalidateLayout()
+            if let vPt = displayMap.visualPoint(for: buf.id, bufferPoint: newRange.upperBound) {
+                cursorPoint = vPt
+            } else {
+                cursorPoint = MultiBufferPoint(row: max(0, cursorPoint.row - 1), column: prevLen)
+            }
+            selectionAnchor = cursorPoint
+            needsDisplay = true
+        }
     }
 
     public override func deleteForward(_ sender: Any?) {
@@ -1074,24 +1223,50 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
                 NSSound.beep()
                 return
             }
-            let pt = mb.delete(range: sel)
-            cursorPoint = pt
-            selectionAnchor = cursorPoint
-        } else {
-            if displayMap.isDeleted(multiBufferRow: cursorPoint.row) {
-                NSSound.beep()
-                return
-            }
-            let len = mb.lineLength(at: cursorPoint.row)
-            if cursorPoint.column < len {
-                let end = MultiBufferPoint(row: cursorPoint.row, column: cursorPoint.column + 1)
-                let pt = mb.delete(range: cursorPoint..<end)
-                cursorPoint = pt
-                selectionAnchor = cursorPoint
-            }
+            insertText("", replacementRange: NSRange(location: NSNotFound, length: 0))
+            return
         }
-        displayMap.rebuild()
-        invalidateLayout()
+
+        guard let loc = displayMap.bufferLocation(for: cursorPoint), !loc.isDeleted else {
+            NSSound.beep()
+            return
+        }
+
+        let buf = loc.buffer
+        let bPt = loc.point
+        let lineLen = buf.lineLength(at: bPt.row)
+
+        if bPt.column < lineLen {
+            let end = BufferPoint(row: bPt.row, column: bPt.column + 1)
+            let oldExact = buf.text(in: bPt..<end)
+            let newRange = buf.replace(start: bPt, end: end, with: "")
+            let edit = TextEdit(bufferId: buf.id, range: bPt..<newRange.upperBound, oldText: oldExact, newText: "")
+            let tx = EditTransaction(edits: [edit], selectionBefore: cursorPoint..<cursorPoint, selectionAfter: nil)
+            mb.undoManager.push(transaction: tx)
+            if let base = mb.baseDirectory { try? buf.saveToFile(baseDirectory: base) }
+            displayMap.rebuild()
+            invalidateLayout()
+            if let vPt = displayMap.visualPoint(for: buf.id, bufferPoint: newRange.upperBound) {
+                cursorPoint = vPt
+            }
+            selectionAnchor = cursorPoint
+            needsDisplay = true
+        } else if bPt.row < buf.lineCount - 1 {
+            let end = BufferPoint(row: bPt.row + 1, column: 0)
+            let oldExact = buf.text(in: bPt..<end)
+            let newRange = buf.replace(start: bPt, end: end, with: "")
+            let edit = TextEdit(bufferId: buf.id, range: bPt..<newRange.upperBound, oldText: oldExact, newText: "")
+            let tx = EditTransaction(edits: [edit], selectionBefore: cursorPoint..<cursorPoint, selectionAfter: nil)
+            mb.undoManager.push(transaction: tx)
+            if let base = mb.baseDirectory { try? buf.saveToFile(baseDirectory: base) }
+            displayMap.rebuild()
+            invalidateLayout()
+            if let vPt = displayMap.visualPoint(for: buf.id, bufferPoint: newRange.upperBound) {
+                cursorPoint = vPt
+            }
+            selectionAnchor = cursorPoint
+            needsDisplay = true
+        }
     }
 
     public override func insertNewline(_ sender: Any?) {

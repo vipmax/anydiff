@@ -33,6 +33,12 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
         version &+= 1
     }
 
+    public func updateExcerptBufferRange(at index: Int, range: Range<BufferRow>) {
+        guard index >= 0 && index < excerpts.count else { return }
+        excerpts[index].bufferRange = range
+        version &+= 1
+    }
+
     public func clear() {
         buffers.removeAll()
         excerpts.removeAll()
@@ -120,11 +126,13 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
             return range
         }
 
-        let oldStartPt = BufferPoint(row: startLoc.bufferRow, column: startLoc.bufferColumn)
-        let oldEndPt = BufferPoint(row: endLoc.bufferRow, column: endLoc.bufferColumn)
+        let pt1 = BufferPoint(row: startLoc.bufferRow, column: startLoc.bufferColumn)
+        let pt2 = BufferPoint(row: endLoc.bufferRow, column: endLoc.bufferColumn)
+        let oldStartPt = min(pt1, pt2)
+        let oldEndPt = max(pt1, pt2)
 
         // Capture exact old text for undo
-        let oldExactText = buf.text(in: oldStartPt..<oldEndPt)
+        let oldExactText = (oldStartPt < oldEndPt) ? buf.text(in: oldStartPt..<oldEndPt) : ""
 
         // Perform edit on the buffer
         let newBufRange = buf.replace(start: oldStartPt, end: oldEndPt, with: newText)
@@ -140,9 +148,11 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
         }
 
         if recordUndo {
+            let editRangeStart = min(oldStartPt, newBufRange.upperBound)
+            let editRangeEnd = max(oldStartPt, newBufRange.upperBound)
             let edit = TextEdit(
                 bufferId: startLoc.bufferId,
-                range: oldStartPt..<newBufRange.upperBound,
+                range: editRangeStart..<editRangeEnd,
                 oldText: oldExactText,
                 newText: newText
             )
@@ -164,7 +174,9 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
 
         let newEndMBRow = multiBufferRow(excerptIndex: startLoc.excerptIndex, bufferRow: newBufRange.upperBound.row) ?? range.lowerBound.row
         let newEndPoint = MultiBufferPoint(row: newEndMBRow, column: newBufRange.upperBound.column)
-        return range.lowerBound..<newEndPoint
+        let startPt = min(range.lowerBound, newEndPoint)
+        let endPt = max(range.lowerBound, newEndPoint)
+        return startPt..<endPt
     }
 
     /// Inserts text at a point

@@ -61,14 +61,14 @@ public final class Buffer: Identifiable, @unchecked Sendable {
         _lines.count
     }
 
-    public var lines: [String] {
-        _lines
-    }
+    /// Original baseline file text before modifications (e.g. from git HEAD)
+    public var baselineText: String
 
-    public init(id: BufferId = BufferId(), filePath: String, text: String, language: String = "") {
+    public init(id: BufferId = BufferId(), filePath: String, text: String, language: String = "", baselineText: String = "") {
         self.id = id
         self.filePath = filePath
         self.language = language.isEmpty ? Buffer.detectLanguage(for: filePath) : language
+        self.baselineText = baselineText.isEmpty ? text : baselineText
         
         let split = text.components(separatedBy: "\n")
         self._lines = split.isEmpty ? [""] : split
@@ -113,26 +113,32 @@ public final class Buffer: Identifiable, @unchecked Sendable {
     public func text(in range: Range<BufferPoint>) -> String {
         let start = clamp(point: range.lowerBound)
         let end = clamp(point: range.upperBound)
-        guard start <= end else { return "" }
+        guard start < end else { return "" }
 
         if start.row == end.row {
             let line = _lines[start.row]
-            let startIdx = line.index(line.startIndex, offsetBy: min(line.count, start.column))
-            let endIdx = line.index(line.startIndex, offsetBy: min(line.count, end.column))
+            let sCol = max(0, min(line.count, start.column))
+            let eCol = max(sCol, min(line.count, end.column))
+            let startIdx = line.index(line.startIndex, offsetBy: sCol)
+            let endIdx = line.index(line.startIndex, offsetBy: eCol)
             return String(line[startIdx..<endIdx])
         }
 
         var result: [String] = []
         let firstLine = _lines[start.row]
-        let firstIdx = firstLine.index(firstLine.startIndex, offsetBy: min(firstLine.count, start.column))
+        let firstCol = max(0, min(firstLine.count, start.column))
+        let firstIdx = firstLine.index(firstLine.startIndex, offsetBy: firstCol)
         result.append(String(firstLine[firstIdx...]))
 
-        for r in (start.row + 1)..<end.row {
-            result.append(_lines[r])
+        if (start.row + 1) < end.row {
+            for r in (start.row + 1)..<end.row {
+                result.append(_lines[r])
+            }
         }
 
         let lastLine = _lines[end.row]
-        let lastIdx = lastLine.index(lastLine.startIndex, offsetBy: min(lastLine.count, end.column))
+        let lastCol = max(0, min(lastLine.count, end.column))
+        let lastIdx = lastLine.index(lastLine.startIndex, offsetBy: lastCol)
         result.append(String(lastLine[..<lastIdx]))
 
         return result.joined(separator: "\n")

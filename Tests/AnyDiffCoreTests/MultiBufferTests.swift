@@ -96,7 +96,9 @@ final class MultiBufferTests: XCTestCase {
         let rm = ReviewManager()
         let file = parsed[0]
         let hunk = file.hunks[0]
-        let buffer = Buffer(filePath: file.displayPath, text: hunk.lines.map(\.text).joined(separator: "\n"))
+        let oldBaseline = hunk.lines.filter { $0.kind == .deleted || $0.kind == .unchanged }.map(\.text).joined(separator: "\n")
+        let newFile = hunk.lines.filter { $0.kind == .added || $0.kind == .unchanged }.map(\.text).joined(separator: "\n")
+        let buffer = Buffer(filePath: file.displayPath, text: newFile, baselineText: oldBaseline)
         mb.addBuffer(buffer)
         let excerpt = Excerpt(
             bufferId: buffer.id,
@@ -112,5 +114,65 @@ final class MultiBufferTests: XCTestCase {
         XCTAssertTrue(dm.isDeleted(multiBufferRow: 1))
         XCTAssertFalse(dm.isDeleted(multiBufferRow: 2))
         XCTAssertTrue(dm.isDeleted(rowRange: 0..<2))
+    }
+
+    func testLiveNewlineInsertionDiffRecalculation() {
+        let diffSample = """
+        --- a/Test.swift
+        +++ b/Test.swift
+        @@ -1,3 +1,3 @@
+         let a = 1
+        -let b = 2
+        +let b = 3
+        """
+        let parsed = GitDiffParser.shared.parse(diffText: diffSample)
+        let mb = MultiBuffer()
+        let rm = ReviewManager()
+        let file = parsed[0]
+        let hunk = file.hunks[0]
+        let oldBaseline = hunk.lines.filter { $0.kind == .deleted || $0.kind == .unchanged }.map(\.text).joined(separator: "\n")
+        let newFile = hunk.lines.filter { $0.kind == .added || $0.kind == .unchanged }.map(\.text).joined(separator: "\n")
+        let buffer = Buffer(filePath: file.displayPath, text: newFile, baselineText: oldBaseline)
+        mb.addBuffer(buffer)
+        let excerpt = Excerpt(
+            bufferId: buffer.id,
+            filePath: file.displayPath,
+            bufferRange: 0..<buffer.lineCount,
+            hunk: hunk
+        )
+        mb.addExcerpt(excerpt)
+
+        let dm = DisplayMap(multiBuffer: mb, reviewManager: rm)
+        XCTAssertEqual(dm.displayLines.count, 4) // 1 header + 3 code lines
+
+        // Insert newline after line 1 ("let b = 3")
+        let endPt = MultiBufferPoint(row: 1, column: 9)
+        mb.replace(range: endPt..<endPt, with: "\nlet c = 4")
+        dm.rebuild()
+
+        XCTAssertEqual(dm.displayLines.count, 5) // 1 header + 4 code lines
+        if case .code(let info) = dm.line(at: 4) {
+            // Newly inserted line
+            XCTAssertEqual(info.diffKind, .added)
+            XCTAssertEqual(info.newLineNumber, 3)
+            XCTAssertEqual(info.text, "let c = 4")
+        }
+    }
+
+    func testMultiBufferDeleteAndLineMerging() {
+        let buffer = Buffer(filePath: "Merge.swift", text: "line 1\nline 2\nline 3")
+        let mb = MultiBuffer()
+        mb.addBuffer(buffer)
+        let excerpt = Excerpt(bufferId: buffer.id, filePath: "Merge.swift", bufferRange: 0..<3)
+        mb.addExcerpt(excerpt)
+
+        // Delete newline between line 1 and line 2 (from end of line 1 to start of line 2)
+        let startPt = MultiBufferPoint(row: 0, column: 6)
+        let endPt = MultiBufferPoint(row: 1, column: 0)
+        let deleteRange = startPt..<endPt
+        mb.delete(range: deleteRange)
+
+        XCTAssertEqual(buffer.lineCount, 2)
+        XCTAssertEqual(buffer.line(at: 0), "line 1line 2")
     }
 }
