@@ -122,4 +122,24 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
         guard index >= 0 && index < displayLines.count else { return nil }
         return displayLines[index]
     }
+
+    public func isDeleted(multiBufferRow: Int) -> Bool {
+        for line in displayLines {
+            if case .code(let info) = line, info.multiBufferRow == multiBufferRow {
+                return info.diffKind == .deleted
+            }
+        }
+        return false
+    }
+
+    public func isDeleted(rowRange: Range<Int>) -> Bool {
+        for line in displayLines {
+            if case .code(let info) = line, rowRange.contains(info.multiBufferRow) {
+                if info.diffKind == .deleted {
+                    return true
+                }
+            }
+        }
+        return false
+    }
 }

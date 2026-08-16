@@ -1014,6 +1014,12 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
         let mb = displayMap.multiBuffer
 
         let rangeToReplace = normalizedSelectionRange() ?? (cursorPoint..<cursorPoint)
+        let affectedRows = rangeToReplace.lowerBound.row..<(rangeToReplace.upperBound.row + 1)
+        if displayMap.isDeleted(rowRange: affectedRows) {
+            NSSound.beep()
+            return
+        }
+
         let newRange = mb.replace(range: rangeToReplace, with: text)
         cursorPoint = newRange.upperBound
         selectionAnchor = cursorPoint
@@ -1026,15 +1032,28 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
         let mb = displayMap.multiBuffer
 
         if let sel = normalizedSelectionRange() {
+            let affectedRows = sel.lowerBound.row..<(sel.upperBound.row + 1)
+            if displayMap.isDeleted(rowRange: affectedRows) {
+                NSSound.beep()
+                return
+            }
             let pt = mb.delete(range: sel)
             cursorPoint = pt
             selectionAnchor = cursorPoint
         } else if cursorPoint.column > 0 {
+            if displayMap.isDeleted(multiBufferRow: cursorPoint.row) {
+                NSSound.beep()
+                return
+            }
             let start = MultiBufferPoint(row: cursorPoint.row, column: cursorPoint.column - 1)
             let pt = mb.delete(range: start..<cursorPoint)
             cursorPoint = pt
             selectionAnchor = cursorPoint
         } else if cursorPoint.row > 0 {
+            if displayMap.isDeleted(multiBufferRow: cursorPoint.row) || displayMap.isDeleted(multiBufferRow: cursorPoint.row - 1) {
+                NSSound.beep()
+                return
+            }
             let prevLen = mb.lineLength(at: cursorPoint.row - 1)
             let start = MultiBufferPoint(row: cursorPoint.row - 1, column: prevLen)
             let pt = mb.delete(range: start..<cursorPoint)
@@ -1050,10 +1069,19 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
         let mb = displayMap.multiBuffer
 
         if let sel = normalizedSelectionRange() {
+            let affectedRows = sel.lowerBound.row..<(sel.upperBound.row + 1)
+            if displayMap.isDeleted(rowRange: affectedRows) {
+                NSSound.beep()
+                return
+            }
             let pt = mb.delete(range: sel)
             cursorPoint = pt
             selectionAnchor = cursorPoint
         } else {
+            if displayMap.isDeleted(multiBufferRow: cursorPoint.row) {
+                NSSound.beep()
+                return
+            }
             let len = mb.lineLength(at: cursorPoint.row)
             if cursorPoint.column < len {
                 let end = MultiBufferPoint(row: cursorPoint.row, column: cursorPoint.column + 1)

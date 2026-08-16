@@ -79,4 +79,38 @@ final class MultiBufferTests: XCTestCase {
         let spans = SyntaxHighlighter.shared.tokenize(line: line, language: "swift")
         XCTAssertFalse(spans.isEmpty)
     }
+
+    func testDisplayMapDeletedLineDetection() {
+        let diffSample = """
+        --- a/Test.swift
+        +++ b/Test.swift
+        @@ -1,3 +1,3 @@
+         let a = 1
+        -let b = 2
+        +let b = 3
+        """
+        let parsed = GitDiffParser.shared.parse(diffText: diffSample)
+        XCTAssertEqual(parsed.count, 1)
+
+        let mb = MultiBuffer()
+        let rm = ReviewManager()
+        let file = parsed[0]
+        let hunk = file.hunks[0]
+        let buffer = Buffer(filePath: file.displayPath, text: hunk.lines.map(\.text).joined(separator: "\n"))
+        mb.addBuffer(buffer)
+        let excerpt = Excerpt(
+            bufferId: buffer.id,
+            filePath: file.displayPath,
+            bufferRange: 0..<buffer.lineCount,
+            hunk: hunk
+        )
+        mb.addExcerpt(excerpt)
+
+        let dm = DisplayMap(multiBuffer: mb, reviewManager: rm)
+        // Row 0 is unchanged, Row 1 is deleted, Row 2 is added
+        XCTAssertFalse(dm.isDeleted(multiBufferRow: 0))
+        XCTAssertTrue(dm.isDeleted(multiBufferRow: 1))
+        XCTAssertFalse(dm.isDeleted(multiBufferRow: 2))
+        XCTAssertTrue(dm.isDeleted(rowRange: 0..<2))
+    }
 }
