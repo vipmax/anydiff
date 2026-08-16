@@ -28,6 +28,13 @@ public struct MainWindowView: View {
     @StateObject private var displayMap: DisplayMap
     @StateObject private var systemAppearance = SystemAppearanceObserver()
 
+    public enum RepoStatus {
+        case notGitRepository
+        case clean
+        case hasChanges
+    }
+
+    @State private var repoStatus: RepoStatus = .clean
     @State private var fileDiffs: [FileDiff] = []
     @State private var selectedFilePath: String? = nil
     @State private var selectedTheme: Theme = .unifiedDark
@@ -40,7 +47,6 @@ public struct MainWindowView: View {
     @State private var cursorPoint: MultiBufferPoint = .zero
 
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
-    @State private var showPasteModal: Bool = false
     @State private var commentTarget: (filePath: String, lineNumber: Int)? = nil
     @State private var currentFolderName: String = ""
     @State private var showThemePicker: Bool = false
@@ -71,6 +77,7 @@ public struct MainWindowView: View {
             SidebarFileListView(
                 fileDiffs: fileDiffs,
                 theme: activeTheme,
+                emptyMessage: repoStatus == .notGitRepository ? "Not a Git repository" : "No changed files",
                 reviewManager: reviewManager,
                 selectedFilePath: $selectedFilePath,
                 onReload: { loadCurrentDirectoryDiff() }
@@ -97,21 +104,84 @@ public struct MainWindowView: View {
                 }
             }
         } detail: {
-            EditorHostView(
-                displayMap: displayMap,
-                theme: activeTheme,
-                fontSize: fontSize,
-                selectedFilePath: selectedFilePath,
-                onCursorChange: { loc, pt in
-                    cursorLocation = loc
-                    cursorPoint = pt
-                },
-                onAddCommentRequest: { path, line in
-                    commentTarget = (filePath: path, lineNumber: line)
+            Group {
+                if fileDiffs.isEmpty {
+                    VStack(spacing: 14) {
+                        switch repoStatus {
+                        case .notGitRepository:
+                            Image(systemName: "folder.badge.questionmark")
+                                .font(.system(size: 44, weight: .ultraLight))
+                                .foregroundColor(Color(activeTheme.gutterForeground).opacity(0.8))
+
+                            Text("Not a Git Repository")
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundColor(Color(activeTheme.foreground))
+
+                            Text(currentFolderName.isEmpty ? "The selected directory has no Git repository initialized." : "Directory \"\(currentFolderName)\" is not a Git repository.")
+                                .font(.system(size: 12))
+                                .foregroundColor(Color(activeTheme.gutterForeground))
+
+                            HStack(spacing: 10) {
+                                Button(action: { openGitRepositoryFolder() }) {
+                                    Label("Open Git Project...", systemImage: "folder")
+                                        .font(.system(size: 12, weight: .medium))
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.small)
+                            }
+                            .padding(.top, 4)
+
+                        case .clean, .hasChanges:
+                            Image(systemName: "checkmark.circle")
+                                .font(.system(size: 44, weight: .ultraLight))
+                                .foregroundColor(Color(activeTheme.gutterForeground).opacity(0.8))
+
+                            Text("No Uncommitted Changes")
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundColor(Color(activeTheme.foreground))
+
+                            Text("Working tree in \(currentFolderName.isEmpty ? "project" : "\"\(currentFolderName)\"") is clean.")
+                                .font(.system(size: 12))
+                                .foregroundColor(Color(activeTheme.gutterForeground))
+
+                            HStack(spacing: 10) {
+                                Button(action: { openGitRepositoryFolder() }) {
+                                    Label("Open Project...", systemImage: "folder")
+                                        .font(.system(size: 12, weight: .medium))
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.small)
+
+                                Button(action: { loadCurrentDirectoryDiff() }) {
+                                    Label("Reload Diff", systemImage: "arrow.clockwise")
+                                        .font(.system(size: 12, weight: .medium))
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                            }
+                            .padding(.top, 4)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color(activeTheme.background))
+                } else {
+                    EditorHostView(
+                        displayMap: displayMap,
+                        theme: activeTheme,
+                        fontSize: fontSize,
+                        selectedFilePath: selectedFilePath,
+                        onCursorChange: { loc, pt in
+                            cursorLocation = loc
+                            cursorPoint = pt
+                        },
+                        onAddCommentRequest: { path, line in
+                            commentTarget = (filePath: path, lineNumber: line)
+                        }
+                    )
+                    .clipped()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-            )
-            .clipped()
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
             .toolbar {
                 ToolbarItem(placement: .navigation) {
                     Button(action: { openGitRepositoryFolder() }) {
@@ -147,17 +217,6 @@ public struct MainWindowView: View {
         .toolbarBackground(.visible, for: .windowToolbar)
         .toolbarColorScheme(activeTheme.isDark ? .dark : .light, for: .windowToolbar)
         .background(Color(activeTheme.background).ignoresSafeArea())
-        .sheet(isPresented: $showPasteModal) {
-            PasteDiffModal(
-                onLoadDiff: { text in
-                    loadDiff(text: text)
-                    showPasteModal = false
-                },
-                onCancel: {
-                    showPasteModal = false
-                }
-            )
-        }
         .sheet(item: Binding(
             get: { commentTarget.map { IdentifiableCommentTarget(filePath: $0.filePath, lineNumber: $0.lineNumber) } },
             set: { _ in commentTarget = nil }
@@ -191,9 +250,6 @@ public struct MainWindowView: View {
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffReloadDiff"))) { _ in
             loadCurrentDirectoryDiff()
         }
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffPasteDiff"))) { _ in
-            showPasteModal = true
-        }
     }
 
     private func updateWindowAppearance() {
@@ -215,36 +271,35 @@ public struct MainWindowView: View {
         DispatchQueue.main.async {
             NSApp.windows.first?.title = "\(folderName)"
         }
+        guard isGitRepository(at: currentDir) else {
+            self.repoStatus = .notGitRepository
+            loadDiff(text: "")
+            return
+        }
         if let diff = fetchGitDiff(at: currentDir), !diff.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            self.repoStatus = .hasChanges
             loadDiff(text: diff)
         } else {
-            // Fallback to sample demo diff if working tree has no changes
-            loadDiff(text: SampleDiffs.swiftMultiBufferDiff)
-            _ = reviewManager.addComment(
-                filePath: "Sources/AnyDiffCore/MultiBuffer/MultiBuffer.swift",
-                lineNumber: 18,
-                author: "Senior Reviewer",
-                content: "Great job! Using MultiBufferUndoManager here aligns perfectly with Zed's transaction history."
-            )
-            displayMap.rebuild()
+            self.repoStatus = .clean
+            loadDiff(text: "")
         }
+    }
+
+    private func isGitRepository(at path: String) -> Bool {
+        return runGit(arguments: ["-C", path, "rev-parse", "--is-inside-work-tree"]) == "true"
     }
 
     private func fetchGitDiff(at path: String) -> String? {
         // 1. Try uncommitted (staged + unstaged) changes: git diff HEAD
-        if let out = runGit(arguments: ["-C", path, "diff", "HEAD"]), !out.isEmpty {
+        if let out = runGit(arguments: ["-C", path, "diff", "HEAD"]), !out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return out
         }
         // 2. Try unstaged changes: git diff
-        if let out = runGit(arguments: ["-C", path, "diff"]), !out.isEmpty {
+        if let out = runGit(arguments: ["-C", path, "diff"]), !out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return out
         }
         // 3. Try staged changes: git diff --staged
-        if let out = runGit(arguments: ["-C", path, "diff", "--staged"]), !out.isEmpty {
-            return out
-        }
-        // 4. Try latest commit diff: git show -p HEAD
-        if let out = runGit(arguments: ["-C", path, "show", "-p", "HEAD"]), !out.isEmpty {
+        if let out = runGit(arguments: ["-C", path, "diff", "--staged"]), !out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return out
         }
         return nil
@@ -436,38 +491,18 @@ public struct MainWindowView: View {
             DispatchQueue.main.async {
                 NSApp.windows.first?.title = "\(folderName)"
             }
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-            process.arguments = ["-C", path, "diff", "HEAD"]
-
-            let pipe = Pipe()
-            let errPipe = Pipe()
-            process.standardOutput = pipe
-            process.standardError = errPipe
-            do {
-                try process.run()
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                process.waitUntilExit()
-
-                if let output = String(data: data, encoding: .utf8), !output.isEmpty {
-                    loadDiff(text: output)
-                } else {
-                    // Try fallback to unstaged diff
-                    let process2 = Process()
-                    process2.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-                    process2.arguments = ["-C", path, "diff"]
-                    let pipe2 = Pipe()
-                    let errPipe2 = Pipe()
-                    process2.standardOutput = pipe2
-                    process2.standardError = errPipe2
-                    try process2.run()
-                    let data2 = pipe2.fileHandleForReading.readDataToEndOfFile()
-                    process2.waitUntilExit()
-                    if let output2 = String(data: data2, encoding: .utf8), !output2.isEmpty {
-                        loadDiff(text: output2)
-                    }
-                }
-            } catch {}
+            guard isGitRepository(at: path) else {
+                self.repoStatus = .notGitRepository
+                loadDiff(text: "")
+                return
+            }
+            if let diff = fetchGitDiff(at: path), !diff.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                self.repoStatus = .hasChanges
+                loadDiff(text: diff)
+            } else {
+                self.repoStatus = .clean
+                loadDiff(text: "")
+            }
         }
     }
 

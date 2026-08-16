@@ -60,7 +60,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let fileMenu = NSMenu(title: "File")
         fileMenu.addItem(NSMenuItem(title: "Open Project...", action: #selector(openProjectAction(_:)), keyEquivalent: "o"))
         fileMenu.addItem(NSMenuItem(title: "Reload Diff", action: #selector(reloadDiffAction(_:)), keyEquivalent: "r"))
-        fileMenu.addItem(NSMenuItem(title: "Paste Diff...", action: #selector(pasteDiffAction(_:)), keyEquivalent: "p"))
         fileMenu.addItem(NSMenuItem.separator())
         fileMenu.addItem(NSMenuItem(title: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w"))
         fileMenuItem.submenu = fileMenu
@@ -96,10 +95,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func reloadDiffAction(_ sender: Any?) {
         NotificationCenter.default.post(name: Notification.Name("anyDiffReloadDiff"), object: nil)
-    }
-
-    @objc func pasteDiffAction(_ sender: Any?) {
-        NotificationCenter.default.post(name: Notification.Name("anyDiffPasteDiff"), object: nil)
     }
 
     public func loadAppIcon() -> NSImage? {

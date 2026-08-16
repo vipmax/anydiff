@@ -4,6 +4,7 @@ import AnyDiffCore
 public struct SidebarFileListView: View {
     public var fileDiffs: [FileDiff]
     public var theme: Theme
+    public var emptyMessage: String
     @ObservedObject public var reviewManager: ReviewManager
     @Binding public var selectedFilePath: String?
     public var onReload: () -> Void
@@ -13,12 +14,14 @@ public struct SidebarFileListView: View {
     public init(
         fileDiffs: [FileDiff],
         theme: Theme,
+        emptyMessage: String = "No changed files",
         reviewManager: ReviewManager,
         selectedFilePath: Binding<String?>,
         onReload: @escaping () -> Void
     ) {
         self.fileDiffs = fileDiffs
         self.theme = theme
+        self.emptyMessage = emptyMessage
         self.reviewManager = reviewManager
         self._selectedFilePath = selectedFilePath
         self.onReload = onReload
@@ -84,25 +87,36 @@ public struct SidebarFileListView: View {
             .padding(.vertical, 6)
 
             // Files List
-            List(selection: $selectedFilePath) {
-                ForEach(filteredFiles) { file in
-                    FileRowView(
-                        file: file,
-                        isReviewed: reviewManager.isFileReviewed(filePath: file.displayPath),
-                        onToggleReviewed: {
-                            reviewManager.toggleReviewed(filePath: file.displayPath)
-                        }
-                    )
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        selectedFilePath = file.displayPath
-                    }
-                    .tag(file.displayPath)
+            if filteredFiles.isEmpty {
+                VStack(spacing: 8) {
+                    Spacer()
+                    Text(searchText.isEmpty ? emptyMessage : "No matching files")
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary.opacity(0.7))
+                    Spacer()
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List(selection: $selectedFilePath) {
+                    ForEach(filteredFiles) { file in
+                        FileRowView(
+                            file: file,
+                            isReviewed: reviewManager.isFileReviewed(filePath: file.displayPath),
+                            onToggleReviewed: {
+                                reviewManager.toggleReviewed(filePath: file.displayPath)
+                            }
+                        )
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            selectedFilePath = file.displayPath
+                        }
+                        .tag(file.displayPath)
+                    }
+                }
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                .background(Color(theme.background))
             }
-            .listStyle(.plain)
-            .scrollContentBackground(.hidden)
-            .background(Color(theme.background))
         }
         .background(Color(theme.background).ignoresSafeArea())
         .toolbarBackground(.hidden, for: .windowToolbar)
