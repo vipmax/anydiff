@@ -23,10 +23,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let customPath = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : nil
         mainWindow.contentView = NSHostingView(rootView: MainWindowView(initialPath: customPath))
         mainWindow.makeKeyAndOrderFront(nil)
+        mainWindow.orderFrontRegardless()
         self.window = mainWindow
 
         setupMainMenu()
 
+        NSRunningApplication.current.activate(options: [.activateAllWindows])
         NSApp.activate(ignoringOtherApps: true)
     }
 

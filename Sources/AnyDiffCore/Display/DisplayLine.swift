@@ -14,7 +14,7 @@ public struct ExcerptHeaderInfo: Sendable, Equatable {
         fileStatus: FileDiffStatus,
         additions: Int,
         deletions: Int,
-        isCollapsed: Bool
+        isCollapsed: Bool = false
     ) {
         self.excerptIndex = excerptIndex
         self.filePath = filePath
@@ -22,6 +22,22 @@ public struct ExcerptHeaderInfo: Sendable, Equatable {
         self.additions = additions
         self.deletions = deletions
         self.isCollapsed = isCollapsed
+    }
+}
+
+public enum ExpandDirection: Sendable, Equatable {
+    case up
+    case down
+    case upAndDown
+}
+
+public struct ExpandInfo: Sendable, Equatable {
+    public var direction: ExpandDirection
+    public var excerptIndex: Int
+
+    public init(direction: ExpandDirection, excerptIndex: Int) {
+        self.direction = direction
+        self.excerptIndex = excerptIndex
     }
 }
 
@@ -35,6 +51,7 @@ public struct DisplayCodeLineInfo: Sendable, Equatable {
     public var text: String
     public var language: String
     public var wordDiffRanges: [Range<Int>]
+    public var expandInfo: ExpandInfo?
 
     public init(
         excerptIndex: Int,
@@ -45,7 +62,8 @@ public struct DisplayCodeLineInfo: Sendable, Equatable {
         diffKind: DiffLineKind,
         text: String,
         language: String,
-        wordDiffRanges: [Range<Int>] = []
+        wordDiffRanges: [Range<Int>] = [],
+        expandInfo: ExpandInfo? = nil
     ) {
         self.excerptIndex = excerptIndex
         self.multiBufferRow = multiBufferRow
@@ -56,18 +74,23 @@ public struct DisplayCodeLineInfo: Sendable, Equatable {
         self.text = text
         self.language = language
         self.wordDiffRanges = wordDiffRanges
+        self.expandInfo = expandInfo
     }
 }
 
 public struct DisplayFoldGapInfo: Sendable, Equatable {
     public var excerptIndex: Int
+    public var nextExcerptIndex: Int?
     public var hiddenCount: Int
     public var isTopGap: Bool
+    public var isBottomGap: Bool
 
-    public init(excerptIndex: Int, hiddenCount: Int, isTopGap: Bool) {
+    public init(excerptIndex: Int, nextExcerptIndex: Int? = nil, hiddenCount: Int, isTopGap: Bool = false, isBottomGap: Bool = false) {
         self.excerptIndex = excerptIndex
+        self.nextExcerptIndex = nextExcerptIndex
         self.hiddenCount = hiddenCount
         self.isTopGap = isTopGap
+        self.isBottomGap = isBottomGap
     }
 }
 

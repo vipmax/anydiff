@@ -1,13 +1,14 @@
 import Foundation
+import Combine
 
-/// One or more Buffers and Excerpts composed into a unified virtual document
+/// Continuous virtual document composing multiple file diff excerpts into a single editable canvas
 public final class MultiBuffer: ObservableObject, @unchecked Sendable {
     public private(set) var buffers: [BufferId: Buffer] = [:]
     public private(set) var excerpts: [Excerpt] = []
     public let undoManager: MultiBufferUndoManager
 
-    /// Incremented on each content or excerpt change to trigger layout updates
-    @Published public private(set) var version: Int = 0
+    /// Monotonically increasing version counter to invalidate layout caches
+    public private(set) var version: UInt64 = 0
 
     public init(undoManager: MultiBufferUndoManager = MultiBufferUndoManager()) {
         self.undoManager = undoManager
@@ -17,10 +18,16 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
 
     public func addBuffer(_ buffer: Buffer) {
         buffers[buffer.id] = buffer
+        version &+= 1
     }
 
     public func buffer(for id: BufferId) -> Buffer? {
         buffers[id]
+    }
+
+    public func addExcerpt(_ excerpt: Excerpt) {
+        excerpts.append(excerpt)
+        version &+= 1
     }
 
     public func setExcerpts(_ newExcerpts: [Excerpt]) {
@@ -28,12 +35,7 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
         version &+= 1
     }
 
-    public func addExcerpt(_ excerpt: Excerpt) {
-        self.excerpts.append(excerpt)
-        version &+= 1
-    }
-
-    public func updateExcerptBufferRange(at index: Int, range: Range<BufferRow>) {
+    public func updateExcerptBufferRange(at index: ExcerptIndex, range: Range<BufferRow>) {
         guard index >= 0 && index < excerpts.count else { return }
         excerpts[index].bufferRange = range
         version &+= 1
@@ -164,10 +166,8 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
             undoManager.push(transaction: transaction)
         }
 
-        // Save directly to file on disk on every edit
-        if let base = baseDirectory {
-            try? buf.saveToFile(baseDirectory: base)
-        }
+        // Schedule 200ms debounced auto-save to disk
+        scheduleDebouncedSave(delayMs: 200)
 
         version &+= 1
         onEdit?()
@@ -196,9 +196,32 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
 
     public var baseDirectory: String?
     public var onEdit: (() -> Void)?
+    private var saveDebounceWorkItem: DispatchWorkItem?
 
     public var isDirty: Bool {
         buffers.values.contains { $0.isDirty }
+    }
+
+    /// Debounces saving all dirty buffers to disk with a 200ms delay to avoid CPU/LSP thrashing
+    public func scheduleDebouncedSave(delayMs: Int = 200) {
+        saveDebounceWorkItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            do {
+                _ = try self?.saveAllDirtyBuffers()
+            } catch {
+                // Debounced background saves intentionally do not interrupt editing.
+            }
+        }
+        saveDebounceWorkItem = item
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + .milliseconds(delayMs), execute: item)
+    }
+
+    /// Immediately writes all modified buffers to disk (e.g. on Cmd+S)
+    @discardableResult
+    public func flushImmediateSave() -> [String] {
+        saveDebounceWorkItem?.cancel()
+        saveDebounceWorkItem = nil
+        return (try? saveAllDirtyBuffers()) ?? []
     }
 
     @discardableResult
@@ -213,28 +236,116 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
 
     // MARK: - Context Expansion
 
-    public func expandExcerpt(at index: ExcerptIndex, up: Int = 0, down: Int = 0) {
-        guard index >= 0 && index < excerpts.count else { return }
-        var excerpt = excerpts[index]
-        guard let buf = buffers[excerpt.bufferId] else { return }
-
-        if up > 0 {
-            excerpt.expandUp(by: up)
-        }
-        if down > 0 {
-            excerpt.expandDown(by: down, bufferTotalRows: buf.lineCount)
-        }
-        excerpts[index] = excerpt
-        version &+= 1
+    public enum ExpandExcerptDirection {
+        case up
+        case down
+        case upAndDown
     }
 
-    public func expandExcerptAll(at index: ExcerptIndex) {
-        guard index >= 0 && index < excerpts.count else { return }
+    @discardableResult
+    public func expandExcerpt(at index: ExcerptIndex, up: Int = 0, down: Int = 0) -> (linesAddedUp: Int, linesAddedDown: Int) {
+        guard index >= 0 && index < excerpts.count else { return (0, 0) }
         var excerpt = excerpts[index]
-        guard let buf = buffers[excerpt.bufferId] else { return }
-        excerpt.expandAll(bufferTotalRows: buf.lineCount)
+        guard let buf = buffers[excerpt.bufferId] else { return (0, 0) }
+
+        var addedUp = 0
+        var addedDown = 0
+
+        if let fullPath = buf.fullDiskPath, let fullText = try? String(contentsOfFile: fullPath, encoding: .utf8) {
+            let allLines = fullText.components(separatedBy: "\n")
+
+            if up > 0 && buf.startLineNumber > 1 {
+                let actualUp = min(up, buf.startLineNumber - 1)
+                let sliceStart = buf.startLineNumber - 1 - actualUp
+                let sliceEnd = buf.startLineNumber - 1
+                if sliceStart >= 0 && sliceEnd <= allLines.count && sliceStart < sliceEnd {
+                    let prepended = Array(allLines[sliceStart..<sliceEnd])
+                    buf.prependContextLines(prepended)
+                    addedUp = prepended.count
+                }
+            }
+
+            let currentEndLine = buf.startLineNumber + buf.lineCount - 1
+            if down > 0 && currentEndLine < allLines.count {
+                let actualDown = min(down, allLines.count - currentEndLine)
+                let sliceStart = currentEndLine
+                let sliceEnd = currentEndLine + actualDown
+                if sliceStart >= 0 && sliceEnd <= allLines.count && sliceStart < sliceEnd {
+                    let appended = Array(allLines[sliceStart..<sliceEnd])
+                    buf.appendContextLines(appended)
+                    addedDown = appended.count
+                }
+            }
+
+            excerpt.bufferRange = 0..<buf.lineCount
+        } else {
+            if up > 0 {
+                let oldLower: Int = excerpt.bufferRange.lowerBound
+                let newLower: Int = max(0, oldLower - up)
+                addedUp = oldLower - newLower
+                excerpt.bufferRange = newLower..<excerpt.bufferRange.upperBound
+            }
+            if down > 0 {
+                let oldUpper: Int = excerpt.bufferRange.upperBound
+                let newUpper: Int = min(buf.lineCount, oldUpper + down)
+                addedDown = newUpper - oldUpper
+                excerpt.bufferRange = excerpt.bufferRange.lowerBound..<newUpper
+            }
+        }
+
         excerpts[index] = excerpt
+        mergeAdjacentExcerpts()
         version &+= 1
+        return (addedUp, addedDown)
+    }
+
+    @discardableResult
+    public func expandExcerptAll(at index: ExcerptIndex) -> (linesAddedUp: Int, linesAddedDown: Int) {
+        guard index >= 0 && index < excerpts.count else { return (0, 0) }
+        let excerpt = excerpts[index]
+        guard let buf = buffers[excerpt.bufferId] else { return (0, 0) }
+
+        if let fullPath = buf.fullDiskPath, let fullText = try? String(contentsOfFile: fullPath, encoding: .utf8) {
+            let allLines = fullText.components(separatedBy: "\n")
+            let neededUp = max(0, buf.startLineNumber - 1)
+            let neededDown = max(0, allLines.count - (buf.startLineNumber + buf.lineCount - 1))
+            return expandExcerpt(at: index, up: neededUp, down: neededDown)
+        } else {
+            return expandExcerpt(at: index, up: excerpt.bufferRange.lowerBound, down: buf.lineCount - excerpt.bufferRange.upperBound)
+        }
+    }
+
+    /// Merges contiguous or overlapping excerpts
+    public func mergeAdjacentExcerpts() {
+        guard excerpts.count > 1 else { return }
+        var merged: [Excerpt] = []
+        for excerpt in excerpts {
+            if let last = merged.last, last.filePath == excerpt.filePath {
+                let gap = excerpt.bufferRange.lowerBound - last.bufferRange.upperBound
+                if gap <= 2 {
+                    var updatedLast = last
+                    let combinedUpper = max(last.bufferRange.upperBound, excerpt.bufferRange.upperBound)
+                    updatedLast.bufferRange = last.bufferRange.lowerBound..<combinedUpper
+                    merged[merged.count - 1] = updatedLast
+                    continue
+                }
+            }
+            merged.append(excerpt)
+        }
+        self.excerpts = merged
+    }
+
+    @discardableResult
+    public func expandExcerptAt(point: MultiBufferPoint, lines: Int = 5, direction: ExpandExcerptDirection = .upAndDown) -> (linesAddedUp: Int, linesAddedDown: Int) {
+        guard let loc = location(for: point) else { return (0, 0) }
+        switch direction {
+        case .up:
+            return expandExcerpt(at: loc.excerptIndex, up: lines, down: 0)
+        case .down:
+            return expandExcerpt(at: loc.excerptIndex, up: 0, down: lines)
+        case .upAndDown:
+            return expandExcerpt(at: loc.excerptIndex, up: lines, down: lines)
+        }
     }
 
     public func toggleCollapse(at index: ExcerptIndex) {

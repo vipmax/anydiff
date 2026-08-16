@@ -6,26 +6,69 @@ public final class LineDiffEngine: Sendable {
 
     public init() {}
 
+    /// Computes the complete line-level diff without grouping it into hunks.
+    public func diffLines(
+        oldLines: [String],
+        newLines: [String],
+        oldStartLine: Int = 1,
+        newStartLine: Int = 1
+    ) -> [DiffLine] {
+        guard oldLines != newLines else {
+            return oldLines.enumerated().map { index, line in
+                DiffLine(
+                    kind: .unchanged,
+                    text: line,
+                    oldLineNumber: oldStartLine + index,
+                    newLineNumber: newStartLine + index
+                )
+            }
+        }
+
+        var lines = computeMyersDiff(
+            oldLines: oldLines,
+            newLines: newLines,
+            oldStartLine: oldStartLine,
+            newStartLine: newStartLine
+        )
+        processWordDiffs(lines: &lines)
+        return lines
+    }
+
     /// Computes unified diff hunks with word-level highlights between old text and new text
     public func diff(
         oldText: String,
         newText: String,
+        oldStartLine: Int = 1,
+        newStartLine: Int = 1,
         contextLines: Int = 3
     ) -> [DiffHunk] {
         let oldLines = oldText.components(separatedBy: "\n")
         let newLines = newText.components(separatedBy: "\n")
-        return diff(oldLines: oldLines, newLines: newLines, contextLines: contextLines)
+        return diff(
+            oldLines: oldLines,
+            newLines: newLines,
+            oldStartLine: oldStartLine,
+            newStartLine: newStartLine,
+            contextLines: contextLines
+        )
     }
 
     /// Computes unified diff hunks between old lines and new lines
     public func diff(
         oldLines: [String],
         newLines: [String],
+        oldStartLine: Int = 1,
+        newStartLine: Int = 1,
         contextLines: Int = 3
     ) -> [DiffHunk] {
         guard oldLines != newLines else { return [] }
 
-        let diffLines = computeMyersDiff(oldLines: oldLines, newLines: newLines)
+        let diffLines = computeMyersDiff(
+            oldLines: oldLines,
+            newLines: newLines,
+            oldStartLine: oldStartLine,
+            newStartLine: newStartLine
+        )
         var hunks = groupIntoHunks(diffLines: diffLines, contextLines: contextLines)
         for i in hunks.indices {
             processWordDiffs(lines: &hunks[i].lines)
@@ -34,19 +77,24 @@ public final class LineDiffEngine: Sendable {
     }
 
     /// Myers' Diff Algorithm for shortest edit script (SES)
-    private func computeMyersDiff(oldLines: [String], newLines: [String]) -> [DiffLine] {
+    private func computeMyersDiff(
+        oldLines: [String],
+        newLines: [String],
+        oldStartLine: Int,
+        newStartLine: Int
+    ) -> [DiffLine] {
         let n = oldLines.count
         let m = newLines.count
         let maxD = n + m
 
         if n == 0 {
             return newLines.enumerated().map { idx, line in
-                DiffLine(kind: .added, text: line, oldLineNumber: nil, newLineNumber: idx + 1)
+                DiffLine(kind: .added, text: line, oldLineNumber: nil, newLineNumber: newStartLine + idx)
             }
         }
         if m == 0 {
             return oldLines.enumerated().map { idx, line in
-                DiffLine(kind: .deleted, text: line, oldLineNumber: idx + 1, newLineNumber: nil)
+                DiffLine(kind: .deleted, text: line, oldLineNumber: oldStartLine + idx, newLineNumber: nil)
             }
         }
 
@@ -79,7 +127,6 @@ public final class LineDiffEngine: Sendable {
             }
         }
 
-        // Backtrack to reconstruct edit path
         var currentX = n
         var currentY = m
         var editScript: [(kind: DiffLineKind, oldIdx: Int?, newIdx: Int?)] = []
@@ -117,8 +164,8 @@ public final class LineDiffEngine: Sendable {
         editScript.reverse()
 
         var result: [DiffLine] = []
-        var runningOld = 1
-        var runningNew = 1
+        var runningOld = oldStartLine
+        var runningNew = newStartLine
 
         for edit in editScript {
             switch edit.kind {
@@ -154,7 +201,6 @@ public final class LineDiffEngine: Sendable {
 
         guard !changeIndices.isEmpty else { return [] }
 
-        // Group changes within 2 * contextLines of each other into clusters
         var clusters: [[Int]] = []
         var currentCluster = [changeIndices[0]]
 
@@ -178,23 +224,20 @@ public final class LineDiffEngine: Sendable {
             guard startIdx <= endIdx && startIdx >= 0 && endIdx < diffLines.count else { continue }
 
             let hunkLines = Array(diffLines[startIdx...endIdx])
-
             let oldStart = hunkLines.compactMap(\.oldLineNumber).first ?? 1
             let oldCount = hunkLines.filter { $0.kind == .unchanged || $0.kind == .deleted }.count
-
             let newStart = hunkLines.compactMap(\.newLineNumber).first ?? 1
             let newCount = hunkLines.filter { $0.kind == .unchanged || $0.kind == .added }.count
 
             let oldRange = oldStart..<(oldStart + max(1, oldCount))
             let newRange = newStart..<(newStart + max(1, newCount))
 
-            let hunk = DiffHunk(
+            hunks.append(DiffHunk(
                 oldRange: oldRange,
                 newRange: newRange,
                 header: "@@ -\(oldStart),\(oldCount) +\(newStart),\(newCount) @@",
                 lines: hunkLines
-            )
-            hunks.append(hunk)
+            ))
         }
 
         return hunks

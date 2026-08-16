@@ -61,17 +61,55 @@ public final class Buffer: Identifiable, @unchecked Sendable {
         _lines.count
     }
 
-    /// Original baseline file text before modifications (e.g. from git HEAD)
-    public var baselineText: String
+    public var lines: [String] {
+        _lines
+    }
 
-    public init(id: BufferId = BufferId(), filePath: String, text: String, language: String = "", baselineText: String = "") {
+    /// Incremented on every buffer modification to invalidate memoized diffs
+    public private(set) var version: Int = 0
+    public var cachedDiffLines: [DiffLine]? = nil
+    public var cachedDiffVersion: Int = -1
+
+    /// Original baseline file lines before modifications (e.g. from git HEAD)
+    public var baselineLines: [String]
+
+    public var baselineText: String {
+        get { baselineLines.joined(separator: "\n") }
+        set { baselineLines = newValue.components(separatedBy: "\n") }
+    }
+
+    public var totalAdditions: Int
+    public var totalDeletions: Int
+    public var startLineNumber: Int
+    public var fullDiskPath: String?
+    public var diskFileLineCount: Int?
+
+    public init(
+        id: BufferId = BufferId(),
+        filePath: String,
+        text: String,
+        language: String = "",
+        baselineText: String = "",
+        totalAdditions: Int = 0,
+        totalDeletions: Int = 0,
+        startLineNumber: Int = 1,
+        fullDiskPath: String? = nil,
+        diskFileLineCount: Int? = nil
+    ) {
         self.id = id
         self.filePath = filePath
         self.language = language.isEmpty ? Buffer.detectLanguage(for: filePath) : language
-        self.baselineText = baselineText.isEmpty ? text : baselineText
-        
+        self.totalAdditions = totalAdditions
+        self.totalDeletions = totalDeletions
+        self.startLineNumber = startLineNumber
+        self.fullDiskPath = fullDiskPath
+        self.diskFileLineCount = diskFileLineCount
+
         let split = text.components(separatedBy: "\n")
         self._lines = split.isEmpty ? [""] : split
+
+        let baseSplit = baselineText.isEmpty ? split : baselineText.components(separatedBy: "\n")
+        self.baselineLines = baseSplit.isEmpty ? [""] : baseSplit
     }
 
     public static func detectLanguage(for path: String) -> String {
@@ -179,6 +217,7 @@ public final class Buffer: Identifiable, @unchecked Sendable {
 
         _lines.replaceSubrange(clampedStart.row...clampedEnd.row, with: newContentLines)
         _isDirty = true
+        version &+= 1
 
         let endRow = clampedStart.row + newContentLines.count - 1
         let endCol: Int
@@ -202,6 +241,21 @@ public final class Buffer: Identifiable, @unchecked Sendable {
     public func delete(from start: BufferPoint, to end: BufferPoint) -> BufferPoint {
         let _ = replace(start: start, end: end, with: "")
         return clamp(point: start)
+    }
+
+    public func prependContextLines(_ lines: [String]) {
+        guard !lines.isEmpty else { return }
+        _lines.insert(contentsOf: lines, at: 0)
+        baselineLines.insert(contentsOf: lines, at: 0)
+        startLineNumber = max(1, startLineNumber - lines.count)
+        version &+= 1
+    }
+
+    public func appendContextLines(_ lines: [String]) {
+        guard !lines.isEmpty else { return }
+        _lines.append(contentsOf: lines)
+        baselineLines.append(contentsOf: lines)
+        version &+= 1
     }
 
     public var isFullFile: Bool = true

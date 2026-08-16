@@ -217,11 +217,13 @@ public struct MainWindowView: View {
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         process.arguments = arguments
         let pipe = Pipe()
+        let errPipe = Pipe()
         process.standardOutput = pipe
+        process.standardError = errPipe
         do {
             try process.run()
-            process.waitUntilExit()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
             return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
         } catch {
             return nil
@@ -236,7 +238,17 @@ public struct MainWindowView: View {
 
         multiBuffer.clear()
 
+        let baseDir = (multiBuffer.baseDirectory?.isEmpty == false) ? (multiBuffer.baseDirectory ?? FileManager.default.currentDirectoryPath) : FileManager.default.currentDirectoryPath
+
         for file in parsedFiles {
+            let relativePath = file.displayPath
+            let fullPath = (baseDir as NSString).appendingPathComponent(relativePath)
+            let fullDiskText = try? String(contentsOfFile: fullPath, encoding: .utf8)
+            let fullDiskLineCount = fullDiskText?.components(separatedBy: "\n").count
+
+            let fileAdds = file.additions
+            let fileDels = file.deletions
+
             for (hIdx, hunk) in file.hunks.enumerated() {
                 // New file text for the working buffer (unchanged + added lines)
                 let newFileLines = hunk.lines.filter { $0.kind == .added || $0.kind == .unchanged }.map(\.text)
@@ -246,11 +258,18 @@ public struct MainWindowView: View {
                 let oldBaselineLines = hunk.lines.filter { $0.kind == .deleted || $0.kind == .unchanged }.map(\.text)
                 let baselineText = oldBaselineLines.joined(separator: "\n")
 
+                let startLine = hunk.newRange.lowerBound
+
                 let buffer = Buffer(
                     filePath: file.displayPath,
                     text: linesText,
                     language: Buffer.detectLanguage(for: file.displayPath),
-                    baselineText: baselineText
+                    baselineText: baselineText,
+                    totalAdditions: fileAdds,
+                    totalDeletions: fileDels,
+                    startLineNumber: startLine,
+                    fullDiskPath: FileManager.default.fileExists(atPath: fullPath) ? fullPath : nil,
+                    diskFileLineCount: fullDiskLineCount
                 )
                 multiBuffer.addBuffer(buffer)
 
@@ -289,27 +308,33 @@ public struct MainWindowView: View {
             process.arguments = ["-C", path, "diff", "HEAD"]
 
             let pipe = Pipe()
+            let errPipe = Pipe()
             process.standardOutput = pipe
-            try? process.run()
-            process.waitUntilExit()
+            process.standardError = errPipe
+            do {
+                try process.run()
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                process.waitUntilExit()
 
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            if let output = String(data: data, encoding: .utf8), !output.isEmpty {
-                loadDiff(text: output)
-            } else {
-                // Try fallback to unstaged diff
-                let process2 = Process()
-                process2.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-                process2.arguments = ["-C", path, "diff"]
-                let pipe2 = Pipe()
-                process2.standardOutput = pipe2
-                try? process2.run()
-                process2.waitUntilExit()
-                let data2 = pipe2.fileHandleForReading.readDataToEndOfFile()
-                if let output2 = String(data: data2, encoding: .utf8), !output2.isEmpty {
-                    loadDiff(text: output2)
+                if let output = String(data: data, encoding: .utf8), !output.isEmpty {
+                    loadDiff(text: output)
+                } else {
+                    // Try fallback to unstaged diff
+                    let process2 = Process()
+                    process2.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+                    process2.arguments = ["-C", path, "diff"]
+                    let pipe2 = Pipe()
+                    let errPipe2 = Pipe()
+                    process2.standardOutput = pipe2
+                    process2.standardError = errPipe2
+                    try process2.run()
+                    let data2 = pipe2.fileHandleForReading.readDataToEndOfFile()
+                    process2.waitUntilExit()
+                    if let output2 = String(data: data2, encoding: .utf8), !output2.isEmpty {
+                        loadDiff(text: output2)
+                    }
                 }
-            }
+            } catch {}
         }
     }
 

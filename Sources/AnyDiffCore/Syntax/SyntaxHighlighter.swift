@@ -28,7 +28,14 @@ public struct HighlightSpan: Sendable {
 public final class SyntaxHighlighter: @unchecked Sendable {
     public static let shared = SyntaxHighlighter()
 
-    private var cache: [String: NSAttributedString] = [:]
+    private struct CacheKey: Hashable {
+        let themeId: String
+        let language: String
+        let fontSize: CGFloat
+        let line: String
+    }
+
+    private var cache: [CacheKey: NSAttributedString] = [:]
     private let cacheLock = NSLock()
 
     private let swiftKeywords: Set<String> = [
@@ -76,9 +83,9 @@ public final class SyntaxHighlighter: @unchecked Sendable {
             ])
         }
 
-        let cacheKey = "\(theme.id):\(language):\(font.pointSize):\(line)"
+        let key = CacheKey(themeId: theme.id, language: language, fontSize: font.pointSize, line: line)
         cacheLock.lock()
-        if let cached = cache[cacheKey] {
+        if let cached = cache[key] {
             cacheLock.unlock()
             return cached
         }
@@ -102,7 +109,7 @@ public final class SyntaxHighlighter: @unchecked Sendable {
 
         cacheLock.lock()
         if cache.count < 10000 {
-            cache[cacheKey] = attr
+            cache[key] = attr
         }
         cacheLock.unlock()
 

@@ -249,4 +249,109 @@ final class MultiBufferTests: XCTestCase {
         XCTAssertEqual(locAdded?.filePath, file.displayPath)
         XCTAssertEqual(locAdded?.bufferColumn, 10)
     }
+
+    func testExpandInfoOnExcerptBoundaries() {
+        var lines: [String] = []
+        for i in 0..<100 {
+            lines.append("line \(i)")
+        }
+        let fullText = lines.joined(separator: "\n")
+        let buffer = Buffer(filePath: "Service.swift", text: fullText)
+
+        let mb = MultiBuffer()
+        mb.addBuffer(buffer)
+
+        // Excerpt representing lines 10..20 of a 100-line file
+        let excerpt = Excerpt(
+            bufferId: buffer.id,
+            filePath: "Service.swift",
+            bufferRange: 10..<20
+        )
+        mb.addExcerpt(excerpt)
+
+        let rm = ReviewManager()
+        let dm = DisplayMap(multiBuffer: mb, reviewManager: rm)
+
+        let codeLines = dm.codeLines
+        XCTAssertEqual(codeLines.count, 10)
+
+        // Top line has ExpandUp
+        XCTAssertEqual(codeLines.first?.expandInfo?.direction, .up)
+        XCTAssertEqual(codeLines.first?.expandInfo?.excerptIndex, 0)
+
+        // Middle lines have no expand button
+        for i in 1..<9 {
+            XCTAssertNil(codeLines[i].expandInfo)
+        }
+
+        // Bottom line has ExpandDown
+        XCTAssertEqual(codeLines.last?.expandInfo?.direction, .down)
+        XCTAssertEqual(codeLines.last?.expandInfo?.excerptIndex, 0)
+    }
+
+    func testExcerptExpansionAndMerging() {
+        var lines: [String] = []
+        for i in 0..<100 {
+            lines.append("line \(i)")
+        }
+        let fullText = lines.joined(separator: "\n")
+        let buffer = Buffer(filePath: "Service.swift", text: fullText)
+
+        let mb = MultiBuffer()
+        mb.addBuffer(buffer)
+
+        let excerpt1 = Excerpt(
+            bufferId: buffer.id,
+            filePath: "Service.swift",
+            bufferRange: 10..<20,
+            isFileStart: true
+        )
+        let excerpt2 = Excerpt(
+            bufferId: buffer.id,
+            filePath: "Service.swift",
+            bufferRange: 30..<40,
+            isFileStart: false
+        )
+        mb.setExcerpts([excerpt1, excerpt2])
+        XCTAssertEqual(mb.excerpts.count, 2)
+
+        // Expand excerpt 1 down by 3 lines -> 10..<23
+        mb.expandExcerpt(at: 0, up: 0, down: 3)
+        XCTAssertEqual(mb.excerpts[0].bufferRange, 10..<23)
+        XCTAssertEqual(mb.excerpts.count, 2)
+
+        // Expand excerpt 2 up by 5 lines -> 25..<40 (gap is now 2 lines: 23..<25, which triggers auto-merge <= 2)
+        mb.expandExcerpt(at: 1, up: 5, down: 0)
+
+        // Automatic merge combines them into 1 contiguous excerpt 10..<40
+        XCTAssertEqual(mb.excerpts.count, 1)
+        XCTAssertEqual(mb.excerpts[0].bufferRange, 10..<40)
+    }
+
+    func testSingleLineExcerptVerticalExpansion() {
+        var lines: [String] = []
+        for i in 0..<50 {
+            lines.append("line \(i)")
+        }
+        let fullText = lines.joined(separator: "\n")
+        let buffer = Buffer(filePath: "Single.swift", text: fullText)
+
+        let mb = MultiBuffer()
+        mb.addBuffer(buffer)
+
+        // Single line excerpt in the middle of buffer
+        let excerpt = Excerpt(
+            bufferId: buffer.id,
+            filePath: "Single.swift",
+            bufferRange: 25..<26
+        )
+        mb.addExcerpt(excerpt)
+
+        let rm = ReviewManager()
+        let dm = DisplayMap(multiBuffer: mb, reviewManager: rm)
+
+        let codeLines = dm.codeLines
+        XCTAssertEqual(codeLines.count, 1)
+        XCTAssertEqual(codeLines.first?.expandInfo?.direction, .upAndDown)
+    }
 }

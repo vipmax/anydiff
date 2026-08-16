@@ -37,7 +37,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     public private(set) var lineHeight: CGFloat = 22
     public private(set) var fontAscent: CGFloat = 14
     public private(set) var fontDescent: CGFloat = 4
-    public private(set) var gutterWidth: CGFloat = 96
+    public private(set) var gutterWidth: CGFloat = 58
     public private(set) var excerptHeaderHeight: CGFloat = 34
     public private(set) var foldGapHeight: CGFloat = 26
     public private(set) var commentHeight: CGFloat = 64
@@ -239,6 +239,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     }
 
     public func invalidateLayout() {
+        cachedFileSections = nil
         guard let displayMap = displayMap else {
             totalDocumentHeight = 0
             totalDocumentWidth = 0
@@ -436,15 +437,8 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
             case .code(let info):
                 let gutterRect = CGRect(x: 0, y: screenY, width: gutterWidth, height: height)
-                // Draw gutter cell background & border
-                context.setFillColor(theme.gutterBackground.cgColor)
+                context.setFillColor(theme.background.cgColor)
                 context.fill(gutterRect)
-                context.setStrokeColor(theme.excerptHeaderBorder.withAlphaComponent(0.4).cgColor)
-                context.setLineWidth(1.0)
-                context.strokeLineSegments(between: [
-                    CGPoint(x: gutterWidth, y: screenY),
-                    CGPoint(x: gutterWidth, y: screenY + height)
-                ])
                 drawGutter(for: info, lineIdx: lineIdx, in: gutterRect, context: context)
 
             case .foldGap(let info):
@@ -497,6 +491,36 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         context.restoreGState()
     }
 
+    // MARK: - Pixel-Perfect Viewport Scroll Anchoring
+
+    private func preserveScreenPosition(ofCodeRow codeRow: Int, originalScreenY: CGFloat) {
+        guard let dm = displayMap else { return }
+        dm.rebuild()
+        invalidateLayout()
+
+        var newAbsY: CGFloat = 0
+        var found = false
+        for line in dm.displayLines {
+            if case .code(let info) = line, info.multiBufferRow == codeRow {
+                found = true
+                break
+            }
+            switch line {
+            case .excerptHeader: newAbsY += excerptHeaderHeight
+            case .code: newAbsY += lineHeight
+            case .foldGap: newAbsY += foldGapHeight
+            case .inlineComment: newAbsY += commentHeight
+            }
+        }
+
+        if found {
+            let maxScrollY = max(0, totalDocumentHeight - bounds.height)
+            let targetScrollY = newAbsY - originalScreenY
+            scrollOffsetY = max(0, min(maxScrollY, targetScrollY))
+        }
+        needsDisplay = true
+    }
+
     // MARK: - Sticky Excerpt Header Computation
 
     private struct FileSection {
@@ -505,7 +529,10 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         var contentMaxY: CGFloat
     }
 
+    private var cachedFileSections: [FileSection]? = nil
+
     private func computeFileSections() -> [FileSection] {
+        if let cached = cachedFileSections { return cached }
         guard let displayMap = displayMap else { return [] }
         var sections: [FileSection] = []
         var currentY: CGFloat = 0
@@ -534,6 +561,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                 }
             }
         }
+        self.cachedFileSections = sections
         return sections
     }
 
@@ -767,7 +795,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     // MARK: - Gutter Drawing
 
     private func drawGutter(for info: DisplayCodeLineInfo, lineIdx: Int, in rect: CGRect, context: CGContext) {
-        // Diff Status Left Bar
+        // Diff Status Left Bar (3px stripe on left edge)
         if info.diffKind == .added {
             context.setFillColor(theme.diffAddedGutter.cgColor)
             context.fill(CGRect(x: 0, y: rect.minY, width: 3, height: rect.height))
@@ -776,86 +804,111 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             context.fill(CGRect(x: 0, y: rect.minY, width: 3, height: rect.height))
         }
 
-        let numFont = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        // Expand Excerpt Button (Zed Style) on the left
+        if let expandInfo = info.expandInfo {
+            let btnRect = CGRect(x: 4, y: rect.minY + (rect.height - 16) / 2, width: 16, height: 16)
+            drawExpandButton(expandInfo: expandInfo, in: btnRect, isHovered: hoveredGutterLineIndex == lineIdx, context: context)
+        }
 
-        // Old Line Number (left column: x = 6..42)
-        if let oldNum = info.oldLineNumber {
-            let color = (info.diffKind == .deleted) ? theme.diffDeletedGutter : theme.gutterForeground
-            let str = NSAttributedString(string: String(format: "%3d", oldNum), attributes: [
+        // Single Unified Line Number Column (Zed Style)
+        let lineNum = (info.diffKind == .deleted) ? info.oldLineNumber : (info.newLineNumber ?? info.oldLineNumber ?? (info.bufferRow + 1))
+        if let num = lineNum {
+            let color: NSColor
+            switch info.diffKind {
+            case .added:
+                color = theme.diffAddedGutter
+            case .deleted:
+                color = theme.diffDeletedGutter
+            case .unchanged, .header:
+                color = theme.gutterForeground
+            }
+
+            let numFont = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+            let str = NSAttributedString(string: "\(num)", attributes: [
                 .font: numFont,
                 .foregroundColor: color
             ])
             let line = CTLineCreateWithAttributedString(str)
+            var ascent: CGFloat = 0, descent: CGFloat = 0, leading: CGFloat = 0
+            let numWidth = CGFloat(CTLineGetTypographicBounds(line, &ascent, &descent, &leading))
+            let numX = gutterWidth - numWidth - 8
+
             context.saveGState()
             context.textMatrix = .identity
-            context.translateBy(x: 8, y: rect.minY + fontAscent + 2)
+            context.translateBy(x: numX, y: rect.minY + fontAscent + 2)
             context.scaleBy(x: 1.0, y: -1.0)
             CTLineDraw(line, context)
             context.restoreGState()
         }
+    }
 
-        // New Line Number (middle column: x = 44..76)
-        if let newNum = info.newLineNumber {
-            let color = (info.diffKind == .added) ? theme.diffAddedGutter : theme.gutterForeground
-            let str = NSAttributedString(string: String(format: "%3d", newNum), attributes: [
-                .font: numFont,
-                .foregroundColor: color
-            ])
-            let line = CTLineCreateWithAttributedString(str)
-            context.saveGState()
-            context.textMatrix = .identity
-            context.translateBy(x: 44, y: rect.minY + fontAscent + 2)
-            context.scaleBy(x: 1.0, y: -1.0)
-            CTLineDraw(line, context)
-            context.restoreGState()
-        }
+    private func drawExpandButton(expandInfo: ExpandInfo, in btnRect: CGRect, isHovered: Bool, context: CGContext) {
+        context.saveGState()
 
-        // Diff Symbol (+ / -) on right of gutter
-        if info.diffKind != .unchanged {
-            let symbol = (info.diffKind == .added) ? "+" : "-"
-            let symColor = (info.diffKind == .added) ? theme.diffAddedGutter : theme.diffDeletedGutter
-            let symStr = NSAttributedString(string: symbol, attributes: [
-                .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .bold),
-                .foregroundColor: symColor
-            ])
-            let symLine = CTLineCreateWithAttributedString(symStr)
-            context.saveGState()
-            context.textMatrix = .identity
-            context.translateBy(x: 80, y: rect.minY + fontAscent + 2)
-            context.scaleBy(x: 1.0, y: -1.0)
-            CTLineDraw(symLine, context)
-            context.restoreGState()
-        }
-
-        // Hover '+' button to add code review comment
-        if hoveredGutterLineIndex == lineIdx {
-            let btnRect = CGRect(x: 78, y: rect.minY + 3, width: 16, height: 16)
-            context.setFillColor(theme.diffModifiedGutter.cgColor)
-            let path = CGPath(roundedRect: btnRect, cornerWidth: 4, cornerHeight: 4, transform: nil)
-            context.addPath(path)
+        if isHovered {
+            let bgPath = CGPath(roundedRect: btnRect, cornerWidth: 3.5, cornerHeight: 3.5, transform: nil)
+            context.setFillColor(NSColor(white: 1.0, alpha: 0.12).cgColor)
+            context.addPath(bgPath)
             context.fillPath()
 
-            let plusStr = NSAttributedString(string: "+", attributes: [
-                .font: NSFont.boldSystemFont(ofSize: 12),
-                .foregroundColor: NSColor.white
-            ])
-            let plusLine = CTLineCreateWithAttributedString(plusStr)
-            context.saveGState()
-            context.textMatrix = .identity
-            context.translateBy(x: 82, y: rect.minY + 14)
-            context.scaleBy(x: 1.0, y: -1.0)
-            CTLineDraw(plusLine, context)
-            context.restoreGState()
+            context.setStrokeColor(NSColor(white: 1.0, alpha: 0.22).cgColor)
+            context.setLineWidth(0.75)
+            context.addPath(bgPath)
+            context.strokePath()
         }
+
+        let iconColor: NSColor = isHovered ? .white : theme.gutterForeground.withAlphaComponent(0.7)
+        context.setStrokeColor(iconColor.cgColor)
+        context.setLineWidth(1.2)
+        context.setLineCap(.round)
+        context.setLineJoin(.round)
+
+        let cx = btnRect.midX
+        let cy = btnRect.midY
+
+        switch expandInfo.direction {
+        case .up:
+            context.move(to: CGPoint(x: cx - 3.2, y: cy + 4.5))
+            context.addLine(to: CGPoint(x: cx + 3.2, y: cy + 4.5))
+            context.move(to: CGPoint(x: cx, y: cy + 2.0))
+            context.addLine(to: CGPoint(x: cx, y: cy - 4.5))
+            context.move(to: CGPoint(x: cx - 3.0, y: cy - 1.5))
+            context.addLine(to: CGPoint(x: cx, y: cy - 4.5))
+            context.addLine(to: CGPoint(x: cx + 3.0, y: cy - 1.5))
+            context.strokePath()
+
+        case .down:
+            context.move(to: CGPoint(x: cx - 3.2, y: cy - 4.5))
+            context.addLine(to: CGPoint(x: cx + 3.2, y: cy - 4.5))
+            context.move(to: CGPoint(x: cx, y: cy - 2.0))
+            context.addLine(to: CGPoint(x: cx, y: cy + 4.5))
+            context.move(to: CGPoint(x: cx - 3.0, y: cy + 1.5))
+            context.addLine(to: CGPoint(x: cx, y: cy + 4.5))
+            context.addLine(to: CGPoint(x: cx + 3.0, y: cy + 1.5))
+            context.strokePath()
+
+        case .upAndDown:
+            context.move(to: CGPoint(x: cx - 2.5, y: cy - 2.0))
+            context.addLine(to: CGPoint(x: cx, y: cy - 4.5))
+            context.addLine(to: CGPoint(x: cx + 2.5, y: cy - 2.0))
+            context.move(to: CGPoint(x: cx - 2.5, y: cy + 2.0))
+            context.addLine(to: CGPoint(x: cx, y: cy + 4.5))
+            context.addLine(to: CGPoint(x: cx + 2.5, y: cy + 2.0))
+            context.move(to: CGPoint(x: cx, y: cy - 4.5))
+            context.addLine(to: CGPoint(x: cx, y: cy + 4.5))
+            context.strokePath()
+        }
+
+        context.restoreGState()
     }
 
     // MARK: - Fold Gap Drawing
 
     private func drawFoldGap(info: DisplayFoldGapInfo, lineIdx: Int, in rect: CGRect, context: CGContext) {
-        context.setFillColor(theme.gutterBackground.cgColor)
+        context.setFillColor(theme.background.cgColor)
         context.fill(rect)
 
-        let label = "... \(info.hiddenCount) hidden lines  [Expand +10] ..."
+        let label = "⋯   \(info.hiddenCount) hidden lines   [Expand all]   ⋯"
         let str = NSAttributedString(string: label, attributes: [
             .font: NSFont.systemFont(ofSize: 11, weight: .medium),
             .foregroundColor: theme.foldPlaceholderForeground
@@ -864,7 +917,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
         context.saveGState()
         context.textMatrix = .identity
-        context.translateBy(x: gutterWidth + 24, y: rect.minY + 18)
+        context.translateBy(x: gutterWidth + 24, y: rect.minY + 16)
         context.scaleBy(x: 1.0, y: -1.0)
         CTLineDraw(line, context)
         context.restoreGState()
@@ -913,63 +966,25 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         context.restoreGState()
     }
 
-    // MARK: - Mouse & Click Interaction
-
-    public override func mouseMoved(with event: NSEvent) {
-        let loc = convert(event.locationInWindow, from: nil)
-        let docY = loc.y + scrollOffsetY
-        guard let displayMap = displayMap else { return }
-
-        var currentY: CGFloat = 0
-        var foundGutterHover: Int? = nil
-
-        for (idx, line) in displayMap.displayLines.enumerated() {
-            let height: CGFloat
-            switch line {
-            case .excerptHeader: height = excerptHeaderHeight
-            case .code: height = lineHeight
-            case .foldGap: height = foldGapHeight
-            case .inlineComment: height = commentHeight
-            }
-
-            let lineMinY = currentY
-            currentY += height
-
-            if lineMinY > docY {
-                break
-            }
-
-            if docY >= lineMinY && docY <= currentY {
-                if case .code = line, loc.x < gutterWidth {
-                    foundGutterHover = idx
-                }
-                break
-            }
-        }
-
-        if hoveredGutterLineIndex != foundGutterHover {
-            hoveredGutterLineIndex = foundGutterHover
-            needsDisplay = true
-        }
-    }
+    // MARK: - Mouse Event Handling
 
     public override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
         let screenPoint = convert(event.locationInWindow, from: nil)
         let docY = screenPoint.y + scrollOffsetY
         let docX = screenPoint.x + scrollOffsetX
+        let isShift = event.modifierFlags.contains(.shift)
         guard let displayMap = displayMap else { return }
 
-        let isShift = event.modifierFlags.contains(.shift)
-
-        // 1. Check sticky file header interaction first
-        if let (stickyHeader, stickyFrame) = currentStickyHeader(), stickyFrame.contains(screenPoint) {
-            displayMap.multiBuffer.toggleCollapse(at: stickyHeader.excerptIndex)
+        // 1. Check if user clicked on Sticky Excerpt Header
+        if let (stickyInfo, stickyFrame) = currentStickyHeader(), stickyFrame.contains(screenPoint) {
+            displayMap.multiBuffer.toggleCollapse(at: stickyInfo.excerptIndex)
             displayMap.rebuild()
             invalidateLayout()
             return
         }
 
+        // 2. Search through visible display lines
         var currentY: CGFloat = 0
         var clickedInDocument = false
 
@@ -998,17 +1013,65 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                     invalidateLayout()
                     return
                 case .foldGap(let gap):
-                    displayMap.multiBuffer.expandExcerpt(at: gap.excerptIndex, up: gap.isTopGap ? 10 : 0, down: gap.isTopGap ? 0 : 10)
-                    displayMap.rebuild()
-                    invalidateLayout()
+                    var anchorCodeRow: Int = 0
+                    var anchorScreenY: CGFloat = 0
+                    var curY: CGFloat = 0
+                    for l in displayMap.displayLines {
+                        if case .foldGap(let g) = l, g == gap { break }
+                        if case .code(let c) = l {
+                            anchorCodeRow = c.multiBufferRow
+                            anchorScreenY = curY - scrollOffsetY
+                        }
+                        switch l {
+                        case .excerptHeader: curY += excerptHeaderHeight
+                        case .code: curY += lineHeight
+                        case .foldGap: curY += foldGapHeight
+                        case .inlineComment: curY += commentHeight
+                        }
+                    }
+
+                    if gap.isTopGap {
+                        displayMap.multiBuffer.expandExcerpt(at: gap.excerptIndex, up: gap.hiddenCount, down: 0)
+                    } else if gap.isBottomGap {
+                        displayMap.multiBuffer.expandExcerpt(at: gap.excerptIndex, up: 0, down: gap.hiddenCount)
+                    } else if let _ = gap.nextExcerptIndex {
+                        displayMap.multiBuffer.expandExcerpt(at: gap.excerptIndex, up: 0, down: gap.hiddenCount)
+                        displayMap.multiBuffer.mergeAdjacentExcerpts()
+                    } else {
+                        displayMap.multiBuffer.expandExcerpt(at: gap.excerptIndex, up: 0, down: gap.hiddenCount)
+                    }
+
+                    preserveScreenPosition(ofCodeRow: anchorCodeRow, originalScreenY: anchorScreenY)
                     return
                 case .code(let codeInfo):
-                    if screenPoint.x < gutterWidth {
-                        // Click in gutter on '+' button
-                        let targetLine = codeInfo.newLineNumber ?? codeInfo.oldLineNumber ?? (codeInfo.bufferRow + 1)
-                        if let loc = displayMap.excerptLocation(for: MultiBufferPoint(row: codeInfo.multiBufferRow, column: 0)) {
-                            delegate?.editorDidRequestAddComment(filePath: loc.filePath, lineNumber: targetLine)
+                    if screenPoint.x <= 22, let exp = codeInfo.expandInfo {
+                        let isFullExpand = event.modifierFlags.contains(.shift) || event.modifierFlags.contains(.option)
+                        let lineScreenY = lineMinY - scrollOffsetY
+                        if isFullExpand {
+                            displayMap.multiBuffer.expandExcerptAll(at: exp.excerptIndex)
+                        } else {
+                            switch exp.direction {
+                            case .up:
+                                displayMap.multiBuffer.expandExcerpt(at: exp.excerptIndex, up: 5, down: 0)
+                            case .down:
+                                displayMap.multiBuffer.expandExcerpt(at: exp.excerptIndex, up: 0, down: 5)
+                            case .upAndDown:
+                                let relY = screenPoint.y - lineScreenY
+                                if relY < height / 2 {
+                                    displayMap.multiBuffer.expandExcerpt(at: exp.excerptIndex, up: 5, down: 0)
+                                } else {
+                                    displayMap.multiBuffer.expandExcerpt(at: exp.excerptIndex, up: 0, down: 5)
+                                }
+                            }
                         }
+                        preserveScreenPosition(ofCodeRow: codeInfo.multiBufferRow, originalScreenY: lineScreenY)
+                        return
+                    } else if screenPoint.x < gutterWidth {
+                        let targetPoint = MultiBufferPoint(row: codeInfo.multiBufferRow, column: 0)
+                        activeSelectionGranularity = .character
+                        selectionAnchor = targetPoint
+                        cursorPoint = targetPoint
+                        needsDisplay = true
                         return
                     } else {
                         // Position cursor in code
@@ -1232,7 +1295,30 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     // MARK: - Keyboard & Text Input (Cocoa Standard Key Binding Responding)
 
     public override func keyDown(with event: NSEvent) {
-        guard displayMap != nil else { return }
+        guard let displayMap = displayMap else { return }
+
+        // Shift + Enter (Expand Excerpt around current cursor location, matching Zed shortcut)
+        if event.keyCode == 36 && event.modifierFlags.contains(.shift) {
+            let cursorRow = cursorPoint.row
+            var currentScreenY: CGFloat = 0
+            for line in displayMap.displayLines {
+                if case .code(let c) = line, c.multiBufferRow == cursorRow {
+                    break
+                }
+                switch line {
+                case .excerptHeader: currentScreenY += excerptHeaderHeight
+                case .code: currentScreenY += lineHeight
+                case .foldGap: currentScreenY += foldGapHeight
+                case .inlineComment: currentScreenY += commentHeight
+                }
+            }
+            currentScreenY -= scrollOffsetY
+
+            displayMap.multiBuffer.expandExcerptAt(point: cursorPoint, lines: 5, direction: .upAndDown)
+            preserveScreenPosition(ofCodeRow: cursorRow, originalScreenY: currentScreenY)
+            return
+        }
+
         interpretKeyEvents([event])
     }
 
@@ -1246,6 +1332,10 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
     public override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if event.modifierFlags.contains(.command) {
+            if event.charactersIgnoringModifiers == "s" {
+                _ = displayMap?.multiBuffer.flushImmediateSave()
+                return true
+            }
             if NSApp.mainMenu?.performKeyEquivalent(with: event) == true {
                 return true
             }
@@ -1531,7 +1621,15 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     }
 
     public func insertText(_ string: Any, replacementRange: NSRange) {
-        guard let displayMap = displayMap, let text = string as? String else { return }
+        guard let displayMap = displayMap else { return }
+        let text: String
+        if let s = string as? String {
+            text = s
+        } else if let attr = string as? NSAttributedString {
+            text = attr.string
+        } else {
+            return
+        }
         let mb = displayMap.multiBuffer
 
         let rangeToReplace = normalizedSelectionRange() ?? (cursorPoint..<cursorPoint)
@@ -1568,9 +1666,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         )
         mb.undoManager.push(transaction: transaction)
 
-        if let base = mb.baseDirectory {
-            try? buf.saveToFile(baseDirectory: base)
-        }
+        mb.scheduleDebouncedSave(delayMs: 200)
 
         displayMap.rebuild()
         invalidateLayout()
@@ -1613,7 +1709,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             let edit = TextEdit(bufferId: buf.id, range: start..<newRange.upperBound, oldText: oldExact, newText: "")
             let tx = EditTransaction(edits: [edit], selectionBefore: cursorPoint..<cursorPoint, selectionAfter: nil)
             mb.undoManager.push(transaction: tx)
-            if let base = mb.baseDirectory { try? buf.saveToFile(baseDirectory: base) }
+            mb.scheduleDebouncedSave(delayMs: 200)
             displayMap.rebuild()
             invalidateLayout()
             if let vPt = displayMap.visualPoint(for: buf.id, bufferPoint: newRange.upperBound) {
@@ -1631,7 +1727,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             let edit = TextEdit(bufferId: buf.id, range: start..<newRange.upperBound, oldText: oldExact, newText: "")
             let tx = EditTransaction(edits: [edit], selectionBefore: cursorPoint..<cursorPoint, selectionAfter: nil)
             mb.undoManager.push(transaction: tx)
-            if let base = mb.baseDirectory { try? buf.saveToFile(baseDirectory: base) }
+            mb.scheduleDebouncedSave(delayMs: 200)
             displayMap.rebuild()
             invalidateLayout()
             if let vPt = displayMap.visualPoint(for: buf.id, bufferPoint: newRange.upperBound) {
@@ -1674,7 +1770,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             let edit = TextEdit(bufferId: buf.id, range: bPt..<newRange.upperBound, oldText: oldExact, newText: "")
             let tx = EditTransaction(edits: [edit], selectionBefore: cursorPoint..<cursorPoint, selectionAfter: nil)
             mb.undoManager.push(transaction: tx)
-            if let base = mb.baseDirectory { try? buf.saveToFile(baseDirectory: base) }
+            mb.scheduleDebouncedSave(delayMs: 200)
             displayMap.rebuild()
             invalidateLayout()
             if let vPt = displayMap.visualPoint(for: buf.id, bufferPoint: newRange.upperBound) {
@@ -1689,7 +1785,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             let edit = TextEdit(bufferId: buf.id, range: bPt..<newRange.upperBound, oldText: oldExact, newText: "")
             let tx = EditTransaction(edits: [edit], selectionBefore: cursorPoint..<cursorPoint, selectionAfter: nil)
             mb.undoManager.push(transaction: tx)
-            if let base = mb.baseDirectory { try? buf.saveToFile(baseDirectory: base) }
+            mb.scheduleDebouncedSave(delayMs: 200)
             displayMap.rebuild()
             invalidateLayout()
             if let vPt = displayMap.visualPoint(for: buf.id, bufferPoint: newRange.upperBound) {
@@ -1717,11 +1813,9 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             for edit in transaction.edits.reversed() {
                 if let buf = mb.buffer(for: edit.bufferId) {
                     buf.replace(start: edit.range.lowerBound, end: edit.range.upperBound, with: edit.oldText)
-                    if let base = mb.baseDirectory {
-                        try? buf.saveToFile(baseDirectory: base)
-                    }
                 }
             }
+            mb.scheduleDebouncedSave(delayMs: 200)
             if let sel = transaction.selectionBefore {
                 cursorPoint = sel.lowerBound
                 selectionAnchor = sel.upperBound
@@ -1738,11 +1832,9 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             for edit in transaction.edits {
                 if let buf = mb.buffer(for: edit.bufferId) {
                     buf.replace(start: edit.range.lowerBound, end: edit.range.upperBound, with: edit.newText)
-                    if let base = mb.baseDirectory {
-                        try? buf.saveToFile(baseDirectory: base)
-                    }
                 }
             }
+            mb.scheduleDebouncedSave(delayMs: 200)
             displayMap.rebuild()
             invalidateLayout()
         }
@@ -1796,7 +1888,9 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     public func hasMarkedText() -> Bool { false }
     public func markedRange() -> NSRange { NSRange(location: NSNotFound, length: 0) }
     public func selectedRange() -> NSRange { NSRange(location: 0, length: 0) }
-    public func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {}
+    public func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+        insertText(string, replacementRange: replacementRange)
+    }
     public func unmarkText() {}
     public func validAttributesForMarkedText() -> [NSAttributedString.Key] { [] }
     public func attributedSubstring(forProposedRange range: NSRange, actualRange: NSRangePointer?) -> NSAttributedString? { nil }
