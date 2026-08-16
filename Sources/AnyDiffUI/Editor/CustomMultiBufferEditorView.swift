@@ -9,7 +9,7 @@ public protocol CustomMultiBufferEditorDelegate: AnyObject {
 }
 
 /// A high-performance, virtualized MultiBuffer Code Reviewer & Editor View built with CoreText
-public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
+public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUserInterfaceValidations {
     public weak var delegate: CustomMultiBufferEditorDelegate?
 
     public var displayMap: DisplayMap? {
@@ -1204,110 +1204,184 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
         return min(chars.count, i)
     }
 
-    // MARK: - Keyboard & Text Editing
+    // MARK: - Keyboard & Text Input (Cocoa Standard Key Binding Responding)
 
     public override func keyDown(with event: NSEvent) {
         guard displayMap != nil else { return }
+        interpretKeyEvents([event])
+    }
 
-        let isShift = event.modifierFlags.contains(.shift)
-        let isCmd = event.modifierFlags.contains(.command)
-        let isOption = event.modifierFlags.contains(.option)
+    public override func doCommand(by selector: Selector) {
+        if responds(to: selector) {
+            perform(selector, with: nil)
+        } else {
+            super.doCommand(by: selector)
+        }
+    }
 
-        if isCmd {
-            let char = event.charactersIgnoringModifiers?.lowercased()
-            let code = event.keyCode
-
-            // ANSI keyCodes: A=0, Z=6, X=7, C=8, V=9
-            let isZ = code == 6 || char == "z" || char == "я"
-            let isA = code == 0 || char == "a" || char == "ф"
-            let isC = code == 8 || char == "c" || char == "с"
-            let isX = code == 7 || char == "x" || char == "ч"
-            let isV = code == 9 || char == "v" || char == "м"
-
-            if isZ {
-                if isShift {
-                    redo(nil)
-                } else {
-                    undo(nil)
-                }
-                return
-            } else if isA {
-                selectAll(nil)
-                return
-            } else if isC {
-                copy(nil)
-                return
-            } else if isX {
-                cut(nil)
-                return
-            } else if isV {
-                paste(nil)
-                return
+    public override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if event.modifierFlags.contains(.command) {
+            if NSApp.mainMenu?.performKeyEquivalent(with: event) == true {
+                return true
             }
         }
+        return super.performKeyEquivalent(with: event)
+    }
 
-        switch event.keyCode {
-        case 123: // Left Arrow
-            if isCmd {
-                moveCursorToLineStart(expandSelection: isShift)
-            } else if isOption {
-                moveCursorWordLeft(expandSelection: isShift)
-            } else {
-                moveCursorLeft(expandSelection: isShift)
-            }
-        case 124: // Right Arrow
-            if isCmd {
-                moveCursorToLineEnd(expandSelection: isShift)
-            } else if isOption {
-                moveCursorWordRight(expandSelection: isShift)
-            } else {
-                moveCursorRight(expandSelection: isShift)
-            }
-        case 126: // Up Arrow
-            if isCmd {
-                moveCursorToDocumentStart(expandSelection: isShift)
-            } else {
-                moveCursorUp(expandSelection: isShift)
-            }
-        case 125: // Down Arrow
-            if isCmd {
-                moveCursorToDocumentEnd(expandSelection: isShift)
-            } else {
-                moveCursorDown(expandSelection: isShift)
-            }
-        case 115: // Home key
-            if isCmd {
-                moveCursorToDocumentStart(expandSelection: isShift)
-            } else {
-                moveCursorToLineStart(expandSelection: isShift)
-            }
-        case 119: // End key
-            if isCmd {
-                moveCursorToDocumentEnd(expandSelection: isShift)
-            } else {
-                moveCursorToLineEnd(expandSelection: isShift)
-            }
-        case 116: // Page Up
-            pageUp(expandSelection: isShift)
-        case 121: // Page Down
-            pageDown(expandSelection: isShift)
-        case 51: // Backspace
-            guard isEditable else { return }
-            deleteBackward(nil)
-        case 117: // Forward Delete
-            guard isEditable else { return }
-            deleteForward(nil)
-        case 36: // Enter
-            guard isEditable else { return }
-            insertNewline(nil)
-        case 48: // Tab
-            guard isEditable else { return }
-            insertTab(nil)
+    public func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        switch item.action {
+        case #selector(copy(_:)), #selector(cut(_:)):
+            return hasSelection
+        case #selector(paste(_:)):
+            return isEditable
+        case #selector(selectAll(_:)):
+            return (displayMap?.codeLineCount ?? 0) > 0
+        case #selector(undo(_:)):
+            return displayMap?.multiBuffer.undoManager.canUndo ?? false
+        case #selector(redo(_:)):
+            return displayMap?.multiBuffer.undoManager.canRedo ?? false
         default:
-            if let chars = event.characters, !chars.isEmpty, isEditable, !isCmd {
-                insertText(chars, replacementRange: NSRange(location: NSNotFound, length: 0))
-            }
+            return true
         }
+    }
+
+    // MARK: - Standard Key Binding Selectors (NSStandardKeyBindingResponding)
+
+    @objc public override func moveLeft(_ sender: Any?) {
+        moveCursorLeft(expandSelection: false)
+    }
+
+    @objc public override func moveRight(_ sender: Any?) {
+        moveCursorRight(expandSelection: false)
+    }
+
+    @objc public override func moveUp(_ sender: Any?) {
+        moveCursorUp(expandSelection: false)
+    }
+
+    @objc public override func moveDown(_ sender: Any?) {
+        moveCursorDown(expandSelection: false)
+    }
+
+    @objc public override func moveLeftAndModifySelection(_ sender: Any?) {
+        moveCursorLeft(expandSelection: true)
+    }
+
+    @objc public override func moveRightAndModifySelection(_ sender: Any?) {
+        moveCursorRight(expandSelection: true)
+    }
+
+    @objc public override func moveUpAndModifySelection(_ sender: Any?) {
+        moveCursorUp(expandSelection: true)
+    }
+
+    @objc public override func moveDownAndModifySelection(_ sender: Any?) {
+        moveCursorDown(expandSelection: true)
+    }
+
+    @objc public override func moveWordLeft(_ sender: Any?) {
+        moveCursorWordLeft(expandSelection: false)
+    }
+
+    @objc public override func moveWordRight(_ sender: Any?) {
+        moveCursorWordRight(expandSelection: false)
+    }
+
+    @objc public override func moveWordLeftAndModifySelection(_ sender: Any?) {
+        moveCursorWordLeft(expandSelection: true)
+    }
+
+    @objc public override func moveWordRightAndModifySelection(_ sender: Any?) {
+        moveCursorWordRight(expandSelection: true)
+    }
+
+    @objc public override func moveToBeginningOfLine(_ sender: Any?) {
+        moveCursorToLineStart(expandSelection: false)
+    }
+
+    @objc public override func moveToEndOfLine(_ sender: Any?) {
+        moveCursorToLineEnd(expandSelection: false)
+    }
+
+    @objc public override func moveToBeginningOfLineAndModifySelection(_ sender: Any?) {
+        moveCursorToLineStart(expandSelection: true)
+    }
+
+    @objc public override func moveToEndOfLineAndModifySelection(_ sender: Any?) {
+        moveCursorToLineEnd(expandSelection: true)
+    }
+
+    @objc public override func moveToBeginningOfDocument(_ sender: Any?) {
+        moveCursorToDocumentStart(expandSelection: false)
+    }
+
+    @objc public override func moveToEndOfDocument(_ sender: Any?) {
+        moveCursorToDocumentEnd(expandSelection: false)
+    }
+
+    @objc public override func moveToBeginningOfDocumentAndModifySelection(_ sender: Any?) {
+        moveCursorToDocumentStart(expandSelection: true)
+    }
+
+    @objc public override func moveToEndOfDocumentAndModifySelection(_ sender: Any?) {
+        moveCursorToDocumentEnd(expandSelection: true)
+    }
+
+    @objc public override func pageUp(_ sender: Any?) {
+        pageUpMovement(expandSelection: false)
+    }
+
+    @objc public override func pageDown(_ sender: Any?) {
+        pageDownMovement(expandSelection: false)
+    }
+
+    @objc public override func pageUpAndModifySelection(_ sender: Any?) {
+        pageUpMovement(expandSelection: true)
+    }
+
+    @objc public override func pageDownAndModifySelection(_ sender: Any?) {
+        pageDownMovement(expandSelection: true)
+    }
+
+    @objc public override func deleteWordBackward(_ sender: Any?) {
+        guard isEditable, displayMap != nil else { return }
+        if hasSelection {
+            deleteBackward(sender)
+            return
+        }
+        let oldCursor = cursorPoint
+        moveCursorWordLeft(expandSelection: false)
+        let newCursor = cursorPoint
+        cursorPoint = oldCursor
+        let range = min(newCursor, oldCursor)..<max(newCursor, oldCursor)
+        selectionAnchor = range.lowerBound
+        cursorPoint = range.upperBound
+        deleteBackward(sender)
+    }
+
+    @objc public override func deleteWordForward(_ sender: Any?) {
+        guard isEditable, displayMap != nil else { return }
+        if hasSelection {
+            deleteForward(sender)
+            return
+        }
+        let oldCursor = cursorPoint
+        moveCursorWordRight(expandSelection: false)
+        let newCursor = cursorPoint
+        cursorPoint = oldCursor
+        let range = min(oldCursor, newCursor)..<max(oldCursor, newCursor)
+        selectionAnchor = range.lowerBound
+        cursorPoint = range.upperBound
+        deleteBackward(sender)
+    }
+
+    @objc public override func deleteToBeginningOfLine(_ sender: Any?) {
+        guard isEditable else { return }
+        let oldCursor = cursorPoint
+        let range = MultiBufferPoint(row: oldCursor.row, column: 0)..<oldCursor
+        selectionAnchor = range.lowerBound
+        cursorPoint = range.upperBound
+        deleteBackward(sender)
     }
 
     private func moveCursorLeft(expandSelection: Bool) {
@@ -1399,7 +1473,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
         if !expandSelection { selectionAnchor = cursorPoint }
     }
 
-    private func pageUp(expandSelection: Bool) {
+    private func pageUpMovement(expandSelection: Bool) {
         guard let dm = displayMap else { return }
         let linesPerPage = max(1, Int(bounds.height / lineHeight) - 2)
         var targetRow = cursorPoint.row
@@ -1415,7 +1489,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
         if !expandSelection { selectionAnchor = cursorPoint }
     }
 
-    private func pageDown(expandSelection: Bool) {
+    private func pageDownMovement(expandSelection: Bool) {
         guard let dm = displayMap else { return }
         let linesPerPage = max(1, Int(bounds.height / lineHeight) - 2)
         var targetRow = cursorPoint.row
@@ -1665,7 +1739,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
         needsDisplay = true
     }
 
-    public func copy(_ sender: Any?) {
+    @objc @IBAction public func copy(_ sender: Any?) {
         guard let dm = displayMap, let sel = normalizedSelectionRange() else { return }
         var copiedLines: [String] = []
         for r in sel.lowerBound.row...sel.upperBound.row {
@@ -1682,12 +1756,12 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
         NSPasteboard.general.setString(copiedLines.joined(separator: "\n"), forType: .string)
     }
 
-    public func cut(_ sender: Any?) {
+    @objc @IBAction public func cut(_ sender: Any?) {
         copy(sender)
         deleteBackward(sender)
     }
 
-    public func paste(_ sender: Any?) {
+    @objc @IBAction public func paste(_ sender: Any?) {
         guard let text = NSPasteboard.general.string(forType: .string) else { return }
         insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
     }
@@ -1703,5 +1777,4 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
     public func attributedSubstring(forProposedRange range: NSRange, actualRange: NSRangePointer?) -> NSAttributedString? { nil }
     public func characterIndex(for point: NSPoint) -> Int { 0 }
     public func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect { .zero }
-    public override func doCommand(by selector: Selector) {}
 }
