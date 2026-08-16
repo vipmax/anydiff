@@ -71,6 +71,14 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
         return anchor != cursorPoint
     }
 
+    // Selection Granularity Mode (1-click char, 2-click word, 3-click line)
+    private enum SelectionGranularity {
+        case character
+        case word(initialStart: Int, initialEnd: Int, initialRow: MultiBufferRow)
+        case line(initialRow: MultiBufferRow)
+    }
+    private var activeSelectionGranularity: SelectionGranularity = .character
+
     // Cursor Animation
     private var cursorTimer: Timer?
     private var isCursorVisible: Bool = true
@@ -266,7 +274,40 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
         scrollOffsetY = max(0, min(maxScrollY, scrollOffsetY))
         scrollOffsetX = max(0, min(maxScrollX, scrollOffsetX))
 
+        clampCursorToValidBounds()
         needsDisplay = true
+    }
+
+    public func clampCursorToValidBounds() {
+        guard let dm = displayMap, dm.codeLineCount > 0 else { return }
+        let validRows = dm.codeLines.map(\.multiBufferRow)
+        var row = cursorPoint.row
+        if !validRows.contains(row) {
+            if let closest = validRows.min(by: { abs($0 - row) < abs($1 - row) }) {
+                row = closest
+            } else {
+                row = dm.minCodeRow
+            }
+        }
+        let maxCol = dm.lineLength(at: row)
+        let col = max(0, min(cursorPoint.column, maxCol))
+        let clamped = MultiBufferPoint(row: row, column: col)
+        if clamped != cursorPoint {
+            cursorPoint = clamped
+        }
+        if let anchor = selectionAnchor {
+            var anchorRow = anchor.row
+            if !validRows.contains(anchorRow) {
+                if let closest = validRows.min(by: { abs($0 - anchorRow) < abs($1 - anchorRow) }) {
+                    anchorRow = closest
+                } else {
+                    anchorRow = dm.minCodeRow
+                }
+            }
+            let anchorMaxCol = dm.lineLength(at: anchorRow)
+            let anchorCol = max(0, min(anchor.column, anchorMaxCol))
+            selectionAnchor = MultiBufferPoint(row: anchorRow, column: anchorCol)
+        }
     }
 
     private func ensureCursorVisible() {
@@ -314,8 +355,8 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
     }
 
     private func notifyCursorChange() {
-        guard let mb = displayMap?.multiBuffer else { return }
-        let loc = mb.location(for: cursorPoint)
+        guard let dm = displayMap else { return }
+        let loc = dm.excerptLocation(for: cursorPoint)
         delegate?.editorDidChangeCursor(location: loc, point: cursorPoint)
     }
 
@@ -668,8 +709,8 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
            info.multiBufferRow >= selRange.lowerBound.row && info.multiBufferRow <= selRange.upperBound.row {
             let startCol = (info.multiBufferRow == selRange.lowerBound.row) ? selRange.lowerBound.column : 0
             let endCol = (info.multiBufferRow == selRange.upperBound.row) ? selRange.upperBound.column : info.text.count
-            let startX = LineLayoutCache.shared.xOffset(in: ctLine, for: startCol)
-            let endX = LineLayoutCache.shared.xOffset(in: ctLine, for: max(startCol, endCol))
+            let startX = LineLayoutCache.shared.xOffset(in: ctLine, for: min(info.text.count, max(0, startCol)))
+            let endX = LineLayoutCache.shared.xOffset(in: ctLine, for: min(info.text.count, max(startCol, endCol)))
             let selRect = CGRect(x: codeStartX + startX, y: rect.minY, width: max(3, endX - startX), height: rect.height)
             context.setFillColor(theme.selectionBackground.cgColor)
             context.fill(selRect)
@@ -684,8 +725,9 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
         context.restoreGState()
 
         // 3. Draw Caret / Cursor if focused on this line
-        if isCurrentCursorLine && isCursorVisible && isEditable {
-            let cursorX = codeStartX + LineLayoutCache.shared.xOffset(in: ctLine, for: cursorPoint.column)
+        if isCurrentCursorLine && isCursorVisible {
+            let clampedCol = min(info.text.count, max(0, cursorPoint.column))
+            let cursorX = codeStartX + LineLayoutCache.shared.xOffset(in: ctLine, for: clampedCol)
             let cursorRect = CGRect(x: cursorX, y: rect.minY + 2, width: 2, height: rect.height - 4)
             context.setFillColor(theme.foreground.cgColor)
             context.fill(cursorRect)
@@ -888,6 +930,8 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
         let docX = screenPoint.x + scrollOffsetX
         guard let displayMap = displayMap else { return }
 
+        let isShift = event.modifierFlags.contains(.shift)
+
         // 1. Check sticky file header interaction first
         if let (stickyHeader, stickyFrame) = currentStickyHeader(), stickyFrame.contains(screenPoint) {
             if screenPoint.x > bounds.width - 80 {
@@ -900,6 +944,8 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
         }
 
         var currentY: CGFloat = 0
+        var clickedInDocument = false
+
         for line in displayMap.displayLines {
             let height: CGFloat
             switch line {
@@ -917,6 +963,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
             }
 
             if docY >= lineMinY && docY <= currentY {
+                clickedInDocument = true
                 switch line {
                 case .excerptHeader(let header):
                     if screenPoint.x > bounds.width - 80 {
@@ -934,7 +981,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
                     if screenPoint.x < gutterWidth {
                         // Click in gutter on '+' button
                         let targetLine = codeInfo.newLineNumber ?? codeInfo.oldLineNumber ?? (codeInfo.bufferRow + 1)
-                        if let loc = displayMap.multiBuffer.location(for: codeInfo.multiBufferRow) {
+                        if let loc = displayMap.excerptLocation(for: MultiBufferPoint(row: codeInfo.multiBufferRow, column: 0)) {
                             delegate?.editorDidRequestAddComment(filePath: loc.filePath, lineNumber: targetLine)
                         }
                         return
@@ -945,8 +992,25 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
                         let ctLine = LineLayoutCache.shared.getOrCreateCTLine(attributedString: attr)
                         let xOffset = max(0, docX - (gutterWidth + 12))
                         let charIdx = LineLayoutCache.shared.characterIndex(in: ctLine, at: xOffset)
-                        cursorPoint = MultiBufferPoint(row: codeInfo.multiBufferRow, column: min(text.count, charIdx))
-                        selectionAnchor = cursorPoint
+                        let col = max(0, min(text.count, charIdx))
+                        let targetPoint = MultiBufferPoint(row: codeInfo.multiBufferRow, column: col)
+
+                        if event.clickCount == 2 {
+                            let (wordStart, wordEnd) = wordRange(in: text, at: col)
+                            activeSelectionGranularity = .word(initialStart: wordStart, initialEnd: wordEnd, initialRow: codeInfo.multiBufferRow)
+                            selectionAnchor = MultiBufferPoint(row: codeInfo.multiBufferRow, column: wordStart)
+                            cursorPoint = MultiBufferPoint(row: codeInfo.multiBufferRow, column: wordEnd)
+                        } else if event.clickCount >= 3 {
+                            activeSelectionGranularity = .line(initialRow: codeInfo.multiBufferRow)
+                            selectionAnchor = MultiBufferPoint(row: codeInfo.multiBufferRow, column: 0)
+                            cursorPoint = MultiBufferPoint(row: codeInfo.multiBufferRow, column: text.count)
+                        } else {
+                            activeSelectionGranularity = .character
+                            if !isShift || selectionAnchor == nil {
+                                selectionAnchor = targetPoint
+                            }
+                            cursorPoint = targetPoint
+                        }
                         needsDisplay = true
                         return
                     }
@@ -954,6 +1018,25 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
                     break
                 }
                 break
+            }
+        }
+
+        if !clickedInDocument {
+            activeSelectionGranularity = .character
+            if docY > currentY, let lastCode = displayMap.codeLines.last {
+                let targetPoint = MultiBufferPoint(row: lastCode.multiBufferRow, column: lastCode.text.count)
+                if !isShift || selectionAnchor == nil {
+                    selectionAnchor = targetPoint
+                }
+                cursorPoint = targetPoint
+                needsDisplay = true
+            } else if docY < 0, let firstCode = displayMap.codeLines.first {
+                let targetPoint = MultiBufferPoint(row: firstCode.multiBufferRow, column: 0)
+                if !isShift || selectionAnchor == nil {
+                    selectionAnchor = targetPoint
+                }
+                cursorPoint = targetPoint
+                needsDisplay = true
             }
         }
     }
@@ -965,6 +1048,8 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
         guard let displayMap = displayMap else { return }
 
         var currentY: CGFloat = 0
+        var handled = false
+
         for line in displayMap.displayLines {
             let height: CGFloat
             switch line {
@@ -988,12 +1073,135 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
                     let ctLine = LineLayoutCache.shared.getOrCreateCTLine(attributedString: attr)
                     let xOffset = max(0, docX - (gutterWidth + 12))
                     let charIdx = LineLayoutCache.shared.characterIndex(in: ctLine, at: xOffset)
-                    cursorPoint = MultiBufferPoint(row: codeInfo.multiBufferRow, column: min(text.count, charIdx))
+                    let col = max(0, min(text.count, charIdx))
+                    let targetRow = codeInfo.multiBufferRow
+
+                    switch activeSelectionGranularity {
+                    case .character:
+                        cursorPoint = MultiBufferPoint(row: targetRow, column: col)
+                    case .word(let initStart, let initEnd, let initRow):
+                        let (curWordStart, curWordEnd) = wordRange(in: text, at: col)
+                        if targetRow > initRow || (targetRow == initRow && col >= initStart) {
+                            selectionAnchor = MultiBufferPoint(row: initRow, column: initStart)
+                            cursorPoint = MultiBufferPoint(row: targetRow, column: curWordEnd)
+                        } else {
+                            selectionAnchor = MultiBufferPoint(row: initRow, column: initEnd)
+                            cursorPoint = MultiBufferPoint(row: targetRow, column: curWordStart)
+                        }
+                    case .line(let initRow):
+                        if targetRow >= initRow {
+                            selectionAnchor = MultiBufferPoint(row: initRow, column: 0)
+                            cursorPoint = MultiBufferPoint(row: targetRow, column: text.count)
+                        } else {
+                            let initLen = displayMap.lineLength(at: initRow)
+                            selectionAnchor = MultiBufferPoint(row: initRow, column: initLen)
+                            cursorPoint = MultiBufferPoint(row: targetRow, column: 0)
+                        }
+                    }
+                    handled = true
                     needsDisplay = true
                 }
                 break
             }
         }
+
+        if !handled {
+            if docY > currentY, let lastCode = displayMap.codeLines.last {
+                cursorPoint = MultiBufferPoint(row: lastCode.multiBufferRow, column: lastCode.text.count)
+                needsDisplay = true
+            } else if docY < 0, let firstCode = displayMap.codeLines.first {
+                cursorPoint = MultiBufferPoint(row: firstCode.multiBufferRow, column: 0)
+                needsDisplay = true
+            }
+        }
+    }
+
+    public override func mouseUp(with event: NSEvent) {
+        super.mouseUp(with: event)
+        activeSelectionGranularity = .character
+    }
+
+    // MARK: - Word Boundary Utilities
+
+    private func isWordChar(_ char: Character) -> Bool {
+        char.isLetter || char.isNumber || char == "_"
+    }
+
+    /// Finds exact word range for double-click selection without grabbing adjacent spaces or punctuation
+    private func wordRange(in text: String, at index: Int) -> (start: Int, end: Int) {
+        let chars = Array(text)
+        guard !chars.isEmpty else { return (0, 0) }
+
+        var targetIndex = min(index, chars.count - 1)
+        if targetIndex < 0 { targetIndex = 0 }
+
+        // If clicked at end of line / right after word char on space, adjust to the word char
+        if targetIndex > 0 && index == chars.count && isWordChar(chars[targetIndex - 1]) {
+            targetIndex = targetIndex - 1
+        } else if targetIndex > 0 && chars[targetIndex].isWhitespace && isWordChar(chars[targetIndex - 1]) {
+            targetIndex = targetIndex - 1
+        }
+
+        let char = chars[targetIndex]
+
+        if isWordChar(char) {
+            var start = targetIndex
+            while start > 0 && isWordChar(chars[start - 1]) {
+                start -= 1
+            }
+            var end = targetIndex
+            while end < chars.count && isWordChar(chars[end]) {
+                end += 1
+            }
+            return (start, end)
+        } else if char.isWhitespace {
+            var start = targetIndex
+            while start > 0 && chars[start - 1].isWhitespace {
+                start -= 1
+            }
+            var end = targetIndex
+            while end < chars.count && chars[end].isWhitespace {
+                end += 1
+            }
+            return (start, end)
+        } else {
+            // Punctuation / symbol
+            var start = targetIndex
+            while start > 0 && !isWordChar(chars[start - 1]) && !chars[start - 1].isWhitespace {
+                start -= 1
+            }
+            var end = targetIndex
+            while end < chars.count && !isWordChar(chars[end]) && !chars[end].isWhitespace {
+                end += 1
+            }
+            return (start, end)
+        }
+    }
+
+    private func findPreviousWordBoundary(in text: String, from index: Int) -> Int {
+        let chars = Array(text)
+        guard !chars.isEmpty && index > 0 else { return 0 }
+        var i = min(index, chars.count)
+        while i > 0 && !isWordChar(chars[i - 1]) {
+            i -= 1
+        }
+        while i > 0 && isWordChar(chars[i - 1]) {
+            i -= 1
+        }
+        return max(0, i)
+    }
+
+    private func findNextWordBoundary(in text: String, from index: Int) -> Int {
+        let chars = Array(text)
+        guard !chars.isEmpty && index < chars.count else { return text.count }
+        var i = max(0, index)
+        while i < chars.count && !isWordChar(chars[i]) {
+            i += 1
+        }
+        while i < chars.count && isWordChar(chars[i]) {
+            i += 1
+        }
+        return min(chars.count, i)
     }
 
     // MARK: - Keyboard & Text Editing
@@ -1003,6 +1211,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
 
         let isShift = event.modifierFlags.contains(.shift)
         let isCmd = event.modifierFlags.contains(.command)
+        let isOption = event.modifierFlags.contains(.option)
 
         if isCmd {
             switch event.charactersIgnoringModifiers {
@@ -1032,13 +1241,49 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
 
         switch event.keyCode {
         case 123: // Left Arrow
-            moveCursorLeft(expandSelection: isShift)
+            if isCmd {
+                moveCursorToLineStart(expandSelection: isShift)
+            } else if isOption {
+                moveCursorWordLeft(expandSelection: isShift)
+            } else {
+                moveCursorLeft(expandSelection: isShift)
+            }
         case 124: // Right Arrow
-            moveCursorRight(expandSelection: isShift)
+            if isCmd {
+                moveCursorToLineEnd(expandSelection: isShift)
+            } else if isOption {
+                moveCursorWordRight(expandSelection: isShift)
+            } else {
+                moveCursorRight(expandSelection: isShift)
+            }
         case 126: // Up Arrow
-            moveCursorUp(expandSelection: isShift)
+            if isCmd {
+                moveCursorToDocumentStart(expandSelection: isShift)
+            } else {
+                moveCursorUp(expandSelection: isShift)
+            }
         case 125: // Down Arrow
-            moveCursorDown(expandSelection: isShift)
+            if isCmd {
+                moveCursorToDocumentEnd(expandSelection: isShift)
+            } else {
+                moveCursorDown(expandSelection: isShift)
+            }
+        case 115: // Home key
+            if isCmd {
+                moveCursorToDocumentStart(expandSelection: isShift)
+            } else {
+                moveCursorToLineStart(expandSelection: isShift)
+            }
+        case 119: // End key
+            if isCmd {
+                moveCursorToDocumentEnd(expandSelection: isShift)
+            } else {
+                moveCursorToLineEnd(expandSelection: isShift)
+            }
+        case 116: // Page Up
+            pageUp(expandSelection: isShift)
+        case 121: // Page Down
+            pageDown(expandSelection: isShift)
         case 51: // Backspace
             guard isEditable else { return }
             deleteBackward(nil)
@@ -1052,50 +1297,130 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
             guard isEditable else { return }
             insertTab(nil)
         default:
-            if let chars = event.characters, !chars.isEmpty, isEditable {
+            if let chars = event.characters, !chars.isEmpty, isEditable, !isCmd {
                 insertText(chars, replacementRange: NSRange(location: NSNotFound, length: 0))
             }
         }
     }
 
     private func moveCursorLeft(expandSelection: Bool) {
-        guard let mb = displayMap?.multiBuffer else { return }
+        guard let dm = displayMap else { return }
         if cursorPoint.column > 0 {
             cursorPoint.column -= 1
-        } else if cursorPoint.row > 0 {
-            cursorPoint.row -= 1
-            cursorPoint.column = mb.lineLength(at: cursorPoint.row)
+        } else if let prevRow = dm.previousCodeRow(before: cursorPoint.row) {
+            cursorPoint.row = prevRow
+            cursorPoint.column = dm.lineLength(at: prevRow)
         }
         if !expandSelection { selectionAnchor = cursorPoint }
     }
 
     private func moveCursorRight(expandSelection: Bool) {
-        guard let mb = displayMap?.multiBuffer else { return }
-        let len = mb.lineLength(at: cursorPoint.row)
-        if cursorPoint.column < len {
+        guard let dm = displayMap else { return }
+        let currentLen = dm.lineLength(at: cursorPoint.row)
+        if cursorPoint.column < currentLen {
             cursorPoint.column += 1
-        } else if cursorPoint.row < mb.lineCount - 1 {
-            cursorPoint.row += 1
+        } else if let nextRow = dm.nextCodeRow(after: cursorPoint.row) {
+            cursorPoint.row = nextRow
             cursorPoint.column = 0
         }
         if !expandSelection { selectionAnchor = cursorPoint }
     }
 
     private func moveCursorUp(expandSelection: Bool) {
-        guard let mb = displayMap?.multiBuffer else { return }
-        if cursorPoint.row > 0 {
-            cursorPoint.row -= 1
-            cursorPoint.column = min(cursorPoint.column, mb.lineLength(at: cursorPoint.row))
+        guard let dm = displayMap else { return }
+        if let prevRow = dm.previousCodeRow(before: cursorPoint.row) {
+            cursorPoint.row = prevRow
+            cursorPoint.column = min(cursorPoint.column, dm.lineLength(at: prevRow))
         }
         if !expandSelection { selectionAnchor = cursorPoint }
     }
 
     private func moveCursorDown(expandSelection: Bool) {
-        guard let mb = displayMap?.multiBuffer else { return }
-        if cursorPoint.row < mb.lineCount - 1 {
-            cursorPoint.row += 1
-            cursorPoint.column = min(cursorPoint.column, mb.lineLength(at: cursorPoint.row))
+        guard let dm = displayMap else { return }
+        if let nextRow = dm.nextCodeRow(after: cursorPoint.row) {
+            cursorPoint.row = nextRow
+            cursorPoint.column = min(cursorPoint.column, dm.lineLength(at: nextRow))
         }
+        if !expandSelection { selectionAnchor = cursorPoint }
+    }
+
+    private func moveCursorWordLeft(expandSelection: Bool) {
+        guard let dm = displayMap else { return }
+        if cursorPoint.column > 0 {
+            let line = dm.lineText(at: cursorPoint.row) ?? ""
+            cursorPoint.column = findPreviousWordBoundary(in: line, from: cursorPoint.column)
+        } else if let prevRow = dm.previousCodeRow(before: cursorPoint.row) {
+            cursorPoint.row = prevRow
+            cursorPoint.column = dm.lineLength(at: prevRow)
+        }
+        if !expandSelection { selectionAnchor = cursorPoint }
+    }
+
+    private func moveCursorWordRight(expandSelection: Bool) {
+        guard let dm = displayMap else { return }
+        let line = dm.lineText(at: cursorPoint.row) ?? ""
+        if cursorPoint.column < line.count {
+            cursorPoint.column = findNextWordBoundary(in: line, from: cursorPoint.column)
+        } else if let nextRow = dm.nextCodeRow(after: cursorPoint.row) {
+            cursorPoint.row = nextRow
+            cursorPoint.column = 0
+        }
+        if !expandSelection { selectionAnchor = cursorPoint }
+    }
+
+    private func moveCursorToLineStart(expandSelection: Bool) {
+        cursorPoint.column = 0
+        if !expandSelection { selectionAnchor = cursorPoint }
+    }
+
+    private func moveCursorToLineEnd(expandSelection: Bool) {
+        guard let dm = displayMap else { return }
+        cursorPoint.column = dm.lineLength(at: cursorPoint.row)
+        if !expandSelection { selectionAnchor = cursorPoint }
+    }
+
+    private func moveCursorToDocumentStart(expandSelection: Bool) {
+        guard let dm = displayMap else { return }
+        cursorPoint = MultiBufferPoint(row: dm.minCodeRow, column: 0)
+        if !expandSelection { selectionAnchor = cursorPoint }
+    }
+
+    private func moveCursorToDocumentEnd(expandSelection: Bool) {
+        guard let dm = displayMap else { return }
+        let lastRow = dm.maxCodeRow
+        cursorPoint = MultiBufferPoint(row: lastRow, column: dm.lineLength(at: lastRow))
+        if !expandSelection { selectionAnchor = cursorPoint }
+    }
+
+    private func pageUp(expandSelection: Bool) {
+        guard let dm = displayMap else { return }
+        let linesPerPage = max(1, Int(bounds.height / lineHeight) - 2)
+        var targetRow = cursorPoint.row
+        for _ in 0..<linesPerPage {
+            if let prev = dm.previousCodeRow(before: targetRow) {
+                targetRow = prev
+            } else {
+                break
+            }
+        }
+        cursorPoint.row = targetRow
+        cursorPoint.column = min(cursorPoint.column, dm.lineLength(at: targetRow))
+        if !expandSelection { selectionAnchor = cursorPoint }
+    }
+
+    private func pageDown(expandSelection: Bool) {
+        guard let dm = displayMap else { return }
+        let linesPerPage = max(1, Int(bounds.height / lineHeight) - 2)
+        var targetRow = cursorPoint.row
+        for _ in 0..<linesPerPage {
+            if let next = dm.nextCodeRow(after: targetRow) {
+                targetRow = next
+            } else {
+                break
+            }
+        }
+        cursorPoint.row = targetRow
+        cursorPoint.column = min(cursorPoint.column, dm.lineLength(at: targetRow))
         if !expandSelection { selectionAnchor = cursorPoint }
     }
 
@@ -1325,22 +1650,26 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
     }
 
     public override func selectAll(_ sender: Any?) {
-        guard let mb = displayMap?.multiBuffer, mb.lineCount > 0 else { return }
-        selectionAnchor = .zero
-        let lastRow = mb.lineCount - 1
-        cursorPoint = MultiBufferPoint(row: lastRow, column: mb.lineLength(at: lastRow))
+        guard let dm = displayMap, dm.codeLineCount > 0 else { return }
+        let firstRow = dm.minCodeRow
+        let lastRow = dm.maxCodeRow
+        selectionAnchor = MultiBufferPoint(row: firstRow, column: 0)
+        cursorPoint = MultiBufferPoint(row: lastRow, column: dm.lineLength(at: lastRow))
         needsDisplay = true
     }
 
     public func copy(_ sender: Any?) {
-        guard let mb = displayMap?.multiBuffer, let sel = normalizedSelectionRange() else { return }
+        guard let dm = displayMap, let sel = normalizedSelectionRange() else { return }
         var copiedLines: [String] = []
         for r in sel.lowerBound.row...sel.upperBound.row {
-            let line = mb.line(at: r)
+            guard let line = dm.lineText(at: r) else { continue }
             let start = (r == sel.lowerBound.row) ? sel.lowerBound.column : 0
             let end = (r == sel.upperBound.row) ? sel.upperBound.column : line.count
-            let sub = String(line.prefix(end).suffix(max(0, end - start)))
-            copiedLines.append(sub)
+            let clampedStart = max(0, min(line.count, start))
+            let clampedEnd = max(clampedStart, min(line.count, end))
+            let startIndex = line.index(line.startIndex, offsetBy: clampedStart)
+            let endIndex = line.index(line.startIndex, offsetBy: clampedEnd)
+            copiedLines.append(String(line[startIndex..<endIndex]))
         }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(copiedLines.joined(separator: "\n"), forType: .string)

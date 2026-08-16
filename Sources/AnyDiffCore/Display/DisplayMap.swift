@@ -136,6 +136,77 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
         return displayLines[index]
     }
 
+    public var codeLines: [DisplayCodeLineInfo] {
+        displayLines.compactMap {
+            if case .code(let info) = $0 { return info }
+            return nil
+        }
+    }
+
+    public var codeLineCount: Int {
+        codeLines.count
+    }
+
+    public var minCodeRow: Int {
+        codeLines.first?.multiBufferRow ?? 0
+    }
+
+    public var maxCodeRow: Int {
+        codeLines.last?.multiBufferRow ?? 0
+    }
+
+    public func codeInfo(for multiBufferRow: MultiBufferRow) -> DisplayCodeLineInfo? {
+        for line in displayLines {
+            if case .code(let info) = line, info.multiBufferRow == multiBufferRow {
+                return info
+            }
+        }
+        return nil
+    }
+
+    public func lineText(at multiBufferRow: MultiBufferRow) -> String? {
+        codeInfo(for: multiBufferRow)?.text
+    }
+
+    public func lineLength(at multiBufferRow: MultiBufferRow) -> Int {
+        lineText(at: multiBufferRow)?.count ?? 0
+    }
+
+    public func nextCodeRow(after row: MultiBufferRow) -> MultiBufferRow? {
+        for line in displayLines {
+            if case .code(let info) = line, info.multiBufferRow > row {
+                return info.multiBufferRow
+            }
+        }
+        return nil
+    }
+
+    public func previousCodeRow(before row: MultiBufferRow) -> MultiBufferRow? {
+        for line in displayLines.reversed() {
+            if case .code(let info) = line, info.multiBufferRow < row {
+                return info.multiBufferRow
+            }
+        }
+        return nil
+    }
+
+    public func excerptLocation(for point: MultiBufferPoint) -> ExcerptLocation? {
+        for line in displayLines {
+            if case .code(let info) = line, info.multiBufferRow == point.row {
+                guard info.excerptIndex >= 0 && info.excerptIndex < multiBuffer.excerpts.count else { return nil }
+                let excerpt = multiBuffer.excerpts[info.excerptIndex]
+                return ExcerptLocation(
+                    excerptIndex: info.excerptIndex,
+                    bufferId: excerpt.bufferId,
+                    filePath: excerpt.filePath,
+                    bufferRow: info.bufferRow,
+                    bufferColumn: point.column
+                )
+            }
+        }
+        return nil
+    }
+
     public func isDeleted(multiBufferRow: Int) -> Bool {
         for line in displayLines {
             if case .code(let info) = line, info.multiBufferRow == multiBufferRow {

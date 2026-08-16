@@ -175,4 +175,78 @@ final class MultiBufferTests: XCTestCase {
         XCTAssertEqual(buffer.lineCount, 2)
         XCTAssertEqual(buffer.line(at: 0), "line 1line 2")
     }
+
+    func testCursorNavigationAndDeletedLinesInDisplayMap() {
+        let diffSample = """
+        --- a/Calculator.swift
+        +++ b/Calculator.swift
+        @@ -1,4 +1,4 @@
+         let header = "Calc"
+        -let oldFormula = 2 * 2 + 10
+        +let newFormula = 3 * 3
+         let footer = "End"
+        """
+        let parsed = GitDiffParser.shared.parse(diffText: diffSample)
+        let mb = MultiBuffer()
+        let rm = ReviewManager()
+        let file = parsed[0]
+        let hunk = file.hunks[0]
+        let oldBaseline = hunk.lines.filter { $0.kind == .deleted || $0.kind == .unchanged }.map(\.text).joined(separator: "\n")
+        let newFile = hunk.lines.filter { $0.kind == .added || $0.kind == .unchanged }.map(\.text).joined(separator: "\n")
+        let buffer = Buffer(filePath: file.displayPath, text: newFile, baselineText: oldBaseline)
+        mb.addBuffer(buffer)
+        let excerpt = Excerpt(
+            bufferId: buffer.id,
+            filePath: file.displayPath,
+            bufferRange: 0..<buffer.lineCount,
+            hunk: hunk
+        )
+        mb.addExcerpt(excerpt)
+
+        let dm = DisplayMap(multiBuffer: mb, reviewManager: rm)
+
+        // 1 header + 4 code lines (row 0: unchanged, row 1: deleted, row 2: added, row 3: unchanged)
+        XCTAssertEqual(dm.codeLineCount, 4)
+        XCTAssertEqual(dm.minCodeRow, 0)
+        XCTAssertEqual(dm.maxCodeRow, 3)
+
+        // Check line lengths including deleted line
+        let len0 = dm.lineLength(at: 0) // 'let header = "Calc"' (19 chars)
+        let len1 = dm.lineLength(at: 1) // 'let oldFormula = 2 * 2 + 10' (27 chars, deleted line)
+        let len2 = dm.lineLength(at: 2) // 'let newFormula = 3 * 3' (22 chars, added line)
+        let len3 = dm.lineLength(at: 3) // 'let footer = "End"' (18 chars)
+
+        XCTAssertEqual(len0, 19)
+        XCTAssertEqual(len1, 27)
+        XCTAssertEqual(len2, 22)
+        XCTAssertEqual(len3, 18)
+
+        // Deleted line recognition
+        XCTAssertFalse(dm.isDeleted(multiBufferRow: 0))
+        XCTAssertTrue(dm.isDeleted(multiBufferRow: 1))
+        XCTAssertFalse(dm.isDeleted(multiBufferRow: 2))
+        XCTAssertFalse(dm.isDeleted(multiBufferRow: 3))
+
+        // Next and Previous row lookups
+        XCTAssertEqual(dm.nextCodeRow(after: 0), 1)
+        XCTAssertEqual(dm.nextCodeRow(after: 1), 2)
+        XCTAssertEqual(dm.nextCodeRow(after: 2), 3)
+        XCTAssertNil(dm.nextCodeRow(after: 3))
+
+        XCTAssertNil(dm.previousCodeRow(before: 0))
+        XCTAssertEqual(dm.previousCodeRow(before: 1), 0)
+        XCTAssertEqual(dm.previousCodeRow(before: 2), 1)
+        XCTAssertEqual(dm.previousCodeRow(before: 3), 2)
+
+        // Excerpt location mapping
+        let locDeleted = dm.excerptLocation(for: MultiBufferPoint(row: 1, column: 5))
+        XCTAssertNotNil(locDeleted)
+        XCTAssertEqual(locDeleted?.filePath, file.displayPath)
+        XCTAssertEqual(locDeleted?.bufferColumn, 5)
+
+        let locAdded = dm.excerptLocation(for: MultiBufferPoint(row: 2, column: 10))
+        XCTAssertNotNil(locAdded)
+        XCTAssertEqual(locAdded?.filePath, file.displayPath)
+        XCTAssertEqual(locAdded?.bufferColumn, 10)
+    }
 }
