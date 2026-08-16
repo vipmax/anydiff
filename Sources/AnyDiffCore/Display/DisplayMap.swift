@@ -33,8 +33,9 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
 
             // 1. Excerpt Header
             if excerpt.isFileStart || excerptIdx == 0 {
-                let adds = excerpt.hunk?.addedLineCount ?? 0
-                let dels = excerpt.hunk?.deletedLineCount ?? 0
+                let fileExcerpts = multiBuffer.excerpts.filter { $0.filePath == excerpt.filePath }
+                let adds = fileExcerpts.reduce(0) { $0 + ($1.hunk?.addedLineCount ?? 0) }
+                let dels = fileExcerpts.reduce(0) { $0 + ($1.hunk?.deletedLineCount ?? 0) }
                 let header = ExcerptHeaderInfo(
                     excerptIndex: excerptIdx,
                     filePath: excerpt.filePath,

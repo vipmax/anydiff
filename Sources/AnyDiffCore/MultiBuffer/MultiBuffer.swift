@@ -227,7 +227,29 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
 
     public func toggleCollapse(at index: ExcerptIndex) {
         guard index >= 0 && index < excerpts.count else { return }
-        excerpts[index].isCollapsed.toggle()
+        let targetFilePath = excerpts[index].filePath
+        let targetBufferId = excerpts[index].bufferId
+        let newState = !excerpts[index].isCollapsed
+
+        for i in 0..<excerpts.count {
+            if excerpts[i].bufferId == targetBufferId || excerpts[i].filePath == targetFilePath {
+                excerpts[i].isCollapsed = newState
+            }
+        }
+        version &+= 1
+    }
+
+    public func collapseAll() {
+        for i in 0..<excerpts.count {
+            excerpts[i].isCollapsed = true
+        }
+        version &+= 1
+    }
+
+    public func expandAll() {
+        for i in 0..<excerpts.count {
+            excerpts[i].isCollapsed = false
+        }
         version &+= 1
     }
 }
