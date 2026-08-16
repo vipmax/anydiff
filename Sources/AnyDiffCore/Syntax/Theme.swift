@@ -235,7 +235,40 @@ public struct Theme: Identifiable, Sendable {
         diffModifiedGutter: NSColor(red: 0.38, green: 0.68, blue: 0.96, alpha: 1.0)
     )
 
+    public static let unifiedDark = Theme(
+        id: "unified-dark",
+        name: "macOS Window Unified",
+        isDark: true,
+        background: NSColor(red: 0.145, green: 0.145, blue: 0.152, alpha: 1.0),
+        gutterBackground: NSColor(red: 0.130, green: 0.130, blue: 0.136, alpha: 1.0),
+        currentLineBackground: NSColor(red: 0.182, green: 0.184, blue: 0.194, alpha: 1.0),
+        selectionBackground: NSColor(red: 0.260, green: 0.350, blue: 0.500, alpha: 0.65),
+        excerptHeaderBackground: NSColor(red: 0.175, green: 0.178, blue: 0.188, alpha: 1.0),
+        excerptHeaderBorder: NSColor(red: 0.225, green: 0.230, blue: 0.245, alpha: 1.0),
+        foreground: NSColor(red: 0.92, green: 0.93, blue: 0.96, alpha: 1.0),
+        gutterForeground: NSColor(red: 0.46, green: 0.48, blue: 0.54, alpha: 1.0),
+        gutterActiveForeground: NSColor(red: 0.92, green: 0.94, blue: 0.98, alpha: 1.0),
+        foldPlaceholderForeground: NSColor(red: 0.55, green: 0.58, blue: 0.66, alpha: 1.0),
+        keyword: NSColor(red: 0.94, green: 0.48, blue: 0.58, alpha: 1.0),
+        type: NSColor(red: 0.92, green: 0.78, blue: 0.48, alpha: 1.0),
+        function: NSColor(red: 0.42, green: 0.72, blue: 0.98, alpha: 1.0),
+        string: NSColor(red: 0.60, green: 0.84, blue: 0.52, alpha: 1.0),
+        number: NSColor(red: 0.90, green: 0.64, blue: 0.40, alpha: 1.0),
+        comment: NSColor(red: 0.50, green: 0.54, blue: 0.60, alpha: 1.0),
+        property: NSColor(red: 0.74, green: 0.84, blue: 0.96, alpha: 1.0),
+        operator: NSColor(red: 0.54, green: 0.76, blue: 0.88, alpha: 1.0),
+        punctuation: NSColor(red: 0.72, green: 0.76, blue: 0.84, alpha: 1.0),
+        diffAddedGutter: NSColor(red: 0.28, green: 0.78, blue: 0.44, alpha: 1.0),
+        diffAddedBackground: NSColor(red: 0.20, green: 0.45, blue: 0.25, alpha: 0.28),
+        diffAddedWordHighlight: NSColor(red: 0.25, green: 0.65, blue: 0.35, alpha: 0.48),
+        diffDeletedGutter: NSColor(red: 0.92, green: 0.32, blue: 0.38, alpha: 1.0),
+        diffDeletedBackground: NSColor(red: 0.48, green: 0.18, blue: 0.22, alpha: 0.28),
+        diffDeletedWordHighlight: NSColor(red: 0.78, green: 0.20, blue: 0.26, alpha: 0.48),
+        diffModifiedGutter: NSColor(red: 0.38, green: 0.68, blue: 0.96, alpha: 1.0)
+    )
+
     public static let allThemes: [Theme] = [
+        .unifiedDark,
         .zedGray,
         .zedDark,
         .tokyoNight,

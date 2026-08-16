@@ -10,7 +10,7 @@ public struct MainWindowView: View {
 
     @State private var fileDiffs: [FileDiff] = []
     @State private var selectedFilePath: String? = nil
-    @State private var selectedTheme: Theme = .zedGray
+    @State private var selectedTheme: Theme = .unifiedDark
     @State private var viewMode: DiffViewMode = .unified
     @State private var contextLines: Int = 3
     @State private var fontSize: CGFloat = 13
