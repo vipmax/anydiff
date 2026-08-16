@@ -93,6 +93,10 @@ public struct SidebarFileListView: View {
                             reviewManager.toggleReviewed(filePath: file.displayPath)
                         }
                     )
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        selectedFilePath = file.displayPath
+                    }
                     .tag(file.displayPath)
                 }
             }

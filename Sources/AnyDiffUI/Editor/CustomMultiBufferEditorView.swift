@@ -342,6 +342,82 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         }
     }
 
+    // MARK: - Navigation & File Scrolling
+
+    public func scrollToFilePath(_ filePath: String) {
+        guard let displayMap = displayMap else { return }
+
+        let targetLast = (filePath as NSString).lastPathComponent
+        var currentY: CGFloat = 0
+        var foundTargetY: CGFloat? = nil
+        var firstCodeRow: Int? = nil
+
+        for line in displayMap.displayLines {
+            let height: CGFloat
+            switch line {
+            case .excerptHeader(let info):
+                height = excerptHeaderHeight
+                let matches = (info.filePath == filePath || (info.filePath as NSString).lastPathComponent == targetLast || info.filePath.hasSuffix(filePath) || filePath.hasSuffix(info.filePath))
+                if matches && foundTargetY == nil {
+                    foundTargetY = currentY
+                }
+            case .code(let info):
+                height = lineHeight
+                let excerptFilePath = (info.excerptIndex < displayMap.multiBuffer.excerpts.count) ? displayMap.multiBuffer.excerpts[info.excerptIndex].filePath : nil
+                let matches = excerptFilePath.map { path in
+                    path == filePath || (path as NSString).lastPathComponent == targetLast || path.hasSuffix(filePath) || filePath.hasSuffix(path)
+                } ?? false
+                if matches {
+                    if foundTargetY == nil {
+                        foundTargetY = currentY
+                    }
+                    if firstCodeRow == nil {
+                        firstCodeRow = info.multiBufferRow
+                    }
+                }
+            case .foldGap(let info):
+                height = foldGapHeight
+                if foundTargetY == nil && info.excerptIndex < displayMap.multiBuffer.excerpts.count {
+                    let ex = displayMap.multiBuffer.excerpts[info.excerptIndex]
+                    if ex.filePath == filePath || (ex.filePath as NSString).lastPathComponent == targetLast {
+                        foundTargetY = currentY
+                    }
+                }
+            case .inlineComment(let info):
+                height = commentHeight
+                if foundTargetY == nil && (info.comment.filePath == filePath || (info.comment.filePath as NSString).lastPathComponent == targetLast) {
+                    foundTargetY = currentY
+                }
+            }
+
+            if foundTargetY != nil && firstCodeRow != nil {
+                break
+            }
+
+            currentY += height
+        }
+
+        if let targetY = foundTargetY {
+            let maxScrollY = max(0, totalDocumentHeight - bounds.height)
+            scrollOffsetY = max(0, min(maxScrollY, targetY))
+            scrollOffsetX = 0
+            showScrollbarsWithAutohide()
+        }
+
+        if let row = firstCodeRow {
+            cursorPoint = MultiBufferPoint(row: row, column: 0)
+            selectionAnchor = nil
+            resetCursorBlink()
+            notifyCursorChange()
+        }
+
+        if let win = window {
+            win.makeFirstResponder(self)
+        }
+
+        needsDisplay = true
+    }
+
     // MARK: - Cursor Blinking
 
     private func startCursorBlink() {

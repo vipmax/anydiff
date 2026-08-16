@@ -101,6 +101,7 @@ public struct MainWindowView: View {
                 displayMap: displayMap,
                 theme: activeTheme,
                 fontSize: fontSize,
+                selectedFilePath: selectedFilePath,
                 onCursorChange: { loc, pt in
                     cursorLocation = loc
                     cursorPoint = pt
