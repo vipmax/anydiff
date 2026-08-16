@@ -194,6 +194,11 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
         scrollOffsetX = max(0, min(maxScrollX, scrollOffsetX - dx))
     }
 
+    public override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        invalidateLayout()
+    }
+
     public func invalidateLayout() {
         guard let displayMap = displayMap else {
             totalDocumentHeight = 0
@@ -217,10 +222,10 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
                 totalHeight += commentHeight
             }
         }
-        totalHeight += 200 // Scroll margin at bottom
+        totalHeight += 8 // Clean minimal 8px margin at bottom (no empty void)
 
         let charWidth = font.pointSize * 0.75
-        let neededWidth = gutterWidth + CGFloat(maxLineChars) * charWidth + 200
+        let neededWidth = gutterWidth + CGFloat(maxLineChars) * charWidth + 100
 
         totalDocumentHeight = totalHeight
         totalDocumentWidth = max(bounds.width, neededWidth)
