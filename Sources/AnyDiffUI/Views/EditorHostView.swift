@@ -6,6 +6,7 @@ public struct EditorHostView: NSViewRepresentable {
     public var displayMap: DisplayMap
     public var theme: Theme
     public var fontSize: CGFloat
+    public var isEditable: Bool
     public var selectedFilePath: String?
     public var onCursorChange: (ExcerptLocation?, MultiBufferPoint) -> Void
     public var onAddCommentRequest: (String, Int) -> Void
@@ -14,6 +15,7 @@ public struct EditorHostView: NSViewRepresentable {
         displayMap: DisplayMap,
         theme: Theme,
         fontSize: CGFloat = 13,
+        isEditable: Bool = true,
         selectedFilePath: String? = nil,
         onCursorChange: @escaping (ExcerptLocation?, MultiBufferPoint) -> Void,
         onAddCommentRequest: @escaping (String, Int) -> Void
@@ -21,6 +23,7 @@ public struct EditorHostView: NSViewRepresentable {
         self.displayMap = displayMap
         self.theme = theme
         self.fontSize = fontSize
+        self.isEditable = isEditable
         self.selectedFilePath = selectedFilePath
         self.onCursorChange = onCursorChange
         self.onAddCommentRequest = onAddCommentRequest
@@ -33,6 +36,7 @@ public struct EditorHostView: NSViewRepresentable {
     public func makeNSView(context: Context) -> CustomMultiBufferEditorView {
         let editorView = CustomMultiBufferEditorView(displayMap: displayMap, theme: theme)
         editorView.font = .monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        editorView.isEditable = isEditable
         editorView.delegate = context.coordinator
         context.coordinator.editorView = editorView
         if let path = selectedFilePath {
@@ -53,6 +57,9 @@ public struct EditorHostView: NSViewRepresentable {
         }
         if editorView.font.pointSize != fontSize {
             editorView.font = .monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        }
+        if editorView.isEditable != isEditable {
+            editorView.isEditable = isEditable
         }
         editorView.invalidateLayout()
 

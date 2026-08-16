@@ -1535,7 +1535,9 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     public override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if event.modifierFlags.contains(.command) {
             if event.charactersIgnoringModifiers == "s" {
-                _ = displayMap?.multiBuffer.flushImmediateSave()
+                if isEditable {
+                    _ = displayMap?.multiBuffer.flushImmediateSave()
+                }
                 return true
             }
             if NSApp.mainMenu?.performKeyEquivalent(with: event) == true {
@@ -1823,7 +1825,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     }
 
     public func insertText(_ string: Any, replacementRange: NSRange) {
-        guard let displayMap = displayMap else { return }
+        guard isEditable, let displayMap = displayMap else { return }
         let text: String
         if let s = string as? String {
             text = s
@@ -1885,7 +1887,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     }
 
     public override func deleteBackward(_ sender: Any?) {
-        guard let displayMap = displayMap else { return }
+        guard isEditable, let displayMap = displayMap else { return }
         let mb = displayMap.multiBuffer
 
         if let sel = normalizedSelectionRange() {
@@ -1949,7 +1951,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     }
 
     public override func deleteForward(_ sender: Any?) {
-        guard let displayMap = displayMap else { return }
+        guard isEditable, let displayMap = displayMap else { return }
         let mb = displayMap.multiBuffer
 
         if let sel = normalizedSelectionRange() {
@@ -2036,7 +2038,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     // MARK: - Undo & Redo
 
     @IBAction public func undo(_ sender: Any?) {
-        guard let displayMap = displayMap else { return }
+        guard isEditable, let displayMap = displayMap else { return }
         let mb = displayMap.multiBuffer
         if let transaction = mb.undoManager.popUndo() {
             for edit in transaction.edits.reversed() {
@@ -2060,7 +2062,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     }
 
     @IBAction public func redo(_ sender: Any?) {
-        guard let displayMap = displayMap else { return }
+        guard isEditable, let displayMap = displayMap else { return }
         let mb = displayMap.multiBuffer
         if let transaction = mb.undoManager.popRedo() {
             for edit in transaction.edits {

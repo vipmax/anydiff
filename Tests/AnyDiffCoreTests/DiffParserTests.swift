@@ -103,4 +103,18 @@ index 1111111..0000000
             }
         }
     }
+
+    func testComparisonTargetEnum() {
+        let workingTree = ComparisonTarget.workingTree
+        XCTAssertEqual(workingTree.title, "Uncommitted Changes")
+        XCTAssertEqual(workingTree.shortDescription, "Working Tree")
+
+        let baseBranch = ComparisonTarget.baseBranch("main")
+        XCTAssertEqual(baseBranch.title, "vs main (Base)")
+        XCTAssertEqual(baseBranch.shortDescription, "main...")
+
+        let directBranch = ComparisonTarget.directBranch("origin/feature")
+        XCTAssertEqual(directBranch.title, "vs origin/feature")
+        XCTAssertEqual(directBranch.shortDescription, "→ origin/feature")
+    }
 }

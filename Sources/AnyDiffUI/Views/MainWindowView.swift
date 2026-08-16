@@ -36,6 +36,10 @@ public struct MainWindowView: View {
 
     @State private var currentPath: String? = nil
     @State private var isReloading: Bool = false
+    @State private var currentBranch: String = ""
+    @State private var localBranches: [String] = []
+    @State private var remoteBranches: [String] = []
+    @State private var comparisonTarget: ComparisonTarget = .workingTree
     @State private var repoStatus: RepoStatus = .clean
     @State private var fileDiffs: [FileDiff] = []
     @State private var selectedFilePath: String? = nil
@@ -81,6 +85,8 @@ public struct MainWindowView: View {
                 theme: activeTheme,
                 emptyMessage: repoStatus == .notGitRepository ? "Not a Git repository" : "No changed files",
                 isReloading: isReloading,
+                comparisonTarget: comparisonTarget,
+                currentBranch: currentBranch,
                 reviewManager: reviewManager,
                 selectedFilePath: $selectedFilePath,
                 onReload: { loadCurrentDirectoryDiff() }
@@ -181,6 +187,7 @@ public struct MainWindowView: View {
                         displayMap: displayMap,
                         theme: activeTheme,
                         fontSize: fontSize,
+                        isEditable: (comparisonTarget == .workingTree),
                         selectedFilePath: selectedFilePath,
                         onCursorChange: { loc, pt in
                             cursorLocation = loc
@@ -196,18 +203,48 @@ public struct MainWindowView: View {
             }
             .toolbar {
                 ToolbarItem(placement: .navigation) {
-                    Button(action: { openGitRepositoryFolder() }) {
-                        HStack(spacing: 6) {
-                            Image(systemName: "folder.fill")
-                                .font(.system(size: 12))
-                                .foregroundColor(.secondary)
-                            Text(currentFolderName.isEmpty ? "AnyDiff" : currentFolderName)
-                                .font(.system(size: 13, weight: .bold))
-                                .foregroundColor(.primary)
+                    HStack(spacing: 6) {
+                        Button(action: { openGitRepositoryFolder() }) {
+                            HStack(spacing: 6) {
+                                Image(systemName: "folder.fill")
+                                    .font(.system(size: 12))
+                                    .foregroundColor(.secondary)
+                                Text(currentFolderName.isEmpty ? "AnyDiff" : currentFolderName)
+                                    .font(.system(size: 13, weight: .bold))
+                                    .foregroundColor(.primary)
+                            }
+                        }
+                        .buttonStyle(ToolbarHoverButtonStyle())
+                        .help("Open Git Repository (Cmd+O)")
+
+                        if repoStatus != .notGitRepository && !currentBranch.isEmpty {
+                            BranchPickerView(
+                                currentBranch: currentBranch,
+                                localBranches: localBranches,
+                                remoteBranches: remoteBranches,
+                                comparisonTarget: $comparisonTarget,
+                                onSelectTarget: { target in
+                                    self.comparisonTarget = target
+                                    loadCurrentDirectoryDiff()
+                                }
+                            )
+                        }
+
+                        if comparisonTarget != .workingTree {
+                            HStack(spacing: 4) {
+                                Image(systemName: "lock.fill")
+                                    .font(.system(size: 9.5))
+                                Text("Read-Only")
+                                    .font(.system(size: 11, weight: .semibold))
+                            }
+                            .foregroundColor(.secondary)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3.5)
+                            .background(Color.secondary.opacity(0.12))
+                            .cornerRadius(5)
+                            .help("Branch comparison is read-only. Switch to 'Working Tree' in the branch menu to edit.")
                         }
                     }
-                    .buttonStyle(ToolbarHoverButtonStyle())
-                    .help("Open Git Repository (Cmd+O)")
                 }
             }
             .background(
@@ -289,9 +326,15 @@ public struct MainWindowView: View {
 
         DispatchQueue.global(qos: .userInitiated).async {
             let isGit = self.isGitRepository(at: currentDir)
-            let diff = isGit ? self.fetchGitDiff(at: currentDir) : nil
+            let branch = isGit ? self.fetchCurrentBranch(at: currentDir) : ""
+            let branches = isGit ? self.fetchAvailableBranches(at: currentDir) : (local: [], remote: [])
+            let diff = isGit ? self.fetchGitDiff(at: currentDir, target: self.comparisonTarget) : nil
 
             DispatchQueue.main.async {
+                self.currentBranch = branch
+                self.localBranches = branches.local
+                self.remoteBranches = branches.remote
+
                 guard isGit else {
                     self.repoStatus = .notGitRepository
                     self.loadDiff(text: "")
@@ -314,20 +357,54 @@ public struct MainWindowView: View {
         return runGit(arguments: ["-C", path, "rev-parse", "--is-inside-work-tree"]) == "true"
     }
 
-    private func fetchGitDiff(at path: String) -> String? {
-        // 1. Try uncommitted (staged + unstaged) changes: git diff HEAD
-        if let out = runGit(arguments: ["-C", path, "diff", "HEAD"]), !out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return out
+    private func fetchCurrentBranch(at path: String) -> String {
+        runGit(arguments: ["-C", path, "rev-parse", "--abbrev-ref", "HEAD"]) ?? ""
+    }
+
+    private func fetchAvailableBranches(at path: String) -> (local: [String], remote: [String]) {
+        let localOut = runGit(arguments: ["-C", path, "branch", "--format=%(refname:short)"]) ?? ""
+        let local = localOut.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+
+        let remoteOut = runGit(arguments: ["-C", path, "branch", "-r", "--format=%(refname:short)"]) ?? ""
+        let remote = remoteOut.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty && !$0.contains("HEAD") }
+
+        return (local, remote)
+    }
+
+    private func fetchGitDiff(at path: String, target: ComparisonTarget = .workingTree) -> String? {
+        switch target {
+        case .workingTree:
+            // 1. Try uncommitted (staged + unstaged) changes: git diff HEAD
+            if let out = runGit(arguments: ["-C", path, "diff", "HEAD"]), !out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return out
+            }
+            // 2. Try unstaged changes: git diff
+            if let out = runGit(arguments: ["-C", path, "diff"]), !out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return out
+            }
+            // 3. Try staged changes: git diff --staged
+            if let out = runGit(arguments: ["-C", path, "diff", "--staged"]), !out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return out
+            }
+            return nil
+
+        case .baseBranch(let base):
+            // Triple-dot diff: git diff <base>...
+            if let out = runGit(arguments: ["-C", path, "diff", "\(base)..."]), !out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return out
+            }
+            if let out = runGit(arguments: ["-C", path, "diff", "\(base)..HEAD"]), !out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return out
+            }
+            return nil
+
+        case .directBranch(let branch):
+            // Direct diff against branch: git diff <branch>
+            if let out = runGit(arguments: ["-C", path, "diff", branch]), !out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return out
+            }
+            return nil
         }
-        // 2. Try unstaged changes: git diff
-        if let out = runGit(arguments: ["-C", path, "diff"]), !out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return out
-        }
-        // 3. Try staged changes: git diff --staged
-        if let out = runGit(arguments: ["-C", path, "diff", "--staged"]), !out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return out
-        }
-        return nil
     }
 
     private func runGit(arguments: [String]) -> String? {

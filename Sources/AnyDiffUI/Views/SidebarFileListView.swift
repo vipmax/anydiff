@@ -6,6 +6,8 @@ public struct SidebarFileListView: View {
     public var theme: Theme
     public var emptyMessage: String
     public var isReloading: Bool
+    public var comparisonTarget: ComparisonTarget
+    public var currentBranch: String
     @ObservedObject public var reviewManager: ReviewManager
     @Binding public var selectedFilePath: String?
     public var onReload: () -> Void
@@ -17,6 +19,8 @@ public struct SidebarFileListView: View {
         theme: Theme,
         emptyMessage: String = "No changed files",
         isReloading: Bool = false,
+        comparisonTarget: ComparisonTarget = .workingTree,
+        currentBranch: String = "",
         reviewManager: ReviewManager,
         selectedFilePath: Binding<String?>,
         onReload: @escaping () -> Void
@@ -25,6 +29,8 @@ public struct SidebarFileListView: View {
         self.theme = theme
         self.emptyMessage = emptyMessage
         self.isReloading = isReloading
+        self.comparisonTarget = comparisonTarget
+        self.currentBranch = currentBranch
         self.reviewManager = reviewManager
         self._selectedFilePath = selectedFilePath
         self.onReload = onReload
@@ -90,10 +96,28 @@ public struct SidebarFileListView: View {
 
                 Spacer()
 
-                let totalReviewed = fileDiffs.filter { reviewManager.isFileReviewed(filePath: $0.displayPath) }.count
-                Text("\(totalReviewed)/\(fileDiffs.count) reviewed")
-                    .font(.system(size: 10))
-                    .foregroundColor(.secondary)
+                if case .baseBranch(let base) = comparisonTarget {
+                    Text("\(base)...")
+                        .font(.system(size: 9.5, weight: .medium))
+                        .foregroundColor(.accentColor)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(Color.accentColor.opacity(0.12))
+                        .cornerRadius(4)
+                } else if case .directBranch(let branch) = comparisonTarget {
+                    Text("→ \(branch)")
+                        .font(.system(size: 9.5, weight: .medium))
+                        .foregroundColor(.accentColor)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(Color.accentColor.opacity(0.12))
+                        .cornerRadius(4)
+                } else {
+                    let totalReviewed = fileDiffs.filter { reviewManager.isFileReviewed(filePath: $0.displayPath) }.count
+                    Text("\(totalReviewed)/\(fileDiffs.count) reviewed")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                }
             }
             .frame(height: 24)
             .padding(.horizontal, 12)

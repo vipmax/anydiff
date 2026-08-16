@@ -30,7 +30,7 @@ let package = Package(
         ),
         .testTarget(
             name: "AnyDiffCoreTests",
-            dependencies: ["AnyDiffCore"],
+            dependencies: ["AnyDiffCore", "AnyDiffUI"],
             path: "Tests/AnyDiffCoreTests"
         )
     ]
