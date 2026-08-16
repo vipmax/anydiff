@@ -40,37 +40,20 @@ public struct MainWindowView: View {
             )
             .navigationSplitViewColumnWidth(min: 200, ideal: 280, max: 800)
         } detail: {
-            VStack(spacing: 0) {
-                // Custom CoreText MultiBuffer Editor Canvas
-                EditorHostView(
-                    displayMap: displayMap,
-                    theme: selectedTheme,
-                    fontSize: fontSize,
-                    onCursorChange: { loc, pt in
-                        cursorLocation = loc
-                        cursorPoint = pt
-                    },
-                    onAddCommentRequest: { path, line in
-                        commentTarget = (filePath: path, lineNumber: line)
-                    }
-                )
-                .clipped()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                Divider()
-
-                // Bottom Status Bar
-                StatusBarView(
-                    currentCursorLocation: cursorLocation,
-                    currentCursorPoint: cursorPoint,
-                    totalFiles: fileDiffs.count,
-                    totalAdditions: fileDiffs.reduce(0) { $0 + $1.additions },
-                    totalDeletions: fileDiffs.reduce(0) { $0 + $1.deletions },
-                    totalComments: reviewManager.comments.count,
-                    theme: selectedTheme
-                )
-                .zIndex(10)
-            }
+            EditorHostView(
+                displayMap: displayMap,
+                theme: selectedTheme,
+                fontSize: fontSize,
+                onCursorChange: { loc, pt in
+                    cursorLocation = loc
+                    cursorPoint = pt
+                },
+                onAddCommentRequest: { path, line in
+                    commentTarget = (filePath: path, lineNumber: line)
+                }
+            )
+            .clipped()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(
                 // Global keyboard shortcuts (Cmd+R reload, Cmd+O open folder, Cmd+-/Cmd+= zoom)
                 Group {
