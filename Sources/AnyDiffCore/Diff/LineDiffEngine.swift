@@ -76,8 +76,90 @@ public final class LineDiffEngine: Sendable {
         return hunks
     }
 
-    /// Myers' Diff Algorithm for shortest edit script (SES)
+    /// Myers' Diff Algorithm with Common Prefix and Suffix Pruning Optimization
     private func computeMyersDiff(
+        oldLines: [String],
+        newLines: [String],
+        oldStartLine: Int,
+        newStartLine: Int
+    ) -> [DiffLine] {
+        let n = oldLines.count
+        let m = newLines.count
+
+        if n == 0 {
+            return newLines.enumerated().map { idx, line in
+                DiffLine(kind: .added, text: line, oldLineNumber: nil, newLineNumber: newStartLine + idx)
+            }
+        }
+        if m == 0 {
+            return oldLines.enumerated().map { idx, line in
+                DiffLine(kind: .deleted, text: line, oldLineNumber: oldStartLine + idx, newLineNumber: nil)
+            }
+        }
+
+        // 1. Common Prefix Pruning: strip identical lines at the start in O(N)
+        var prefixCount = 0
+        let minCount = min(n, m)
+        while prefixCount < minCount && oldLines[prefixCount] == newLines[prefixCount] {
+            prefixCount += 1
+        }
+
+        // 2. Common Suffix Pruning: strip identical lines at the end in O(N)
+        var suffixCount = 0
+        while suffixCount < (minCount - prefixCount) && oldLines[n - 1 - suffixCount] == newLines[m - 1 - suffixCount] {
+            suffixCount += 1
+        }
+
+        // If entire arrays matched via prefix + suffix
+        if prefixCount + suffixCount == n && prefixCount + suffixCount == m {
+            return oldLines.enumerated().map { idx, line in
+                DiffLine(kind: .unchanged, text: line, oldLineNumber: oldStartLine + idx, newLineNumber: newStartLine + idx)
+            }
+        }
+
+        var result: [DiffLine] = []
+
+        // Append unchanged common prefix lines
+        for i in 0..<prefixCount {
+            result.append(DiffLine(
+                kind: .unchanged,
+                text: oldLines[i],
+                oldLineNumber: oldStartLine + i,
+                newLineNumber: newStartLine + i
+            ))
+        }
+
+        // Compute Myers edit graph only on the trimmed middle slice
+        let trimmedOldLines = Array(oldLines[prefixCount..<(n - suffixCount)])
+        let trimmedNewLines = Array(newLines[prefixCount..<(m - suffixCount)])
+        let trimmedOldStart = oldStartLine + prefixCount
+        let trimmedNewStart = newStartLine + prefixCount
+
+        let middleDiff = computeMyersDiffCore(
+            oldLines: trimmedOldLines,
+            newLines: trimmedNewLines,
+            oldStartLine: trimmedOldStart,
+            newStartLine: trimmedNewStart
+        )
+        result.append(contentsOf: middleDiff)
+
+        // Append unchanged common suffix lines
+        let oldSuffixStart = n - suffixCount
+        let newSuffixStart = m - suffixCount
+        for i in 0..<suffixCount {
+            result.append(DiffLine(
+                kind: .unchanged,
+                text: oldLines[oldSuffixStart + i],
+                oldLineNumber: oldStartLine + oldSuffixStart + i,
+                newLineNumber: newStartLine + newSuffixStart + i
+            ))
+        }
+
+        return result
+    }
+
+    /// Core Myers algorithm executed on the trimmed middle slice
+    private func computeMyersDiffCore(
         oldLines: [String],
         newLines: [String],
         oldStartLine: Int,

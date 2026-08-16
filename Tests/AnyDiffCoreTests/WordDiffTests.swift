@@ -55,4 +55,44 @@ final class WordDiffTests: XCTestCase {
             XCTAssertTrue(info.wordDiffRanges.isEmpty)
         }
     }
+
+    func testMyersDiffCommonPrefixAndSuffixPruning() {
+        var oldLines: [String] = []
+        var newLines: [String] = []
+
+        // 1000 identical lines at the top
+        for i in 0..<1000 {
+            oldLines.append("prefix line \(i)")
+            newLines.append("prefix line \(i)")
+        }
+
+        // 2 changed lines in the middle
+        oldLines.append("old middle line A")
+        oldLines.append("old middle line B")
+        newLines.append("new middle line A")
+        newLines.append("new middle line B")
+
+        // 1000 identical lines at the bottom
+        for i in 0..<1000 {
+            oldLines.append("suffix line \(i)")
+            newLines.append("suffix line \(i)")
+        }
+
+        let diffLines = LineDiffEngine.shared.diffLines(oldLines: oldLines, newLines: newLines)
+
+        // Total lines = 1000 prefix + 2 deleted + 2 added + 1000 suffix = 2004
+        XCTAssertEqual(diffLines.count, 2004)
+        XCTAssertEqual(diffLines[0].kind, .unchanged)
+        XCTAssertEqual(diffLines[999].kind, .unchanged)
+        XCTAssertEqual(diffLines[1000].kind, .deleted)
+        XCTAssertEqual(diffLines[1000].text, "old middle line A")
+        XCTAssertEqual(diffLines[1001].kind, .deleted)
+        XCTAssertEqual(diffLines[1001].text, "old middle line B")
+        XCTAssertEqual(diffLines[1002].kind, .added)
+        XCTAssertEqual(diffLines[1002].text, "new middle line A")
+        XCTAssertEqual(diffLines[1003].kind, .added)
+        XCTAssertEqual(diffLines[1003].text, "new middle line B")
+        XCTAssertEqual(diffLines[1004].kind, .unchanged)
+        XCTAssertEqual(diffLines[2003].kind, .unchanged)
+    }
 }
