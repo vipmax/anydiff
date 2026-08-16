@@ -22,6 +22,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mainWindow.title = "AnyDiff"
         mainWindow.titleVisibility = .hidden
         mainWindow.titlebarAppearsTransparent = true
+        mainWindow.titlebarSeparatorStyle = .none
+        mainWindow.backgroundColor = NSColor(red: 0.11, green: 0.12, blue: 0.14, alpha: 1.0)
         mainWindow.toolbarStyle = .unified
         let windowToolbar = NSToolbar(identifier: "AnyDiffWindowToolbar")
         windowToolbar.allowsUserCustomization = false

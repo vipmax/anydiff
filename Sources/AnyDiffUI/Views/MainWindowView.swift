@@ -143,7 +143,8 @@ public struct MainWindowView: View {
                 .opacity(0)
             )
         }
-        .toolbarBackground(.hidden, for: .windowToolbar)
+        .toolbarBackground(Color(activeTheme.background), for: .windowToolbar)
+        .toolbarBackground(.visible, for: .windowToolbar)
         .toolbarColorScheme(activeTheme.isDark ? .dark : .light, for: .windowToolbar)
         .background(Color(activeTheme.background).ignoresSafeArea())
         .sheet(isPresented: $showPasteModal) {
@@ -176,6 +177,13 @@ public struct MainWindowView: View {
         }
         .onAppear {
             loadCurrentDirectoryDiff()
+            updateWindowAppearance()
+        }
+        .onChange(of: selectedTheme.id) { _ in
+            updateWindowAppearance()
+        }
+        .onChange(of: followsSystemAppearance) { _ in
+            updateWindowAppearance()
         }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffOpenProject"))) { _ in
             openGitRepositoryFolder()
@@ -185,6 +193,15 @@ public struct MainWindowView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffPasteDiff"))) { _ in
             showPasteModal = true
+        }
+    }
+
+    private func updateWindowAppearance() {
+        DispatchQueue.main.async {
+            if let window = NSApp.windows.first {
+                window.backgroundColor = activeTheme.background
+                window.titlebarSeparatorStyle = .none
+            }
         }
     }
 
