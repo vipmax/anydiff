@@ -1214,28 +1214,35 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
         let isOption = event.modifierFlags.contains(.option)
 
         if isCmd {
-            switch event.charactersIgnoringModifiers {
-            case "z":
+            let char = event.charactersIgnoringModifiers?.lowercased()
+            let code = event.keyCode
+
+            // ANSI keyCodes: A=0, Z=6, X=7, C=8, V=9
+            let isZ = code == 6 || char == "z" || char == "я"
+            let isA = code == 0 || char == "a" || char == "ф"
+            let isC = code == 8 || char == "c" || char == "с"
+            let isX = code == 7 || char == "x" || char == "ч"
+            let isV = code == 9 || char == "v" || char == "м"
+
+            if isZ {
                 if isShift {
                     redo(nil)
                 } else {
                     undo(nil)
                 }
                 return
-            case "a":
+            } else if isA {
                 selectAll(nil)
                 return
-            case "c":
+            } else if isC {
                 copy(nil)
                 return
-            case "x":
+            } else if isX {
                 cut(nil)
                 return
-            case "v":
+            } else if isV {
                 paste(nil)
                 return
-            default:
-                break
             }
         }
 
