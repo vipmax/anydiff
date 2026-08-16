@@ -1,0 +1,45 @@
+# atext.txt - Тестовый файл для AnyDiff
+
+Добро пожаловать в AnyDiff!
+Этот файл создан для проверки работы MultiBuffer, редактирования, дифф-движка и сохранения на диск.
+
+Line 01: Начало файла
+Line 02: Конфигурация приложения
+Line 03: host = "127.0.0.1"
+Line 04: port = 8080
+Line 05: timeout = 30
+Line 06: debug = true
+Line 07: 
+Line 08: === Секция 1: Пользовательские настройки ===
+Line 09: theme = "dark"
+Line 10: font_size = 14
+Line 11: font_family = "JetBrains Mono"
+Line 12: tab_size = 4
+Line 13: word_wrap = true
+Line 14: 
+Line 15: === Секция 2: Модули системы ===
+Line 16: [module.core]
+Line 17: enabled = true
+Line 18: priority = 100
+Line 19: description = "Базовое ядро MultiBuffer"
+Line 20: 
+Line 21: [module.diff]
+Line 22: enabled = true
+Line 23: engine = "myers_zero_copy"
+Line 24: pruning = true
+Line 25: 
+Line 26: [module.editor]
+Line 27: render_mode = "core_text"
+Line 28: fps_target = 120
+Line 29: 
+Line 30: === Секция 3: Данные и метрики ===
+Line 31: status = "active"
+Line 32: uptime_seconds = 86400
+Line 33: total_requests = 1048576
+Line 34: memory_usage_mb = 18.4
+Line 35: cpu_usage_percent = 1.2
+Line 36: 
+Line 37: === Секция 4: Завершение конфигурации ===
+Line 38: log_level = "info"
+Line 39: log_file = "/var/log/anydiff.log"
+Line 40: Конец базового файла.
