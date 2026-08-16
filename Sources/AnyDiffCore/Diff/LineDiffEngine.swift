@@ -11,7 +11,8 @@ public final class LineDiffEngine: Sendable {
         oldLines: [String],
         newLines: [String],
         oldStartLine: Int = 1,
-        newStartLine: Int = 1
+        newStartLine: Int = 1,
+        enablePrefixSuffixPruning: Bool = true
     ) -> [DiffLine] {
         guard oldLines != newLines else {
             return oldLines.enumerated().map { index, line in
@@ -24,14 +25,130 @@ public final class LineDiffEngine: Sendable {
             }
         }
 
-        var lines = computeMyersDiff(
-            oldLines: oldLines,
-            newLines: newLines,
-            oldStartLine: oldStartLine,
-            newStartLine: newStartLine
-        )
+        var lines: [DiffLine]
+        if enablePrefixSuffixPruning {
+            lines = computeMyersDiff(
+                oldLines: oldLines,
+                newLines: newLines,
+                oldStartLine: oldStartLine,
+                newStartLine: newStartLine
+            )
+        } else {
+            lines = computeMyersDiffCore(
+                oldLines: oldLines,
+                newLines: newLines,
+                oldStartLine: oldStartLine,
+                newStartLine: newStartLine
+            )
+        }
         processWordDiffs(lines: &lines)
         return lines
+    }
+
+    /// Computes diff lines ONLY for the specified slice of the new buffer (targetRange in 0-based buffer rows),
+    /// avoiding allocation and materialization of DiffLines for rows outside targetRange.
+    public func diffLinesForSlice(
+        oldLines: [String],
+        newLines: [String],
+        oldStartLine: Int = 1,
+        newStartLine: Int = 1,
+        targetRange: Range<Int>
+    ) -> [(line: DiffLine, bufferRow: Int)] {
+        let n = oldLines.count
+        let m = newLines.count
+
+        // 1. Fast Path: both are identical
+        if oldLines == newLines {
+            let clamped = max(0, min(m, targetRange.lowerBound))..<max(0, min(m, targetRange.upperBound))
+            var result: [(line: DiffLine, bufferRow: Int)] = []
+            result.reserveCapacity(clamped.count)
+            for r in clamped {
+                let num = newStartLine + r
+                let dLine = DiffLine(kind: .unchanged, text: newLines[r], oldLineNumber: num, newLineNumber: num)
+                result.append((line: dLine, bufferRow: r))
+            }
+            return result
+        }
+
+        // 2. Common Prefix in O(N)
+        var prefixCount = 0
+        let minCount = min(n, m)
+        while prefixCount < minCount && oldLines[prefixCount] == newLines[prefixCount] {
+            prefixCount += 1
+        }
+
+        // 3. Common Suffix in O(N)
+        var suffixCount = 0
+        while suffixCount < (minCount - prefixCount) && oldLines[n - 1 - suffixCount] == newLines[m - 1 - suffixCount] {
+            suffixCount += 1
+        }
+
+        var result: [(line: DiffLine, bufferRow: Int)] = []
+
+        // A. Process Prefix region intersection with targetRange
+        let prefixEnd = prefixCount
+        let prefixIntersectionStart = max(0, min(prefixEnd, targetRange.lowerBound))
+        let prefixIntersectionEnd = max(prefixIntersectionStart, min(prefixEnd, targetRange.upperBound))
+        for r in prefixIntersectionStart..<prefixIntersectionEnd {
+            let oldNum = oldStartLine + r
+            let newNum = newStartLine + r
+            let dLine = DiffLine(kind: .unchanged, text: newLines[r], oldLineNumber: oldNum, newLineNumber: newNum)
+            result.append((line: dLine, bufferRow: r))
+        }
+
+        // B. Process Middle region (if any changes exist)
+        let oldMiddleRange = prefixCount..<(n - suffixCount)
+        let newMiddleRange = prefixCount..<(m - suffixCount)
+
+        if !oldMiddleRange.isEmpty || !newMiddleRange.isEmpty {
+            let trimmedOldStart = oldStartLine + prefixCount
+            let trimmedNewStart = newStartLine + prefixCount
+
+            var middleDiff = computeMyersDiffCore(
+                oldLines: oldLines,
+                oldRange: oldMiddleRange,
+                newLines: newLines,
+                newRange: newMiddleRange,
+                oldStartLine: trimmedOldStart,
+                newStartLine: trimmedNewStart
+            )
+            processWordDiffs(lines: &middleDiff)
+
+            var curBRow = prefixCount
+            for dLine in middleDiff {
+                let row = curBRow
+                if dLine.kind == .deleted {
+                    // Deleted line attached to current buffer row
+                    if targetRange.isEmpty {
+                        if row == targetRange.lowerBound {
+                            result.append((line: dLine, bufferRow: row))
+                        }
+                    } else if targetRange.contains(row) || (row == targetRange.upperBound && targetRange.upperBound == m) {
+                        result.append((line: dLine, bufferRow: row))
+                    }
+                } else {
+                    if targetRange.contains(row) {
+                        result.append((line: dLine, bufferRow: row))
+                    }
+                    curBRow += 1
+                }
+            }
+        }
+
+        // C. Process Suffix region intersection with targetRange
+        let suffixStartInNew = m - suffixCount
+        let suffixIntersectionStart = max(suffixStartInNew, min(m, targetRange.lowerBound))
+        let suffixIntersectionEnd = max(suffixIntersectionStart, min(m, targetRange.upperBound))
+
+        let oldSuffixOffset = (n - suffixCount) - suffixStartInNew
+        for r in suffixIntersectionStart..<suffixIntersectionEnd {
+            let oldNum = oldStartLine + r + oldSuffixOffset
+            let newNum = newStartLine + r
+            let dLine = DiffLine(kind: .unchanged, text: newLines[r], oldLineNumber: oldNum, newLineNumber: newNum)
+            result.append((line: dLine, bufferRow: r))
+        }
+
+        return result
     }
 
     /// Computes unified diff hunks with word-level highlights between old text and new text
@@ -40,7 +157,8 @@ public final class LineDiffEngine: Sendable {
         newText: String,
         oldStartLine: Int = 1,
         newStartLine: Int = 1,
-        contextLines: Int = 3
+        contextLines: Int = 3,
+        enablePrefixSuffixPruning: Bool = true
     ) -> [DiffHunk] {
         let oldLines = oldText.components(separatedBy: "\n")
         let newLines = newText.components(separatedBy: "\n")
@@ -49,7 +167,8 @@ public final class LineDiffEngine: Sendable {
             newLines: newLines,
             oldStartLine: oldStartLine,
             newStartLine: newStartLine,
-            contextLines: contextLines
+            contextLines: contextLines,
+            enablePrefixSuffixPruning: enablePrefixSuffixPruning
         )
     }
 
@@ -59,16 +178,27 @@ public final class LineDiffEngine: Sendable {
         newLines: [String],
         oldStartLine: Int = 1,
         newStartLine: Int = 1,
-        contextLines: Int = 3
+        contextLines: Int = 3,
+        enablePrefixSuffixPruning: Bool = true
     ) -> [DiffHunk] {
         guard oldLines != newLines else { return [] }
 
-        let diffLines = computeMyersDiff(
-            oldLines: oldLines,
-            newLines: newLines,
-            oldStartLine: oldStartLine,
-            newStartLine: newStartLine
-        )
+        let diffLines: [DiffLine]
+        if enablePrefixSuffixPruning {
+            diffLines = computeMyersDiff(
+                oldLines: oldLines,
+                newLines: newLines,
+                oldStartLine: oldStartLine,
+                newStartLine: newStartLine
+            )
+        } else {
+            diffLines = computeMyersDiffCore(
+                oldLines: oldLines,
+                newLines: newLines,
+                oldStartLine: oldStartLine,
+                newStartLine: newStartLine
+            )
+        }
         var hunks = groupIntoHunks(diffLines: diffLines, contextLines: contextLines)
         for i in hunks.indices {
             processWordDiffs(lines: &hunks[i].lines)
@@ -76,7 +206,7 @@ public final class LineDiffEngine: Sendable {
         return hunks
     }
 
-    /// Myers' Diff Algorithm with Common Prefix and Suffix Pruning Optimization
+    /// Myers' Diff Algorithm with Common Prefix and Suffix Pruning Optimization (Zero Array Allocations)
     private func computeMyersDiff(
         oldLines: [String],
         newLines: [String],
@@ -118,6 +248,7 @@ public final class LineDiffEngine: Sendable {
         }
 
         var result: [DiffLine] = []
+        result.reserveCapacity(n + m)
 
         // Append unchanged common prefix lines
         for i in 0..<prefixCount {
@@ -129,15 +260,17 @@ public final class LineDiffEngine: Sendable {
             ))
         }
 
-        // Compute Myers edit graph only on the trimmed middle slice
-        let trimmedOldLines = Array(oldLines[prefixCount..<(n - suffixCount)])
-        let trimmedNewLines = Array(newLines[prefixCount..<(m - suffixCount)])
+        // Compute Myers edit graph only on the trimmed middle slice using direct index ranges (0 Array allocations)
+        let oldMiddleRange = prefixCount..<(n - suffixCount)
+        let newMiddleRange = prefixCount..<(m - suffixCount)
         let trimmedOldStart = oldStartLine + prefixCount
         let trimmedNewStart = newStartLine + prefixCount
 
         let middleDiff = computeMyersDiffCore(
-            oldLines: trimmedOldLines,
-            newLines: trimmedNewLines,
+            oldLines: oldLines,
+            oldRange: oldMiddleRange,
+            newLines: newLines,
+            newRange: newMiddleRange,
             oldStartLine: trimmedOldStart,
             newStartLine: trimmedNewStart
         )
@@ -158,49 +291,57 @@ public final class LineDiffEngine: Sendable {
         return result
     }
 
-    /// Core Myers algorithm executed on the trimmed middle slice
+    /// Core Myers algorithm executed on direct index ranges using flat contiguous integer buffers
     private func computeMyersDiffCore(
         oldLines: [String],
+        oldRange: Range<Int>? = nil,
         newLines: [String],
+        newRange: Range<Int>? = nil,
         oldStartLine: Int,
         newStartLine: Int
     ) -> [DiffLine] {
-        let n = oldLines.count
-        let m = newLines.count
+        let oRange = oldRange ?? (0..<oldLines.count)
+        let nRange = newRange ?? (0..<newLines.count)
+        let n = oRange.count
+        let m = nRange.count
         let maxD = n + m
 
         if n == 0 {
-            return newLines.enumerated().map { idx, line in
-                DiffLine(kind: .added, text: line, oldLineNumber: nil, newLineNumber: newStartLine + idx)
+            return (0..<m).map { idx in
+                DiffLine(kind: .added, text: newLines[nRange.lowerBound + idx], oldLineNumber: nil, newLineNumber: newStartLine + idx)
             }
         }
         if m == 0 {
-            return oldLines.enumerated().map { idx, line in
-                DiffLine(kind: .deleted, text: line, oldLineNumber: oldStartLine + idx, newLineNumber: nil)
+            return (0..<n).map { idx in
+                DiffLine(kind: .deleted, text: oldLines[oRange.lowerBound + idx], oldLineNumber: oldStartLine + idx, newLineNumber: nil)
             }
         }
 
-        var v = [Int: Int]()
-        v[1] = 0
-        var trace: [[Int: Int]] = []
+        let offset = maxD
+        var v = [Int](repeating: 0, count: 2 * maxD + 1)
+        v[1 + offset] = 0
+
+        var trace: [[Int]] = []
+        trace.reserveCapacity(maxD + 1)
 
         var foundD: Int? = nil
         outer: for d in 0...maxD {
             trace.append(v)
             for k in stride(from: -d, through: d, by: 2) {
+                let kOffset = k + offset
                 var x: Int
-                if k == -d || (k != d && (v[k - 1] ?? 0) < (v[k + 1] ?? 0)) {
-                    x = v[k + 1] ?? 0
+                if k == -d || (k != d && v[kOffset - 1] < v[kOffset + 1]) {
+                    x = v[kOffset + 1]
                 } else {
-                    x = (v[k - 1] ?? 0) + 1
+                    x = v[kOffset - 1] + 1
                 }
                 var y = x - k
 
-                while x < n && y < m && oldLines[x] == newLines[y] {
+                while x < n && y < m && oldLines[oRange.lowerBound + x] == newLines[nRange.lowerBound + y] {
                     x += 1
                     y += 1
                 }
-                v[k] = x
+                v[kOffset] = x
 
                 if x >= n && y >= m {
                     foundD = d
@@ -212,32 +353,35 @@ public final class LineDiffEngine: Sendable {
         var currentX = n
         var currentY = m
         var editScript: [(kind: DiffLineKind, oldIdx: Int?, newIdx: Int?)] = []
+        editScript.reserveCapacity(maxD)
 
         if let dMax = foundD {
             for d in (0...dMax).reversed() {
                 let vD = trace[d]
                 let k = currentX - currentY
+                let kOffset = k + offset
                 let prevK: Int
-                if k == -d || (k != d && (vD[k - 1] ?? 0) < (vD[k + 1] ?? 0)) {
+                if k == -d || (k != d && vD[kOffset - 1] < vD[kOffset + 1]) {
                     prevK = k + 1
                 } else {
                     prevK = k - 1
                 }
-                let prevX = vD[prevK] ?? 0
+                let prevKOffset = prevK + offset
+                let prevX = vD[prevKOffset]
                 let prevY = prevX - prevK
 
                 while currentX > prevX && currentY > prevY {
                     currentX -= 1
                     currentY -= 1
-                    editScript.append((.unchanged, currentX, currentY))
+                    editScript.append((.unchanged, oRange.lowerBound + currentX, nRange.lowerBound + currentY))
                 }
                 if d > 0 {
                     if currentX == prevX {
                         currentY -= 1
-                        editScript.append((.added, nil, currentY))
+                        editScript.append((.added, nil, nRange.lowerBound + currentY))
                     } else if currentY == prevY {
                         currentX -= 1
-                        editScript.append((.deleted, currentX, nil))
+                        editScript.append((.deleted, oRange.lowerBound + currentX, nil))
                     }
                 }
             }
@@ -246,6 +390,7 @@ public final class LineDiffEngine: Sendable {
         editScript.reverse()
 
         var result: [DiffLine] = []
+        result.reserveCapacity(editScript.count)
         var runningOld = oldStartLine
         var runningNew = newStartLine
 

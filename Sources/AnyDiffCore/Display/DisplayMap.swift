@@ -62,57 +62,23 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
                 }
             }
 
-            // 3. Dynamic Diff Calculation: compute live diff lines without dropping expanded context
-            let fullDiffLines: [DiffLine]
-            if let cached = buffer.cachedDiffLines, buffer.cachedDiffVersion == buffer.version {
-                fullDiffLines = cached
-            } else if !buffer.baselineLines.isEmpty && (buffer.baselineLines != buffer.lines || excerpt.hunk != nil || buffer.fullDiskPath != nil) {
-                let computed = LineDiffEngine.shared.diffLines(
+            // 3. Dynamic Diff Calculation: compute live diff lines only for the current excerpt's bufferRange
+            let diffLinesToRender: [(line: DiffLine, bufferRow: Int)]
+            if !buffer.baselineLines.isEmpty && (buffer.baselineLines != buffer.lines || excerpt.hunk != nil || buffer.fullDiskPath != nil) {
+                diffLinesToRender = LineDiffEngine.shared.diffLinesForSlice(
                     oldLines: buffer.baselineLines,
                     newLines: buffer.lines,
                     oldStartLine: buffer.startLineNumber,
-                    newStartLine: buffer.startLineNumber
+                    newStartLine: buffer.startLineNumber,
+                    targetRange: excerpt.bufferRange
                 )
-                buffer.cachedDiffLines = computed
-                buffer.cachedDiffVersion = buffer.version
-                fullDiffLines = computed
             } else {
-                let computed = buffer.lines.enumerated().map { idx, line in
-                    let num = buffer.startLineNumber + idx
-                    return DiffLine(kind: .unchanged, text: line, oldLineNumber: num, newLineNumber: num)
-                }
-                buffer.cachedDiffLines = computed
-                buffer.cachedDiffVersion = buffer.version
-                fullDiffLines = computed
-            }
-
-            // Slice fullDiffLines for the current excerpt's bufferRange
-            var diffLinesWithBufferRow: [(line: DiffLine, bufferRow: Int)] = []
-            var curBRow = 0
-            for dLine in fullDiffLines {
-                if dLine.kind == .deleted {
-                    diffLinesWithBufferRow.append((line: dLine, bufferRow: curBRow))
-                } else {
-                    diffLinesWithBufferRow.append((line: dLine, bufferRow: curBRow))
-                    curBRow += 1
-                }
-            }
-
-            var diffLinesToRender: [(line: DiffLine, bufferRow: Int)] = []
-            let range = excerpt.bufferRange
-            if range.isEmpty {
-                if buffer.lineCount == 0 {
-                    diffLinesToRender = diffLinesWithBufferRow
-                } else {
-                    diffLinesToRender = diffLinesWithBufferRow.filter { $0.line.kind == .deleted && $0.bufferRow == range.lowerBound }
-                }
-            } else {
-                for item in diffLinesWithBufferRow {
-                    if range.contains(item.bufferRow) {
-                        diffLinesToRender.append(item)
-                    } else if item.line.kind == .deleted && item.bufferRow == range.upperBound && range.upperBound == buffer.lineCount {
-                        diffLinesToRender.append(item)
-                    }
+                let range = excerpt.bufferRange
+                let clamped = max(0, min(buffer.lineCount, range.lowerBound))..<max(0, min(buffer.lineCount, range.upperBound))
+                diffLinesToRender = clamped.map { r in
+                    let num = buffer.startLineNumber + r
+                    let dLine = DiffLine(kind: .unchanged, text: buffer.lines[r], oldLineNumber: num, newLineNumber: num)
+                    return (line: dLine, bufferRow: r)
                 }
             }
 
