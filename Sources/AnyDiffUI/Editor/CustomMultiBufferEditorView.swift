@@ -58,6 +58,8 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     }
     public private(set) var totalDocumentHeight: CGFloat = 0
     public private(set) var totalDocumentWidth: CGFloat = 0
+    private var contentTotalHeight: CGFloat = 0
+    private var contentNeededWidth: CGFloat = 0
 
     // Selection & Cursor State
     public var cursorPoint: MultiBufferPoint = .zero {
@@ -239,12 +241,26 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
     public override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
-        invalidateLayout()
+        updateViewportMetrics()
+    }
+
+    private func updateViewportMetrics() {
+        totalDocumentHeight = contentTotalHeight
+        totalDocumentWidth = max(bounds.width, contentNeededWidth)
+
+        let maxScrollY = max(0, totalDocumentHeight - bounds.height)
+        let maxScrollX = max(0, totalDocumentWidth - bounds.width)
+        scrollOffsetY = max(0, min(maxScrollY, scrollOffsetY))
+        scrollOffsetX = max(0, min(maxScrollX, scrollOffsetX))
+
+        needsDisplay = true
     }
 
     public func invalidateLayout() {
         cachedFileSections = nil
         guard let displayMap = displayMap else {
+            contentTotalHeight = 0
+            contentNeededWidth = 0
             totalDocumentHeight = 0
             totalDocumentWidth = 0
             needsDisplay = true
@@ -271,27 +287,30 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         let charWidth = font.pointSize * 0.75
         let neededWidth = gutterWidth + CGFloat(maxLineChars) * charWidth + 100
 
-        totalDocumentHeight = totalHeight
-        totalDocumentWidth = max(bounds.width, neededWidth)
+        contentTotalHeight = totalHeight
+        contentNeededWidth = neededWidth
 
-        let maxScrollY = max(0, totalDocumentHeight - bounds.height)
-        let maxScrollX = max(0, totalDocumentWidth - bounds.width)
-        scrollOffsetY = max(0, min(maxScrollY, scrollOffsetY))
-        scrollOffsetX = max(0, min(maxScrollX, scrollOffsetX))
-
+        updateViewportMetrics()
         clampCursorToValidBounds()
-        needsDisplay = true
     }
 
     public func clampCursorToValidBounds() {
         guard let dm = displayMap, dm.codeLineCount > 0 else { return }
-        let validRows = dm.codeLines.map(\.multiBufferRow)
+        let minRow = dm.minCodeRow
+        let maxRow = dm.maxCodeRow
+
         var row = cursorPoint.row
-        if !validRows.contains(row) {
-            if let closest = validRows.min(by: { abs($0 - row) < abs($1 - row) }) {
-                row = closest
+        if row < minRow {
+            row = minRow
+        } else if row > maxRow {
+            row = maxRow
+        } else if dm.codeInfo(for: row) == nil {
+            if let next = dm.nextCodeRow(after: row) {
+                row = next
+            } else if let prev = dm.previousCodeRow(before: row) {
+                row = prev
             } else {
-                row = dm.minCodeRow
+                row = minRow
             }
         }
         let maxCol = dm.lineLength(at: row)
@@ -302,11 +321,17 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         }
         if let anchor = selectionAnchor {
             var anchorRow = anchor.row
-            if !validRows.contains(anchorRow) {
-                if let closest = validRows.min(by: { abs($0 - anchorRow) < abs($1 - anchorRow) }) {
-                    anchorRow = closest
+            if anchorRow < minRow {
+                anchorRow = minRow
+            } else if anchorRow > maxRow {
+                anchorRow = maxRow
+            } else if dm.codeInfo(for: anchorRow) == nil {
+                if let next = dm.nextCodeRow(after: anchorRow) {
+                    anchorRow = next
+                } else if let prev = dm.previousCodeRow(before: anchorRow) {
+                    anchorRow = prev
                 } else {
-                    anchorRow = dm.minCodeRow
+                    anchorRow = minRow
                 }
             }
             let anchorMaxCol = dm.lineLength(at: anchorRow)

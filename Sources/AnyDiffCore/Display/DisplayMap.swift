@@ -14,6 +14,11 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
     public var viewMode: DiffViewMode = .unified
 
     @Published public private(set) var displayLines: [DisplayLine] = []
+    public private(set) var codeLines: [DisplayCodeLineInfo] = []
+    public private(set) var codeLineCount: Int = 0
+    public private(set) var minCodeRow: Int = 0
+    public private(set) var maxCodeRow: Int = 0
+    private var codeInfoByRow: [MultiBufferRow: DisplayCodeLineInfo] = [:]
 
     public init(multiBuffer: MultiBuffer, reviewManager: ReviewManager) {
         self.multiBuffer = multiBuffer
@@ -25,6 +30,8 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
     public func rebuild() {
         var lines: [DisplayLine] = []
         var runningMBRow = 0
+        var cachedCodeLines: [DisplayCodeLineInfo] = []
+        var rowMap: [MultiBufferRow: DisplayCodeLineInfo] = [:]
 
         for (excerptIdx, excerpt) in multiBuffer.excerpts.enumerated() {
             guard let buffer = multiBuffer.buffer(for: excerpt.bufferId) else {
@@ -152,6 +159,8 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
                     expandInfo: expandInfo
                 )
                 lines.append(.code(codeInfo))
+                cachedCodeLines.append(codeInfo)
+                rowMap[mbRow] = codeInfo
 
                 // Check for inline review comments on this line
                 let lineForComment = dLine.newLineNumber ?? dLine.oldLineNumber ?? (bRow + 1)
@@ -195,41 +204,18 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
             }
         }
 
+        self.codeLines = cachedCodeLines
+        self.codeLineCount = cachedCodeLines.count
+        self.minCodeRow = cachedCodeLines.first?.multiBufferRow ?? 0
+        self.maxCodeRow = cachedCodeLines.last?.multiBufferRow ?? 0
+        self.codeInfoByRow = rowMap
         self.displayLines = lines
     }
 
     // MARK: - Lookups and Mapping Helpers
 
-    public var codeLines: [DisplayCodeLineInfo] {
-        displayLines.compactMap {
-            if case .code(let info) = self.wrappedLine($0) { return info }
-            return nil
-        }
-    }
-
-    private func wrappedLine(_ line: DisplayLine) -> DisplayLine {
-        line
-    }
-
-    public var codeLineCount: Int {
-        codeLines.count
-    }
-
-    public var minCodeRow: Int {
-        codeLines.first?.multiBufferRow ?? 0
-    }
-
-    public var maxCodeRow: Int {
-        codeLines.last?.multiBufferRow ?? 0
-    }
-
     public func codeInfo(for multiBufferRow: MultiBufferRow) -> DisplayCodeLineInfo? {
-        for line in displayLines {
-            if case .code(let info) = line, info.multiBufferRow == multiBufferRow {
-                return info
-            }
-        }
-        return nil
+        codeInfoByRow[multiBufferRow]
     }
 
     public func lineText(at multiBufferRow: MultiBufferRow) -> String? {

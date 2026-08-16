@@ -61,7 +61,6 @@ public struct EditorHostView: NSViewRepresentable {
         if editorView.isEditable != isEditable {
             editorView.isEditable = isEditable
         }
-        editorView.invalidateLayout()
 
         if let path = selectedFilePath, path != context.coordinator.lastScrolledFilePath {
             context.coordinator.lastScrolledFilePath = path

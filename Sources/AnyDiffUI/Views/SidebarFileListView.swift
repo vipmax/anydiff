@@ -113,7 +113,7 @@ public struct SidebarFileListView: View {
                         .background(Color.accentColor.opacity(0.12))
                         .cornerRadius(4)
                 } else {
-                    let totalReviewed = fileDiffs.filter { reviewManager.isFileReviewed(filePath: $0.displayPath) }.count
+                    let totalReviewed = fileDiffs.lazy.filter { reviewManager.reviewedFiles.contains($0.displayPath) }.count
                     Text("\(totalReviewed)/\(fileDiffs.count) reviewed")
                         .font(.system(size: 10))
                         .foregroundColor(.secondary)

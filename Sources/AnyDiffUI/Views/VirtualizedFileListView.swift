@@ -61,19 +61,16 @@ public struct VirtualizedFileListView: NSViewRepresentable {
         context.coordinator.parent = self
         guard let tableView = context.coordinator.tableView else { return }
 
-        let previousCount = context.coordinator.cachedFiles.count
-        context.coordinator.cachedFiles = files
+        let filesChanged = context.coordinator.cachedFiles != files
+        let themeChanged = context.coordinator.cachedThemeId != theme.id
+        let reviewedChanged = context.coordinator.cachedReviewedSet != reviewManager.reviewedFiles
 
-        if previousCount != files.count || context.coordinator.needsFullReload {
+        if filesChanged || themeChanged || reviewedChanged || context.coordinator.needsFullReload {
+            context.coordinator.cachedFiles = files
+            context.coordinator.cachedThemeId = theme.id
+            context.coordinator.cachedReviewedSet = reviewManager.reviewedFiles
             context.coordinator.needsFullReload = false
             tableView.reloadData()
-        } else {
-            // Update visible rows only
-            let visibleRows = tableView.rows(in: tableView.visibleRect)
-            if visibleRows.length > 0 {
-                let indexSet = IndexSet(integersIn: visibleRows.location..<(visibleRows.location + visibleRows.length))
-                tableView.reloadData(forRowIndexes: indexSet, columnIndexes: IndexSet(integer: 0))
-            }
         }
 
         // Sync selection
@@ -91,11 +88,15 @@ public struct VirtualizedFileListView: NSViewRepresentable {
         var parent: VirtualizedFileListView
         weak var tableView: NSTableView?
         var cachedFiles: [FileDiff] = []
+        var cachedThemeId: String = ""
+        var cachedReviewedSet: Set<String> = []
         var needsFullReload: Bool = true
 
         init(_ parent: VirtualizedFileListView) {
             self.parent = parent
             self.cachedFiles = parent.files
+            self.cachedThemeId = parent.theme.id
+            self.cachedReviewedSet = parent.reviewManager.reviewedFiles
         }
 
         public func numberOfRows(in tableView: NSTableView) -> Int {
@@ -159,17 +160,16 @@ final class CustomTableRowView: NSTableRowView {
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        if let existing = trackingArea {
-            removeTrackingArea(existing)
+        if trackingArea == nil {
+            let area = NSTrackingArea(
+                rect: .zero,
+                options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+                owner: self,
+                userInfo: nil
+            )
+            addTrackingArea(area)
+            trackingArea = area
         }
-        let area = NSTrackingArea(
-            rect: bounds,
-            options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
-            owner: self,
-            userInfo: nil
-        )
-        addTrackingArea(area)
-        trackingArea = area
     }
 
     override func drawSelection(in dirtyRect: NSRect) {
@@ -194,6 +194,16 @@ final class FileTableCellView: NSTableCellView {
     private let dirLabel = NSTextField(labelWithString: "")
     private let additionsLabel = NSTextField(labelWithString: "")
     private let deletionsLabel = NSTextField(labelWithString: "")
+
+    private static let reviewedImage: NSImage? = {
+        let config = NSImage.SymbolConfiguration(pointSize: 12, weight: .regular)
+        return NSImage(systemSymbolName: "checkmark.circle.fill", accessibilityDescription: "Reviewed")?.withSymbolConfiguration(config)
+    }()
+
+    private static let unreviewedImage: NSImage? = {
+        let config = NSImage.SymbolConfiguration(pointSize: 12, weight: .regular)
+        return NSImage(systemSymbolName: "circle", accessibilityDescription: "Unreviewed")?.withSymbolConfiguration(config)
+    }()
 
     private var onToggleReviewed: (() -> Void)?
 
@@ -290,12 +300,8 @@ final class FileTableCellView: NSTableCellView {
         self.onToggleReviewed = onToggleReviewed
 
         // Checkmark Icon
-        let checkImageName = isReviewed ? "checkmark.circle.fill" : "circle"
-        if let img = NSImage(systemSymbolName: checkImageName, accessibilityDescription: "Reviewed") {
-            let config = NSImage.SymbolConfiguration(pointSize: 12, weight: .regular)
-            checkButton.image = img.withSymbolConfiguration(config)
-            checkButton.contentTintColor = isReviewed ? .systemGreen : .secondaryLabelColor.withAlphaComponent(0.6)
-        }
+        checkButton.image = isReviewed ? Self.reviewedImage : Self.unreviewedImage
+        checkButton.contentTintColor = isReviewed ? .systemGreen : .secondaryLabelColor.withAlphaComponent(0.6)
 
         // Status Badge
         let symbol: String
