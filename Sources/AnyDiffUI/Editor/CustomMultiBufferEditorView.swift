@@ -640,35 +640,53 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         CTLineDraw(ctLine, context)
         context.restoreGState()
 
-        // Diff Badges (+N -M)
-        let badgeX: CGFloat = min(bounds.width - 150, 36 + CGFloat(info.filePath.count * 8))
-        if info.additions > 0 {
-            let addAttr: [NSAttributedString.Key: Any] = [
-                .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .bold),
-                .foregroundColor: theme.diffAddedGutter
-            ]
-            let addStr = NSAttributedString(string: "+\(info.additions)", attributes: addAttr)
-            let addLine = CTLineCreateWithAttributedString(addStr)
-            context.saveGState()
-            context.textMatrix = .identity
-            context.translateBy(x: badgeX, y: rect.minY + 22)
-            context.scaleBy(x: 1.0, y: -1.0)
-            CTLineDraw(addLine, context)
-            context.restoreGState()
-        }
+        // Diff Badges (+N -M) floated to the right edge of header
+        var rightBadgeX = bounds.width + scrollOffsetX - 20
 
+        var delLine: CTLine?
+        var delWidth: CGFloat = 0
         if info.deletions > 0 {
             let delAttr: [NSAttributedString.Key: Any] = [
                 .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .bold),
                 .foregroundColor: theme.diffDeletedGutter
             ]
             let delStr = NSAttributedString(string: "-\(info.deletions)", attributes: delAttr)
-            let delLine = CTLineCreateWithAttributedString(delStr)
+            let line = CTLineCreateWithAttributedString(delStr)
+            delWidth = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
+            delLine = line
+        }
+
+        var addLine: CTLine?
+        var addWidth: CGFloat = 0
+        if info.additions > 0 {
+            let addAttr: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .bold),
+                .foregroundColor: theme.diffAddedGutter
+            ]
+            let addStr = NSAttributedString(string: "+\(info.additions)", attributes: addAttr)
+            let line = CTLineCreateWithAttributedString(addStr)
+            addWidth = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
+            addLine = line
+        }
+
+        if let delLine = delLine {
+            rightBadgeX -= delWidth
             context.saveGState()
             context.textMatrix = .identity
-            context.translateBy(x: badgeX + 45, y: rect.minY + 22)
+            context.translateBy(x: rightBadgeX, y: rect.minY + 22)
             context.scaleBy(x: 1.0, y: -1.0)
             CTLineDraw(delLine, context)
+            context.restoreGState()
+            rightBadgeX -= 12 // Spacing between + and - badges
+        }
+
+        if let addLine = addLine {
+            rightBadgeX -= addWidth
+            context.saveGState()
+            context.textMatrix = .identity
+            context.translateBy(x: rightBadgeX, y: rect.minY + 22)
+            context.scaleBy(x: 1.0, y: -1.0)
+            CTLineDraw(addLine, context)
             context.restoreGState()
         }
     }
