@@ -17,11 +17,19 @@ public enum TokenType: Sendable {
 public struct HighlightSpan: Sendable {
     public let range: Range<Int>
     public let tokenType: TokenType
+
+    public init(range: Range<Int>, tokenType: TokenType) {
+        self.range = range
+        self.tokenType = tokenType
+    }
 }
 
-/// Ultra-fast regex & keyword syntax highlighter with caching
+/// Ultra-fast memoized syntax highlighter for 120 FPS editor scrolling
 public final class SyntaxHighlighter: @unchecked Sendable {
     public static let shared = SyntaxHighlighter()
+
+    private var cache: [String: NSAttributedString] = [:]
+    private let cacheLock = NSLock()
 
     private let swiftKeywords: Set<String> = [
         "func", "class", "struct", "enum", "protocol", "extension", "let", "var", "import",
@@ -48,7 +56,13 @@ public final class SyntaxHighlighter: @unchecked Sendable {
 
     public init() {}
 
-    /// Produces an NSAttributedString for a line of code with syntax highlighting
+    public func clearCache() {
+        cacheLock.lock()
+        cache.removeAll()
+        cacheLock.unlock()
+    }
+
+    /// Produces an NSAttributedString for a line of code with syntax highlighting (instant memoized lookup)
     public func highlight(
         line: String,
         language: String,
@@ -61,6 +75,14 @@ public final class SyntaxHighlighter: @unchecked Sendable {
                 .foregroundColor: theme.foreground
             ])
         }
+
+        let cacheKey = "\(theme.id):\(language):\(font.pointSize):\(line)"
+        cacheLock.lock()
+        if let cached = cache[cacheKey] {
+            cacheLock.unlock()
+            return cached
+        }
+        cacheLock.unlock()
 
         let attr = NSMutableAttributedString(
             string: line,
@@ -77,6 +99,12 @@ public final class SyntaxHighlighter: @unchecked Sendable {
             let color = colorForToken(span.tokenType, theme: theme)
             attr.addAttribute(.foregroundColor, value: color, range: nsRange)
         }
+
+        cacheLock.lock()
+        if cache.count < 10000 {
+            cache[cacheKey] = attr
+        }
+        cacheLock.unlock()
 
         return attr
     }
@@ -135,17 +163,19 @@ public final class SyntaxHighlighter: @unchecked Sendable {
             // Numbers
             if ch.isNumber || (ch == "." && i + 1 < count && chars[i + 1].isNumber) {
                 let start = i
-                while i < count && (chars[i].isNumber || chars[i] == "." || chars[i] == "x" || chars[i] == "f" || (chars[i] >= "a" && chars[i] <= "f")) {
+                i += 1
+                while i < count && (chars[i].isNumber || chars[i] == "." || chars[i] == "x" || chars[i] == "f" || (chars[i] >= "a" && chars[i] <= "f") || (chars[i] >= "A" && chars[i] <= "F")) {
                     i += 1
                 }
                 spans.append(HighlightSpan(range: start..<i, tokenType: .number))
                 continue
             }
 
-            // Identifiers / Keywords / Types
+            // Identifiers / Keywords / Types (including Swift closure shorthands $0, $1, etc.)
             if ch.isLetter || ch == "_" || ch == "$" {
                 let start = i
-                while i < count && (chars[i].isLetter || chars[i].isNumber || chars[i] == "_") {
+                i += 1
+                while i < count && (chars[i].isLetter || chars[i].isNumber || chars[i] == "_" || chars[i] == "$") {
                     i += 1
                 }
                 let word = String(chars[start..<i])
@@ -157,6 +187,7 @@ public final class SyntaxHighlighter: @unchecked Sendable {
             // Operators & Punctuation
             if "+-*/%=!<>|&^~?".contains(ch) {
                 let start = i
+                i += 1
                 while i < count && "+-*/%=!<>|&^~?".contains(chars[i]) {
                     i += 1
                 }

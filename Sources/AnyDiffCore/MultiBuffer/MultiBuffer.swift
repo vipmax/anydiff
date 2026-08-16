@@ -154,7 +154,13 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
             undoManager.push(transaction: transaction)
         }
 
+        // Save directly to file on disk on every edit
+        if let base = baseDirectory {
+            try? buf.saveToFile(baseDirectory: base)
+        }
+
         version &+= 1
+        onEdit?()
 
         let newEndMBRow = multiBufferRow(excerptIndex: startLoc.excerptIndex, bufferRow: newBufRange.upperBound.row) ?? range.lowerBound.row
         let newEndPoint = MultiBufferPoint(row: newEndMBRow, column: newBufRange.upperBound.column)
@@ -172,6 +178,25 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
     public func delete(range: Range<MultiBufferPoint>) -> MultiBufferPoint {
         let res = replace(range: range, with: "")
         return res.lowerBound
+    }
+
+    // MARK: - Saving & Dirty State
+
+    public var baseDirectory: String?
+    public var onEdit: (() -> Void)?
+
+    public var isDirty: Bool {
+        buffers.values.contains { $0.isDirty }
+    }
+
+    @discardableResult
+    public func saveAllDirtyBuffers() throws -> [String] {
+        var savedFiles: [String] = []
+        for buffer in buffers.values where buffer.isDirty {
+            try buffer.saveToFile(baseDirectory: baseDirectory)
+            savedFiles.append(buffer.filePath)
+        }
+        return savedFiles
     }
 
     // MARK: - Context Expansion

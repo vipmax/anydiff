@@ -6,13 +6,22 @@ public final class WordDiffEngine: Sendable {
 
     public init() {}
 
+    public struct Token: Sendable {
+        public let text: String
+        public let range: Range<Int>
+    }
+
     /// Computes diff highlight ranges for a pair of old line and new line
     public func diffWords(oldText: String, newText: String) -> (oldDiffRanges: [Range<Int>], newDiffRanges: [Range<Int>]) {
+        guard oldText != newText else { return ([], []) }
+
         let oldTokens = tokenize(oldText)
         let newTokens = tokenize(newText)
 
         guard !oldTokens.isEmpty && !newTokens.isEmpty else {
-            return ([], [])
+            let oldR: [Range<Int>] = oldText.isEmpty ? [] : [0..<oldText.count]
+            let newR: [Range<Int>] = newText.isEmpty ? [] : [0..<newText.count]
+            return (oldR, newR)
         }
 
         let lcs = computeLCS(oldTokens.map(\.text), newTokens.map(\.text))
@@ -27,30 +36,51 @@ public final class WordDiffEngine: Sendable {
         while oldIdx < oldTokens.count || newIdx < newTokens.count {
             if lcsIdx < lcs.count && oldIdx < oldTokens.count && newIdx < newTokens.count &&
                 oldTokens[oldIdx].text == lcs[lcsIdx] && newTokens[newIdx].text == lcs[lcsIdx] {
-                // Matched token
                 oldIdx += 1
                 newIdx += 1
                 lcsIdx += 1
             } else {
-                // Discrepancy range
-                let oldStartToken = oldIdx
+                let oldStart = oldIdx
                 while oldIdx < oldTokens.count && (lcsIdx >= lcs.count || oldTokens[oldIdx].text != lcs[lcsIdx]) {
                     oldIdx += 1
                 }
-                if oldIdx > oldStartToken {
-                    let charStart = oldTokens[oldStartToken].range.lowerBound
+                if oldIdx > oldStart {
+                    let charStart = oldTokens[oldStart].range.lowerBound
                     let charEnd = oldTokens[oldIdx - 1].range.upperBound
                     oldDiffs.append(charStart..<charEnd)
                 }
 
-                let newStartToken = newIdx
+                let newStart = newIdx
                 while newIdx < newTokens.count && (lcsIdx >= lcs.count || newTokens[newIdx].text != lcs[lcsIdx]) {
                     newIdx += 1
                 }
-                if newIdx > newStartToken {
-                    let charStart = newTokens[newStartToken].range.lowerBound
+                if newIdx > newStart {
+                    let charStart = newTokens[newStart].range.lowerBound
                     let charEnd = newTokens[newIdx - 1].range.upperBound
                     newDiffs.append(charStart..<charEnd)
+                }
+
+                // Safety guarantee: always advance to prevent any infinite loop
+                if oldIdx == oldStart && newIdx == newStart {
+                    if oldIdx < oldTokens.count && (lcsIdx >= lcs.count || oldTokens[oldIdx].text != lcs[lcsIdx]) {
+                        oldDiffs.append(oldTokens[oldIdx].range)
+                        oldIdx += 1
+                    } else if newIdx < newTokens.count && (lcsIdx >= lcs.count || newTokens[newIdx].text != lcs[lcsIdx]) {
+                        newDiffs.append(newTokens[newIdx].range)
+                        newIdx += 1
+                    } else {
+                        if oldIdx < oldTokens.count {
+                            oldDiffs.append(oldTokens[oldIdx].range)
+                            oldIdx += 1
+                        }
+                        if newIdx < newTokens.count {
+                            newDiffs.append(newTokens[newIdx].range)
+                            newIdx += 1
+                        }
+                        if lcsIdx < lcs.count {
+                            lcsIdx += 1
+                        }
+                    }
                 }
             }
         }
@@ -58,52 +88,42 @@ public final class WordDiffEngine: Sendable {
         return (oldDiffs, newDiffs)
     }
 
-    private struct Token {
-        let text: String
-        let range: Range<Int>
-    }
-
     /// Splits text into word/punctuation/whitespace tokens with character offsets
-    private func tokenize(_ text: String) -> [Token] {
+    public func tokenize(_ text: String) -> [Token] {
         var tokens: [Token] = []
-        let utf16 = Array(text.utf16)
+        let chars = Array(text)
+        let count = chars.count
         var i = 0
 
-        while i < utf16.count {
+        while i < count {
             let start = i
-            let char = Character(UnicodeScalar(utf16[i])!)
+            let ch = chars[i]
 
-            if char.isWhitespace {
-                while i < utf16.count && Character(UnicodeScalar(utf16[i])!).isWhitespace {
+            if ch.isWhitespace {
+                while i < count && chars[i].isWhitespace {
                     i += 1
                 }
-            } else if char.isLetter || char.isNumber || char == "_" {
-                while i < utf16.count {
-                    let c = Character(UnicodeScalar(utf16[i])!)
-                    if c.isLetter || c.isNumber || c == "_" {
-                        i += 1
-                    } else {
-                        break
-                    }
+            } else if ch.isLetter || ch.isNumber || ch == "_" {
+                while i < count && (chars[i].isLetter || chars[i].isNumber || chars[i] == "_") {
+                    i += 1
                 }
             } else {
-                // Single punctuation or operator
                 i += 1
             }
 
-            let startIdx = text.index(text.startIndex, offsetBy: start)
-            let endIdx = text.index(text.startIndex, offsetBy: i)
-            let tokenStr = String(text[startIdx..<endIdx])
+            let tokenStr = String(chars[start..<i])
             tokens.append(Token(text: tokenStr, range: start..<i))
         }
 
         return tokens
     }
 
-    /// Computes Longest Common Subsequence of tokens
+    /// Computes Longest Common Subsequence of tokens (capped at 200 tokens)
     private func computeLCS(_ a: [String], _ b: [String]) -> [String] {
-        let n = a.count
-        let m = b.count
+        let n = min(a.count, 200)
+        let m = min(b.count, 200)
+        guard n > 0 && m > 0 else { return [] }
+
         var dp = Array(repeating: Array(repeating: 0, count: m + 1), count: n + 1)
 
         for i in 0..<n {

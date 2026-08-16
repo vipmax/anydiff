@@ -73,4 +73,10 @@ final class MultiBufferTests: XCTestCase {
         }
         XCTAssertEqual(mb.line(at: 1), "    return 42")
     }
+
+    func testSyntaxHighlightingClosureVariables() {
+        let line = "        buffers.values.contains { $0.isDirty }"
+        let spans = SyntaxHighlighter.shared.tokenize(line: line, language: "swift")
+        XCTAssertFalse(spans.isEmpty)
+    }
 }

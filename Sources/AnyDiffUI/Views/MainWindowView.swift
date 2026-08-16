@@ -10,7 +10,7 @@ public struct MainWindowView: View {
 
     @State private var fileDiffs: [FileDiff] = []
     @State private var selectedFilePath: String? = nil
-    @State private var selectedTheme: Theme = .zedDark
+    @State private var selectedTheme: Theme = .zedGray
     @State private var viewMode: DiffViewMode = .unified
     @State private var contextLines: Int = 3
     @State private var fontSize: CGFloat = 13
@@ -119,6 +119,7 @@ public struct MainWindowView: View {
 
     public func loadCurrentDirectoryDiff() {
         let currentDir = initialPath ?? FileManager.default.currentDirectoryPath
+        multiBuffer.baseDirectory = currentDir
         if let diff = fetchGitDiff(at: currentDir), !diff.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             loadDiff(text: diff)
         } else {

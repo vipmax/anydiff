@@ -27,26 +27,15 @@ public struct EditorHostView: NSViewRepresentable {
         Coordinator(self)
     }
 
-    public func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = NSScrollView()
-        scrollView.hasVerticalScroller = true
-        scrollView.hasHorizontalScroller = true
-        scrollView.autohidesScrollers = false
-        scrollView.borderType = .noBorder
-        scrollView.drawsBackground = false
-
+    public func makeNSView(context: Context) -> CustomMultiBufferEditorView {
         let editorView = CustomMultiBufferEditorView(displayMap: displayMap, theme: theme)
         editorView.font = .monospacedSystemFont(ofSize: fontSize, weight: .regular)
         editorView.delegate = context.coordinator
-
-        scrollView.documentView = editorView
         context.coordinator.editorView = editorView
-
-        return scrollView
+        return editorView
     }
 
-    public func updateNSView(_ nsView: NSScrollView, context: Context) {
-        guard let editorView = nsView.documentView as? CustomMultiBufferEditorView else { return }
+    public func updateNSView(_ editorView: CustomMultiBufferEditorView, context: Context) {
         if editorView.displayMap !== displayMap {
             editorView.displayMap = displayMap
         }

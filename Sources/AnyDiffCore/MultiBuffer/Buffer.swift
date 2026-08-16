@@ -198,6 +198,24 @@ public final class Buffer: Identifiable, @unchecked Sendable {
         return clamp(point: start)
     }
 
+    public var isFullFile: Bool = true
+    public var absolutePath: String?
+
+    public func saveToFile(baseDirectory: String? = nil) throws {
+        let resolvedPath: String
+        if let abs = absolutePath {
+            resolvedPath = abs
+        } else if let base = baseDirectory {
+            resolvedPath = URL(fileURLWithPath: base).appendingPathComponent(filePath).path
+        } else {
+            resolvedPath = filePath
+        }
+
+        let fullText = text()
+        try fullText.write(to: URL(fileURLWithPath: resolvedPath), atomically: true, encoding: .utf8)
+        _isDirty = false
+    }
+
     public func markClean() {
         _isDirty = false
     }

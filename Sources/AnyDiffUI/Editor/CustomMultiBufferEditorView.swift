@@ -18,7 +18,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
         }
     }
 
-    public var theme: Theme = .zedDark {
+    public var theme: Theme = .zedGray {
         didSet {
             needsDisplay = true
         }
@@ -42,11 +42,26 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
     public private(set) var foldGapHeight: CGFloat = 26
     public private(set) var commentHeight: CGFloat = 64
 
+    // Virtual Scrolling
+    public var scrollOffsetY: CGFloat = 0 {
+        didSet {
+            needsDisplay = true
+        }
+    }
+    public var scrollOffsetX: CGFloat = 0 {
+        didSet {
+            needsDisplay = true
+        }
+    }
+    public private(set) var totalDocumentHeight: CGFloat = 0
+    public private(set) var totalDocumentWidth: CGFloat = 0
+
     // Selection & Cursor State
     public var cursorPoint: MultiBufferPoint = .zero {
         didSet {
             resetCursorBlink()
             notifyCursorChange()
+            ensureCursorVisible()
             needsDisplay = true
         }
     }
@@ -81,8 +96,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
     }
 
     private func setup() {
-        wantsLayer = true
-        layerContentsRedrawPolicy = .onSetNeedsDisplay
+        canDrawConcurrently = true
         updateFontMetrics()
         startCursorBlink()
     }
@@ -114,9 +128,22 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
         self.trackingArea = area
     }
 
+    public override func scrollWheel(with event: NSEvent) {
+        let mult: CGFloat = event.hasPreciseScrollingDeltas ? 1.0 : 24.0
+        let dy = event.scrollingDeltaY * mult
+        let dx = event.scrollingDeltaX * mult
+
+        let maxScrollY = max(0, totalDocumentHeight - bounds.height)
+        let maxScrollX = max(0, totalDocumentWidth - bounds.width)
+
+        scrollOffsetY = max(0, min(maxScrollY, scrollOffsetY - dy))
+        scrollOffsetX = max(0, min(maxScrollX, scrollOffsetX - dx))
+    }
+
     public func invalidateLayout() {
         guard let displayMap = displayMap else {
-            frame.size = .zero
+            totalDocumentHeight = 0
+            totalDocumentWidth = 0
             needsDisplay = true
             return
         }
@@ -138,17 +165,45 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
         }
         totalHeight += 200 // Scroll margin at bottom
 
-        // Compute needed width based on longest line + gutter
         let charWidth = font.pointSize * 0.75
-        let neededWidth = gutterWidth + CGFloat(maxLineChars) * charWidth + 300
-        let viewportWidth = enclosingScrollView?.contentSize.width ?? bounds.width
-        let finalWidth = max(viewportWidth, neededWidth, bounds.width, 1000)
+        let neededWidth = gutterWidth + CGFloat(maxLineChars) * charWidth + 200
 
-        let newSize = NSSize(width: finalWidth, height: max(bounds.height, totalHeight))
-        if frame.size != newSize {
-            frame.size = newSize
-        }
+        totalDocumentHeight = totalHeight
+        totalDocumentWidth = max(bounds.width, neededWidth)
+
+        let maxScrollY = max(0, totalDocumentHeight - bounds.height)
+        let maxScrollX = max(0, totalDocumentWidth - bounds.width)
+        scrollOffsetY = max(0, min(maxScrollY, scrollOffsetY))
+        scrollOffsetX = max(0, min(maxScrollX, scrollOffsetX))
+
         needsDisplay = true
+    }
+
+    private func ensureCursorVisible() {
+        guard let displayMap = displayMap else { return }
+        var currentY: CGFloat = 0
+        for line in displayMap.displayLines {
+            let height: CGFloat
+            switch line {
+            case .excerptHeader: height = excerptHeaderHeight
+            case .code: height = lineHeight
+            case .foldGap: height = foldGapHeight
+            case .inlineComment: height = commentHeight
+            }
+
+            if case .code(let info) = line, info.multiBufferRow == cursorPoint.row {
+                let cursorY = currentY
+                let margin: CGFloat = 30
+                if cursorY < scrollOffsetY + margin {
+                    scrollOffsetY = max(0, cursorY - margin)
+                } else if cursorY + height > scrollOffsetY + bounds.height - margin {
+                    let maxScrollY = max(0, totalDocumentHeight - bounds.height)
+                    scrollOffsetY = min(maxScrollY, cursorY + height - bounds.height + margin)
+                }
+                return
+            }
+            currentY += height
+        }
     }
 
     // MARK: - Cursor Blinking
@@ -184,28 +239,15 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
             return
         }
 
-        let fullWidth = max(bounds.width, dirtyRect.maxX, frame.width, 1000)
-
-        // 1. Draw Editor Canvas Background
+        // 1. Draw Canvas Background
         context.setFillColor(theme.background.cgColor)
-        context.fill(CGRect(x: 0, y: dirtyRect.minY, width: fullWidth, height: dirtyRect.height))
+        context.fill(bounds)
 
-        // 2. Draw Gutter Background & Border
-        let gutterRect = CGRect(x: 0, y: dirtyRect.minY, width: gutterWidth, height: dirtyRect.height)
-        context.setFillColor(theme.gutterBackground.cgColor)
-        context.fill(gutterRect)
-
-        context.setStrokeColor(theme.excerptHeaderBorder.withAlphaComponent(0.4).cgColor)
-        context.setLineWidth(1.0)
-        context.strokeLineSegments(between: [
-            CGPoint(x: gutterWidth, y: dirtyRect.minY),
-            CGPoint(x: gutterWidth, y: dirtyRect.maxY)
-        ])
-
-        // 3. Find Visible Line Indices
+        // 2. Draw Visible Lines in Virtual Coordinates
         var currentY: CGFloat = 0
-        let visibleMinY = dirtyRect.minY
-        let visibleMaxY = dirtyRect.maxY
+        let visibleMinY = scrollOffsetY
+        let visibleMaxY = scrollOffsetY + bounds.height
+        let lineWidth = max(bounds.width + scrollOffsetX, totalDocumentWidth)
 
         for (lineIdx, line) in displayMap.displayLines.enumerated() {
             let height: CGFloat
@@ -216,25 +258,91 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
             case .inlineComment: height = commentHeight
             }
 
-            let lineFrame = CGRect(x: 0, y: currentY, width: fullWidth, height: height)
+            let lineMinY = currentY
             currentY += height
 
-            // Skip lines outside dirtyRect
-            guard lineFrame.maxY >= visibleMinY && lineFrame.minY <= visibleMaxY else {
+            // Early break once passed visible viewport
+            if lineMinY > visibleMaxY {
+                break
+            }
+
+            // Skip lines above visible viewport
+            guard lineMinY + height >= visibleMinY else {
                 continue
             }
 
-            // Draw visible line based on its type
+            // Screen frame for this line
+            let screenLineFrame = CGRect(
+                x: -scrollOffsetX,
+                y: lineMinY - scrollOffsetY,
+                width: lineWidth,
+                height: height
+            )
+
             switch line {
             case .excerptHeader(let info):
-                drawExcerptHeader(info: info, in: lineFrame, context: context)
+                drawExcerptHeader(info: info, in: screenLineFrame, context: context)
             case .code(let info):
-                drawCodeLine(info: info, lineIdx: lineIdx, in: lineFrame, context: context)
+                drawCodeLine(info: info, lineIdx: lineIdx, in: screenLineFrame, context: context)
             case .foldGap(let info):
-                drawFoldGap(info: info, lineIdx: lineIdx, in: lineFrame, context: context)
+                drawFoldGap(info: info, lineIdx: lineIdx, in: screenLineFrame, context: context)
             case .inlineComment(let info):
-                drawInlineComment(info: info, in: lineFrame, context: context)
+                drawInlineComment(info: info, in: screenLineFrame, context: context)
             }
+        }
+
+        // 3. Draw Sticky Gutter Background on the left
+        let gutterRect = CGRect(x: 0, y: 0, width: gutterWidth, height: bounds.height)
+        context.setFillColor(theme.gutterBackground.cgColor)
+        context.fill(gutterRect)
+
+        context.setStrokeColor(theme.excerptHeaderBorder.withAlphaComponent(0.4).cgColor)
+        context.setLineWidth(1.0)
+        context.strokeLineSegments(between: [
+            CGPoint(x: gutterWidth, y: 0),
+            CGPoint(x: gutterWidth, y: bounds.height)
+        ])
+
+        // Re-draw gutter numbers for visible code lines on top of sticky gutter
+        currentY = 0
+        for (lineIdx, line) in displayMap.displayLines.enumerated() {
+            let height: CGFloat
+            switch line {
+            case .excerptHeader: height = excerptHeaderHeight
+            case .code: height = lineHeight
+            case .foldGap: height = foldGapHeight
+            case .inlineComment: height = commentHeight
+            }
+
+            let lineMinY = currentY
+            currentY += height
+
+            if lineMinY > visibleMaxY { break }
+            guard lineMinY + height >= visibleMinY else { continue }
+
+            if case .code(let info) = line {
+                let screenGutterRect = CGRect(
+                    x: 0,
+                    y: lineMinY - scrollOffsetY,
+                    width: gutterWidth,
+                    height: height
+                )
+                drawGutter(for: info, lineIdx: lineIdx, in: screenGutterRect, context: context)
+            }
+        }
+
+        // 4. Draw Overlay Scrollbar on right
+        if totalDocumentHeight > bounds.height {
+            let maxScrollY = totalDocumentHeight - bounds.height
+            let progress = maxScrollY > 0 ? (scrollOffsetY / maxScrollY) : 0
+            let thumbHeight = max(30, (bounds.height / totalDocumentHeight) * bounds.height)
+            let thumbY = progress * (bounds.height - thumbHeight)
+            let thumbRect = CGRect(x: bounds.width - 7, y: thumbY, width: 4, height: thumbHeight)
+
+            context.setFillColor(theme.gutterForeground.withAlphaComponent(0.4).cgColor)
+            let path = CGPath(roundedRect: thumbRect, cornerWidth: 2, cornerHeight: 2, transform: nil)
+            context.addPath(path)
+            context.fillPath()
         }
     }
 
@@ -555,6 +663,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
 
     public override func mouseMoved(with event: NSEvent) {
         let loc = convert(event.locationInWindow, from: nil)
+        let docY = loc.y + scrollOffsetY
         guard let displayMap = displayMap else { return }
 
         var currentY: CGFloat = 0
@@ -569,10 +678,14 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
             case .inlineComment: height = commentHeight
             }
 
-            let frame = CGRect(x: 0, y: currentY, width: bounds.width, height: height)
+            let lineMinY = currentY
             currentY += height
 
-            if frame.contains(loc) {
+            if lineMinY > docY {
+                break
+            }
+
+            if docY >= lineMinY && docY <= currentY {
                 if case .code = line, loc.x < gutterWidth {
                     foundGutterHover = idx
                 }
@@ -588,7 +701,9 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
 
     public override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
-        let point = convert(event.locationInWindow, from: nil)
+        let screenPoint = convert(event.locationInWindow, from: nil)
+        let docY = screenPoint.y + scrollOffsetY
+        let docX = screenPoint.x + scrollOffsetX
         guard let displayMap = displayMap else { return }
 
         var currentY: CGFloat = 0
@@ -601,13 +716,17 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
             case .inlineComment: height = commentHeight
             }
 
-            let frame = CGRect(x: 0, y: currentY, width: bounds.width, height: height)
+            let lineMinY = currentY
             currentY += height
 
-            if frame.contains(point) {
+            if lineMinY > docY {
+                break
+            }
+
+            if docY >= lineMinY && docY <= currentY {
                 switch line {
                 case .excerptHeader(let header):
-                    if point.x > bounds.width - 80 {
+                    if screenPoint.x > bounds.width - 80 {
                         displayMap.multiBuffer.toggleCollapse(at: header.excerptIndex)
                         displayMap.rebuild()
                         invalidateLayout()
@@ -619,7 +738,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
                     invalidateLayout()
                     return
                 case .code(let codeInfo):
-                    if point.x < gutterWidth {
+                    if screenPoint.x < gutterWidth {
                         // Click in gutter on '+' button
                         let targetLine = codeInfo.newLineNumber ?? codeInfo.oldLineNumber ?? (codeInfo.bufferRow + 1)
                         if let loc = displayMap.multiBuffer.location(for: codeInfo.multiBufferRow) {
@@ -631,7 +750,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
                         let text = codeInfo.text
                         let attr = SyntaxHighlighter.shared.highlight(line: text, language: codeInfo.language, font: font, theme: theme)
                         let ctLine = LineLayoutCache.shared.getOrCreateCTLine(attributedString: attr)
-                        let xOffset = max(0, point.x - (gutterWidth + 12))
+                        let xOffset = max(0, docX - (gutterWidth + 12))
                         let charIdx = LineLayoutCache.shared.characterIndex(in: ctLine, at: xOffset)
                         cursorPoint = MultiBufferPoint(row: codeInfo.multiBufferRow, column: min(text.count, charIdx))
                         selectionAnchor = cursorPoint
@@ -647,7 +766,9 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
     }
 
     public override func mouseDragged(with event: NSEvent) {
-        let point = convert(event.locationInWindow, from: nil)
+        let screenPoint = convert(event.locationInWindow, from: nil)
+        let docY = screenPoint.y + scrollOffsetY
+        let docX = screenPoint.x + scrollOffsetX
         guard let displayMap = displayMap else { return }
 
         var currentY: CGFloat = 0
@@ -660,15 +781,19 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
             case .inlineComment: height = commentHeight
             }
 
-            let frame = CGRect(x: 0, y: currentY, width: bounds.width, height: height)
+            let lineMinY = currentY
             currentY += height
 
-            if frame.contains(point) {
+            if lineMinY > docY {
+                break
+            }
+
+            if docY >= lineMinY && docY <= currentY {
                 if case .code(let codeInfo) = line {
                     let text = codeInfo.text
                     let attr = SyntaxHighlighter.shared.highlight(line: text, language: codeInfo.language, font: font, theme: theme)
                     let ctLine = LineLayoutCache.shared.getOrCreateCTLine(attributedString: attr)
-                    let xOffset = max(0, point.x - (gutterWidth + 12))
+                    let xOffset = max(0, docX - (gutterWidth + 12))
                     let charIdx = LineLayoutCache.shared.characterIndex(in: ctLine, at: xOffset)
                     cursorPoint = MultiBufferPoint(row: codeInfo.multiBufferRow, column: min(text.count, charIdx))
                     needsDisplay = true
@@ -855,6 +980,9 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
             for edit in transaction.edits.reversed() {
                 if let buf = mb.buffer(for: edit.bufferId) {
                     buf.replace(start: edit.range.lowerBound, end: edit.range.upperBound, with: edit.oldText)
+                    if let base = mb.baseDirectory {
+                        try? buf.saveToFile(baseDirectory: base)
+                    }
                 }
             }
             if let sel = transaction.selectionBefore {
@@ -873,6 +1001,9 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
             for edit in transaction.edits {
                 if let buf = mb.buffer(for: edit.bufferId) {
                     buf.replace(start: edit.range.lowerBound, end: edit.range.upperBound, with: edit.newText)
+                    if let base = mb.baseDirectory {
+                        try? buf.saveToFile(baseDirectory: base)
+                    }
                 }
             }
             displayMap.rebuild()
