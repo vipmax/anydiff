@@ -41,3 +41,20 @@ test-release:
 check:
     just build
     just test-release
+
+# Package AnyDiff.app bundle, ZIP, and DMG for distribution to other Macs.
+package:
+    ./scripts/package_app.sh
+
+# Alias for package
+app:
+    just package
+
+# Package and deploy AnyDiff.app directly to the second Mac (mvpa).
+deploy:
+    just package
+    scp dist/AnyDiff-macOS.zip dist/AnyDiff.dmg mvpa:~/Downloads/
+    ssh mvpa "cd ~/Downloads && rm -rf AnyDiff.app && unzip -q AnyDiff-macOS.zip && xattr -cr AnyDiff.app"
+    @echo "🚀 Deployed AnyDiff.app to second Mac ~/Downloads!"
+
+

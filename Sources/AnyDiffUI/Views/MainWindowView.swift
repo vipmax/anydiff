@@ -176,6 +176,15 @@ public struct MainWindowView: View {
         .onAppear {
             loadCurrentDirectoryDiff()
         }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffOpenProject"))) { _ in
+            openGitRepositoryFolder()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffReloadDiff"))) { _ in
+            loadCurrentDirectoryDiff()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffPasteDiff"))) { _ in
+            showPasteModal = true
+        }
     }
 
     // MARK: - Current Directory Diff Loading

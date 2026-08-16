@@ -6,3 +6,4 @@ Packages/
 *.xcworkspace
 xcuserdata/
 DerivedData/
+dist/
