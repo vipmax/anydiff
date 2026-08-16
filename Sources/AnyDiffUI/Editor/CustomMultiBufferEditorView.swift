@@ -300,7 +300,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
         context.setFillColor(theme.background.cgColor)
         context.fill(bounds)
 
-        // 2. Draw Visible Lines in Virtual Coordinates
+        // 2. Pass 1: Draw Code Lines (content that scrolls horizontally under gutter)
         var currentY: CGFloat = 0
         let visibleMinY = scrollOffsetY
         let visibleMaxY = scrollOffsetY + bounds.height
@@ -318,17 +318,9 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
             let lineMinY = currentY
             currentY += height
 
-            // Early break once passed visible viewport
-            if lineMinY > visibleMaxY {
-                break
-            }
+            if lineMinY > visibleMaxY { break }
+            guard lineMinY + height >= visibleMinY else { continue }
 
-            // Skip lines above visible viewport
-            guard lineMinY + height >= visibleMinY else {
-                continue
-            }
-
-            // Screen frame for this line
             let screenLineFrame = CGRect(
                 x: -scrollOffsetX,
                 y: lineMinY - scrollOffsetY,
@@ -336,31 +328,12 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
                 height: height
             )
 
-            switch line {
-            case .excerptHeader(let info):
-                drawExcerptHeader(info: info, in: screenLineFrame, context: context)
-            case .code(let info):
+            if case .code(let info) = line {
                 drawCodeLine(info: info, lineIdx: lineIdx, in: screenLineFrame, context: context)
-            case .foldGap(let info):
-                drawFoldGap(info: info, lineIdx: lineIdx, in: screenLineFrame, context: context)
-            case .inlineComment(let info):
-                drawInlineComment(info: info, in: screenLineFrame, context: context)
             }
         }
 
-        // 3. Draw Sticky Gutter Background on the left
-        let gutterRect = CGRect(x: 0, y: 0, width: gutterWidth, height: bounds.height)
-        context.setFillColor(theme.gutterBackground.cgColor)
-        context.fill(gutterRect)
-
-        context.setStrokeColor(theme.excerptHeaderBorder.withAlphaComponent(0.4).cgColor)
-        context.setLineWidth(1.0)
-        context.strokeLineSegments(between: [
-            CGPoint(x: gutterWidth, y: 0),
-            CGPoint(x: gutterWidth, y: bounds.height)
-        ])
-
-        // Re-draw gutter numbers for visible code lines on top of sticky gutter
+        // 3. Pass 2: Draw Sticky Gutters, Excerpt Headers, Fold Gaps & Comments (Sticky UI)
         currentY = 0
         for (lineIdx, line) in displayMap.displayLines.enumerated() {
             let height: CGFloat
@@ -377,14 +350,33 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
             if lineMinY > visibleMaxY { break }
             guard lineMinY + height >= visibleMinY else { continue }
 
-            if case .code(let info) = line {
-                let screenGutterRect = CGRect(
-                    x: 0,
-                    y: lineMinY - scrollOffsetY,
-                    width: gutterWidth,
-                    height: height
-                )
-                drawGutter(for: info, lineIdx: lineIdx, in: screenGutterRect, context: context)
+            let screenY = lineMinY - scrollOffsetY
+
+            switch line {
+            case .excerptHeader(let info):
+                let headerFrame = CGRect(x: 0, y: screenY, width: bounds.width, height: height)
+                drawExcerptHeader(info: info, in: headerFrame, context: context)
+
+            case .code(let info):
+                let gutterRect = CGRect(x: 0, y: screenY, width: gutterWidth, height: height)
+                // Draw gutter cell background & border
+                context.setFillColor(theme.gutterBackground.cgColor)
+                context.fill(gutterRect)
+                context.setStrokeColor(theme.excerptHeaderBorder.withAlphaComponent(0.4).cgColor)
+                context.setLineWidth(1.0)
+                context.strokeLineSegments(between: [
+                    CGPoint(x: gutterWidth, y: screenY),
+                    CGPoint(x: gutterWidth, y: screenY + height)
+                ])
+                drawGutter(for: info, lineIdx: lineIdx, in: gutterRect, context: context)
+
+            case .foldGap(let info):
+                let gapFrame = CGRect(x: 0, y: screenY, width: bounds.width, height: height)
+                drawFoldGap(info: info, lineIdx: lineIdx, in: gapFrame, context: context)
+
+            case .inlineComment(let info):
+                let commentFrame = CGRect(x: 0, y: screenY, width: bounds.width, height: height)
+                drawInlineComment(info: info, in: commentFrame, context: context)
             }
         }
 
