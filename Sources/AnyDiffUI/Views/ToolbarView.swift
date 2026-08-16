@@ -9,6 +9,7 @@ public struct ToolbarView: View {
     @ObservedObject public var reviewManager: ReviewManager
     public var onOpenGitRepo: () -> Void
     public var onPasteDiff: () -> Void
+    public var onReload: () -> Void
     public var onExpandAll: () -> Void
     public var onCollapseAll: () -> Void
 
@@ -20,6 +21,7 @@ public struct ToolbarView: View {
         reviewManager: ReviewManager,
         onOpenGitRepo: @escaping () -> Void,
         onPasteDiff: @escaping () -> Void,
+        onReload: @escaping () -> Void,
         onExpandAll: @escaping () -> Void,
         onCollapseAll: @escaping () -> Void
     ) {
@@ -30,14 +32,26 @@ public struct ToolbarView: View {
         self.reviewManager = reviewManager
         self.onOpenGitRepo = onOpenGitRepo
         self.onPasteDiff = onPasteDiff
+        self.onReload = onReload
         self.onExpandAll = onExpandAll
         self.onCollapseAll = onCollapseAll
     }
 
     public var body: some View {
         HStack(spacing: 12) {
+            // Reload Git Diff button
+            Button(action: onReload) {
+                Image(systemName: "arrow.clockwise")
+            }
+            .help("Reload Git Diff (Cmd+R)")
+            .keyboardShortcut("r", modifiers: .command)
+            .buttonStyle(.plain)
+
             // Source Buttons
             Menu {
+                Button(action: onReload) {
+                    Label("Reload Current Directory Diff", systemImage: "arrow.clockwise")
+                }
                 Button(action: onOpenGitRepo) {
                     Label("Open Local Git Repo...", systemImage: "folder")
                 }

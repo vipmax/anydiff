@@ -104,12 +104,22 @@ struct FileRowView: View {
                 .background(statusColor.opacity(0.15))
                 .cornerRadius(3)
 
-            // File Path
-            Text(file.displayPath)
-                .font(.system(size: 12, weight: .medium))
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .foregroundColor(isReviewed ? .secondary : .primary)
+            // File Path & Name
+            VStack(alignment: .leading, spacing: 2) {
+                Text((file.displayPath as NSString).lastPathComponent)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(isReviewed ? .secondary : .primary)
+                    .lineLimit(1)
+
+                let dir = (file.displayPath as NSString).deletingLastPathComponent
+                if !dir.isEmpty && dir != "." {
+                    Text(dir)
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
 
             Spacer()
 

@@ -2,6 +2,8 @@ import SwiftUI
 import AnyDiffCore
 
 public struct MainWindowView: View {
+    public var initialPath: String?
+
     @StateObject private var multiBuffer = MultiBuffer()
     @StateObject private var reviewManager = ReviewManager()
     @StateObject private var displayMap: DisplayMap
@@ -19,7 +21,8 @@ public struct MainWindowView: View {
     @State private var showPasteModal: Bool = false
     @State private var commentTarget: (filePath: String, lineNumber: Int)? = nil
 
-    public init() {
+    public init(initialPath: String? = nil) {
+        self.initialPath = initialPath
         let mb = MultiBuffer()
         let rm = ReviewManager()
         let dm = DisplayMap(multiBuffer: mb, reviewManager: rm)
@@ -47,6 +50,7 @@ public struct MainWindowView: View {
                     reviewManager: reviewManager,
                     onOpenGitRepo: { openGitRepositoryFolder() },
                     onPasteDiff: { showPasteModal = true },
+                    onReload: { loadCurrentDirectoryDiff() },
                     onExpandAll: { expandAllExcerpts() },
                     onCollapseAll: { collapseAllExcerpts() }
                 )
@@ -107,9 +111,19 @@ public struct MainWindowView: View {
             )
         }
         .onAppear {
-            // Load initial demo diff on first launch
+            loadCurrentDirectoryDiff()
+        }
+    }
+
+    // MARK: - Current Directory Diff Loading
+
+    public func loadCurrentDirectoryDiff() {
+        let currentDir = initialPath ?? FileManager.default.currentDirectoryPath
+        if let diff = fetchGitDiff(at: currentDir), !diff.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            loadDiff(text: diff)
+        } else {
+            // Fallback to sample demo diff if working tree has no changes
             loadDiff(text: SampleDiffs.swiftMultiBufferDiff)
-            // Add a sample review comment
             _ = reviewManager.addComment(
                 filePath: "Sources/AnyDiffCore/MultiBuffer/MultiBuffer.swift",
                 lineNumber: 18,
@@ -117,6 +131,42 @@ public struct MainWindowView: View {
                 content: "Great job! Using MultiBufferUndoManager here aligns perfectly with Zed's transaction history."
             )
             displayMap.rebuild()
+        }
+    }
+
+    private func fetchGitDiff(at path: String) -> String? {
+        // 1. Try uncommitted (staged + unstaged) changes: git diff HEAD
+        if let out = runGit(arguments: ["-C", path, "diff", "HEAD"]), !out.isEmpty {
+            return out
+        }
+        // 2. Try unstaged changes: git diff
+        if let out = runGit(arguments: ["-C", path, "diff"]), !out.isEmpty {
+            return out
+        }
+        // 3. Try staged changes: git diff --staged
+        if let out = runGit(arguments: ["-C", path, "diff", "--staged"]), !out.isEmpty {
+            return out
+        }
+        // 4. Try latest commit diff: git show -p HEAD
+        if let out = runGit(arguments: ["-C", path, "show", "-p", "HEAD"]), !out.isEmpty {
+            return out
+        }
+        return nil
+    }
+
+    private func runGit(arguments: [String]) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = arguments
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        do {
+            try process.run()
+            process.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        } catch {
+            return nil
         }
     }
 
