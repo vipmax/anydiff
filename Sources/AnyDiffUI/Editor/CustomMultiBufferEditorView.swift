@@ -331,7 +331,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
             }
         }
 
-        // 4. Draw Overlay Scrollbar on right
+        // 4. Draw Overlay Scrollbars (Vertical & Horizontal)
         if totalDocumentHeight > bounds.height {
             let maxScrollY = totalDocumentHeight - bounds.height
             let progress = maxScrollY > 0 ? (scrollOffsetY / maxScrollY) : 0
@@ -344,15 +344,29 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
             context.addPath(path)
             context.fillPath()
         }
+
+        if totalDocumentWidth > bounds.width {
+            let maxScrollX = totalDocumentWidth - bounds.width
+            let progress = maxScrollX > 0 ? (scrollOffsetX / maxScrollX) : 0
+            let scrollableWidth = bounds.width - gutterWidth - 10
+            let thumbWidth = max(40, (scrollableWidth / totalDocumentWidth) * scrollableWidth)
+            let thumbX = gutterWidth + progress * (scrollableWidth - thumbWidth)
+            let thumbRect = CGRect(x: thumbX, y: bounds.height - 6, width: thumbWidth, height: 4)
+
+            context.setFillColor(theme.gutterForeground.withAlphaComponent(0.4).cgColor)
+            let path = CGPath(roundedRect: thumbRect, cornerWidth: 2, cornerHeight: 2, transform: nil)
+            context.addPath(path)
+            context.fillPath()
+        }
     }
 
     // MARK: - Excerpt Header Drawing
 
     private func drawExcerptHeader(info: ExcerptHeaderInfo, in rect: CGRect, context: CGContext) {
-        let fullWidth = max(rect.width, bounds.width, frame.width)
+        let fullWidth = bounds.width
         let headerRect = CGRect(x: 0, y: rect.minY, width: fullWidth, height: rect.height)
 
-        // Header background spanning entire width
+        // Header background spanning sticky width
         context.setFillColor(theme.excerptHeaderBackground.cgColor)
         context.fill(headerRect)
 
@@ -440,25 +454,23 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
 
     private func drawCodeLine(info: DisplayCodeLineInfo, lineIdx: Int, in rect: CGRect, context: CGContext) {
         let isCurrentCursorLine = (info.multiBufferRow == cursorPoint.row)
-        let fullLineWidth = max(rect.width, bounds.width, frame.width)
+        let fullLineWidth = max(rect.width, bounds.width + scrollOffsetX, totalDocumentWidth)
 
         // 1. Line Background (Diff Tint or Current Line Highlight)
+        let bgRect = CGRect(x: rect.minX + gutterWidth, y: rect.minY, width: fullLineWidth, height: rect.height)
         if info.diffKind == .added {
             context.setFillColor(theme.diffAddedBackground.cgColor)
-            context.fill(CGRect(x: gutterWidth, y: rect.minY, width: fullLineWidth - gutterWidth, height: rect.height))
+            context.fill(bgRect)
         } else if info.diffKind == .deleted {
             context.setFillColor(theme.diffDeletedBackground.cgColor)
-            context.fill(CGRect(x: gutterWidth, y: rect.minY, width: fullLineWidth - gutterWidth, height: rect.height))
+            context.fill(bgRect)
         } else if isCurrentCursorLine {
             context.setFillColor(theme.currentLineBackground.cgColor)
-            context.fill(CGRect(x: gutterWidth, y: rect.minY, width: fullLineWidth - gutterWidth, height: rect.height))
+            context.fill(bgRect)
         }
 
-        // 2. Gutter Rendering (Old L# | New L# | Diff Symbol)
-        drawGutter(for: info, lineIdx: lineIdx, in: CGRect(x: 0, y: rect.minY, width: gutterWidth, height: rect.height), context: context)
-
-        // 3. Syntax Highlighting & Word Diff Highlighting
-        let codeStartX = gutterWidth + 12
+        // 2. Syntax Highlighting & Word Diff Highlighting
+        let codeStartX = rect.minX + gutterWidth + 12
         let attrText = SyntaxHighlighter.shared.highlight(
             line: info.text,
             language: info.language,
@@ -501,7 +513,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
         CTLineDraw(ctLine, context)
         context.restoreGState()
 
-        // 4. Draw Caret / Cursor if focused on this line
+        // 3. Draw Caret / Cursor if focused on this line
         if isCurrentCursorLine && isCursorVisible && isEditable {
             let cursorX = codeStartX + LineLayoutCache.shared.xOffset(in: ctLine, for: cursorPoint.column)
             let cursorRect = CGRect(x: cursorX, y: rect.minY + 2, width: 2, height: rect.height - 4)
