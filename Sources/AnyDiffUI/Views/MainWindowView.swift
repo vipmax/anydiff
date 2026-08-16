@@ -41,23 +41,6 @@ public struct MainWindowView: View {
             .navigationSplitViewColumnWidth(min: 200, ideal: 280, max: 800)
         } detail: {
             VStack(spacing: 0) {
-                // Top Control Toolbar
-                ToolbarView(
-                    selectedTheme: $selectedTheme,
-                    viewMode: $viewMode,
-                    contextLines: $contextLines,
-                    fontSize: $fontSize,
-                    reviewManager: reviewManager,
-                    onOpenGitRepo: { openGitRepositoryFolder() },
-                    onPasteDiff: { showPasteModal = true },
-                    onReload: { loadCurrentDirectoryDiff() },
-                    onExpandAll: { expandAllExcerpts() },
-                    onCollapseAll: { collapseAllExcerpts() }
-                )
-                .zIndex(10)
-
-                Divider()
-
                 // Custom CoreText MultiBuffer Editor Canvas
                 EditorHostView(
                     displayMap: displayMap,
@@ -88,6 +71,20 @@ public struct MainWindowView: View {
                 )
                 .zIndex(10)
             }
+            .background(
+                // Global keyboard shortcuts (Cmd+R reload, Cmd+O open folder, Cmd+-/Cmd+= zoom)
+                Group {
+                    Button(action: { loadCurrentDirectoryDiff() }) {}
+                        .keyboardShortcut("r", modifiers: .command)
+                    Button(action: { openGitRepositoryFolder() }) {}
+                        .keyboardShortcut("o", modifiers: .command)
+                    Button(action: { fontSize = max(9, fontSize - 1) }) {}
+                        .keyboardShortcut("-", modifiers: .command)
+                    Button(action: { fontSize = min(28, fontSize + 1) }) {}
+                        .keyboardShortcut("=", modifiers: .command)
+                }
+                .opacity(0)
+            )
         }
         .sheet(isPresented: $showPasteModal) {
             PasteDiffModal(
