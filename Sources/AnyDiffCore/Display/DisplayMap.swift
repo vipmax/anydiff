@@ -85,18 +85,34 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
 
             let totalDiffLines = diffLinesToRender.count
             let canExpandUp: Bool
-            let canExpandDown: Bool
             if buffer.startLineNumber > 1 || excerpt.bufferRange.lowerBound > 0 {
+                canExpandUp = true
+            } else if excerptIdx > 0 && multiBuffer.excerpts[excerptIdx - 1].filePath == excerpt.filePath {
                 canExpandUp = true
             } else {
                 canExpandUp = false
             }
 
+            let canExpandDown: Bool
             if let diskCount = buffer.diskFileLineCount {
                 let currentEndLine = buffer.startLineNumber - 1 + excerpt.bufferRange.upperBound
                 canExpandDown = (currentEndLine < diskCount)
+            } else if excerpt.bufferRange.upperBound < buffer.lineCount {
+                canExpandDown = true
+            } else if excerptIdx < multiBuffer.excerpts.count - 1 && multiBuffer.excerpts[excerptIdx + 1].filePath == excerpt.filePath {
+                canExpandDown = true
+            } else if let diskPath = buffer.fullDiskPath ?? multiBuffer.baseDirectory.map({ ($0 as NSString).appendingPathComponent(buffer.filePath) }),
+                      FileManager.default.fileExists(atPath: diskPath) {
+                if let data = try? Data(contentsOf: URL(fileURLWithPath: diskPath)),
+                   let diskStr = String(data: data, encoding: .utf8) {
+                    let totalDiskLines = diskStr.components(separatedBy: "\n").count
+                    let currentEndLine = buffer.startLineNumber - 1 + excerpt.bufferRange.upperBound
+                    canExpandDown = (currentEndLine < totalDiskLines)
+                } else {
+                    canExpandDown = true
+                }
             } else {
-                canExpandDown = (excerpt.bufferRange.upperBound < buffer.lineCount)
+                canExpandDown = false
             }
 
             for (idx, item) in diffLinesToRender.enumerated() {

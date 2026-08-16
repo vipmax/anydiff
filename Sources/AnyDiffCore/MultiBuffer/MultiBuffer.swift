@@ -274,7 +274,8 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
             excerpt.bufferRange = excerpt.bufferRange.lowerBound..<newUpper
         }
 
-        if (up > addedUp || down > addedDown), let fullPath = buf.fullDiskPath, let fullText = try? String(contentsOfFile: fullPath, encoding: .utf8) {
+        let diskPath = buf.fullDiskPath ?? baseDirectory.map { ($0 as NSString).appendingPathComponent(buf.filePath) }
+        if (up > addedUp || down > addedDown), let fullPath = diskPath, let fullText = try? String(contentsOfFile: fullPath, encoding: .utf8) {
             let allLines = fullText.components(separatedBy: "\n")
             let neededUp = up - addedUp
             if neededUp > 0 && buf.startLineNumber > 1 {
@@ -316,9 +317,10 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
         let excerpt = excerpts[index]
         guard let buf = buffers[excerpt.bufferId] else { return (0, 0) }
 
-        if buf.isFullFile || buf.fullDiskPath == nil {
+        let diskPath = buf.fullDiskPath ?? baseDirectory.map { ($0 as NSString).appendingPathComponent(buf.filePath) }
+        if buf.isFullFile || diskPath == nil {
             return expandExcerpt(at: index, up: excerpt.bufferRange.lowerBound, down: buf.lineCount - excerpt.bufferRange.upperBound)
-        } else if let fullPath = buf.fullDiskPath, let fullText = try? String(contentsOfFile: fullPath, encoding: .utf8) {
+        } else if let fullPath = diskPath, let fullText = try? String(contentsOfFile: fullPath, encoding: .utf8) {
             let allLines = fullText.components(separatedBy: "\n")
             let neededUp = max(0, buf.startLineNumber - 1) + excerpt.bufferRange.lowerBound
             let neededDown = max(0, allLines.count - (buf.startLineNumber + buf.lineCount - 1)) + (buf.lineCount - excerpt.bufferRange.upperBound)

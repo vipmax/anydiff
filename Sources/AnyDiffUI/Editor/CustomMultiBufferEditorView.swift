@@ -350,7 +350,6 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         let targetLast = (filePath as NSString).lastPathComponent
         var currentY: CGFloat = 0
         var foundTargetY: CGFloat? = nil
-        var firstCodeRow: Int? = nil
 
         for line in displayMap.displayLines {
             let height: CGFloat
@@ -367,13 +366,8 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                 let matches = excerptFilePath.map { path in
                     path == filePath || (path as NSString).lastPathComponent == targetLast || path.hasSuffix(filePath) || filePath.hasSuffix(path)
                 } ?? false
-                if matches {
-                    if foundTargetY == nil {
-                        foundTargetY = currentY
-                    }
-                    if firstCodeRow == nil {
-                        firstCodeRow = info.multiBufferRow
-                    }
+                if matches && foundTargetY == nil {
+                    foundTargetY = currentY
                 }
             case .foldGap(let info):
                 height = foldGapHeight
@@ -390,7 +384,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                 }
             }
 
-            if foundTargetY != nil && firstCodeRow != nil {
+            if foundTargetY != nil {
                 break
             }
 
@@ -402,17 +396,6 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             scrollOffsetY = max(0, min(maxScrollY, targetY))
             scrollOffsetX = 0
             showScrollbarsWithAutohide()
-        }
-
-        if let row = firstCodeRow {
-            cursorPoint = MultiBufferPoint(row: row, column: 0)
-            selectionAnchor = nil
-            resetCursorBlink()
-            notifyCursorChange()
-        }
-
-        if let win = window {
-            win.makeFirstResponder(self)
         }
 
         needsDisplay = true

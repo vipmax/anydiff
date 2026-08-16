@@ -263,7 +263,17 @@ public struct MainWindowView: View {
 
         for file in parsedFiles {
             let relativePath = file.displayPath
-            let fullPath = (baseDir as NSString).appendingPathComponent(relativePath)
+            var fullPath = (baseDir as NSString).appendingPathComponent(relativePath)
+            if !FileManager.default.fileExists(atPath: fullPath) {
+                let components = relativePath.components(separatedBy: "/")
+                if components.count > 1 {
+                    let subPath = components.dropFirst().joined(separator: "/")
+                    let altPath = (baseDir as NSString).appendingPathComponent(subPath)
+                    if FileManager.default.fileExists(atPath: altPath) {
+                        fullPath = altPath
+                    }
+                }
+            }
             let fileExists = FileManager.default.fileExists(atPath: fullPath)
             let fullDiskText = fileExists ? (try? String(contentsOfFile: fullPath, encoding: .utf8)) : nil
             let fullDiskLineCount = fullDiskText?.components(separatedBy: "\n").count
@@ -405,6 +415,7 @@ public struct MainWindowView: View {
             let path = url.path
             let folderName = (path as NSString).lastPathComponent
             self.currentFolderName = folderName
+            self.multiBuffer.baseDirectory = path
             DispatchQueue.main.async {
                 NSApp.windows.first?.title = "\(folderName)"
             }
