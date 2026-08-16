@@ -122,17 +122,29 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
         }
 
         var totalHeight: CGFloat = 0
+        var maxLineChars: Int = 80
         for line in displayMap.displayLines {
             switch line {
-            case .excerptHeader: totalHeight += excerptHeaderHeight
-            case .code: totalHeight += lineHeight
-            case .foldGap: totalHeight += foldGapHeight
-            case .inlineComment: totalHeight += commentHeight
+            case .excerptHeader:
+                totalHeight += excerptHeaderHeight
+            case .code(let info):
+                totalHeight += lineHeight
+                maxLineChars = max(maxLineChars, info.text.count)
+            case .foldGap:
+                totalHeight += foldGapHeight
+            case .inlineComment:
+                totalHeight += commentHeight
             }
         }
         totalHeight += 200 // Scroll margin at bottom
 
-        let newSize = NSSize(width: max(800, bounds.width), height: max(bounds.height, totalHeight))
+        // Compute needed width based on longest line + gutter
+        let charWidth = font.pointSize * 0.75
+        let neededWidth = gutterWidth + CGFloat(maxLineChars) * charWidth + 300
+        let viewportWidth = enclosingScrollView?.contentSize.width ?? bounds.width
+        let finalWidth = max(viewportWidth, neededWidth, bounds.width, 1000)
+
+        let newSize = NSSize(width: finalWidth, height: max(bounds.height, totalHeight))
         if frame.size != newSize {
             frame.size = newSize
         }
@@ -172,9 +184,11 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
             return
         }
 
+        let fullWidth = max(bounds.width, dirtyRect.maxX, frame.width, 1000)
+
         // 1. Draw Editor Canvas Background
         context.setFillColor(theme.background.cgColor)
-        context.fill(dirtyRect)
+        context.fill(CGRect(x: 0, y: dirtyRect.minY, width: fullWidth, height: dirtyRect.height))
 
         // 2. Draw Gutter Background & Border
         let gutterRect = CGRect(x: 0, y: dirtyRect.minY, width: gutterWidth, height: dirtyRect.height)
@@ -202,7 +216,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
             case .inlineComment: height = commentHeight
             }
 
-            let lineFrame = CGRect(x: 0, y: currentY, width: bounds.width, height: height)
+            let lineFrame = CGRect(x: 0, y: currentY, width: fullWidth, height: height)
             currentY += height
 
             // Skip lines outside dirtyRect
@@ -227,16 +241,19 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
     // MARK: - Excerpt Header Drawing
 
     private func drawExcerptHeader(info: ExcerptHeaderInfo, in rect: CGRect, context: CGContext) {
+        let fullWidth = max(rect.width, bounds.width, frame.width)
+        let headerRect = CGRect(x: 0, y: rect.minY, width: fullWidth, height: rect.height)
+
         // Header background spanning entire width
         context.setFillColor(theme.excerptHeaderBackground.cgColor)
-        context.fill(rect)
+        context.fill(headerRect)
 
         // Top & Bottom border
         context.setStrokeColor(theme.excerptHeaderBorder.cgColor)
         context.setLineWidth(1.0)
         context.strokeLineSegments(between: [
-            CGPoint(x: 0, y: rect.minY), CGPoint(x: rect.maxX, y: rect.minY),
-            CGPoint(x: 0, y: rect.maxY), CGPoint(x: rect.maxX, y: rect.maxY)
+            CGPoint(x: 0, y: rect.minY), CGPoint(x: fullWidth, y: rect.minY),
+            CGPoint(x: 0, y: rect.maxY), CGPoint(x: fullWidth, y: rect.maxY)
         ])
 
         // File Status Stripe on the left of header
@@ -315,17 +332,18 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient {
 
     private func drawCodeLine(info: DisplayCodeLineInfo, lineIdx: Int, in rect: CGRect, context: CGContext) {
         let isCurrentCursorLine = (info.multiBufferRow == cursorPoint.row)
+        let fullLineWidth = max(rect.width, bounds.width, frame.width)
 
         // 1. Line Background (Diff Tint or Current Line Highlight)
         if info.diffKind == .added {
             context.setFillColor(theme.diffAddedBackground.cgColor)
-            context.fill(CGRect(x: gutterWidth, y: rect.minY, width: rect.width - gutterWidth, height: rect.height))
+            context.fill(CGRect(x: gutterWidth, y: rect.minY, width: fullLineWidth - gutterWidth, height: rect.height))
         } else if info.diffKind == .deleted {
             context.setFillColor(theme.diffDeletedBackground.cgColor)
-            context.fill(CGRect(x: gutterWidth, y: rect.minY, width: rect.width - gutterWidth, height: rect.height))
+            context.fill(CGRect(x: gutterWidth, y: rect.minY, width: fullLineWidth - gutterWidth, height: rect.height))
         } else if isCurrentCursorLine {
             context.setFillColor(theme.currentLineBackground.cgColor)
-            context.fill(CGRect(x: gutterWidth, y: rect.minY, width: rect.width - gutterWidth, height: rect.height))
+            context.fill(CGRect(x: gutterWidth, y: rect.minY, width: fullLineWidth - gutterWidth, height: rect.height))
         }
 
         // 2. Gutter Rendering (Old L# | New L# | Diff Symbol)
