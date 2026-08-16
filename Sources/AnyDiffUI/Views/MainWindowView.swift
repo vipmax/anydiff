@@ -38,7 +38,7 @@ public struct MainWindowView: View {
                 reviewManager: reviewManager,
                 selectedFilePath: $selectedFilePath
             )
-            .navigationSplitViewColumnWidth(min: 140, ideal: 260, max: 800)
+            .navigationSplitViewColumnWidth(min: 200, ideal: 280, max: 800)
         } detail: {
             VStack(spacing: 0) {
                 // Top Control Toolbar

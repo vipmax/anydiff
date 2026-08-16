@@ -18,7 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mainWindow.title = "AnyDiff - MultiBuffer Code Reviewer"
         mainWindow.titlebarAppearsTransparent = true
         mainWindow.isReleasedWhenClosed = false
-        mainWindow.minSize = NSSize(width: 480, height: 350)
+        mainWindow.minSize = NSSize(width: 900, height: 500)
         let customPath = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : nil
         mainWindow.contentView = NSHostingView(rootView: MainWindowView(initialPath: customPath))
         mainWindow.makeKeyAndOrderFront(nil)
