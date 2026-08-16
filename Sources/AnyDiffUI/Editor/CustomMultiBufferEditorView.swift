@@ -1666,6 +1666,8 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         let oldExactText = (oldStart < oldEnd) ? buf.text(in: oldStart..<oldEnd) : ""
 
         let newBufRange = buf.replace(start: oldStart, end: oldEnd, with: text)
+        let lineDelta = (newBufRange.upperBound.row - oldEnd.row)
+        updateExcerptsAfterEdit(bufferId: buf.id, excerptIndex: startLoc.excerptIndex, lineDelta: lineDelta)
 
         let edit = TextEdit(
             bufferId: buf.id,
@@ -1720,6 +1722,8 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             let start = BufferPoint(row: bPt.row, column: bPt.column - 1)
             let oldExact = buf.text(in: start..<bPt)
             let newRange = buf.replace(start: start, end: bPt, with: "")
+            let lineDelta = (newRange.upperBound.row - bPt.row)
+            updateExcerptsAfterEdit(bufferId: buf.id, excerptIndex: loc.excerptIndex, lineDelta: lineDelta)
             let edit = TextEdit(bufferId: buf.id, range: start..<newRange.upperBound, oldText: oldExact, newText: "")
             let tx = EditTransaction(edits: [edit], selectionBefore: cursorPoint..<cursorPoint, selectionAfter: nil)
             mb.undoManager.push(transaction: tx)
@@ -1738,6 +1742,8 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             let start = BufferPoint(row: bPt.row - 1, column: prevLen)
             let oldExact = buf.text(in: start..<bPt)
             let newRange = buf.replace(start: start, end: bPt, with: "")
+            let lineDelta = (newRange.upperBound.row - bPt.row)
+            updateExcerptsAfterEdit(bufferId: buf.id, excerptIndex: loc.excerptIndex, lineDelta: lineDelta)
             let edit = TextEdit(bufferId: buf.id, range: start..<newRange.upperBound, oldText: oldExact, newText: "")
             let tx = EditTransaction(edits: [edit], selectionBefore: cursorPoint..<cursorPoint, selectionAfter: nil)
             mb.undoManager.push(transaction: tx)
@@ -1781,6 +1787,8 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             let end = BufferPoint(row: bPt.row, column: bPt.column + 1)
             let oldExact = buf.text(in: bPt..<end)
             let newRange = buf.replace(start: bPt, end: end, with: "")
+            let lineDelta = (newRange.upperBound.row - end.row)
+            updateExcerptsAfterEdit(bufferId: buf.id, excerptIndex: loc.excerptIndex, lineDelta: lineDelta)
             let edit = TextEdit(bufferId: buf.id, range: bPt..<newRange.upperBound, oldText: oldExact, newText: "")
             let tx = EditTransaction(edits: [edit], selectionBefore: cursorPoint..<cursorPoint, selectionAfter: nil)
             mb.undoManager.push(transaction: tx)
@@ -1796,6 +1804,8 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             let end = BufferPoint(row: bPt.row + 1, column: 0)
             let oldExact = buf.text(in: bPt..<end)
             let newRange = buf.replace(start: bPt, end: end, with: "")
+            let lineDelta = (newRange.upperBound.row - end.row)
+            updateExcerptsAfterEdit(bufferId: buf.id, excerptIndex: loc.excerptIndex, lineDelta: lineDelta)
             let edit = TextEdit(bufferId: buf.id, range: bPt..<newRange.upperBound, oldText: oldExact, newText: "")
             let tx = EditTransaction(edits: [edit], selectionBefore: cursorPoint..<cursorPoint, selectionAfter: nil)
             mb.undoManager.push(transaction: tx)
@@ -1807,6 +1817,23 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             }
             selectionAnchor = cursorPoint
             needsDisplay = true
+        }
+    }
+
+    private func updateExcerptsAfterEdit(bufferId: BufferId, excerptIndex: Int, lineDelta: Int) {
+        guard lineDelta != 0, let mb = displayMap?.multiBuffer, excerptIndex >= 0 && excerptIndex < mb.excerpts.count else { return }
+        var excerpt = mb.excerpts[excerptIndex]
+        let newUpper = max(excerpt.bufferRange.lowerBound, excerpt.bufferRange.upperBound + lineDelta)
+        excerpt.bufferRange = excerpt.bufferRange.lowerBound..<newUpper
+        mb.updateExcerptBufferRange(at: excerptIndex, range: excerpt.bufferRange)
+
+        for i in (excerptIndex + 1)..<mb.excerpts.count {
+            if mb.excerpts[i].bufferId == bufferId {
+                let oldRange = mb.excerpts[i].bufferRange
+                let newLower = max(newUpper, oldRange.lowerBound + lineDelta)
+                let newUpperSub = max(newLower, oldRange.upperBound + lineDelta)
+                mb.updateExcerptBufferRange(at: i, range: newLower..<newUpperSub)
+            }
         }
     }
 
@@ -1826,7 +1853,12 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         if let transaction = mb.undoManager.popUndo() {
             for edit in transaction.edits.reversed() {
                 if let buf = mb.buffer(for: edit.bufferId) {
-                    buf.replace(start: edit.range.lowerBound, end: edit.range.upperBound, with: edit.oldText)
+                    let oldEndRow = edit.range.upperBound.row
+                    let newRange = buf.replace(start: edit.range.lowerBound, end: edit.range.upperBound, with: edit.oldText)
+                    let lineDelta = newRange.upperBound.row - oldEndRow
+                    if lineDelta != 0, let excerptIdx = mb.excerpts.firstIndex(where: { $0.bufferId == edit.bufferId }) {
+                        updateExcerptsAfterEdit(bufferId: edit.bufferId, excerptIndex: excerptIdx, lineDelta: lineDelta)
+                    }
                 }
             }
             mb.scheduleDebouncedSave(delayMs: 200)
@@ -1845,7 +1877,12 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         if let transaction = mb.undoManager.popRedo() {
             for edit in transaction.edits {
                 if let buf = mb.buffer(for: edit.bufferId) {
-                    buf.replace(start: edit.range.lowerBound, end: edit.range.upperBound, with: edit.newText)
+                    let oldEndRow = edit.range.upperBound.row
+                    let newRange = buf.replace(start: edit.range.lowerBound, end: edit.range.upperBound, with: edit.newText)
+                    let lineDelta = newRange.upperBound.row - oldEndRow
+                    if lineDelta != 0, let excerptIdx = mb.excerpts.firstIndex(where: { $0.bufferId == edit.bufferId }) {
+                        updateExcerptsAfterEdit(bufferId: edit.bufferId, excerptIndex: excerptIdx, lineDelta: lineDelta)
+                    }
                 }
             }
             mb.scheduleDebouncedSave(delayMs: 200)

@@ -354,4 +354,167 @@ final class MultiBufferTests: XCTestCase {
         XCTAssertEqual(codeLines.count, 1)
         XCTAssertEqual(codeLines.first?.expandInfo?.direction, .upAndDown)
     }
+
+    func testSaveToFilePreservesFullFileContentsOnEdit() throws {
+        // 1. Create a 100-line file on disk
+        let tmpDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let fileURL = tmpDir.appendingPathComponent("Document.swift")
+        var originalLines: [String] = []
+        for i in 1...100 {
+            originalLines.append("let variable\(i) = \(i)")
+        }
+        let fullDiskContent = originalLines.joined(separator: "\n")
+        try fullDiskContent.write(to: fileURL, atomically: true, encoding: .utf8)
+
+        // 2. Setup MultiBuffer with full file buffer and an excerpt at lines 40..<50 (0-based: 39..<49)
+        let buffer = Buffer(
+            filePath: "Document.swift",
+            text: fullDiskContent,
+            fullDiskPath: fileURL.path,
+            diskFileLineCount: 100
+        )
+        buffer.isFullFile = true
+
+        let mb = MultiBuffer()
+        mb.baseDirectory = tmpDir.path
+        mb.addBuffer(buffer)
+
+        let excerpt = Excerpt(
+            bufferId: buffer.id,
+            filePath: "Document.swift",
+            bufferRange: 39..<49
+        )
+        mb.addExcerpt(excerpt)
+
+        // MultiBuffer point for line 42 (0-based row 41, which is offset 2 inside excerpt: row 2 in mb)
+        // Edit line 42 ("let variable42 = 42" -> "let variable42 = 999999")
+        let editPoint = MultiBufferPoint(row: 2, column: 17)
+        mb.replace(range: editPoint..<MultiBufferPoint(row: 2, column: 19), with: "999999")
+
+        // 3. Immediately flush save
+        let saved = mb.flushImmediateSave()
+        XCTAssertEqual(saved.count, 1)
+        XCTAssertEqual(saved.first, "Document.swift")
+
+        // 4. Read back file from disk and assert all 100 lines are preserved!
+        let savedDiskText = try String(contentsOf: fileURL, encoding: .utf8)
+        let savedDiskLines = savedDiskText.components(separatedBy: "\n")
+        XCTAssertEqual(savedDiskLines.count, 100, "File on disk must retain all 100 lines, NOT be truncated!")
+
+        // Verify lines before and after are intact
+        for i in 0..<41 {
+            XCTAssertEqual(savedDiskLines[i], originalLines[i])
+        }
+        XCTAssertEqual(savedDiskLines[41], "let variable42 = 999999")
+        for i in 42..<100 {
+            XCTAssertEqual(savedDiskLines[i], originalLines[i])
+        }
+    }
+
+    func testSaveMultipleHunksToSameFile() throws {
+        // 1. Create a 100-line file on disk
+        let tmpDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let fileURL = tmpDir.appendingPathComponent("MultiHunk.swift")
+        var originalLines: [String] = []
+        for i in 1...100 {
+            originalLines.append("func step\(i)() {}")
+        }
+        try originalLines.joined(separator: "\n").write(to: fileURL, atomically: true, encoding: .utf8)
+
+        // 2. Setup MultiBuffer with 2 excerpts (hunk 1: 10..<20, hunk 2: 60..<70)
+        let fullDiskContent = originalLines.joined(separator: "\n")
+        let buffer = Buffer(
+            filePath: "MultiHunk.swift",
+            text: fullDiskContent,
+            fullDiskPath: fileURL.path,
+            diskFileLineCount: 100
+        )
+        buffer.isFullFile = true
+
+        let mb = MultiBuffer()
+        mb.baseDirectory = tmpDir.path
+        mb.addBuffer(buffer)
+
+        let excerpt1 = Excerpt(
+            bufferId: buffer.id,
+            filePath: "MultiHunk.swift",
+            bufferRange: 10..<20,
+            isFileStart: true
+        )
+        let excerpt2 = Excerpt(
+            bufferId: buffer.id,
+            filePath: "MultiHunk.swift",
+            bufferRange: 60..<70,
+            isFileStart: false
+        )
+        mb.setExcerpts([excerpt1, excerpt2])
+
+        // Insert a new line in Excerpt 1 after step15 (MB row 4 -> buffer row 14)
+        let insPt = MultiBufferPoint(row: 4, column: 17)
+        mb.replace(range: insPt..<insPt, with: "\nfunc extraStep() {}")
+
+        // Excerpt 2 should have automatically shifted its bufferRange from 60..<70 to 61..<71
+        XCTAssertEqual(mb.excerpts[0].bufferRange, 10..<21)
+        XCTAssertEqual(mb.excerpts[1].bufferRange, 61..<71)
+
+        // Edit Excerpt 2 at MB row 11 (first line of excerpt2, now buffer row 61: step61)
+        let editPt = MultiBufferPoint(row: 11, column: 17)
+        mb.replace(range: editPt..<editPt, with: " // modified")
+
+        // Save
+        mb.flushImmediateSave()
+
+        // 3. Verify file on disk has 101 lines with both edits in the right positions
+        let savedText = try String(contentsOf: fileURL, encoding: .utf8)
+        let savedLines = savedText.components(separatedBy: "\n")
+        XCTAssertEqual(savedLines.count, 101)
+        XCTAssertEqual(savedLines[14], "func step15() {}")
+        XCTAssertEqual(savedLines[15], "func extraStep() {}")
+        XCTAssertEqual(savedLines[16], "func step16() {}")
+        XCTAssertEqual(savedLines[61], "func step61() {} // modified")
+        XCTAssertEqual(savedLines.first, "func step1() {}")
+        XCTAssertEqual(savedLines.last, "func step100() {}")
+    }
+
+    func testPartialBufferSafeSplicingFallback() throws {
+        let tmpDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let fileURL = tmpDir.appendingPathComponent("Partial.swift")
+        var originalLines: [String] = []
+        for i in 1...50 {
+            originalLines.append("item \(i)")
+        }
+        try originalLines.joined(separator: "\n").write(to: fileURL, atomically: true, encoding: .utf8)
+
+        // Partial buffer representing lines 20..24 (5 lines)
+        let partialText = "item 20\nitem 21\nitem 22 (edited)\nitem 23\nitem 24"
+        let baselineText = "item 20\nitem 21\nitem 22\nitem 23\nitem 24"
+        let buffer = Buffer(
+            filePath: "Partial.swift",
+            text: partialText,
+            baselineText: baselineText,
+            startLineNumber: 20,
+            fullDiskPath: fileURL.path,
+            diskFileLineCount: 50
+        )
+        buffer.isFullFile = false // Explicit partial buffer
+
+        try buffer.saveToFile(baseDirectory: tmpDir.path)
+
+        // Disk file should still have all 50 lines!
+        let savedText = try String(contentsOf: fileURL, encoding: .utf8)
+        let savedLines = savedText.components(separatedBy: "\n")
+        XCTAssertEqual(savedLines.count, 50)
+        XCTAssertEqual(savedLines[0], "item 1")
+        XCTAssertEqual(savedLines[21], "item 22 (edited)")
+        XCTAssertEqual(savedLines[49], "item 50")
+    }
 }

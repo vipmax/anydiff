@@ -263,7 +263,9 @@ public final class Buffer: Identifiable, @unchecked Sendable {
 
     public func saveToFile(baseDirectory: String? = nil) throws {
         let resolvedPath: String
-        if let abs = absolutePath {
+        if let abs = fullDiskPath {
+            resolvedPath = abs
+        } else if let abs = absolutePath {
             resolvedPath = abs
         } else if let base = baseDirectory {
             resolvedPath = URL(fileURLWithPath: base).appendingPathComponent(filePath).path
@@ -271,8 +273,27 @@ public final class Buffer: Identifiable, @unchecked Sendable {
             resolvedPath = filePath
         }
 
-        let fullText = text()
-        try fullText.write(to: URL(fileURLWithPath: resolvedPath), atomically: true, encoding: .utf8)
+        let fileURL = URL(fileURLWithPath: resolvedPath)
+        let parentDir = fileURL.deletingLastPathComponent()
+        if !FileManager.default.fileExists(atPath: parentDir.path) {
+            try FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true)
+        }
+
+        if isFullFile || !FileManager.default.fileExists(atPath: resolvedPath) {
+            let fullText = text()
+            try fullText.write(to: fileURL, atomically: true, encoding: .utf8)
+        } else {
+            // Defensive partial-hunk splicing fallback: never truncate existing file
+            let diskText = try String(contentsOfFile: resolvedPath, encoding: .utf8)
+            var diskLines = diskText.components(separatedBy: "\n")
+            let replaceStart = max(0, min(diskLines.count, startLineNumber - 1))
+            let replaceCount = max(0, baselineLines.count)
+            let replaceEnd = max(replaceStart, min(diskLines.count, replaceStart + replaceCount))
+            diskLines.replaceSubrange(replaceStart..<replaceEnd, with: _lines)
+            let fullText = diskLines.joined(separator: "\n")
+            try fullText.write(to: fileURL, atomically: true, encoding: .utf8)
+            baselineLines = _lines
+        }
         _isDirty = false
     }
 

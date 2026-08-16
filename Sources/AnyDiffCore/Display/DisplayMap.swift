@@ -56,64 +56,86 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
 
             // 2. Top Fold Gap (if first excerpt starts > 1)
             if isFirstExcerptOfFile {
-                let topHidden = buffer.fullDiskPath != nil ? (buffer.startLineNumber - 1) : excerpt.bufferRange.lowerBound
+                let topHidden = buffer.startLineNumber > 1 ? (buffer.startLineNumber - 1 + excerpt.bufferRange.lowerBound) : excerpt.bufferRange.lowerBound
                 if topHidden >= 3 {
                     lines.append(.foldGap(DisplayFoldGapInfo(excerptIndex: excerptIdx, hiddenCount: topHidden, isTopGap: true)))
                 }
             }
 
             // 3. Dynamic Diff Calculation: compute live diff lines without dropping expanded context
-            var diffLinesToRender: [DiffLine] = []
-            if !buffer.baselineLines.isEmpty && (excerpt.hunk != nil || buffer.fullDiskPath != nil || buffer.lineCount == excerpt.lineCount) {
-                if let cached = buffer.cachedDiffLines, buffer.cachedDiffVersion == buffer.version {
-                    diffLinesToRender = cached
-                } else {
-                    let computed = LineDiffEngine.shared.diffLines(
-                        oldLines: buffer.baselineLines,
-                        newLines: buffer.lines,
-                        oldStartLine: buffer.startLineNumber,
-                        newStartLine: buffer.startLineNumber
-                    )
-                    buffer.cachedDiffLines = computed
-                    buffer.cachedDiffVersion = buffer.version
-                    diffLinesToRender = computed
-                }
-                multiBuffer.updateExcerptBufferRange(at: excerptIdx, range: 0..<diffLinesToRender.count)
+            let fullDiffLines: [DiffLine]
+            if let cached = buffer.cachedDiffLines, buffer.cachedDiffVersion == buffer.version {
+                fullDiffLines = cached
+            } else if !buffer.baselineLines.isEmpty && (buffer.baselineLines != buffer.lines || excerpt.hunk != nil || buffer.fullDiskPath != nil) {
+                let computed = LineDiffEngine.shared.diffLines(
+                    oldLines: buffer.baselineLines,
+                    newLines: buffer.lines,
+                    oldStartLine: buffer.startLineNumber,
+                    newStartLine: buffer.startLineNumber
+                )
+                buffer.cachedDiffLines = computed
+                buffer.cachedDiffVersion = buffer.version
+                fullDiffLines = computed
             } else {
-                let clampedLower = max(0, min(buffer.lineCount, excerpt.bufferRange.lowerBound))
-                let clampedUpper = max(clampedLower, min(buffer.lineCount, excerpt.bufferRange.upperBound))
-                for bRow in clampedLower..<clampedUpper {
-                    let lineStr = buffer.line(at: bRow) ?? ""
-                    let lineNum = buffer.startLineNumber + bRow
-                    diffLinesToRender.append(DiffLine(kind: .unchanged, text: lineStr, oldLineNumber: lineNum, newLineNumber: lineNum))
+                let computed = buffer.lines.enumerated().map { idx, line in
+                    let num = buffer.startLineNumber + idx
+                    return DiffLine(kind: .unchanged, text: line, oldLineNumber: num, newLineNumber: num)
+                }
+                buffer.cachedDiffLines = computed
+                buffer.cachedDiffVersion = buffer.version
+                fullDiffLines = computed
+            }
+
+            // Slice fullDiffLines for the current excerpt's bufferRange
+            var diffLinesWithBufferRow: [(line: DiffLine, bufferRow: Int)] = []
+            var curBRow = 0
+            for dLine in fullDiffLines {
+                if dLine.kind == .deleted {
+                    diffLinesWithBufferRow.append((line: dLine, bufferRow: curBRow))
+                } else {
+                    diffLinesWithBufferRow.append((line: dLine, bufferRow: curBRow))
+                    curBRow += 1
+                }
+            }
+
+            var diffLinesToRender: [(line: DiffLine, bufferRow: Int)] = []
+            let range = excerpt.bufferRange
+            if range.isEmpty {
+                if buffer.lineCount == 0 {
+                    diffLinesToRender = diffLinesWithBufferRow
+                } else {
+                    diffLinesToRender = diffLinesWithBufferRow.filter { $0.line.kind == .deleted && $0.bufferRow == range.lowerBound }
+                }
+            } else {
+                for item in diffLinesWithBufferRow {
+                    if range.contains(item.bufferRow) {
+                        diffLinesToRender.append(item)
+                    } else if item.line.kind == .deleted && item.bufferRow == range.upperBound && range.upperBound == buffer.lineCount {
+                        diffLinesToRender.append(item)
+                    }
                 }
             }
 
             let totalDiffLines = diffLinesToRender.count
             let canExpandUp: Bool
             let canExpandDown: Bool
-            if buffer.fullDiskPath != nil {
-                canExpandUp = (buffer.startLineNumber > 1)
-                if let fullCount = buffer.diskFileLineCount {
-                    canExpandDown = (buffer.startLineNumber + buffer.lineCount - 1 < fullCount)
-                } else {
-                    canExpandDown = (excerpt.bufferRange.upperBound < buffer.lineCount)
-                }
+            if buffer.startLineNumber > 1 || excerpt.bufferRange.lowerBound > 0 {
+                canExpandUp = true
             } else {
-                canExpandUp = (excerpt.bufferRange.lowerBound > 0)
+                canExpandUp = false
+            }
+
+            if let diskCount = buffer.diskFileLineCount {
+                let currentEndLine = buffer.startLineNumber - 1 + excerpt.bufferRange.upperBound
+                canExpandDown = (currentEndLine < diskCount)
+            } else {
                 canExpandDown = (excerpt.bufferRange.upperBound < buffer.lineCount)
             }
 
-            var currentBufferRow = 0
-            for (idx, dLine) in diffLinesToRender.enumerated() {
+            for (idx, item) in diffLinesToRender.enumerated() {
                 let mbRow = runningMBRow + idx
-                let bRow: Int
-                if dLine.kind == .deleted {
-                    bRow = max(0, currentBufferRow)
-                } else {
-                    bRow = currentBufferRow
-                    currentBufferRow += 1
-                }
+                let dLine = item.line
+                let bRow = item.bufferRow
 
                 var expandInfo: ExpandInfo? = nil
                 if totalDiffLines == 1 {
@@ -165,19 +187,23 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
             if !isLastExcerptOfFile {
                 let nextExcerpt = multiBuffer.excerpts[excerptIdx + 1]
                 let nextBuf = multiBuffer.buffer(for: nextExcerpt.bufferId)
-                let nextStartLine = nextBuf?.startLineNumber ?? (nextExcerpt.bufferRange.lowerBound + 1)
-                let currentEndLine = buffer.startLineNumber + buffer.lineCount - 1
-                let hiddenBetween = max(0, nextStartLine - currentEndLine - 1)
+                let hiddenBetween: Int
+                if nextExcerpt.bufferId == excerpt.bufferId {
+                    hiddenBetween = max(0, nextExcerpt.bufferRange.lowerBound - excerpt.bufferRange.upperBound)
+                } else {
+                    let nextStart = (nextBuf?.startLineNumber ?? 1) + nextExcerpt.bufferRange.lowerBound
+                    let currentEnd = buffer.startLineNumber + excerpt.bufferRange.upperBound
+                    hiddenBetween = max(0, nextStart - currentEnd)
+                }
                 if hiddenBetween >= 3 {
                     lines.append(.foldGap(DisplayFoldGapInfo(excerptIndex: excerptIdx, nextExcerptIndex: excerptIdx + 1, hiddenCount: hiddenBetween, isTopGap: false, isBottomGap: false)))
                 }
             } else if isLastExcerptOfFile {
-                if let diskCount = buffer.diskFileLineCount {
-                    let currentEndLine = buffer.startLineNumber + buffer.lineCount - 1
-                    let remaining = max(0, diskCount - currentEndLine)
-                    if remaining >= 3 {
-                        lines.append(.foldGap(DisplayFoldGapInfo(excerptIndex: excerptIdx, hiddenCount: remaining, isTopGap: false, isBottomGap: true)))
-                    }
+                let totalLines = buffer.diskFileLineCount ?? (buffer.startLineNumber - 1 + buffer.lineCount)
+                let currentEnd = (buffer.startLineNumber - 1) + excerpt.bufferRange.upperBound
+                let remaining = max(0, totalLines - currentEnd)
+                if remaining >= 3 {
+                    lines.append(.foldGap(DisplayFoldGapInfo(excerptIndex: excerptIdx, hiddenCount: remaining, isTopGap: false, isBottomGap: true)))
                 }
             }
         }

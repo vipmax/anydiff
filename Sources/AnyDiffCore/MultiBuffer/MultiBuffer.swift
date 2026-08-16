@@ -144,9 +144,19 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
         if lineDelta != 0 {
             let excerptIdx = startLoc.excerptIndex
             var excerpt = excerpts[excerptIdx]
-            let newUpper = max(excerpt.bufferRange.lowerBound + 1, excerpt.bufferRange.upperBound + lineDelta)
+            let newUpper = max(excerpt.bufferRange.lowerBound, excerpt.bufferRange.upperBound + lineDelta)
             excerpt.bufferRange = excerpt.bufferRange.lowerBound..<newUpper
             excerpts[excerptIdx] = excerpt
+
+            // Shift all subsequent excerpts pointing to the same buffer
+            for i in (excerptIdx + 1)..<excerpts.count {
+                if excerpts[i].bufferId == startLoc.bufferId {
+                    let oldRange = excerpts[i].bufferRange
+                    let newLower = max(newUpper, oldRange.lowerBound + lineDelta)
+                    let newUpperSub = max(newLower, oldRange.upperBound + lineDelta)
+                    excerpts[i].bufferRange = newLower..<newUpperSub
+                }
+            }
         }
 
         if recordUndo {
@@ -251,45 +261,46 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
         var addedUp = 0
         var addedDown = 0
 
-        if let fullPath = buf.fullDiskPath, let fullText = try? String(contentsOfFile: fullPath, encoding: .utf8) {
-            let allLines = fullText.components(separatedBy: "\n")
+        if up > 0 {
+            let oldLower = excerpt.bufferRange.lowerBound
+            let newLower = max(0, oldLower - up)
+            addedUp = oldLower - newLower
+            excerpt.bufferRange = newLower..<excerpt.bufferRange.upperBound
+        }
+        if down > 0 {
+            let oldUpper = excerpt.bufferRange.upperBound
+            let newUpper = min(buf.lineCount, oldUpper + down)
+            addedDown = newUpper - oldUpper
+            excerpt.bufferRange = excerpt.bufferRange.lowerBound..<newUpper
+        }
 
-            if up > 0 && buf.startLineNumber > 1 {
-                let actualUp = min(up, buf.startLineNumber - 1)
+        if (up > addedUp || down > addedDown), let fullPath = buf.fullDiskPath, let fullText = try? String(contentsOfFile: fullPath, encoding: .utf8) {
+            let allLines = fullText.components(separatedBy: "\n")
+            let neededUp = up - addedUp
+            if neededUp > 0 && buf.startLineNumber > 1 {
+                let actualUp = min(neededUp, buf.startLineNumber - 1)
                 let sliceStart = buf.startLineNumber - 1 - actualUp
                 let sliceEnd = buf.startLineNumber - 1
                 if sliceStart >= 0 && sliceEnd <= allLines.count && sliceStart < sliceEnd {
                     let prepended = Array(allLines[sliceStart..<sliceEnd])
                     buf.prependContextLines(prepended)
-                    addedUp = prepended.count
+                    addedUp += prepended.count
+                    excerpt.bufferRange = 0..<excerpt.bufferRange.upperBound + prepended.count
                 }
             }
 
+            let neededDown = down - addedDown
             let currentEndLine = buf.startLineNumber + buf.lineCount - 1
-            if down > 0 && currentEndLine < allLines.count {
-                let actualDown = min(down, allLines.count - currentEndLine)
+            if neededDown > 0 && currentEndLine < allLines.count {
+                let actualDown = min(neededDown, allLines.count - currentEndLine)
                 let sliceStart = currentEndLine
                 let sliceEnd = currentEndLine + actualDown
                 if sliceStart >= 0 && sliceEnd <= allLines.count && sliceStart < sliceEnd {
                     let appended = Array(allLines[sliceStart..<sliceEnd])
                     buf.appendContextLines(appended)
-                    addedDown = appended.count
+                    addedDown += appended.count
+                    excerpt.bufferRange = excerpt.bufferRange.lowerBound..<buf.lineCount
                 }
-            }
-
-            excerpt.bufferRange = 0..<buf.lineCount
-        } else {
-            if up > 0 {
-                let oldLower: Int = excerpt.bufferRange.lowerBound
-                let newLower: Int = max(0, oldLower - up)
-                addedUp = oldLower - newLower
-                excerpt.bufferRange = newLower..<excerpt.bufferRange.upperBound
-            }
-            if down > 0 {
-                let oldUpper: Int = excerpt.bufferRange.upperBound
-                let newUpper: Int = min(buf.lineCount, oldUpper + down)
-                addedDown = newUpper - oldUpper
-                excerpt.bufferRange = excerpt.bufferRange.lowerBound..<newUpper
             }
         }
 
@@ -305,10 +316,12 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
         let excerpt = excerpts[index]
         guard let buf = buffers[excerpt.bufferId] else { return (0, 0) }
 
-        if let fullPath = buf.fullDiskPath, let fullText = try? String(contentsOfFile: fullPath, encoding: .utf8) {
+        if buf.isFullFile || buf.fullDiskPath == nil {
+            return expandExcerpt(at: index, up: excerpt.bufferRange.lowerBound, down: buf.lineCount - excerpt.bufferRange.upperBound)
+        } else if let fullPath = buf.fullDiskPath, let fullText = try? String(contentsOfFile: fullPath, encoding: .utf8) {
             let allLines = fullText.components(separatedBy: "\n")
-            let neededUp = max(0, buf.startLineNumber - 1)
-            let neededDown = max(0, allLines.count - (buf.startLineNumber + buf.lineCount - 1))
+            let neededUp = max(0, buf.startLineNumber - 1) + excerpt.bufferRange.lowerBound
+            let neededDown = max(0, allLines.count - (buf.startLineNumber + buf.lineCount - 1)) + (buf.lineCount - excerpt.bufferRange.upperBound)
             return expandExcerpt(at: index, up: neededUp, down: neededDown)
         } else {
             return expandExcerpt(at: index, up: excerpt.bufferRange.lowerBound, down: buf.lineCount - excerpt.bufferRange.upperBound)
@@ -320,7 +333,7 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
         guard excerpts.count > 1 else { return }
         var merged: [Excerpt] = []
         for excerpt in excerpts {
-            if let last = merged.last, last.filePath == excerpt.filePath {
+            if let last = merged.last, last.filePath == excerpt.filePath && last.bufferId == excerpt.bufferId {
                 let gap = excerpt.bufferRange.lowerBound - last.bufferRange.upperBound
                 if gap <= 2 {
                     var updatedLast = last

@@ -300,46 +300,130 @@ public struct MainWindowView: View {
         for file in parsedFiles {
             let relativePath = file.displayPath
             let fullPath = (baseDir as NSString).appendingPathComponent(relativePath)
-            let fullDiskText = try? String(contentsOfFile: fullPath, encoding: .utf8)
+            let fileExists = FileManager.default.fileExists(atPath: fullPath)
+            let fullDiskText = fileExists ? (try? String(contentsOfFile: fullPath, encoding: .utf8)) : nil
             let fullDiskLineCount = fullDiskText?.components(separatedBy: "\n").count
 
             let fileAdds = file.additions
             let fileDels = file.deletions
 
-            for (hIdx, hunk) in file.hunks.enumerated() {
-                // New file text for the working buffer (unchanged + added lines)
-                let newFileLines = hunk.lines.filter { $0.kind == .added || $0.kind == .unchanged }.map(\.text)
-                let linesText = newFileLines.joined(separator: "\n")
-
-                // Old baseline text (deleted + unchanged lines)
-                let oldBaselineLines = hunk.lines.filter { $0.kind == .deleted || $0.kind == .unchanged }.map(\.text)
-                let baselineText = oldBaselineLines.joined(separator: "\n")
-
-                let startLine = hunk.newRange.lowerBound
+            if let diskText = fullDiskText, let diskCount = fullDiskLineCount {
+                // 1. File exists on disk: build ONE full-file buffer with exact baseline lines
+                var baselineLines = diskText.components(separatedBy: "\n")
+                let sortedHunks = file.hunks.sorted { $0.newRange.lowerBound > $1.newRange.lowerBound }
+                for hunk in sortedHunks {
+                    let newStart = max(0, min(baselineLines.count, hunk.newRange.lowerBound - 1))
+                    let newCount = hunk.lines.filter { $0.kind == .added || $0.kind == .unchanged }.count
+                    let newEnd = max(newStart, min(baselineLines.count, newStart + newCount))
+                    let oldHunkLines = hunk.lines.filter { $0.kind == .deleted || $0.kind == .unchanged }.map(\.text)
+                    baselineLines.replaceSubrange(newStart..<newEnd, with: oldHunkLines)
+                }
+                let baselineText = baselineLines.joined(separator: "\n")
 
                 let buffer = Buffer(
                     filePath: file.displayPath,
-                    text: linesText,
+                    text: diskText,
                     language: Buffer.detectLanguage(for: file.displayPath),
                     baselineText: baselineText,
                     totalAdditions: fileAdds,
                     totalDeletions: fileDels,
-                    startLineNumber: startLine,
-                    fullDiskPath: FileManager.default.fileExists(atPath: fullPath) ? fullPath : nil,
-                    diskFileLineCount: fullDiskLineCount
+                    startLineNumber: 1,
+                    fullDiskPath: fullPath,
+                    diskFileLineCount: diskCount
                 )
+                buffer.isFullFile = true
+                multiBuffer.addBuffer(buffer)
+
+                if file.hunks.isEmpty {
+                    let excerpt = Excerpt(
+                        bufferId: buffer.id,
+                        filePath: file.displayPath,
+                        fileStatus: file.status,
+                        bufferRange: 0..<buffer.lineCount,
+                        hunk: nil,
+                        isCollapsed: false,
+                        isFileStart: true
+                    )
+                    multiBuffer.addExcerpt(excerpt)
+                } else {
+                    for (hIdx, hunk) in file.hunks.enumerated() {
+                        let startRow = max(0, min(buffer.lineCount, hunk.newRange.lowerBound - 1))
+                        let newCount = hunk.lines.filter { $0.kind == .added || $0.kind == .unchanged }.count
+                        let endRow = max(startRow, min(buffer.lineCount, startRow + newCount))
+                        let excerpt = Excerpt(
+                            bufferId: buffer.id,
+                            filePath: file.displayPath,
+                            fileStatus: file.status,
+                            bufferRange: startRow..<endRow,
+                            hunk: hunk,
+                            isCollapsed: false,
+                            isFileStart: (hIdx == 0)
+                        )
+                        multiBuffer.addExcerpt(excerpt)
+                    }
+                }
+            } else if file.status == .deleted {
+                let oldLines = file.hunks.flatMap { $0.lines.filter { $0.kind == .deleted || $0.kind == .unchanged }.map(\.text) }
+                let buffer = Buffer(
+                    filePath: file.displayPath,
+                    text: "",
+                    language: Buffer.detectLanguage(for: file.displayPath),
+                    baselineText: oldLines.joined(separator: "\n"),
+                    totalAdditions: 0,
+                    totalDeletions: fileDels,
+                    startLineNumber: 1,
+                    fullDiskPath: nil,
+                    diskFileLineCount: 0
+                )
+                buffer.isFullFile = true
                 multiBuffer.addBuffer(buffer)
 
                 let excerpt = Excerpt(
                     bufferId: buffer.id,
                     filePath: file.displayPath,
-                    fileStatus: file.status,
-                    bufferRange: 0..<buffer.lineCount,
-                    hunk: hunk,
+                    fileStatus: .deleted,
+                    bufferRange: 0..<0,
+                    hunk: file.hunks.first,
                     isCollapsed: false,
-                    isFileStart: (hIdx == 0)
+                    isFileStart: true
                 )
                 multiBuffer.addExcerpt(excerpt)
+            } else {
+                // File does NOT exist on disk (pasted / mock diff)
+                for (hIdx, hunk) in file.hunks.enumerated() {
+                    let newFileLines = hunk.lines.filter { $0.kind == .added || $0.kind == .unchanged }.map(\.text)
+                    let linesText = newFileLines.joined(separator: "\n")
+
+                    let oldBaselineLines = hunk.lines.filter { $0.kind == .deleted || $0.kind == .unchanged }.map(\.text)
+                    let baselineText = oldBaselineLines.joined(separator: "\n")
+
+                    let startLine = hunk.newRange.lowerBound
+
+                    let buffer = Buffer(
+                        filePath: file.displayPath,
+                        text: linesText,
+                        language: Buffer.detectLanguage(for: file.displayPath),
+                        baselineText: baselineText,
+                        totalAdditions: fileAdds,
+                        totalDeletions: fileDels,
+                        startLineNumber: startLine,
+                        fullDiskPath: nil,
+                        diskFileLineCount: nil
+                    )
+                    buffer.isFullFile = (file.status == .added && file.hunks.count == 1)
+                    multiBuffer.addBuffer(buffer)
+
+                    let excerpt = Excerpt(
+                        bufferId: buffer.id,
+                        filePath: file.displayPath,
+                        fileStatus: file.status,
+                        bufferRange: 0..<buffer.lineCount,
+                        hunk: hunk,
+                        isCollapsed: false,
+                        isFileStart: (hIdx == 0)
+                    )
+                    multiBuffer.addExcerpt(excerpt)
+                }
             }
         }
 
