@@ -21,6 +21,7 @@ public struct MainWindowView: View {
     @State private var showPasteModal: Bool = false
     @State private var commentTarget: (filePath: String, lineNumber: Int)? = nil
     @State private var currentFolderName: String = ""
+    @State private var showThemePicker: Bool = false
 
     public init(initialPath: String? = nil) {
         self.initialPath = initialPath
@@ -41,36 +42,66 @@ public struct MainWindowView: View {
             )
             .navigationSplitViewColumnWidth(min: 200, ideal: 280, max: 800)
             .toolbar {
-                ToolbarItemGroup(placement: .navigation) {
-                    Button(action: { openGitRepositoryFolder() }) {
-                        Image(systemName: "folder")
-                            .font(.system(size: 11, weight: .semibold))
-                    }
-                    .buttonStyle(.plain)
-                    .controlSize(.small)
-                    .help("Open Git Repository (Cmd+O)")
-
-                    Button(action: { loadCurrentDirectoryDiff() }) {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 11, weight: .semibold))
-                    }
-                    .buttonStyle(.plain)
-                    .controlSize(.small)
-                    .help("Reload Git Diff (Cmd+R)")
-
-                    Menu {
-                        ForEach(Theme.allThemes, id: \.id) { theme in
-                            Button(theme.name) {
-                                selectedTheme = theme
-                            }
+                ToolbarItem(placement: .automatic) {
+                    HStack(spacing: 12) {
+                        Button(action: { openGitRepositoryFolder() }) {
+                            Image(systemName: "folder")
+                                .font(.system(size: 14.5, weight: .regular))
+                                .foregroundColor(Color(NSColor.secondaryLabelColor))
                         }
-                    } label: {
-                        Image(systemName: "paintpalette")
-                            .font(.system(size: 11, weight: .semibold))
+                        .buttonStyle(.plain)
+                        .help("Open Git Repository (Cmd+O)")
+
+                        Button(action: { loadCurrentDirectoryDiff() }) {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.system(size: 14.5, weight: .regular))
+                                .foregroundColor(Color(NSColor.secondaryLabelColor))
+                        }
+                        .buttonStyle(.plain)
+                        .help("Reload Git Diff (Cmd+R)")
+
+                        Button(action: { showThemePicker.toggle() }) {
+                            Image(systemName: "paintpalette")
+                                .font(.system(size: 13.0, weight: .regular))
+                                .foregroundColor(Color(NSColor.secondaryLabelColor))
+                                .opacity(0.85)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Select Color Theme (\(selectedTheme.name))")
+                        .popover(isPresented: $showThemePicker, arrowEdge: .bottom) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("COLOR THEME")
+                                    .font(.system(size: 9, weight: .bold))
+                                    .foregroundColor(.secondary)
+                                    .padding(.horizontal, 8)
+                                    .padding(.top, 6)
+                                Divider()
+                                ForEach(Theme.allThemes, id: \.id) { theme in
+                                    Button(action: {
+                                        selectedTheme = theme
+                                        showThemePicker = false
+                                    }) {
+                                        HStack {
+                                            Text(theme.name)
+                                                .font(.system(size: 12))
+                                            Spacer()
+                                            if selectedTheme.id == theme.id {
+                                                Image(systemName: "checkmark")
+                                                    .font(.system(size: 10, weight: .bold))
+                                                    .foregroundColor(.accentColor)
+                                            }
+                                        }
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 4)
+                                        .contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                            .padding(6)
+                            .frame(width: 170)
+                        }
                     }
-                    .menuStyle(.borderlessButton)
-                    .controlSize(.small)
-                    .help("Select Color Theme (\(selectedTheme.name))")
                 }
             }
         } detail: {
