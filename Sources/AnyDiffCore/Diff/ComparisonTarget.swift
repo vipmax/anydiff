@@ -8,6 +8,8 @@ public enum ComparisonTarget: Equatable, Hashable, Sendable {
     case baseBranch(String)
     /// Direct diff against a specific branch or ref (e.g. "git diff <branch>")
     case directBranch(String)
+    /// Remote GitHub PR / commit / compare diff
+    case remote(GitHubDiffReference)
 
     public var title: String {
         switch self {
@@ -17,6 +19,8 @@ public enum ComparisonTarget: Equatable, Hashable, Sendable {
             return "vs \(branch) (Base)"
         case .directBranch(let branch):
             return "vs \(branch)"
+        case .remote(let ref):
+            return ref.displayTitle
         }
     }
 
@@ -28,6 +32,8 @@ public enum ComparisonTarget: Equatable, Hashable, Sendable {
             return "\(branch)..."
         case .directBranch(let branch):
             return "→ \(branch)"
+        case .remote(let ref):
+            return ref.displayTitle
         }
     }
 }

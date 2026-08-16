@@ -44,6 +44,8 @@ public struct BranchPickerView: View {
             return "\(currentBranch) → \(base)"
         case .directBranch(let branch):
             return "\(currentBranch) vs \(branch)"
+        case .remote(let ref):
+            return ref.displayTitle
         }
     }
 

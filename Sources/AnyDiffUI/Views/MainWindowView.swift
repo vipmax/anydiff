@@ -56,6 +56,9 @@ public struct MainWindowView: View {
     @State private var commentTarget: (filePath: String, lineNumber: Int)? = nil
     @State private var currentFolderName: String = ""
     @State private var showThemePicker: Bool = false
+    @State private var showOpenURLSheet: Bool = false
+    @State private var remoteTarget: GitHubDiffReference? = nil
+    @State private var remoteErrorMessage: String? = nil
 
     public init(initialPath: String? = nil) {
         self.initialPath = initialPath
@@ -89,7 +92,7 @@ public struct MainWindowView: View {
                 currentBranch: currentBranch,
                 reviewManager: reviewManager,
                 selectedFilePath: $selectedFilePath,
-                onReload: { loadCurrentDirectoryDiff() }
+                onReload: { reloadCurrentDiff() }
             )
             .navigationSplitViewColumnWidth(min: 200, ideal: 280, max: 800)
             .toolbar {
@@ -115,7 +118,7 @@ public struct MainWindowView: View {
         } detail: {
             Group {
                 if fileDiffs.isEmpty {
-                    VStack(spacing: 14) {
+                    VStack(spacing: 16) {
                         switch repoStatus {
                         case .notGitRepository:
                             Image(systemName: "folder.badge.questionmark")
@@ -137,8 +140,18 @@ public struct MainWindowView: View {
                                 }
                                 .buttonStyle(.borderedProminent)
                                 .controlSize(.small)
+
+                                Button(action: { showOpenURLSheet = true }) {
+                                    Label("Open GitHub PR / URL...", systemImage: "globe")
+                                        .font(.system(size: 12, weight: .medium))
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
                             }
                             .padding(.top, 4)
+
+                            // Quick Links (DiffsHub style)
+                            quickExamplesSection
 
                         case .clean, .hasChanges:
                             Image(systemName: "checkmark.circle")
@@ -161,7 +174,14 @@ public struct MainWindowView: View {
                                 .buttonStyle(.borderedProminent)
                                 .controlSize(.small)
 
-                                Button(action: { loadCurrentDirectoryDiff() }) {
+                                Button(action: { showOpenURLSheet = true }) {
+                                    Label("Open GitHub PR...", systemImage: "globe")
+                                        .font(.system(size: 12, weight: .medium))
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+
+                                Button(action: { reloadCurrentDiff() }) {
                                     HStack(spacing: 6) {
                                         if isReloading {
                                             ProgressView()
@@ -178,6 +198,9 @@ public struct MainWindowView: View {
                                 .disabled(isReloading)
                             }
                             .padding(.top, 4)
+
+                            // Quick Links (DiffsHub style)
+                            quickExamplesSection
                         }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -204,33 +227,48 @@ public struct MainWindowView: View {
             .toolbar {
                 ToolbarItem(placement: .navigation) {
                     HStack(spacing: 6) {
-                        Button(action: { openGitRepositoryFolder() }) {
-                            HStack(spacing: 6) {
-                                Image(systemName: "folder.fill")
-                                    .font(.system(size: 12))
-                                    .foregroundColor(.secondary)
-                                Text(currentFolderName.isEmpty ? "AnyDiff" : currentFolderName)
-                                    .font(.system(size: 13, weight: .bold))
-                                    .foregroundColor(.primary)
-                            }
-                        }
-                        .buttonStyle(ToolbarHoverButtonStyle())
-                        .help("Open Git Repository (Cmd+O)")
-
-                        if repoStatus != .notGitRepository && !currentBranch.isEmpty {
-                            BranchPickerView(
-                                currentBranch: currentBranch,
-                                localBranches: localBranches,
-                                remoteBranches: remoteBranches,
-                                comparisonTarget: $comparisonTarget,
-                                onSelectTarget: { target in
-                                    self.comparisonTarget = target
-                                    loadCurrentDirectoryDiff()
+                        if case .remote(let ref) = comparisonTarget {
+                            // Remote Diff Navigation Item
+                            Button(action: {
+                                if let webURL = ref.webURL {
+                                    NSWorkspace.shared.open(webURL)
                                 }
-                            )
-                        }
+                            }) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "globe")
+                                        .font(.system(size: 12))
+                                        .foregroundColor(.accentColor)
+                                    Text(ref.displayTitle)
+                                        .font(.system(size: 13, weight: .bold))
+                                        .foregroundColor(.primary)
+                                    Image(systemName: "arrow.up.right")
+                                        .font(.system(size: 9, weight: .bold))
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            .buttonStyle(ToolbarHoverButtonStyle())
+                            .help("Open Pull Request in Browser (Cmd+Shift+B)")
 
-                        if comparisonTarget != .workingTree {
+                            Button(action: { showOpenURLSheet = true }) {
+                                Image(systemName: "pencil.circle")
+                                    .font(.system(size: 13))
+                                    .foregroundColor(.secondary)
+                            }
+                            .buttonStyle(ToolbarHoverButtonStyle())
+                            .help("Open Another GitHub Diff or URL (Cmd+Shift+O)")
+
+                            Button(action: { openGitRepositoryFolder() }) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "folder")
+                                        .font(.system(size: 11))
+                                    Text("Open Local...")
+                                        .font(.system(size: 11))
+                                }
+                                .foregroundColor(.secondary)
+                            }
+                            .buttonStyle(ToolbarHoverButtonStyle())
+                            .help("Switch back to Local Git Repository (Cmd+O)")
+
                             HStack(spacing: 4) {
                                 Image(systemName: "lock.fill")
                                     .font(.system(size: 9.5))
@@ -242,17 +280,74 @@ public struct MainWindowView: View {
                             .padding(.vertical, 3.5)
                             .background(Color.secondary.opacity(0.12))
                             .cornerRadius(5)
-                            .help("Branch comparison is read-only. Switch to 'Working Tree' in the branch menu to edit.")
+                            .help("Remote diff is read-only.")
+
+                        } else {
+                            // Local Git Repository Navigation Item
+                            Button(action: { openGitRepositoryFolder() }) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "folder.fill")
+                                        .font(.system(size: 12))
+                                        .foregroundColor(.secondary)
+                                    Text(currentFolderName.isEmpty ? "AnyDiff" : currentFolderName)
+                                        .font(.system(size: 13, weight: .bold))
+                                        .foregroundColor(.primary)
+                                }
+                            }
+                            .buttonStyle(ToolbarHoverButtonStyle())
+                            .help("Open Git Repository (Cmd+O)")
+
+                            if repoStatus != .notGitRepository && !currentBranch.isEmpty {
+                                BranchPickerView(
+                                    currentBranch: currentBranch,
+                                    localBranches: localBranches,
+                                    remoteBranches: remoteBranches,
+                                    comparisonTarget: $comparisonTarget,
+                                    onSelectTarget: { target in
+                                        self.comparisonTarget = target
+                                        loadCurrentDirectoryDiff()
+                                    }
+                                )
+                            }
+
+                            Button(action: { showOpenURLSheet = true }) {
+                                Image(systemName: "globe")
+                                    .font(.system(size: 12))
+                                    .foregroundColor(.secondary)
+                            }
+                            .buttonStyle(ToolbarHoverButtonStyle())
+                            .help("Open GitHub PR or Diff URL (Cmd+Shift+O)")
+
+                            if comparisonTarget != .workingTree {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "lock.fill")
+                                        .font(.system(size: 9.5))
+                                    Text("Read-Only")
+                                        .font(.system(size: 11, weight: .semibold))
+                                }
+                                .foregroundColor(.secondary)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3.5)
+                                .background(Color.secondary.opacity(0.12))
+                                .cornerRadius(5)
+                                .help("Branch comparison is read-only. Switch to 'Working Tree' in the branch menu to edit.")
+                            }
                         }
                     }
                 }
             }
             .background(
                 Group {
-                    Button(action: { loadCurrentDirectoryDiff() }) {}
+                    Button(action: { reloadCurrentDiff() }) {}
                         .keyboardShortcut("r", modifiers: .command)
                     Button(action: { openGitRepositoryFolder() }) {}
                         .keyboardShortcut("o", modifiers: .command)
+                    Button(action: { showOpenURLSheet = true }) {}
+                        .keyboardShortcut("o", modifiers: [.command, .shift])
+                    Button(action: { showOpenURLSheet = true }) {}
+                        .keyboardShortcut("u", modifiers: .command)
+                    Button(action: { openInBrowser() }) {}
+                        .keyboardShortcut("b", modifiers: [.command, .shift])
                     Button(action: { fontSize = max(9, fontSize - 1) }) {}
                         .keyboardShortcut("-", modifiers: .command)
                     Button(action: { fontSize = min(28, fontSize + 1) }) {}
@@ -267,6 +362,15 @@ public struct MainWindowView: View {
         .toolbarBackground(.visible, for: .windowToolbar)
         .toolbarColorScheme(activeTheme.isDark ? .dark : .light, for: .windowToolbar)
         .background(Color(activeTheme.background).ignoresSafeArea())
+        .sheet(isPresented: $showOpenURLSheet) {
+            OpenRemoteDiffSheetView(
+                isPresented: $showOpenURLSheet,
+                theme: activeTheme,
+                onOpen: { url in
+                    loadRemoteDiff(from: url)
+                }
+            )
+        }
         .sheet(item: Binding(
             get: { commentTarget.map { IdentifiableCommentTarget(filePath: $0.filePath, lineNumber: $0.lineNumber) } },
             set: { _ in commentTarget = nil }
@@ -285,7 +389,11 @@ public struct MainWindowView: View {
             )
         }
         .onAppear {
-            loadCurrentDirectoryDiff()
+            if let initial = initialPath, (initial.hasPrefix("http://") || initial.hasPrefix("https://") || initial.contains("github.com") || initial.contains("diffshub.com") || initial.contains("#")) {
+                loadRemoteDiff(from: initial)
+            } else {
+                loadCurrentDirectoryDiff()
+            }
             updateWindowAppearance()
         }
         .onChange(of: selectedTheme.id) { _ in
@@ -297,7 +405,85 @@ public struct MainWindowView: View {
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffOpenProject"))) { _ in
             openGitRepositoryFolder()
         }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffOpenURL"))) { _ in
+            showOpenURLSheet = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffOpenInBrowser"))) { _ in
+            openInBrowser()
+        }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffReloadDiff"))) { _ in
+            reloadCurrentDiff()
+        }
+    }
+
+    private var quickExamplesSection: some View {
+        VStack(spacing: 8) {
+            Text("OR TRY POPULAR DIFFS (DIFFSHUB STYLE):")
+                .font(.system(size: 9.5, weight: .bold))
+                .foregroundColor(Color(activeTheme.gutterForeground).opacity(0.8))
+                .padding(.top, 8)
+
+            HStack(spacing: 8) {
+                Button(action: { loadRemoteDiff(from: "https://github.com/oven-sh/bun/pull/30412") }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "flame.fill")
+                            .font(.system(size: 10))
+                            .foregroundColor(.orange)
+                        Text("oven-sh/bun #30412 (1M+ lines)")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.orange.opacity(0.12))
+                    .cornerRadius(5)
+                }
+                .buttonStyle(.plain)
+
+                Button(action: { loadRemoteDiff(from: "https://github.com/ghostty-org/ghostty/pull/12291") }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.triangle.pull")
+                            .font(.system(size: 10))
+                            .foregroundColor(.accentColor)
+                        Text("ghostty #12291")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.accentColor.opacity(0.12))
+                    .cornerRadius(5)
+                }
+                .buttonStyle(.plain)
+
+                Button(action: { loadRemoteDiff(from: "https://github.com/nodejs/node/pull/59805") }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.triangle.pull")
+                            .font(.system(size: 10))
+                            .foregroundColor(.accentColor)
+                        Text("nodejs #59805")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.accentColor.opacity(0.12))
+                    .cornerRadius(5)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private func openInBrowser() {
+        if case .remote(let ref) = comparisonTarget {
+            if let url = ref.webURL ?? Optional(ref.diffURL) {
+                NSWorkspace.shared.open(url)
+            }
+        }
+    }
+
+    public func reloadCurrentDiff() {
+        if case .remote(let ref) = comparisonTarget {
+            loadRemoteDiff(reference: ref)
+        } else {
             loadCurrentDirectoryDiff()
         }
     }
@@ -307,6 +493,70 @@ public struct MainWindowView: View {
             if let window = NSApp.windows.first {
                 window.backgroundColor = activeTheme.background
                 window.titlebarSeparatorStyle = .none
+            }
+        }
+    }
+
+    // MARK: - Remote GitHub Diff Loading
+
+    public func loadRemoteDiff(from urlString: String) {
+        guard !isReloading else { return }
+        isReloading = true
+        remoteErrorMessage = nil
+
+        Task {
+            do {
+                let (ref, diffText) = try await GitHubDiffService.shared.fetchDiff(from: urlString)
+                await MainActor.run {
+                    self.remoteTarget = ref
+                    self.comparisonTarget = .remote(ref)
+                    self.currentFolderName = ref.displayTitle
+                    self.currentBranch = ""
+                    self.localBranches = []
+                    self.remoteBranches = []
+                    self.multiBuffer.baseDirectory = nil
+                    NSApp.windows.first?.title = ref.displayTitle
+
+                    self.repoStatus = .hasChanges
+                    self.loadDiff(text: diffText)
+                    self.isReloading = false
+                }
+            } catch {
+                await MainActor.run {
+                    self.remoteErrorMessage = error.localizedDescription
+                    self.isReloading = false
+                }
+            }
+        }
+    }
+
+    public func loadRemoteDiff(reference: GitHubDiffReference) {
+        guard !isReloading else { return }
+        isReloading = true
+        remoteErrorMessage = nil
+
+        Task {
+            do {
+                let diffText = try await GitHubDiffService.shared.fetchDiff(for: reference)
+                await MainActor.run {
+                    self.remoteTarget = reference
+                    self.comparisonTarget = .remote(reference)
+                    self.currentFolderName = reference.displayTitle
+                    self.currentBranch = ""
+                    self.localBranches = []
+                    self.remoteBranches = []
+                    self.multiBuffer.baseDirectory = nil
+                    NSApp.windows.first?.title = reference.displayTitle
+
+                    self.repoStatus = .hasChanges
+                    self.loadDiff(text: diffText)
+                    self.isReloading = false
+                }
+            } catch {
+                await MainActor.run {
+                    self.remoteErrorMessage = error.localizedDescription
+                    self.isReloading = false
+                }
             }
         }
     }
@@ -404,6 +654,9 @@ public struct MainWindowView: View {
                 return out
             }
             return nil
+
+        case .remote:
+            return nil
         }
     }
 
@@ -432,6 +685,9 @@ public struct MainWindowView: View {
         self.fileDiffs = parsedFiles
 
         multiBuffer.clear()
+        displayMap.clear()
+        LineLayoutCache.shared.clear()
+        SyntaxHighlighter.shared.clearCache()
 
         let baseDir = (multiBuffer.baseDirectory?.isEmpty == false) ? (multiBuffer.baseDirectory ?? FileManager.default.currentDirectoryPath) : FileManager.default.currentDirectoryPath
 
@@ -537,40 +793,63 @@ public struct MainWindowView: View {
                 )
                 multiBuffer.addExcerpt(excerpt)
             } else {
-                // File does NOT exist on disk (pasted / mock diff)
-                for (hIdx, hunk) in file.hunks.enumerated() {
-                    let newFileLines = hunk.lines.filter { $0.kind == .added || $0.kind == .unchanged }.map(\.text)
-                    let linesText = newFileLines.joined(separator: "\n")
-
-                    let oldBaselineLines = hunk.lines.filter { $0.kind == .deleted || $0.kind == .unchanged }.map(\.text)
-                    let baselineText = oldBaselineLines.joined(separator: "\n")
-
-                    let startLine = hunk.newRange.lowerBound
-
+                // File does NOT exist on disk (pasted / mock diff / remote PR)
+                if file.hunks.isEmpty {
                     let buffer = Buffer(
                         filePath: file.displayPath,
-                        text: linesText,
+                        text: "",
                         language: Buffer.detectLanguage(for: file.displayPath),
-                        baselineText: baselineText,
+                        baselineText: "",
                         totalAdditions: fileAdds,
                         totalDeletions: fileDels,
-                        startLineNumber: startLine,
+                        startLineNumber: 1,
                         fullDiskPath: nil,
-                        diskFileLineCount: nil
+                        diskFileLineCount: 0
                     )
-                    buffer.isFullFile = (file.status == .added && file.hunks.count == 1)
+                    buffer.isFullFile = true
                     multiBuffer.addBuffer(buffer)
 
                     let excerpt = Excerpt(
                         bufferId: buffer.id,
                         filePath: file.displayPath,
                         fileStatus: file.status,
-                        bufferRange: 0..<buffer.lineCount,
-                        hunk: hunk,
+                        bufferRange: 0..<0,
+                        hunk: nil,
                         isCollapsed: false,
-                        isFileStart: (hIdx == 0)
+                        isFileStart: true
                     )
                     multiBuffer.addExcerpt(excerpt)
+                } else {
+                    for (hIdx, hunk) in file.hunks.enumerated() {
+                        let newFileLines = hunk.lines.filter { $0.kind == .added || $0.kind == .unchanged }.map(\.text)
+                        let oldBaselineLines = hunk.lines.filter { $0.kind == .deleted || $0.kind == .unchanged }.map(\.text)
+                        let startLine = hunk.newRange.lowerBound
+
+                        let buffer = Buffer(
+                            filePath: file.displayPath,
+                            lines: newFileLines,
+                            language: Buffer.detectLanguage(for: file.displayPath),
+                            baselineLines: oldBaselineLines,
+                            totalAdditions: fileAdds,
+                            totalDeletions: fileDels,
+                            startLineNumber: startLine,
+                            fullDiskPath: nil,
+                            diskFileLineCount: nil
+                        )
+                        buffer.isFullFile = (file.status == .added && file.hunks.count == 1)
+                        multiBuffer.addBuffer(buffer)
+
+                        let excerpt = Excerpt(
+                            bufferId: buffer.id,
+                            filePath: file.displayPath,
+                            fileStatus: file.status,
+                            bufferRange: 0..<buffer.lineCount,
+                            hunk: hunk,
+                            isCollapsed: false,
+                            isFileStart: (hIdx == 0)
+                        )
+                        multiBuffer.addExcerpt(excerpt)
+                    }
                 }
             }
         }

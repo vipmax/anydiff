@@ -8,7 +8,6 @@ public final class GitDiffParser: Sendable {
 
     /// Parses unified diff text into a list of FileDiffs
     public func parse(diffText: String) -> [FileDiff] {
-        let lines = diffText.components(separatedBy: "\n")
         var fileDiffs: [FileDiff] = []
 
         var currentFile: FileDiff?
@@ -37,7 +36,7 @@ public final class GitDiffParser: Sendable {
             }
         }
 
-        for line in lines {
+        diffText.enumerateLines { line, _ in
             if line.hasPrefix("diff --git ") {
                 flushFile()
                 let parts = line.components(separatedBy: " ")
@@ -72,7 +71,7 @@ public final class GitDiffParser: Sendable {
                     currentFile = FileDiff(oldPath: "File", newPath: "File", status: .modified)
                 }
 
-                if let (oldRange, newRange, header) = parseHunkHeader(line) {
+                if let (oldRange, newRange, header) = self.parseHunkHeader(line) {
                     oldLineNumber = oldRange.lowerBound
                     newLineNumber = newRange.lowerBound
                     currentHunk = DiffHunk(
@@ -94,7 +93,7 @@ public final class GitDiffParser: Sendable {
                     hunkLines.append(diffLine)
                     oldLineNumber += 1
                     newLineNumber += 1
-                    continue
+                    return
                 }
 
                 let text = String(line.dropFirst())

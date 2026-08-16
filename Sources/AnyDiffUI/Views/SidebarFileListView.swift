@@ -112,6 +112,18 @@ public struct SidebarFileListView: View {
                         .padding(.vertical, 1)
                         .background(Color.accentColor.opacity(0.12))
                         .cornerRadius(4)
+                } else if case .remote(let ref) = comparisonTarget {
+                    HStack(spacing: 3) {
+                        Image(systemName: "globe")
+                            .font(.system(size: 8.5))
+                        Text(ref.owner != nil ? "GitHub" : "Remote")
+                            .font(.system(size: 9.5, weight: .medium))
+                    }
+                    .foregroundColor(.accentColor)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1.5)
+                    .background(Color.accentColor.opacity(0.12))
+                    .cornerRadius(4)
                 } else {
                     let totalReviewed = fileDiffs.lazy.filter { reviewManager.reviewedFiles.contains($0.displayPath) }.count
                     Text("\(totalReviewed)/\(fileDiffs.count) reviewed")

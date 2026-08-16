@@ -45,6 +45,7 @@ public struct DisplayCodeLineInfo: Sendable, Equatable {
     public var excerptIndex: Int
     public var multiBufferRow: MultiBufferRow
     public var bufferRow: BufferRow
+    public var displayLineIndex: Int
     public var oldLineNumber: Int?
     public var newLineNumber: Int?
     public var diffKind: DiffLineKind
@@ -57,6 +58,7 @@ public struct DisplayCodeLineInfo: Sendable, Equatable {
         excerptIndex: Int,
         multiBufferRow: MultiBufferRow,
         bufferRow: BufferRow,
+        displayLineIndex: Int = 0,
         oldLineNumber: Int?,
         newLineNumber: Int?,
         diffKind: DiffLineKind,
@@ -68,6 +70,7 @@ public struct DisplayCodeLineInfo: Sendable, Equatable {
         self.excerptIndex = excerptIndex
         self.multiBufferRow = multiBufferRow
         self.bufferRow = bufferRow
+        self.displayLineIndex = displayLineIndex
         self.oldLineNumber = oldLineNumber
         self.newLineNumber = newLineNumber
         self.diffKind = diffKind

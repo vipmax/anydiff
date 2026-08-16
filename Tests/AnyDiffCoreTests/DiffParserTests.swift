@@ -134,4 +134,52 @@ index 1111111..0000000
         XCTAssertEqual(filtered.count, 1)
         XCTAssertEqual(filtered.first?.displayPath, "Sources/Module99/File999.swift")
     }
+
+    func testLargeBunDiffParsing() throws {
+        let diffPath = "/tmp/bun_pr_30412.diff"
+        guard FileManager.default.fileExists(atPath: diffPath) else { return }
+        let diffText = try String(contentsOfFile: diffPath, encoding: .utf8)
+        let t0 = Date()
+        let files = GitDiffParser.shared.parse(diffText: diffText)
+        let elapsed = Date().timeIntervalSince(t0)
+        print("Parsed \(files.count) files in \(elapsed)s")
+        XCTAssertGreaterThan(files.count, 2000)
+
+        let mb = MultiBuffer()
+        for file in files {
+            for (hIdx, hunk) in file.hunks.enumerated() {
+                let newFileLines = hunk.lines.filter { $0.kind == .added || $0.kind == .unchanged }.map(\.text)
+                let linesText = newFileLines.joined(separator: "\n")
+                let oldBaselineLines = hunk.lines.filter { $0.kind == .deleted || $0.kind == .unchanged }.map(\.text)
+                let baselineText = oldBaselineLines.joined(separator: "\n")
+
+                let buffer = Buffer(
+                    filePath: file.displayPath,
+                    text: linesText,
+                    language: Buffer.detectLanguage(for: file.displayPath),
+                    baselineText: baselineText,
+                    totalAdditions: file.additions,
+                    totalDeletions: file.deletions,
+                    startLineNumber: hunk.newRange.lowerBound,
+                    fullDiskPath: nil,
+                    diskFileLineCount: nil
+                )
+                mb.addBuffer(buffer)
+                let excerpt = Excerpt(
+                    bufferId: buffer.id,
+                    filePath: file.displayPath,
+                    fileStatus: file.status,
+                    bufferRange: 0..<buffer.lineCount,
+                    hunk: hunk,
+                    isCollapsed: false,
+                    isFileStart: (hIdx == 0)
+                )
+                mb.addExcerpt(excerpt)
+            }
+        }
+        let t1 = Date()
+        let dm = DisplayMap(multiBuffer: mb, reviewManager: ReviewManager())
+        let dmElapsed = Date().timeIntervalSince(t1)
+        print("Built DisplayMap with \(dm.displayLines.count) display lines in \(dmElapsed)s")
+    }
 }

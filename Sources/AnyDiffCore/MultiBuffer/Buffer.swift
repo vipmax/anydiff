@@ -87,6 +87,30 @@ public final class Buffer: Identifiable, @unchecked Sendable {
     public init(
         id: BufferId = BufferId(),
         filePath: String,
+        lines: [String],
+        language: String = "",
+        baselineLines: [String] = [],
+        totalAdditions: Int = 0,
+        totalDeletions: Int = 0,
+        startLineNumber: Int = 1,
+        fullDiskPath: String? = nil,
+        diskFileLineCount: Int? = nil
+    ) {
+        self.id = id
+        self.filePath = filePath
+        self.language = language.isEmpty ? Buffer.detectLanguage(for: filePath) : language
+        self.totalAdditions = totalAdditions
+        self.totalDeletions = totalDeletions
+        self.startLineNumber = startLineNumber
+        self.fullDiskPath = fullDiskPath
+        self.diskFileLineCount = diskFileLineCount
+        self._lines = lines
+        self.baselineLines = baselineLines.isEmpty ? lines : baselineLines
+    }
+
+    public init(
+        id: BufferId = BufferId(),
+        filePath: String,
         text: String,
         language: String = "",
         baselineText: String = "",

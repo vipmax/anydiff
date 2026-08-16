@@ -51,6 +51,8 @@ public struct EditorHostView: NSViewRepresentable {
     public func updateNSView(_ editorView: CustomMultiBufferEditorView, context: Context) {
         if editorView.displayMap !== displayMap {
             editorView.displayMap = displayMap
+        } else {
+            editorView.syncLayoutIfNeeded()
         }
         if editorView.theme.id != theme.id {
             editorView.theme = theme

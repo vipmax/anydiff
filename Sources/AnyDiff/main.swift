@@ -59,6 +59,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let fileMenuItem = NSMenuItem()
         let fileMenu = NSMenu(title: "File")
         fileMenu.addItem(NSMenuItem(title: "Open Project...", action: #selector(openProjectAction(_:)), keyEquivalent: "o"))
+        let openURLItem = NSMenuItem(title: "Open GitHub PR / URL...", action: #selector(openURLAction(_:)), keyEquivalent: "O")
+        openURLItem.keyEquivalentModifierMask = [.command, .shift]
+        fileMenu.addItem(openURLItem)
+        let openBrowserItem = NSMenuItem(title: "Open in Browser", action: #selector(openInBrowserAction(_:)), keyEquivalent: "B")
+        openBrowserItem.keyEquivalentModifierMask = [.command, .shift]
+        fileMenu.addItem(openBrowserItem)
+        fileMenu.addItem(NSMenuItem.separator())
         fileMenu.addItem(NSMenuItem(title: "Reload Diff", action: #selector(reloadDiffAction(_:)), keyEquivalent: "r"))
         fileMenu.addItem(NSMenuItem.separator())
         fileMenu.addItem(NSMenuItem(title: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w"))
@@ -93,20 +100,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.post(name: Notification.Name("anyDiffOpenProject"), object: nil)
     }
 
+    @objc func openURLAction(_ sender: Any?) {
+        NotificationCenter.default.post(name: Notification.Name("anyDiffOpenURL"), object: nil)
+    }
+
+    @objc func openInBrowserAction(_ sender: Any?) {
+        NotificationCenter.default.post(name: Notification.Name("anyDiffOpenInBrowser"), object: nil)
+    }
+
     @objc func reloadDiffAction(_ sender: Any?) {
         NotificationCenter.default.post(name: Notification.Name("anyDiffReloadDiff"), object: nil)
     }
 
+    private var cachedIcon: NSImage?
     public func loadAppIcon() -> NSImage? {
+        if let cached = cachedIcon { return cached }
+
         // 1. Standard bundle resource (when running inside AnyDiff.app)
         if let img = Bundle.main.image(forResource: "AppIcon") {
+            cachedIcon = img
             return img
         }
         if let resourceURL = Bundle.main.resourceURL {
             let pngURL = resourceURL.appendingPathComponent("AppIcon.png")
-            if let img = NSImage(contentsOf: pngURL) { return img }
+            if let img = NSImage(contentsOf: pngURL) {
+                cachedIcon = img
+                return img
+            }
             let icnsURL = resourceURL.appendingPathComponent("AppIcon.icns")
-            if let img = NSImage(contentsOf: icnsURL) { return img }
+            if let img = NSImage(contentsOf: icnsURL) {
+                cachedIcon = img
+                return img
+            }
         }
 
         // 2. Development mode (swift run / just release / just dev) via #filePath
@@ -117,12 +142,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .deletingLastPathComponent() // Project root
         let devIconURL = projectRoot.appendingPathComponent("Resources/AppIcon.png")
         if let img = NSImage(contentsOf: devIconURL) {
+            cachedIcon = img
             return img
         }
 
         // 3. Fallback to current working directory
         let cwdIconURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("Resources/AppIcon.png")
         if let img = NSImage(contentsOf: cwdIconURL) {
+            cachedIcon = img
             return img
         }
 
