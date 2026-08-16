@@ -117,4 +117,21 @@ index 1111111..0000000
         XCTAssertEqual(directBranch.title, "vs origin/feature")
         XCTAssertEqual(directBranch.shortDescription, "→ origin/feature")
     }
+
+    func testLargeFileListFilteringPerformance() {
+        var files: [FileDiff] = []
+        for i in 0..<10_000 {
+            files.append(FileDiff(
+                oldPath: "Sources/Module\(i % 100)/File\(i).swift",
+                newPath: "Sources/Module\(i % 100)/File\(i).swift",
+                status: (i % 3 == 0) ? .added : ((i % 3 == 1) ? .modified : .deleted),
+                hunks: []
+            ))
+        }
+
+        XCTAssertEqual(files.count, 10_000)
+        let filtered = files.filter { $0.displayPath.localizedCaseInsensitiveContains("File999.swift") }
+        XCTAssertEqual(filtered.count, 1)
+        XCTAssertEqual(filtered.first?.displayPath, "Sources/Module99/File999.swift")
+    }
 }
