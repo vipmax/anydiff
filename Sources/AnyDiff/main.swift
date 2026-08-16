@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         mainWindow.center()
         mainWindow.title = "AnyDiff"
+        mainWindow.titleVisibility = .hidden
         mainWindow.titlebarAppearsTransparent = true
         mainWindow.toolbarStyle = .unified
         mainWindow.isReleasedWhenClosed = false

@@ -6,18 +6,22 @@ public struct SidebarFileListView: View {
     public var theme: Theme
     @ObservedObject public var reviewManager: ReviewManager
     @Binding public var selectedFilePath: String?
+    public var onReload: () -> Void
+
     @State private var searchText: String = ""
 
     public init(
         fileDiffs: [FileDiff],
         theme: Theme,
         reviewManager: ReviewManager,
-        selectedFilePath: Binding<String?>
+        selectedFilePath: Binding<String?>,
+        onReload: @escaping () -> Void
     ) {
         self.fileDiffs = fileDiffs
         self.theme = theme
         self.reviewManager = reviewManager
         self._selectedFilePath = selectedFilePath
+        self.onReload = onReload
     }
 
     private var filteredFiles: [FileDiff] {
@@ -30,9 +34,10 @@ public struct SidebarFileListView: View {
     public var body: some View {
         VStack(spacing: 0) {
             // Search field
-            HStack {
+            HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass")
                     .foregroundColor(.secondary)
+                    .font(.system(size: 11))
                 TextField("Filter changed files...", text: $searchText)
                     .textFieldStyle(.plain)
                     .font(.system(size: 12))
@@ -40,25 +45,36 @@ public struct SidebarFileListView: View {
                     Button(action: { searchText = "" }) {
                         Image(systemName: "xmark.circle.fill")
                             .foregroundColor(.secondary)
+                            .font(.system(size: 11))
                     }
                     .buttonStyle(.plain)
                 }
             }
-            .padding(8)
+            .padding(6)
             .background(Color(theme.gutterBackground))
-            .cornerRadius(8)
+            .cornerRadius(6)
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
 
             Divider()
                 .overlay(Color(theme.excerptHeaderBorder).opacity(0.65))
 
-            // Header info
-            HStack {
+            // Header info with Reload button
+            HStack(spacing: 6) {
                 Text("CHANGED FILES (\(filteredFiles.count))")
                     .font(.system(size: 10, weight: .bold))
                     .foregroundColor(.secondary)
+
+                Button(action: onReload) {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 9.5, weight: .bold))
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(ToolbarHoverButtonStyle())
+                .help("Reload Git Diff (Cmd+R)")
+
                 Spacer()
+
                 let totalReviewed = fileDiffs.filter { reviewManager.isFileReviewed(filePath: $0.displayPath) }.count
                 Text("\(totalReviewed)/\(fileDiffs.count) reviewed")
                     .font(.system(size: 10))

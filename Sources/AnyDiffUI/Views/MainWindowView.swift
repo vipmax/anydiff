@@ -39,6 +39,7 @@ public struct MainWindowView: View {
     @State private var cursorLocation: ExcerptLocation? = nil
     @State private var cursorPoint: MultiBufferPoint = .zero
 
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var showPasteModal: Bool = false
     @State private var commentTarget: (filePath: String, lineNumber: Int)? = nil
     @State private var currentFolderName: String = ""
@@ -66,94 +67,31 @@ public struct MainWindowView: View {
     }
 
     public var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             SidebarFileListView(
                 fileDiffs: fileDiffs,
                 theme: activeTheme,
                 reviewManager: reviewManager,
-                selectedFilePath: $selectedFilePath
+                selectedFilePath: $selectedFilePath,
+                onReload: { loadCurrentDirectoryDiff() }
             )
             .navigationSplitViewColumnWidth(min: 200, ideal: 280, max: 800)
             .toolbar {
                 ToolbarItem(placement: .automatic) {
-                    HStack(spacing: 12) {
-                        Button(action: { openGitRepositoryFolder() }) {
-                            Image(systemName: "folder")
-                                .font(.system(size: 14.5, weight: .regular))
-                                .foregroundColor(Color(NSColor.secondaryLabelColor))
-                        }
-                        .buttonStyle(.plain)
-                        .help("Open Git Repository (Cmd+O)")
-
-                        Button(action: { loadCurrentDirectoryDiff() }) {
-                            Image(systemName: "arrow.clockwise")
-                                .font(.system(size: 14.5, weight: .regular))
-                                .foregroundColor(Color(NSColor.secondaryLabelColor))
-                        }
-                        .buttonStyle(.plain)
-                        .help("Reload Git Diff (Cmd+R)")
-
+                    if columnVisibility != .detailOnly {
                         Button(action: { showThemePicker.toggle() }) {
                             Image(systemName: "paintpalette")
                                 .font(.system(size: 13.0, weight: .regular))
                                 .foregroundColor(Color(NSColor.secondaryLabelColor))
-                                .opacity(0.85)
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(ToolbarHoverButtonStyle())
                         .help("Select Color Theme (\(activeThemeName))")
                         .popover(isPresented: $showThemePicker, arrowEdge: .bottom) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("COLOR THEME")
-                                    .font(.system(size: 9, weight: .bold))
-                                    .foregroundColor(.secondary)
-                                    .padding(.horizontal, 8)
-                                    .padding(.top, 6)
-                                Divider()
-                                Button(action: {
-                                    followsSystemAppearance = true
-                                    showThemePicker = false
-                                }) {
-                                    HStack {
-                                        Text("System")
-                                            .font(.system(size: 12))
-                                        Spacer()
-                                        if followsSystemAppearance {
-                                            Image(systemName: "checkmark")
-                                                .font(.system(size: 10, weight: .bold))
-                                                .foregroundColor(.accentColor)
-                                        }
-                                    }
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 4)
-                                    .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
-                                Divider()
-                                ForEach(Theme.allThemes, id: \.id) { theme in
-                                    Button(action: {
-                                        selectedTheme = theme
-                                        followsSystemAppearance = false
-                                        showThemePicker = false
-                                    }) {
-                                        HStack {
-                                            Text(theme.name)
-                                                .font(.system(size: 12))
-                                            Spacer()
-                                            if followsSystemAppearance == false && selectedTheme.id == theme.id {
-                                                Image(systemName: "checkmark")
-                                                    .font(.system(size: 10, weight: .bold))
-                                                    .foregroundColor(.accentColor)
-                                            }
-                                        }
-                                        .padding(.horizontal, 8)
-                                        .padding(.vertical, 4)
-                                        .contentShape(Rectangle())
-                                    }
-                                    .buttonStyle(.plain)
-                                }
-                            }
-                            .padding(6)
-                            .frame(width: 170)
+                            ThemePickerPopoverView(
+                                selectedTheme: $selectedTheme,
+                                followsSystemAppearance: $followsSystemAppearance,
+                                isPresented: $showThemePicker
+                            )
                         }
                     }
                 }
@@ -173,6 +111,22 @@ public struct MainWindowView: View {
             )
             .clipped()
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .toolbar {
+                ToolbarItem(placement: .navigation) {
+                    Button(action: { openGitRepositoryFolder() }) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "folder.fill")
+                                .font(.system(size: 12))
+                                .foregroundColor(.secondary)
+                            Text(currentFolderName.isEmpty ? "AnyDiff" : currentFolderName)
+                                .font(.system(size: 13, weight: .bold))
+                                .foregroundColor(.primary)
+                        }
+                    }
+                    .buttonStyle(ToolbarHoverButtonStyle())
+                    .help("Open Git Repository (Cmd+O)")
+                }
+            }
             .background(
                 // Global keyboard shortcuts (Cmd+R reload, Cmd+O open folder, Cmd+-/Cmd+= zoom)
                 Group {
@@ -498,4 +452,87 @@ struct IdentifiableCommentTarget: Identifiable {
     var id: String { "\(filePath):\(lineNumber)" }
     let filePath: String
     let lineNumber: Int
+}
+
+struct ThemePickerPopoverView: View {
+    @Binding var selectedTheme: Theme
+    @Binding var followsSystemAppearance: Bool
+    @Binding var isPresented: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("COLOR THEME")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundColor(.secondary)
+                .padding(.horizontal, 8)
+                .padding(.top, 6)
+            Divider()
+            Button(action: {
+                followsSystemAppearance = true
+                isPresented = false
+            }) {
+                HStack {
+                    Text("System")
+                        .font(.system(size: 12))
+                    Spacer()
+                    if followsSystemAppearance {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(.accentColor)
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            Divider()
+            ForEach(Theme.allThemes, id: \.id) { theme in
+                Button(action: {
+                    selectedTheme = theme
+                    followsSystemAppearance = false
+                    isPresented = false
+                }) {
+                    HStack {
+                        Text(theme.name)
+                            .font(.system(size: 12))
+                        Spacer()
+                        if followsSystemAppearance == false && selectedTheme.id == theme.id {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundColor(.accentColor)
+                        }
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(6)
+        .frame(width: 170)
+    }
+}
+
+public struct ToolbarHoverButtonStyle: ButtonStyle {
+    @State private var isHovered = false
+
+    public init() {}
+
+    public func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .padding(.horizontal, 6)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(isHovered ? Color.secondary.opacity(configuration.isPressed ? 0.24 : 0.14) : Color.clear)
+            )
+            .contentShape(Rectangle())
+            .onHover { hovering in
+                withAnimation(.easeInOut(duration: 0.12)) {
+                    isHovered = hovering
+                }
+            }
+    }
 }
