@@ -599,6 +599,32 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         context.setFillColor(stripeColor.cgColor)
         context.fill(CGRect(x: 0, y: rect.minY, width: 4, height: rect.height))
 
+        // Smooth rounded vector chevron indicator matching native macOS
+        let cx: CGFloat = 16
+        let cy: CGFloat = rect.minY + (rect.height / 2)
+        context.saveGState()
+        context.setStrokeColor(theme.gutterForeground.withAlphaComponent(0.85).cgColor)
+        context.setLineWidth(1.8)
+        context.setLineCap(.round)
+        context.setLineJoin(.round)
+
+        if info.isCollapsed {
+            // chevron.right (>)
+            context.beginPath()
+            context.move(to: CGPoint(x: cx - 2.5, y: cy - 4.5))
+            context.addLine(to: CGPoint(x: cx + 2.5, y: cy))
+            context.addLine(to: CGPoint(x: cx - 2.5, y: cy + 4.5))
+            context.strokePath()
+        } else {
+            // chevron.down (v)
+            context.beginPath()
+            context.move(to: CGPoint(x: cx - 4.5, y: cy - 2.5))
+            context.addLine(to: CGPoint(x: cx, y: cy + 2.5))
+            context.addLine(to: CGPoint(x: cx + 4.5, y: cy - 2.5))
+            context.strokePath()
+        }
+        context.restoreGState()
+
         // Title and Breadcrumbs Text
         let pathAttr: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 12, weight: .semibold),
@@ -609,13 +635,13 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
         context.saveGState()
         context.textMatrix = .identity
-        context.translateBy(x: 16, y: rect.minY + 22)
+        context.translateBy(x: 28, y: rect.minY + 22)
         context.scaleBy(x: 1.0, y: -1.0)
         CTLineDraw(ctLine, context)
         context.restoreGState()
 
         // Diff Badges (+N -M)
-        let badgeX: CGFloat = min(bounds.width - 150, 24 + CGFloat(info.filePath.count * 8))
+        let badgeX: CGFloat = min(bounds.width - 150, 36 + CGFloat(info.filePath.count * 8))
         if info.additions > 0 {
             let addAttr: [NSAttributedString.Key: Any] = [
                 .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .bold),
@@ -645,20 +671,6 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             CTLineDraw(delLine, context)
             context.restoreGState()
         }
-
-        // Expand All / Collapse button text on right
-        let actionStr = info.isCollapsed ? "Expand" : "Collapse"
-        let actionAttr: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 11, weight: .medium),
-            .foregroundColor: theme.gutterForeground
-        ]
-        let actLine = CTLineCreateWithAttributedString(NSAttributedString(string: actionStr, attributes: actionAttr))
-        context.saveGState()
-        context.textMatrix = .identity
-        context.translateBy(x: bounds.width - 70, y: rect.minY + 22)
-        context.scaleBy(x: 1.0, y: -1.0)
-        CTLineDraw(actLine, context)
-        context.restoreGState()
     }
 
     // MARK: - Code Line Drawing
@@ -934,12 +946,9 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
         // 1. Check sticky file header interaction first
         if let (stickyHeader, stickyFrame) = currentStickyHeader(), stickyFrame.contains(screenPoint) {
-            if screenPoint.x > bounds.width - 80 {
-                displayMap.multiBuffer.toggleCollapse(at: stickyHeader.excerptIndex)
-                displayMap.rebuild()
-                invalidateLayout()
-                return
-            }
+            displayMap.multiBuffer.toggleCollapse(at: stickyHeader.excerptIndex)
+            displayMap.rebuild()
+            invalidateLayout()
             return
         }
 
@@ -966,12 +975,10 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                 clickedInDocument = true
                 switch line {
                 case .excerptHeader(let header):
-                    if screenPoint.x > bounds.width - 80 {
-                        displayMap.multiBuffer.toggleCollapse(at: header.excerptIndex)
-                        displayMap.rebuild()
-                        invalidateLayout()
-                        return
-                    }
+                    displayMap.multiBuffer.toggleCollapse(at: header.excerptIndex)
+                    displayMap.rebuild()
+                    invalidateLayout()
+                    return
                 case .foldGap(let gap):
                     displayMap.multiBuffer.expandExcerpt(at: gap.excerptIndex, up: gap.isTopGap ? 10 : 0, down: gap.isTopGap ? 0 : 10)
                     displayMap.rebuild()
