@@ -81,6 +81,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         case line(initialRow: MultiBufferRow)
     }
     private var activeSelectionGranularity: SelectionGranularity = .character
+    private var isDraggingSelection: Bool = false
 
     // Cursor Animation
     private var cursorTimer: Timer?
@@ -496,24 +497,48 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
     // MARK: - Pixel-Perfect Viewport Scroll Anchoring
 
-    private func preserveScreenPosition(ofCodeRow codeRow: Int, originalScreenY: CGFloat) {
+    private enum ScrollAnchor {
+        case header(filePath: String)
+        case code(filePath: String, bufferRow: BufferRow)
+    }
+
+    private func preserveScreenPosition(ofAnchor anchor: ScrollAnchor?, originalScreenY: CGFloat) {
         guard let dm = displayMap else { return }
         dm.rebuild()
         invalidateLayout()
 
+        guard let anchor = anchor else {
+            needsDisplay = true
+            return
+        }
+
         var newAbsY: CGFloat = 0
         var found = false
         for line in dm.displayLines {
-            if case .code(let info) = line, info.multiBufferRow == codeRow {
-                found = true
-                break
-            }
             switch line {
-            case .excerptHeader: newAbsY += excerptHeaderHeight
-            case .code: newAbsY += lineHeight
-            case .foldGap: newAbsY += foldGapHeight
-            case .inlineComment: newAbsY += commentHeight
+            case .excerptHeader(let info):
+                if case .header(let path) = anchor, info.filePath == path {
+                    found = true
+                    break
+                }
+                newAbsY += excerptHeaderHeight
+            case .code(let info):
+                if case .code(let path, let bRow) = anchor {
+                    if info.excerptIndex >= 0 && info.excerptIndex < dm.multiBuffer.excerpts.count {
+                        let exc = dm.multiBuffer.excerpts[info.excerptIndex]
+                        if exc.filePath == path && info.bufferRow == bRow {
+                            found = true
+                            break
+                        }
+                    }
+                }
+                newAbsY += lineHeight
+            case .foldGap:
+                newAbsY += foldGapHeight
+            case .inlineComment:
+                newAbsY += commentHeight
             }
+            if found { break }
         }
 
         if found {
@@ -522,6 +547,30 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             scrollOffsetY = max(0, min(maxScrollY, targetScrollY))
         }
         needsDisplay = true
+    }
+
+    private func preserveCursorAndSelection(around action: () -> Void) {
+        guard let dm = displayMap else {
+            action()
+            return
+        }
+        let cursorLoc = dm.bufferLocation(for: cursorPoint)
+        let anchorLoc = selectionAnchor.flatMap { dm.bufferLocation(for: $0) }
+        let hadSelection = (selectionAnchor != nil && selectionAnchor != cursorPoint)
+
+        action()
+
+        dm.rebuild()
+        invalidateLayout()
+
+        if let loc = cursorLoc, let newVPoint = dm.visualPoint(for: loc.buffer.id, bufferPoint: loc.point) {
+            cursorPoint = newVPoint
+            if hadSelection, let aLoc = anchorLoc, let newAPoint = dm.visualPoint(for: aLoc.buffer.id, bufferPoint: aLoc.point) {
+                selectionAnchor = newAPoint
+            } else {
+                selectionAnchor = newVPoint
+            }
+        }
     }
 
     // MARK: - Sticky Excerpt Header Computation
@@ -616,6 +665,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         context.fill(headerRect)
 
         // Top & Bottom border
+
         context.setStrokeColor(theme.excerptHeaderBorder.cgColor)
         context.setLineWidth(1.0)
         context.strokeLineSegments(between: [
@@ -984,6 +1034,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
     public override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
+        isDraggingSelection = false
         let screenPoint = convert(event.locationInWindow, from: nil)
         let docY = screenPoint.y + scrollOffsetY
         let docX = screenPoint.x + scrollOffsetX
@@ -1027,60 +1078,108 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                     invalidateLayout()
                     return
                 case .foldGap(let gap):
-                    var anchorCodeRow: Int = 0
+                    selectionAnchor = cursorPoint
+                    var anchor: ScrollAnchor? = nil
                     var anchorScreenY: CGFloat = 0
                     var curY: CGFloat = 0
-                    for l in displayMap.displayLines {
-                        if case .foldGap(let g) = l, g == gap { break }
-                        if case .code(let c) = l {
-                            anchorCodeRow = c.multiBufferRow
-                            anchorScreenY = curY - scrollOffsetY
-                        }
-                        switch l {
-                        case .excerptHeader: curY += excerptHeaderHeight
-                        case .code: curY += lineHeight
-                        case .foldGap: curY += foldGapHeight
-                        case .inlineComment: curY += commentHeight
-                        }
-                    }
 
                     if gap.isTopGap {
-                        displayMap.multiBuffer.expandExcerpt(at: gap.excerptIndex, up: gap.hiddenCount, down: 0)
-                    } else if gap.isBottomGap {
-                        displayMap.multiBuffer.expandExcerpt(at: gap.excerptIndex, up: 0, down: gap.hiddenCount)
-                    } else if let _ = gap.nextExcerptIndex {
-                        displayMap.multiBuffer.expandExcerpt(at: gap.excerptIndex, up: 0, down: gap.hiddenCount)
-                        displayMap.multiBuffer.mergeAdjacentExcerpts()
+                        // For top gap: anchor to the first code line AFTER the gap so the visible code doesn't jump
+                        var foundGap = false
+                        for l in displayMap.displayLines {
+                            if case .foldGap(let g) = l, g == gap {
+                                foundGap = true
+                                curY += foldGapHeight
+                                continue
+                            }
+                            if foundGap {
+                                if case .code(let c) = l {
+                                    if c.excerptIndex >= 0 && c.excerptIndex < displayMap.multiBuffer.excerpts.count {
+                                        let exc = displayMap.multiBuffer.excerpts[c.excerptIndex]
+                                        anchor = .code(filePath: exc.filePath, bufferRow: c.bufferRow)
+                                    }
+                                    anchorScreenY = curY - scrollOffsetY
+                                    break
+                                }
+                            }
+                            switch l {
+                            case .excerptHeader: curY += excerptHeaderHeight
+                            case .code: curY += lineHeight
+                            case .foldGap: curY += foldGapHeight
+                            case .inlineComment: curY += commentHeight
+                            }
+                        }
                     } else {
-                        displayMap.multiBuffer.expandExcerpt(at: gap.excerptIndex, up: 0, down: gap.hiddenCount)
+                        for l in displayMap.displayLines {
+                            if case .foldGap(let g) = l, g == gap { break }
+                            switch l {
+                            case .excerptHeader(let h):
+                                anchor = .header(filePath: h.filePath)
+                                anchorScreenY = curY - scrollOffsetY
+                                curY += excerptHeaderHeight
+                            case .code(let c):
+                                if c.excerptIndex >= 0 && c.excerptIndex < displayMap.multiBuffer.excerpts.count {
+                                    let exc = displayMap.multiBuffer.excerpts[c.excerptIndex]
+                                    anchor = .code(filePath: exc.filePath, bufferRow: c.bufferRow)
+                                }
+                                anchorScreenY = curY - scrollOffsetY
+                                curY += lineHeight
+                            case .foldGap:
+                                curY += foldGapHeight
+                            case .inlineComment:
+                                curY += commentHeight
+                            }
+                        }
                     }
 
-                    preserveScreenPosition(ofCodeRow: anchorCodeRow, originalScreenY: anchorScreenY)
+                    preserveCursorAndSelection {
+                        if gap.isTopGap {
+                            displayMap.multiBuffer.expandExcerpt(at: gap.excerptIndex, up: gap.hiddenCount, down: 0)
+                        } else if gap.isBottomGap {
+                            displayMap.multiBuffer.expandExcerpt(at: gap.excerptIndex, up: 0, down: gap.hiddenCount)
+                        } else if let _ = gap.nextExcerptIndex {
+                            displayMap.multiBuffer.expandExcerpt(at: gap.excerptIndex, up: 0, down: gap.hiddenCount)
+                            displayMap.multiBuffer.mergeAdjacentExcerpts()
+                        } else {
+                            displayMap.multiBuffer.expandExcerpt(at: gap.excerptIndex, up: 0, down: gap.hiddenCount)
+                        }
+                    }
+
+                    preserveScreenPosition(ofAnchor: anchor, originalScreenY: anchorScreenY)
                     return
                 case .code(let codeInfo):
-                    if screenPoint.x <= 22, let exp = codeInfo.expandInfo {
+                    if screenPoint.x <= 28, let exp = codeInfo.expandInfo {
                         let isFullExpand = event.modifierFlags.contains(.shift) || event.modifierFlags.contains(.option)
                         let lineScreenY = lineMinY - scrollOffsetY
-                        if isFullExpand {
-                            displayMap.multiBuffer.expandExcerptAll(at: exp.excerptIndex)
-                        } else {
-                            switch exp.direction {
-                            case .up:
-                                displayMap.multiBuffer.expandExcerpt(at: exp.excerptIndex, up: 5, down: 0)
-                            case .down:
-                                displayMap.multiBuffer.expandExcerpt(at: exp.excerptIndex, up: 0, down: 5)
-                            case .upAndDown:
-                                let relY = screenPoint.y - lineScreenY
-                                if relY < height / 2 {
+                        selectionAnchor = cursorPoint
+                        var anchor: ScrollAnchor? = nil
+                        if codeInfo.excerptIndex >= 0 && codeInfo.excerptIndex < displayMap.multiBuffer.excerpts.count {
+                            let exc = displayMap.multiBuffer.excerpts[codeInfo.excerptIndex]
+                            anchor = .code(filePath: exc.filePath, bufferRow: codeInfo.bufferRow)
+                        }
+                        preserveCursorAndSelection {
+                            if isFullExpand {
+                                displayMap.multiBuffer.expandExcerptAll(at: exp.excerptIndex)
+                            } else {
+                                switch exp.direction {
+                                case .up:
                                     displayMap.multiBuffer.expandExcerpt(at: exp.excerptIndex, up: 5, down: 0)
-                                } else {
+                                case .down:
                                     displayMap.multiBuffer.expandExcerpt(at: exp.excerptIndex, up: 0, down: 5)
+                                case .upAndDown:
+                                    let relY = screenPoint.y - lineScreenY
+                                    if relY < height / 2 {
+                                        displayMap.multiBuffer.expandExcerpt(at: exp.excerptIndex, up: 5, down: 0)
+                                    } else {
+                                        displayMap.multiBuffer.expandExcerpt(at: exp.excerptIndex, up: 0, down: 5)
+                                    }
                                 }
                             }
                         }
-                        preserveScreenPosition(ofCodeRow: codeInfo.multiBufferRow, originalScreenY: lineScreenY)
+                        preserveScreenPosition(ofAnchor: anchor, originalScreenY: lineScreenY)
                         return
                     } else if screenPoint.x < gutterWidth {
+                        isDraggingSelection = true
                         let targetPoint = MultiBufferPoint(row: codeInfo.multiBufferRow, column: 0)
                         activeSelectionGranularity = .character
                         selectionAnchor = targetPoint
@@ -1089,6 +1188,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                         return
                     } else {
                         // Position cursor in code
+                        isDraggingSelection = true
                         let text = codeInfo.text
                         let attr = SyntaxHighlighter.shared.highlight(line: text, language: codeInfo.language, font: font, theme: theme)
                         let ctLine = LineLayoutCache.shared.getOrCreateCTLine(attributedString: attr)
@@ -1124,6 +1224,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         }
 
         if !clickedInDocument {
+            isDraggingSelection = true
             activeSelectionGranularity = .character
             if docY > currentY, let lastCode = displayMap.codeLines.last {
                 let targetPoint = MultiBufferPoint(row: lastCode.multiBufferRow, column: lastCode.text.count)
@@ -1144,6 +1245,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     }
 
     public override func mouseDragged(with event: NSEvent) {
+        guard isDraggingSelection else { return }
         let screenPoint = convert(event.locationInWindow, from: nil)
         let docY = screenPoint.y + scrollOffsetY
         let docX = screenPoint.x + scrollOffsetX
@@ -1220,6 +1322,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
     public override func mouseUp(with event: NSEvent) {
         super.mouseUp(with: event)
+        isDraggingSelection = false
         activeSelectionGranularity = .character
     }
 
@@ -1328,8 +1431,16 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             }
             currentScreenY -= scrollOffsetY
 
-            displayMap.multiBuffer.expandExcerptAt(point: cursorPoint, lines: 5, direction: .upAndDown)
-            preserveScreenPosition(ofCodeRow: cursorRow, originalScreenY: currentScreenY)
+            var anchor: ScrollAnchor? = nil
+            if let loc = displayMap.bufferLocation(for: cursorPoint) {
+                anchor = .code(filePath: loc.buffer.filePath, bufferRow: loc.point.row)
+            }
+
+            preserveCursorAndSelection {
+                displayMap.multiBuffer.expandExcerptAt(point: cursorPoint, lines: 5, direction: .upAndDown)
+            }
+
+            preserveScreenPosition(ofAnchor: anchor, originalScreenY: currentScreenY)
             return
         }
 
