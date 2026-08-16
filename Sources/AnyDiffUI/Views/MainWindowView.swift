@@ -40,6 +40,39 @@ public struct MainWindowView: View {
                 selectedFilePath: $selectedFilePath
             )
             .navigationSplitViewColumnWidth(min: 200, ideal: 280, max: 800)
+            .toolbar {
+                ToolbarItemGroup(placement: .navigation) {
+                    Button(action: { openGitRepositoryFolder() }) {
+                        Image(systemName: "folder")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    .buttonStyle(.plain)
+                    .controlSize(.small)
+                    .help("Open Git Repository (Cmd+O)")
+
+                    Button(action: { loadCurrentDirectoryDiff() }) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    .buttonStyle(.plain)
+                    .controlSize(.small)
+                    .help("Reload Git Diff (Cmd+R)")
+
+                    Menu {
+                        ForEach(Theme.allThemes, id: \.id) { theme in
+                            Button(theme.name) {
+                                selectedTheme = theme
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "paintpalette")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    .menuStyle(.borderlessButton)
+                    .controlSize(.small)
+                    .help("Select Color Theme (\(selectedTheme.name))")
+                }
+            }
         } detail: {
             EditorHostView(
                 displayMap: displayMap,
@@ -69,43 +102,6 @@ public struct MainWindowView: View {
                 }
                 .opacity(0)
             )
-        }
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Menu {
-                    ForEach(Theme.allThemes, id: \.id) { theme in
-                        Button(theme.name) {
-                            selectedTheme = theme
-                        }
-                    }
-                } label: {
-                    Image(systemName: "paintpalette")
-                        .font(.system(size: 11, weight: .semibold))
-                }
-                .menuStyle(.borderlessButton)
-                .controlSize(.small)
-                .help("Select Color Theme (\(selectedTheme.name))")
-            }
-
-            ToolbarItem(placement: .automatic) {
-                Button(action: { loadCurrentDirectoryDiff() }) {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 11, weight: .semibold))
-                }
-                .buttonStyle(.plain)
-                .controlSize(.small)
-                .help("Reload Git Diff (Cmd+R)")
-            }
-
-            ToolbarItem(placement: .automatic) {
-                Button(action: { openGitRepositoryFolder() }) {
-                    Image(systemName: "folder")
-                        .font(.system(size: 11, weight: .semibold))
-                }
-                .buttonStyle(.plain)
-                .controlSize(.small)
-                .help("Open Git Repository (Cmd+O)")
-            }
         }
         .sheet(isPresented: $showPasteModal) {
             PasteDiffModal(
