@@ -69,6 +69,34 @@ public struct MainWindowView: View {
                 .opacity(0)
             )
         }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    ForEach(Theme.allThemes, id: \.id) { theme in
+                        Button(theme.name) {
+                            selectedTheme = theme
+                        }
+                    }
+                } label: {
+                    Label(selectedTheme.name, systemImage: "paintpalette")
+                }
+                .help("Select Color Theme")
+            }
+
+            ToolbarItem(placement: .automatic) {
+                Button(action: { loadCurrentDirectoryDiff() }) {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .help("Reload Git Diff (Cmd+R)")
+            }
+
+            ToolbarItem(placement: .automatic) {
+                Button(action: { openGitRepositoryFolder() }) {
+                    Image(systemName: "folder")
+                }
+                .help("Open Git Repository (Cmd+O)")
+            }
+        }
         .sheet(isPresented: $showPasteModal) {
             PasteDiffModal(
                 onLoadDiff: { text in

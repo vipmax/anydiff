@@ -17,6 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mainWindow.center()
         mainWindow.title = "AnyDiff - MultiBuffer Code Reviewer"
         mainWindow.titlebarAppearsTransparent = true
+        mainWindow.toolbarStyle = .unified
         mainWindow.isReleasedWhenClosed = false
         mainWindow.minSize = NSSize(width: 900, height: 500)
         let customPath = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : nil
