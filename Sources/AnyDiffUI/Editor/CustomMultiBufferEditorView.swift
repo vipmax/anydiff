@@ -118,8 +118,17 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
     // Scrollbar Auto-Hide Animation
     private var scrollbarAlpha: CGFloat = 0.0
+    private var visibleScrollbarAxis: ScrollAxis?
     private var scrollbarFadeTimer: Timer?
     private var fadeAnimationTimer: Timer?
+
+    private enum ScrollbarDragAxis {
+        case vertical
+        case horizontal
+    }
+    private var scrollbarDragAxis: ScrollbarDragAxis?
+    private var scrollbarDragStartMousePosition: CGFloat = 0
+    private var scrollbarDragStartOffset: CGFloat = 0
 
     public override var isFlipped: Bool { true }
     public override var acceptsFirstResponder: Bool { true }
@@ -148,17 +157,19 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         fadeAnimationTimer?.invalidate()
     }
 
-    private func showScrollbarsWithAutohide() {
+    private func showScrollbarsWithAutohide(for axis: ScrollAxis) {
         scrollbarFadeTimer?.invalidate()
         fadeAnimationTimer?.invalidate()
+        visibleScrollbarAxis = axis
         scrollbarAlpha = 1.0
-        scrollbarFadeTimer = Timer.scheduledTimer(withTimeInterval: 0.8, repeats: false) { [weak self] _ in
+        scrollbarFadeTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: false) { [weak self] _ in
             self?.startScrollbarFadeOut()
         }
         needsDisplay = true
     }
 
     private func startScrollbarFadeOut() {
+        guard scrollbarDragAxis == nil else { return }
         fadeAnimationTimer?.invalidate()
         fadeAnimationTimer = Timer.scheduledTimer(withTimeInterval: 0.03, repeats: true) { [weak self] timer in
             guard let self = self else { timer.invalidate(); return }
@@ -169,6 +180,83 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             }
             self.needsDisplay = true
         }
+    }
+
+    private func verticalScrollbarGeometry() -> (thumb: CGRect, hit: CGRect)? {
+        guard totalDocumentHeight > bounds.height, bounds.height > 0 else { return nil }
+
+        let maxScrollY = totalDocumentHeight - bounds.height
+        let thumbHeight = min(bounds.height, max(30, (bounds.height / totalDocumentHeight) * bounds.height))
+        let travel = max(0, bounds.height - thumbHeight)
+        let progress = maxScrollY > 0 ? scrollOffsetY / maxScrollY : 0
+        let thumbY = progress * travel
+        let thumb = CGRect(x: bounds.width - 9, y: thumbY, width: 6, height: thumbHeight)
+        let hit = thumb.insetBy(dx: -6, dy: -2).intersection(bounds)
+        return (thumb, hit)
+    }
+
+    private func horizontalScrollbarGeometry() -> (thumb: CGRect, hit: CGRect)? {
+        let trackWidth = bounds.width - gutterWidth - 10
+        guard totalDocumentWidth > bounds.width, trackWidth > 0, bounds.height > 0 else { return nil }
+
+        let maxScrollX = totalDocumentWidth - bounds.width
+        let thumbWidth = min(trackWidth, max(40, (trackWidth / totalDocumentWidth) * trackWidth))
+        let travel = max(0, trackWidth - thumbWidth)
+        let progress = maxScrollX > 0 ? scrollOffsetX / maxScrollX : 0
+        let thumbX = gutterWidth + progress * travel
+        let thumb = CGRect(x: thumbX, y: bounds.height - 8, width: thumbWidth, height: 6)
+        let hit = thumb.insetBy(dx: -2, dy: -6).intersection(bounds)
+        return (thumb, hit)
+    }
+
+    @discardableResult
+    private func beginScrollbarDrag(at point: CGPoint) -> Bool {
+        if visibleScrollbarAxis == .vertical,
+           let geometry = verticalScrollbarGeometry(), geometry.hit.contains(point) {
+            scrollbarDragAxis = .vertical
+            scrollbarDragStartMousePosition = point.y
+            scrollbarDragStartOffset = scrollOffsetY
+            showScrollbarsWithAutohide(for: .vertical)
+            return true
+        }
+
+        if visibleScrollbarAxis == .horizontal,
+           let geometry = horizontalScrollbarGeometry(), geometry.hit.contains(point) {
+            scrollbarDragAxis = .horizontal
+            scrollbarDragStartMousePosition = point.x
+            scrollbarDragStartOffset = scrollOffsetX
+            showScrollbarsWithAutohide(for: .horizontal)
+            return true
+        }
+
+        return false
+    }
+
+    private func updateScrollbarDrag(at point: CGPoint) {
+        guard let axis = scrollbarDragAxis else { return }
+
+        switch axis {
+        case .vertical:
+            guard let geometry = verticalScrollbarGeometry() else { return }
+            let maxScrollY = max(0, totalDocumentHeight - bounds.height)
+            let travel = max(0, bounds.height - geometry.thumb.height)
+            guard travel > 0 else { return }
+            let delta = point.y - scrollbarDragStartMousePosition
+            scrollOffsetY = max(0, min(maxScrollY, scrollbarDragStartOffset + delta * maxScrollY / travel))
+            showScrollbarsWithAutohide(for: .vertical)
+
+        case .horizontal:
+            guard let geometry = horizontalScrollbarGeometry() else { return }
+            let maxScrollX = max(0, totalDocumentWidth - bounds.width)
+            let trackWidth = max(0, bounds.width - gutterWidth - 10)
+            let travel = max(0, trackWidth - geometry.thumb.width)
+            guard travel > 0 else { return }
+            let delta = point.x - scrollbarDragStartMousePosition
+            scrollOffsetX = max(0, min(maxScrollX, scrollbarDragStartOffset + delta * maxScrollX / travel))
+            showScrollbarsWithAutohide(for: .horizontal)
+        }
+
+        needsDisplay = true
     }
 
     private func updateFontMetrics() {
@@ -211,35 +299,21 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         let timeSinceLastEvent = now.timeIntervalSince(lastScrollEventTime)
         lastScrollEventTime = now
 
-        let isNewGesture = event.phase == .began || event.phase == .mayBegin || timeSinceLastEvent > 0.20
+        let isNewGesture = event.phase == .began || event.phase == .mayBegin || timeSinceLastEvent > 0.35
         let absX = abs(dx)
         let absY = abs(dy)
 
-        if isNewGesture {
+        if isNewGesture || scrollLockAxis == nil {
             // Determine dominant direction at start of gesture (Zed style)
             if absY >= absX {
                 scrollLockAxis = .vertical
             } else {
                 scrollLockAxis = .horizontal
             }
-        } else if max(absX, absY) >= 6.0 {
-            // Check if user deliberately switched direction with strong intent (>1.9x threshold)
-            let unlockPercent: CGFloat = 1.9
-            switch scrollLockAxis {
-            case .vertical:
-                if absX > absY && absX >= absY * unlockPercent {
-                    scrollLockAxis = .horizontal
-                }
-            case .horizontal:
-                if absY > absX && absY >= absX * unlockPercent {
-                    scrollLockAxis = .vertical
-                }
-            case .none:
-                break
-            }
         }
 
-        // Apply axis lock to completely eliminate accidental diagonal drifting
+        // Keep one axis for the complete gesture. The nil guard above also
+        // covers momentum events arriving immediately after .ended.
         switch scrollLockAxis {
         case .vertical:
             dx = 0
@@ -249,9 +323,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             break
         }
 
-        if event.phase == .ended || event.phase == .cancelled {
-            scrollLockAxis = nil
-        }
+        let scrollbarAxis = scrollLockAxis ?? .vertical
 
         let maxScrollY = max(0, totalDocumentHeight - bounds.height)
         let maxScrollX = max(0, totalDocumentWidth - bounds.width)
@@ -259,7 +331,11 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         scrollOffsetY = max(0, min(maxScrollY, scrollOffsetY - dy))
         scrollOffsetX = max(0, min(maxScrollX, scrollOffsetX - dx))
 
-        showScrollbarsWithAutohide()
+        showScrollbarsWithAutohide(for: scrollbarAxis)
+
+        if event.phase == .ended || event.phase == .cancelled {
+            scrollLockAxis = nil
+        }
     }
 
     public override func setFrameSize(_ newSize: NSSize) {
@@ -454,7 +530,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             let maxScrollY = max(0, totalDocumentHeight - bounds.height)
             scrollOffsetY = max(0, min(maxScrollY, targetY))
             scrollOffsetX = 0
-            showScrollbarsWithAutohide()
+            showScrollbarsWithAutohide(for: .vertical)
             needsDisplay = true
         }
     }
@@ -587,29 +663,16 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         if scrollbarAlpha > 0.01 {
             let thumbColor = theme.gutterForeground.withAlphaComponent(0.45 * scrollbarAlpha)
 
-            if totalDocumentHeight > bounds.height {
-                let maxScrollY = totalDocumentHeight - bounds.height
-                let progress = maxScrollY > 0 ? (scrollOffsetY / maxScrollY) : 0
-                let thumbHeight = max(30, (bounds.height / totalDocumentHeight) * bounds.height)
-                let thumbY = progress * (bounds.height - thumbHeight)
-                let thumbRect = CGRect(x: bounds.width - 7, y: thumbY, width: 4, height: thumbHeight)
-
+            if visibleScrollbarAxis == .vertical, let geometry = verticalScrollbarGeometry() {
                 context.setFillColor(thumbColor.cgColor)
-                let path = CGPath(roundedRect: thumbRect, cornerWidth: 2, cornerHeight: 2, transform: nil)
+                let path = CGPath(roundedRect: geometry.thumb, cornerWidth: 3, cornerHeight: 3, transform: nil)
                 context.addPath(path)
                 context.fillPath()
             }
 
-            if totalDocumentWidth > bounds.width {
-                let maxScrollX = totalDocumentWidth - bounds.width
-                let progress = maxScrollX > 0 ? (scrollOffsetX / maxScrollX) : 0
-                let scrollableWidth = bounds.width - gutterWidth - 10
-                let thumbWidth = max(40, (scrollableWidth / totalDocumentWidth) * scrollableWidth)
-                let thumbX = gutterWidth + progress * (scrollableWidth - thumbWidth)
-                let thumbRect = CGRect(x: thumbX, y: bounds.height - 6, width: thumbWidth, height: 4)
-
+            if visibleScrollbarAxis == .horizontal, let geometry = horizontalScrollbarGeometry() {
                 context.setFillColor(thumbColor.cgColor)
-                let path = CGPath(roundedRect: thumbRect, cornerWidth: 2, cornerHeight: 2, transform: nil)
+                let path = CGPath(roundedRect: geometry.thumb, cornerWidth: 3, cornerHeight: 3, transform: nil)
                 context.addPath(path)
                 context.fillPath()
             }
@@ -1129,6 +1192,13 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         window?.makeFirstResponder(self)
         isDraggingSelection = false
         let screenPoint = convert(event.locationInWindow, from: nil)
+
+        // Scrollbars are painted by this view, so handle their hit-testing
+        // before the normal document/selection hit-testing.
+        if beginScrollbarDrag(at: screenPoint) {
+            return
+        }
+
         let docY = screenPoint.y + scrollOffsetY
         let docX = screenPoint.x + scrollOffsetX
         let isShift = event.modifierFlags.contains(.shift)
@@ -1300,6 +1370,11 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     }
 
     public override func mouseDragged(with event: NSEvent) {
+        if scrollbarDragAxis != nil {
+            updateScrollbarDrag(at: convert(event.locationInWindow, from: nil))
+            return
+        }
+
         guard isDraggingSelection else { return }
         let screenPoint = convert(event.locationInWindow, from: nil)
         let docY = screenPoint.y + scrollOffsetY
@@ -1355,6 +1430,10 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
     public override func mouseUp(with event: NSEvent) {
         super.mouseUp(with: event)
+        if let axis = scrollbarDragAxis {
+            scrollbarDragAxis = nil
+            showScrollbarsWithAutohide(for: axis == .vertical ? .vertical : .horizontal)
+        }
         isDraggingSelection = false
         activeSelectionGranularity = .character
     }
