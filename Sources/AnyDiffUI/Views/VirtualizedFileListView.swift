@@ -124,17 +124,9 @@ public struct VirtualizedFileListView: NSViewRepresentable {
                 cell?.identifier = identifier
             }
 
-            let isReviewed = parent.reviewManager.isFileReviewed(filePath: file.displayPath)
             cell?.configure(
                 file: file,
-                isReviewed: isReviewed,
-                theme: parent.theme,
-                onToggleReviewed: { [weak self] in
-                    guard let self = self else { return }
-                    self.parent.reviewManager.toggleReviewed(filePath: file.displayPath)
-                    self.needsFullReload = true
-                    self.tableView?.reloadData()
-                }
+                theme: parent.theme
             )
 
             return cell
@@ -188,24 +180,11 @@ final class CustomTableRowView: NSTableRowView {
 
 // MARK: - High-Performance Recycled File Cell View
 final class FileTableCellView: NSTableCellView {
-    private let checkButton = NSButton()
     private let statusBadge = NSTextField(labelWithString: "")
     private let nameLabel = NSTextField(labelWithString: "")
     private let dirLabel = NSTextField(labelWithString: "")
     private let additionsLabel = NSTextField(labelWithString: "")
     private let deletionsLabel = NSTextField(labelWithString: "")
-
-    private static let reviewedImage: NSImage? = {
-        let config = NSImage.SymbolConfiguration(pointSize: 12, weight: .regular)
-        return NSImage(systemSymbolName: "checkmark.circle.fill", accessibilityDescription: "Reviewed")?.withSymbolConfiguration(config)
-    }()
-
-    private static let unreviewedImage: NSImage? = {
-        let config = NSImage.SymbolConfiguration(pointSize: 12, weight: .regular)
-        return NSImage(systemSymbolName: "circle", accessibilityDescription: "Unreviewed")?.withSymbolConfiguration(config)
-    }()
-
-    private var onToggleReviewed: (() -> Void)?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -220,16 +199,7 @@ final class FileTableCellView: NSTableCellView {
     private func setupViews() {
         wantsLayer = true
 
-        // 1. Review Check Button
-        checkButton.setButtonType(.momentaryChange)
-        checkButton.isBordered = false
-        checkButton.target = self
-        checkButton.action = #selector(checkButtonClicked)
-        checkButton.imagePosition = .imageOnly
-        checkButton.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(checkButton)
-
-        // 2. Status Badge (A / M / D / R)
+        // 1. Status Badge (A / M / D / R)
         statusBadge.font = .systemFont(ofSize: 9, weight: .black)
         statusBadge.alignment = .center
         statusBadge.wantsLayer = true
@@ -237,20 +207,20 @@ final class FileTableCellView: NSTableCellView {
         statusBadge.translatesAutoresizingMaskIntoConstraints = false
         addSubview(statusBadge)
 
-        // 3. File Name Label
+        // 2. File Name Label
         nameLabel.font = .systemFont(ofSize: 12, weight: .medium)
         nameLabel.lineBreakMode = .byTruncatingTail
         nameLabel.translatesAutoresizingMaskIntoConstraints = false
         addSubview(nameLabel)
 
-        // 4. Directory Subtitle Label
+        // 3. Directory Subtitle Label
         dirLabel.font = .systemFont(ofSize: 10, weight: .regular)
         dirLabel.textColor = .secondaryLabelColor
         dirLabel.lineBreakMode = .byTruncatingMiddle
         dirLabel.translatesAutoresizingMaskIntoConstraints = false
         addSubview(dirLabel)
 
-        // 5. Diff Stats Labels (+ / -)
+        // 4. Diff Stats Labels (+ / -)
         additionsLabel.font = .monospacedSystemFont(ofSize: 10, weight: .semibold)
         additionsLabel.textColor = NSColor.systemGreen
         additionsLabel.alignment = .right
@@ -265,17 +235,12 @@ final class FileTableCellView: NSTableCellView {
 
         // Layout Constraints
         NSLayoutConstraint.activate([
-            checkButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
-            checkButton.centerYAnchor.constraint(equalTo: centerYAnchor),
-            checkButton.widthAnchor.constraint(equalToConstant: 16),
-            checkButton.heightAnchor.constraint(equalToConstant: 16),
-
-            statusBadge.leadingAnchor.constraint(equalTo: checkButton.trailingAnchor, constant: 6),
+            statusBadge.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
             statusBadge.centerYAnchor.constraint(equalTo: centerYAnchor),
-            statusBadge.widthAnchor.constraint(equalToConstant: 15),
-            statusBadge.heightAnchor.constraint(equalToConstant: 15),
+            statusBadge.widthAnchor.constraint(equalToConstant: 16),
+            statusBadge.heightAnchor.constraint(equalToConstant: 16),
 
-            nameLabel.leadingAnchor.constraint(equalTo: statusBadge.trailingAnchor, constant: 7),
+            nameLabel.leadingAnchor.constraint(equalTo: statusBadge.trailingAnchor, constant: 8),
             nameLabel.topAnchor.constraint(equalTo: topAnchor, constant: 3),
             nameLabel.trailingAnchor.constraint(lessThanOrEqualTo: additionsLabel.leadingAnchor, constant: -4),
 
@@ -293,16 +258,8 @@ final class FileTableCellView: NSTableCellView {
 
     func configure(
         file: FileDiff,
-        isReviewed: Bool,
-        theme: Theme,
-        onToggleReviewed: @escaping () -> Void
+        theme: Theme
     ) {
-        self.onToggleReviewed = onToggleReviewed
-
-        // Checkmark Icon
-        checkButton.image = isReviewed ? Self.reviewedImage : Self.unreviewedImage
-        checkButton.contentTintColor = isReviewed ? .systemGreen : .secondaryLabelColor.withAlphaComponent(0.6)
-
         // Status Badge
         let symbol: String
         let color: NSColor
@@ -328,7 +285,7 @@ final class FileTableCellView: NSTableCellView {
         // File Path & Name
         let fileName = (file.displayPath as NSString).lastPathComponent
         nameLabel.stringValue = fileName
-        nameLabel.textColor = isReviewed ? .secondaryLabelColor : .labelColor
+        nameLabel.textColor = .labelColor
 
         let dir = (file.displayPath as NSString).deletingLastPathComponent
         if !dir.isEmpty && dir != "." {
@@ -355,9 +312,5 @@ final class FileTableCellView: NSTableCellView {
             deletionsLabel.stringValue = ""
             deletionsLabel.isHidden = true
         }
-    }
-
-    @objc private func checkButtonClicked() {
-        onToggleReviewed?()
     }
 }

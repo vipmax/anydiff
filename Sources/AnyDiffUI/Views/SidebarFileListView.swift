@@ -131,10 +131,20 @@ public struct SidebarFileListView: View {
                     .background(Color.accentColor.opacity(0.12))
                     .cornerRadius(4)
                 } else {
-                    let totalReviewed = fileDiffs.lazy.filter { reviewManager.reviewedFiles.contains($0.displayPath) }.count
-                    Text("\(totalReviewed)/\(fileDiffs.count) reviewed")
-                        .font(.system(size: 10))
-                        .foregroundColor(.secondary)
+                    let totalAdds = fileDiffs.reduce(0) { $0 + $1.additions }
+                    let totalDels = fileDiffs.reduce(0) { $0 + $1.deletions }
+                    HStack(spacing: 5) {
+                        if totalAdds > 0 {
+                            Text("+\(totalAdds)")
+                                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                .foregroundColor(.green)
+                        }
+                        if totalDels > 0 {
+                            Text("-\(totalDels)")
+                                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                .foregroundColor(.red)
+                        }
+                    }
                 }
             }
             .frame(height: 24)

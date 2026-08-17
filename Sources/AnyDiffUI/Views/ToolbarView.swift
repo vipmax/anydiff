@@ -138,47 +138,10 @@ public struct ToolbarView: View {
                 .menuStyle(.borderlessButton)
                 .fixedSize()
 
-                Divider().frame(height: 16)
-
-                // Review Decision Menu
-                Menu {
-                    Button(action: { reviewManager.decision = .approved }) {
-                        Label("Approve PR", systemImage: "checkmark.seal.fill")
-                    }
-                    Button(action: { reviewManager.decision = .changesRequested }) {
-                        Label("Request Changes", systemImage: "exclamationmark.triangle.fill")
-                    }
-                    Button(action: { reviewManager.decision = .commented }) {
-                        Label("Submit Comments", systemImage: "bubble.left.and.bubble.right.fill")
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        Circle()
-                            .fill(decisionColor)
-                            .frame(width: 8, height: 8)
-                        Text(reviewManager.decision.rawValue)
-                            .font(.system(size: 12, weight: .semibold))
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(decisionColor.opacity(0.15))
-                    .cornerRadius(6)
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
         }
         .background(Color(selectedTheme.gutterBackground))
-    }
-
-    private var decisionColor: Color {
-        switch reviewManager.decision {
-        case .approved: return .green
-        case .changesRequested: return .red
-        case .commented: return .blue
-        case .pending: return .orange
-        }
     }
 }
