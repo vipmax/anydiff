@@ -40,108 +40,118 @@ public struct ToolbarView: View {
     public var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 12) {
-                // Reload Git Diff button
-                Button(action: onReload) {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .help("Reload Git Diff (Cmd+R)")
-                .keyboardShortcut("r", modifiers: .command)
-                .buttonStyle(.plain)
-
-                // Source Buttons
-                Menu {
-                    Button(action: onReload) {
-                        Label("Reload Current Directory Diff", systemImage: "arrow.clockwise")
-                    }
-                    Button(action: onOpenGitRepo) {
-                        Label("Open Local Git Repo...", systemImage: "folder")
-                    }
-                    Button(action: onPasteDiff) {
-                        Label("Paste Git Diff...", systemImage: "doc.on.clipboard")
-                    }
-                } label: {
-                    Label("Diff Source", systemImage: "arrow.triangle.branch")
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-
+                reloadAndSourceMenu
                 Divider().frame(height: 16)
-
-                // View Mode Picker
-                Picker("", selection: $viewMode) {
-                    ForEach(DiffViewMode.allCases, id: \.self) { mode in
-                        Text(mode.rawValue).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 260)
-
-                // Context Lines Menu
-                Menu {
-                    Button("0 Lines (Hunk Only)") { contextLines = 0 }
-                    Button("3 Lines (Standard)") { contextLines = 3 }
-                    Button("5 Lines") { contextLines = 5 }
-                    Button("10 Lines") { contextLines = 10 }
-                } label: {
-                    Label("Context: \(contextLines)L", systemImage: "arrow.up.and.down.text.horizontal")
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-
-                // Expand / Collapse all
-                Button(action: onExpandAll) {
-                    Image(systemName: "arrow.up.left.and.down.right.and.arrow.up.right.and.down.left")
-                }
-                .help("Expand all excerpts")
-                .buttonStyle(.plain)
-
-                Button(action: onCollapseAll) {
-                    Image(systemName: "arrow.down.right.and.arrow.up.left")
-                }
-                .help("Collapse all excerpts")
-                .buttonStyle(.plain)
-
+                viewModePicker
+                contextAndExcerptControls
                 Divider().frame(height: 16)
-
-                // Font Size Controls
-                HStack(spacing: 6) {
-                    Button(action: { fontSize = max(9, fontSize - 1) }) {
-                        Text("A").font(.system(size: 10, weight: .bold))
-                    }
-                    .buttonStyle(.plain)
-                    .help("Decrease font size (Cmd+-)")
-                    .keyboardShortcut("-", modifiers: .command)
-
-                    Text("\(Int(fontSize))pt")
-                        .font(.system(size: 11, design: .monospaced))
-
-                    Button(action: { fontSize = min(28, fontSize + 1) }) {
-                        Text("A").font(.system(size: 14, weight: .bold))
-                    }
-                    .buttonStyle(.plain)
-                    .help("Increase font size (Cmd+=)")
-                    .keyboardShortcut("=", modifiers: .command)
-                }
-
+                fontSizeControls
                 Divider().frame(height: 16)
-
-                // Theme Picker Menu
-                Menu {
-                    ForEach(Theme.allThemes, id: \.id) { theme in
-                        Button(theme.name) {
-                            selectedTheme = theme
-                        }
-                    }
-                } label: {
-                    Label(selectedTheme.name, systemImage: "paintpalette")
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-
+                themePickerMenu
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
         }
         .background(Color(selectedTheme.gutterBackground))
+    }
+
+    @ViewBuilder
+    private var reloadAndSourceMenu: some View {
+        Button(action: onReload) {
+            Image(systemName: "arrow.clockwise")
+        }
+        .help("Reload Git Diff (Cmd+R)")
+        .keyboardShortcut("r", modifiers: .command)
+        .buttonStyle(.plain)
+
+        Menu {
+            Button(action: onReload) {
+                Label("Reload Current Directory Diff", systemImage: "arrow.clockwise")
+            }
+            Button(action: onOpenGitRepo) {
+                Label("Open Local Git Repo...", systemImage: "folder")
+            }
+            Button(action: onPasteDiff) {
+                Label("Paste Git Diff...", systemImage: "doc.on.clipboard")
+            }
+        } label: {
+            Label("Diff Source", systemImage: "arrow.triangle.branch")
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+    }
+
+    @ViewBuilder
+    private var viewModePicker: some View {
+        Picker("", selection: $viewMode) {
+            ForEach(DiffViewMode.allCases, id: \.self) { mode in
+                Text(mode.rawValue).tag(mode)
+            }
+        }
+        .pickerStyle(.segmented)
+        .frame(width: 260)
+    }
+
+    @ViewBuilder
+    private var contextAndExcerptControls: some View {
+        Menu {
+            Button("0 Lines (Hunk Only)") { contextLines = 0 }
+            Button("3 Lines (Standard)") { contextLines = 3 }
+            Button("5 Lines") { contextLines = 5 }
+            Button("10 Lines") { contextLines = 10 }
+        } label: {
+            Label("Context: \(contextLines)L", systemImage: "arrow.up.and.down.text.horizontal")
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+
+        Button(action: onExpandAll) {
+            Image(systemName: "arrow.up.left.and.down.right.and.arrow.up.right.and.down.left")
+        }
+        .help("Expand all excerpts")
+        .buttonStyle(.plain)
+
+        Button(action: onCollapseAll) {
+            Image(systemName: "arrow.down.right.and.arrow.up.left")
+        }
+        .help("Collapse all excerpts")
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private var fontSizeControls: some View {
+        HStack(spacing: 6) {
+            Button(action: { fontSize = max(9, fontSize - 1) }) {
+                Text("A").font(.system(size: 10, weight: .bold))
+            }
+            .buttonStyle(.plain)
+            .help("Decrease font size (Cmd+-)")
+            .keyboardShortcut("-", modifiers: .command)
+
+            Text("\(Int(fontSize))pt")
+                .font(.system(size: 11, design: .monospaced))
+
+            Button(action: { fontSize = min(28, fontSize + 1) }) {
+                Text("A").font(.system(size: 14, weight: .bold))
+            }
+            .buttonStyle(.plain)
+            .help("Increase font size (Cmd+=)")
+            .keyboardShortcut("=", modifiers: .command)
+        }
+    }
+
+    @ViewBuilder
+    private var themePickerMenu: some View {
+        Menu {
+            ForEach(Theme.allThemes, id: \.id) { theme in
+                Button(theme.name) {
+                    selectedTheme = theme
+                }
+            }
+        } label: {
+            Label(selectedTheme.name, systemImage: "paintpalette")
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
     }
 }

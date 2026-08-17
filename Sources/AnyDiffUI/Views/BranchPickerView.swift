@@ -69,136 +69,151 @@ public struct BranchPickerView: View {
         .buttonStyle(ToolbarHoverButtonStyle())
         .help("Select Git Branch / Comparison Target")
         .popover(isPresented: $isPresented, arrowEdge: .bottom) {
-            VStack(alignment: .leading, spacing: 6) {
-                // Search Field
-                HStack(spacing: 6) {
-                    Image(systemName: "magnifyingglass")
+            popoverContent
+        }
+    }
+
+    @ViewBuilder
+    private var popoverContent: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            searchField
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 4) {
+                    if searchText.isEmpty {
+                        comparisonModesSection
+                        Divider()
+                            .padding(.vertical, 4)
+                    }
+
+                    if !filteredLocalBranches.isEmpty {
+                        localBranchesSection
+                    }
+
+                    if !filteredRemoteBranches.isEmpty {
+                        Divider()
+                            .padding(.vertical, 4)
+                        remoteBranchesSection
+                    }
+                }
+                .padding(.horizontal, 4)
+                .padding(.bottom, 6)
+            }
+            .frame(maxHeight: 280)
+        }
+        .frame(width: 270)
+        .padding(4)
+    }
+
+    @ViewBuilder
+    private var searchField: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .foregroundColor(.secondary)
+                .font(.system(size: 11))
+            TextField("Filter branches...", text: $searchText)
+                .textFieldStyle(.plain)
+                .font(.system(size: 12))
+            if !searchText.isEmpty {
+                Button(action: { searchText = "" }) {
+                    Image(systemName: "xmark.circle.fill")
                         .foregroundColor(.secondary)
                         .font(.system(size: 11))
-                    TextField("Filter branches...", text: $searchText)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 12))
-                    if !searchText.isEmpty {
-                        Button(action: { searchText = "" }) {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundColor(.secondary)
-                                .font(.system(size: 11))
-                        }
-                        .buttonStyle(.plain)
-                    }
                 }
-                .padding(6)
-                .background(Color(NSColor.controlBackgroundColor))
-                .cornerRadius(6)
-                .padding(.horizontal, 8)
-                .padding(.top, 8)
-
-                Divider()
-
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 4) {
-                        // 1. Comparison Modes Section
-                        if searchText.isEmpty {
-                            Text("COMPARISON TARGET")
-                                .font(.system(size: 9, weight: .bold))
-                                .foregroundColor(.secondary)
-                                .padding(.horizontal, 8)
-                                .padding(.top, 2)
-
-                            // Option A: Working Copy Changes
-                            branchRowButton(
-                                title: "Working Tree (Uncommitted)",
-                                subtitle: "staged + unstaged vs HEAD",
-                                icon: "clock.arrow.circlepath",
-                                isSelected: comparisonTarget == .workingTree
-                            ) {
-                                comparisonTarget = .workingTree
-                                onSelectTarget(.workingTree)
-                                isPresented = false
-                            }
-
-                            // Option B: Base Branch PR Mode (e.g. main/master)
-                            let commonBases = ["main", "master", "develop"].filter { localBranches.contains($0) && $0 != currentBranch }
-                            ForEach(commonBases, id: \.self) { base in
-                                branchRowButton(
-                                    title: "Compare with \(base)",
-                                    subtitle: "\(base)...\(currentBranch)",
-                                    icon: "arrow.triangle.branch",
-                                    isSelected: comparisonTarget == .baseBranch(base)
-                                ) {
-                                    let target = ComparisonTarget.baseBranch(base)
-                                    comparisonTarget = target
-                                    onSelectTarget(target)
-                                    isPresented = false
-                                }
-                            }
-
-                            Divider()
-                                .padding(.vertical, 4)
-                        }
-
-                        // 2. Local Branches Section
-                        if !filteredLocalBranches.isEmpty {
-                            Text("BRANCHES (\(filteredLocalBranches.count))")
-                                .font(.system(size: 9, weight: .bold))
-                                .foregroundColor(.secondary)
-                                .padding(.horizontal, 8)
-                                .padding(.top, 2)
-
-                            ForEach(filteredLocalBranches, id: \.self) { branch in
-                                let isCurrent = (branch == currentBranch)
-                                branchRowButton(
-                                    title: branch,
-                                    subtitle: isCurrent ? "Active checkout" : "Compare against \(branch)",
-                                    icon: "arrow.triangle.branch",
-                                    isSelected: isCurrent && comparisonTarget == .workingTree || comparisonTarget == .baseBranch(branch)
-                                ) {
-                                    if isCurrent {
-                                        comparisonTarget = .workingTree
-                                        onSelectTarget(.workingTree)
-                                    } else {
-                                        let target = ComparisonTarget.baseBranch(branch)
-                                        comparisonTarget = target
-                                        onSelectTarget(target)
-                                    }
-                                    isPresented = false
-                                }
-                            }
-                        }
-
-                        // 3. Remote Branches Section
-                        if !filteredRemoteBranches.isEmpty {
-                            Divider()
-                                .padding(.vertical, 4)
-
-                            Text("REMOTE BRANCHES (\(filteredRemoteBranches.count))")
-                                .font(.system(size: 9, weight: .bold))
-                                .foregroundColor(.secondary)
-                                .padding(.horizontal, 8)
-                                .padding(.top, 2)
-
-                            ForEach(filteredRemoteBranches, id: \.self) { branch in
-                                branchRowButton(
-                                    title: branch,
-                                    subtitle: "Compare against \(branch)",
-                                    icon: "cloud",
-                                    isSelected: comparisonTarget == .baseBranch(branch)
-                                ) {
-                                    let target = ComparisonTarget.baseBranch(branch)
-                                    comparisonTarget = target
-                                    onSelectTarget(target)
-                                    isPresented = false
-                                }
-                            }
-                        }
-                    }
-                    .padding(.horizontal, 4)
-                    .padding(.bottom, 6)
-                }
-                .frame(maxHeight: 280)
+                .buttonStyle(.plain)
             }
-            .frame(width: 270)
-            .padding(4)
+        }
+        .padding(6)
+        .background(Color(NSColor.controlBackgroundColor))
+        .cornerRadius(6)
+        .padding(.horizontal, 8)
+        .padding(.top, 8)
+    }
+
+    @ViewBuilder
+    private var comparisonModesSection: some View {
+        Text("COMPARISON TARGET")
+            .font(.system(size: 9, weight: .bold))
+            .foregroundColor(.secondary)
+            .padding(.horizontal, 8)
+            .padding(.top, 2)
+
+        branchRowButton(
+            title: "Working Tree (Uncommitted)",
+            subtitle: "staged + unstaged vs HEAD",
+            icon: "clock.arrow.circlepath",
+            isSelected: comparisonTarget == .workingTree
+        ) {
+            comparisonTarget = .workingTree
+            onSelectTarget(.workingTree)
+            isPresented = false
+        }
+
+        let commonBases = ["main", "master", "develop"].filter { localBranches.contains($0) && $0 != currentBranch }
+        ForEach(commonBases, id: \.self) { base in
+            branchRowButton(
+                title: "Compare with \(base)",
+                subtitle: "\(base)...\(currentBranch)",
+                icon: "arrow.triangle.branch",
+                isSelected: comparisonTarget == .baseBranch(base)
+            ) {
+                let target = ComparisonTarget.baseBranch(base)
+                comparisonTarget = target
+                onSelectTarget(target)
+                isPresented = false
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var localBranchesSection: some View {
+        Text("BRANCHES (\(filteredLocalBranches.count))")
+            .font(.system(size: 9, weight: .bold))
+            .foregroundColor(.secondary)
+            .padding(.horizontal, 8)
+            .padding(.top, 2)
+
+        ForEach(filteredLocalBranches, id: \.self) { branch in
+            let isCurrent = (branch == currentBranch)
+            branchRowButton(
+                title: branch,
+                subtitle: isCurrent ? "Active checkout" : "Compare against \(branch)",
+                icon: "arrow.triangle.branch",
+                isSelected: isCurrent && comparisonTarget == .workingTree || comparisonTarget == .baseBranch(branch)
+            ) {
+                if isCurrent {
+                    comparisonTarget = .workingTree
+                    onSelectTarget(.workingTree)
+                } else {
+                    let target = ComparisonTarget.baseBranch(branch)
+                    comparisonTarget = target
+                    onSelectTarget(target)
+                }
+                isPresented = false
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var remoteBranchesSection: some View {
+        Text("REMOTE BRANCHES (\(filteredRemoteBranches.count))")
+            .font(.system(size: 9, weight: .bold))
+            .foregroundColor(.secondary)
+            .padding(.horizontal, 8)
+            .padding(.top, 2)
+
+        ForEach(filteredRemoteBranches, id: \.self) { branch in
+            branchRowButton(
+                title: branch,
+                subtitle: "Compare against \(branch)",
+                icon: "cloud",
+                isSelected: comparisonTarget == .baseBranch(branch)
+            ) {
+                let target = ComparisonTarget.baseBranch(branch)
+                comparisonTarget = target
+                onSelectTarget(target)
+                isPresented = false
+            }
         }
     }
 

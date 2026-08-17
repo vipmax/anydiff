@@ -686,11 +686,24 @@ public struct MainWindowView: View {
 
     private func appendFileDiffsToMultiBuffer(_ files: [FileDiff]) {
         for file in files {
-            let fileAdds = file.hunks.reduce(0) { $0 + $1.lines.filter { $0.kind == .added }.count }
-            let fileDels = file.hunks.reduce(0) { $0 + $1.lines.filter { $0.kind == .deleted }.count }
+            var fileAdds: Int = 0
+            var fileDels: Int = 0
+            var oldLines: [String] = []
+
+            for hunk in file.hunks {
+                for line in hunk.lines {
+                    if line.kind == .added {
+                        fileAdds += 1
+                    } else if line.kind == .deleted {
+                        fileDels += 1
+                        oldLines.append(line.text)
+                    } else if line.kind == .unchanged {
+                        oldLines.append(line.text)
+                    }
+                }
+            }
 
             if file.status == .deleted {
-                let oldLines = file.hunks.flatMap { $0.lines.filter { $0.kind == .deleted || $0.kind == .unchanged }.map(\.text) }
                 let buffer = Buffer(
                     filePath: file.displayPath,
                     lines: [],
@@ -998,7 +1011,14 @@ public struct MainWindowView: View {
                     }
                 }
             } else if file.status == .deleted {
-                let oldLines = file.hunks.flatMap { $0.lines.filter { $0.kind == .deleted || $0.kind == .unchanged }.map(\.text) }
+                var oldLines: [String] = []
+                for hunk in file.hunks {
+                    for line in hunk.lines {
+                        if line.kind == .deleted || line.kind == .unchanged {
+                            oldLines.append(line.text)
+                        }
+                    }
+                }
                 let buffer = Buffer(
                     filePath: file.displayPath,
                     text: "",
