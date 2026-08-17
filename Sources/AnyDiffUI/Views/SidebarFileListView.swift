@@ -6,6 +6,8 @@ public struct SidebarFileListView: View {
     public var theme: Theme
     public var emptyMessage: String
     public var isReloading: Bool
+    public var isStreaming: Bool
+    public var streamingCount: Int
     public var comparisonTarget: ComparisonTarget
     public var currentBranch: String
     @ObservedObject public var reviewManager: ReviewManager
@@ -19,6 +21,8 @@ public struct SidebarFileListView: View {
         theme: Theme,
         emptyMessage: String = "No changed files",
         isReloading: Bool = false,
+        isStreaming: Bool = false,
+        streamingCount: Int = 0,
         comparisonTarget: ComparisonTarget = .workingTree,
         currentBranch: String = "",
         reviewManager: ReviewManager,
@@ -29,6 +33,8 @@ public struct SidebarFileListView: View {
         self.theme = theme
         self.emptyMessage = emptyMessage
         self.isReloading = isReloading
+        self.isStreaming = isStreaming
+        self.streamingCount = streamingCount
         self.comparisonTarget = comparisonTarget
         self.currentBranch = currentBranch
         self.reviewManager = reviewManager
@@ -73,9 +79,9 @@ public struct SidebarFileListView: View {
 
             // Header info with Reload button
             HStack(spacing: 6) {
-                Text("CHANGED FILES (\(filteredFiles.count))")
+                Text(isStreaming ? "STREAMING (\(streamingCount > 0 ? streamingCount : filteredFiles.count)...)" : "CHANGED FILES (\(filteredFiles.count))")
                     .font(.system(size: 10, weight: .bold))
-                    .foregroundColor(.secondary)
+                    .foregroundColor(isStreaming ? .accentColor : .secondary)
 
                 Button(action: onReload) {
                     ZStack {

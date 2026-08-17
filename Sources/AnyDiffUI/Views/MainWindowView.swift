@@ -36,6 +36,8 @@ public struct MainWindowView: View {
 
     @State private var currentPath: String? = nil
     @State private var isReloading: Bool = false
+    @State private var isStreaming: Bool = false
+    @State private var streamingCount: Int = 0
     @State private var currentBranch: String = ""
     @State private var localBranches: [String] = []
     @State private var remoteBranches: [String] = []
@@ -59,6 +61,8 @@ public struct MainWindowView: View {
     @State private var showOpenURLSheet: Bool = false
     @State private var remoteTarget: GitHubDiffReference? = nil
     @State private var remoteErrorMessage: String? = nil
+    @State private var remoteLoadTask: Task<Void, Never>? = nil
+    @State private var loadGeneration: UInt64 = 0
 
     public init(initialPath: String? = nil) {
         self.initialPath = initialPath
@@ -71,7 +75,7 @@ public struct MainWindowView: View {
     }
 
     private var activeTheme: Theme {
-        guard followsSystemAppearance == false else {
+        if followsSystemAppearance {
             return systemAppearance.isDark ? .unifiedDark : .macOSLight
         }
         return selectedTheme
@@ -88,6 +92,8 @@ public struct MainWindowView: View {
                 theme: activeTheme,
                 emptyMessage: repoStatus == .notGitRepository ? "Not a Git repository" : "No changed files",
                 isReloading: isReloading,
+                isStreaming: isStreaming,
+                streamingCount: streamingCount,
                 comparisonTarget: comparisonTarget,
                 currentBranch: currentBranch,
                 reviewManager: reviewManager,
@@ -501,61 +507,195 @@ public struct MainWindowView: View {
 
     public func loadRemoteDiff(from urlString: String) {
         guard !isReloading else { return }
-        isReloading = true
-        remoteErrorMessage = nil
-
-        Task {
-            do {
-                let (ref, diffText) = try await GitHubDiffService.shared.fetchDiff(from: urlString)
-                await MainActor.run {
-                    self.remoteTarget = ref
-                    self.comparisonTarget = .remote(ref)
-                    self.currentFolderName = ref.displayTitle
-                    self.currentBranch = ""
-                    self.localBranches = []
-                    self.remoteBranches = []
-                    self.multiBuffer.baseDirectory = nil
-                    NSApp.windows.first?.title = ref.displayTitle
-
-                    self.repoStatus = .hasChanges
-                    self.loadDiff(text: diffText)
-                    self.isReloading = false
-                }
-            } catch {
-                await MainActor.run {
-                    self.remoteErrorMessage = error.localizedDescription
-                    self.isReloading = false
-                }
-            }
+        switch GitHubDiffService.shared.parseReference(from: urlString) {
+        case .success(let ref):
+            loadRemoteDiff(reference: ref)
+        case .failure(let err):
+            self.remoteErrorMessage = err.localizedDescription
         }
     }
 
     public func loadRemoteDiff(reference: GitHubDiffReference) {
         guard !isReloading else { return }
+        loadGeneration &+= 1
+        let generation = loadGeneration
         isReloading = true
+        isStreaming = true
         remoteErrorMessage = nil
 
-        Task {
-            do {
-                let diffText = try await GitHubDiffService.shared.fetchDiff(for: reference)
-                await MainActor.run {
-                    self.remoteTarget = reference
-                    self.comparisonTarget = .remote(reference)
-                    self.currentFolderName = reference.displayTitle
-                    self.currentBranch = ""
-                    self.localBranches = []
-                    self.remoteBranches = []
-                    self.multiBuffer.baseDirectory = nil
-                    NSApp.windows.first?.title = reference.displayTitle
+        // Clear existing buffers and caches
+        multiBuffer.clear()
+        displayMap.clear()
+        fileDiffs = []
+        selectedFilePath = nil
 
-                    self.repoStatus = .hasChanges
-                    self.loadDiff(text: diffText)
+        self.remoteTarget = reference
+        self.comparisonTarget = .remote(reference)
+        self.currentFolderName = reference.displayTitle
+        self.currentBranch = ""
+        self.localBranches = []
+        self.remoteBranches = []
+        self.multiBuffer.baseDirectory = nil
+        NSApp.windows.first?.title = reference.displayTitle
+        self.repoStatus = .hasChanges
+
+        let task = Task {
+            do {
+                var allFiles: [FileDiff] = []
+                var initialRenderDone = false
+                var lastProgressUpdateTime = Date()
+
+                for try await fileDiff in GitHubDiffService.shared.streamDiff(for: reference) {
+                    if Task.isCancelled { break }
+                    allFiles.append(fileDiff)
+
+                    // 1. Initial Instant Paint (<50ms): show the first file right away
+                    if !initialRenderDone && allFiles.count >= 1 {
+                        initialRenderDone = true
+                        let firstBatch = allFiles
+                        await MainActor.run {
+                            guard self.loadGeneration == generation else { return }
+                            self.fileDiffs = firstBatch
+                            self.appendFileDiffsToMultiBuffer(firstBatch)
+                            self.displayMap.rebuild()
+                            if let first = firstBatch.first {
+                                self.selectedFilePath = first.displayPath
+                            }
+                        }
+                    }
+
+                    // 2. Throttle sidebar progress indicator (every 200ms) with ZERO DisplayMap rebuild
+                    let now = Date()
+                    if now.timeIntervalSince(lastProgressUpdateTime) >= 0.2 {
+                        lastProgressUpdateTime = now
+                        let count = allFiles.count
+                        await MainActor.run {
+                            guard self.loadGeneration == generation else { return }
+                            self.streamingCount = count
+                        }
+                    }
+                }
+
+                // 3. Final single atomic commit: append remaining files and rebuild DisplayMap ONCE
+                let finalFiles = allFiles
+                await MainActor.run {
+                    guard self.loadGeneration == generation else { return }
+                    self.multiBuffer.clear()
+                    self.displayMap.clear()
+                    self.fileDiffs = finalFiles
+                    self.appendFileDiffsToMultiBuffer(finalFiles)
+                    self.displayMap.rebuild()
+
+                    self.isStreaming = false
                     self.isReloading = false
+                    self.remoteLoadTask = nil
+                    self.streamingCount = finalFiles.count
+                    if self.selectedFilePath == nil, let first = finalFiles.first {
+                        self.selectedFilePath = first.displayPath
+                    }
+                    if finalFiles.isEmpty {
+                        self.repoStatus = .clean
+                    }
                 }
             } catch {
                 await MainActor.run {
-                    self.remoteErrorMessage = error.localizedDescription
+                    guard self.loadGeneration == generation else { return }
+                    self.isStreaming = false
                     self.isReloading = false
+                    self.remoteLoadTask = nil
+                    self.remoteErrorMessage = error.localizedDescription
+                }
+            }
+        }
+        remoteLoadTask = task
+    }
+
+    private func appendFileDiffsToMultiBuffer(_ files: [FileDiff]) {
+        for file in files {
+            let fileAdds = file.hunks.reduce(0) { $0 + $1.lines.filter { $0.kind == .added }.count }
+            let fileDels = file.hunks.reduce(0) { $0 + $1.lines.filter { $0.kind == .deleted }.count }
+
+            if file.status == .deleted {
+                let oldLines = file.hunks.flatMap { $0.lines.filter { $0.kind == .deleted || $0.kind == .unchanged }.map(\.text) }
+                let buffer = Buffer(
+                    filePath: file.displayPath,
+                    lines: [],
+                    language: Buffer.detectLanguage(for: file.displayPath),
+                    baselineLines: oldLines,
+                    totalAdditions: 0,
+                    totalDeletions: fileDels,
+                    startLineNumber: 1,
+                    fullDiskPath: nil,
+                    diskFileLineCount: 0
+                )
+                buffer.isFullFile = true
+                multiBuffer.addBuffer(buffer)
+
+                let excerpt = Excerpt(
+                    bufferId: buffer.id,
+                    filePath: file.displayPath,
+                    fileStatus: .deleted,
+                    bufferRange: 0..<0,
+                    hunk: file.hunks.first,
+                    isCollapsed: false,
+                    isFileStart: true
+                )
+                multiBuffer.addExcerpt(excerpt)
+            } else if file.hunks.isEmpty {
+                let buffer = Buffer(
+                    filePath: file.displayPath,
+                    lines: [],
+                    language: Buffer.detectLanguage(for: file.displayPath),
+                    baselineLines: [],
+                    totalAdditions: fileAdds,
+                    totalDeletions: fileDels,
+                    startLineNumber: 1,
+                    fullDiskPath: nil,
+                    diskFileLineCount: 0
+                )
+                buffer.isFullFile = true
+                multiBuffer.addBuffer(buffer)
+
+                let excerpt = Excerpt(
+                    bufferId: buffer.id,
+                    filePath: file.displayPath,
+                    fileStatus: file.status,
+                    bufferRange: 0..<0,
+                    hunk: nil,
+                    isCollapsed: false,
+                    isFileStart: true
+                )
+                multiBuffer.addExcerpt(excerpt)
+            } else {
+                for (hIdx, hunk) in file.hunks.enumerated() {
+                    let newFileLines = hunk.lines.filter { $0.kind == .added || $0.kind == .unchanged }.map(\.text)
+                    let oldBaselineLines = hunk.lines.filter { $0.kind == .deleted || $0.kind == .unchanged }.map(\.text)
+                    let startLine = hunk.newRange.lowerBound
+
+                    let buffer = Buffer(
+                        filePath: file.displayPath,
+                        lines: newFileLines,
+                        language: Buffer.detectLanguage(for: file.displayPath),
+                        baselineLines: oldBaselineLines,
+                        totalAdditions: fileAdds,
+                        totalDeletions: fileDels,
+                        startLineNumber: startLine,
+                        fullDiskPath: nil,
+                        diskFileLineCount: nil
+                    )
+                    buffer.isFullFile = (file.status == .added && file.hunks.count == 1)
+                    multiBuffer.addBuffer(buffer)
+
+                    let excerpt = Excerpt(
+                        bufferId: buffer.id,
+                        filePath: file.displayPath,
+                        fileStatus: file.status,
+                        bufferRange: 0..<buffer.lineCount,
+                        hunk: hunk,
+                        isCollapsed: false,
+                        isFileStart: (hIdx == 0)
+                    )
+                    multiBuffer.addExcerpt(excerpt)
                 }
             }
         }
@@ -564,7 +704,22 @@ public struct MainWindowView: View {
     // MARK: - Current Directory Diff Loading
 
     public func loadCurrentDirectoryDiff() {
+        // A local project must leave remote mode first. Otherwise fetchGitDiff
+        // receives `.remote` and intentionally returns no local diff.
+        if case .remote = comparisonTarget {
+            remoteLoadTask?.cancel()
+            remoteLoadTask = nil
+            loadGeneration &+= 1
+            isReloading = false
+            isStreaming = false
+            remoteTarget = nil
+            remoteErrorMessage = nil
+            comparisonTarget = .workingTree
+        }
+
         guard !isReloading else { return }
+        loadGeneration &+= 1
+        let generation = loadGeneration
         isReloading = true
         let currentDir = currentPath ?? initialPath ?? FileManager.default.currentDirectoryPath
         multiBuffer.baseDirectory = currentDir
@@ -581,6 +736,7 @@ public struct MainWindowView: View {
             let diff = isGit ? self.fetchGitDiff(at: currentDir, target: self.comparisonTarget) : nil
 
             DispatchQueue.main.async {
+                guard self.loadGeneration == generation else { return }
                 self.currentBranch = branch
                 self.localBranches = branches.local
                 self.remoteBranches = branches.remote
@@ -867,6 +1023,8 @@ public struct MainWindowView: View {
         if panel.runModal() == .OK, let url = panel.url {
             let path = url.path
             self.currentPath = path
+            // `loadCurrentDirectoryDiff` handles cancellation and the mode
+            // transition from a remote stream to the selected local project.
             loadCurrentDirectoryDiff()
         }
     }

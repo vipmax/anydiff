@@ -209,6 +209,7 @@ public final class GitHubDiffService: Sendable {
         request.httpMethod = "GET"
         request.setValue("AnyDiff/1.0 (Macintosh; Mac OS X)", forHTTPHeaderField: "User-Agent")
         request.setValue("text/plain, application/vnd.github.v3.diff, */*", forHTTPHeaderField: "Accept")
+        request.setValue("gzip, deflate", forHTTPHeaderField: "Accept-Encoding")
         request.timeoutInterval = 45
 
         let configuration = URLSessionConfiguration.default
@@ -248,6 +249,60 @@ public final class GitHubDiffService: Sendable {
             throw error
         } catch {
             throw ServiceError.networkError(error.localizedDescription)
+        }
+    }
+
+    /// Streams `FileDiff`s incrementally in real time as HTTP chunks arrive from GitHub
+    public func streamDiff(for reference: GitHubDiffReference) -> AsyncThrowingStream<FileDiff, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    var request = URLRequest(url: reference.diffURL)
+                    request.httpMethod = "GET"
+                    request.setValue("AnyDiff/1.0 (Macintosh; Mac OS X)", forHTTPHeaderField: "User-Agent")
+                    request.setValue("text/plain, application/vnd.github.v3.diff, */*", forHTTPHeaderField: "Accept")
+                    request.setValue("gzip, deflate", forHTTPHeaderField: "Accept-Encoding")
+                    request.timeoutInterval = 60
+
+                    let configuration = URLSessionConfiguration.default
+                    configuration.httpShouldSetCookies = true
+                    configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+                    let session = URLSession(configuration: configuration)
+
+                    let (asyncBytes, response) = try await session.bytes(for: request)
+                    guard let httpResponse = response as? HTTPURLResponse else {
+                        throw ServiceError.networkError("Invalid server response")
+                    }
+
+                    if httpResponse.statusCode == 404 {
+                        throw ServiceError.notFound
+                    } else if httpResponse.statusCode == 403 {
+                        throw ServiceError.forbiddenOrRateLimited
+                    } else if httpResponse.statusCode < 200 || httpResponse.statusCode >= 300 {
+                        throw ServiceError.networkError("HTTP Status \(httpResponse.statusCode)")
+                    }
+
+                    let streamer = StreamingGitDiffParser()
+                    for try await line in asyncBytes.lines {
+                        if Task.isCancelled { break }
+                        if let fileDiff = streamer.feed(line: line) {
+                            continuation.yield(fileDiff)
+                        }
+                    }
+
+                    if !Task.isCancelled, let finalFile = streamer.finish() {
+                        continuation.yield(finalFile)
+                    }
+
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+
+            continuation.onTermination = { _ in
+                task.cancel()
+            }
         }
     }
 

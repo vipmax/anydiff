@@ -182,4 +182,43 @@ index 1111111..0000000
         let dmElapsed = Date().timeIntervalSince(t1)
         print("Built DisplayMap with \(dm.displayLines.count) display lines in \(dmElapsed)s")
     }
+
+    func testStreamingGitDiffParser() {
+        let diff = """
+diff --git a/File1.swift b/File1.swift
+index 1111111..2222222 100644
+--- a/File1.swift
++++ b/File1.swift
+@@ -1,3 +1,4 @@
+ import Foundation
++import SwiftUI
+ struct A {}
+diff --git a/File2.swift b/File2.swift
+new file mode 100644
+index 0000000..3333333
+--- /dev/null
++++ b/File2.swift
+@@ -0,0 +1,2 @@
++struct B {}
++struct C {}
+"""
+        let streamer = StreamingGitDiffParser()
+        var streamedFiles: [FileDiff] = []
+
+        diff.enumerateLines { line, _ in
+            if let file = streamer.feed(line: line) {
+                streamedFiles.append(file)
+            }
+        }
+        if let finalFile = streamer.finish() {
+            streamedFiles.append(finalFile)
+        }
+
+        XCTAssertEqual(streamedFiles.count, 2)
+        XCTAssertEqual(streamedFiles[0].displayPath, "File1.swift")
+        XCTAssertEqual(streamedFiles[0].hunks.count, 1)
+        XCTAssertEqual(streamedFiles[1].displayPath, "File2.swift")
+        XCTAssertEqual(streamedFiles[1].status, .added)
+        XCTAssertEqual(streamedFiles[1].hunks.count, 1)
+    }
 }

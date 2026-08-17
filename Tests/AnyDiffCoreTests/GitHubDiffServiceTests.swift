@@ -100,5 +100,12 @@ final class GitHubDiffServiceTests: XCTestCase {
 
         let parsedFiles = GitDiffParser.shared.parse(diffText: diffText)
         XCTAssertGreaterThan(parsedFiles.count, 0)
+
+        var streamedFiles: [FileDiff] = []
+        for try await file in GitHubDiffService.shared.streamDiff(for: ref) {
+            streamedFiles.append(file)
+        }
+        XCTAssertGreaterThan(streamedFiles.count, 0)
+        XCTAssertEqual(streamedFiles.first?.displayPath, parsedFiles.first?.displayPath)
     }
 }
