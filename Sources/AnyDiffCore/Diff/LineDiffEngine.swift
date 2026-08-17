@@ -107,7 +107,7 @@ public final class LineDiffEngine: Sendable {
             let trimmedOldStart = oldStartLine + prefixCount
             let trimmedNewStart = newStartLine + prefixCount
 
-            var middleDiff = computeMyersDiffCore(
+            var middleDiff = computeMyersDiffWithAnchors(
                 oldLines: oldLines,
                 oldRange: oldMiddleRange,
                 newLines: newLines,
@@ -206,7 +206,9 @@ public final class LineDiffEngine: Sendable {
         } else {
             diffLines = computeMyersDiffCore(
                 oldLines: oldLines,
+                oldRange: 0..<oldLines.count,
                 newLines: newLines,
+                newRange: 0..<newLines.count,
                 oldStartLine: oldStartLine,
                 newStartLine: newStartLine
             )
@@ -278,7 +280,7 @@ public final class LineDiffEngine: Sendable {
         let trimmedOldStart = oldStartLine + prefixCount
         let trimmedNewStart = newStartLine + prefixCount
 
-        let middleDiff = computeMyersDiffCore(
+        let middleDiff = computeMyersDiffWithAnchors(
             oldLines: oldLines,
             oldRange: oldMiddleRange,
             newLines: newLines,
@@ -303,7 +305,126 @@ public final class LineDiffEngine: Sendable {
         return result
     }
 
-    /// Core Myers algorithm executed on direct index ranges using flat contiguous integer buffers
+    /// Divide-and-Conquer Myers diff using unique line anchors (Patience diff technique)
+    private func computeMyersDiffWithAnchors(
+        oldLines: [String],
+        oldRange: Range<Int>,
+        newLines: [String],
+        newRange: Range<Int>,
+        oldStartLine: Int,
+        newStartLine: Int
+    ) -> [DiffLine] {
+        let n = oldRange.count
+        let m = newRange.count
+
+        if n <= 60 && m <= 60 {
+            return computeMyersDiffCore(
+                oldLines: oldLines,
+                oldRange: oldRange,
+                newLines: newLines,
+                newRange: newRange,
+                oldStartLine: oldStartLine,
+                newStartLine: newStartLine
+            )
+        }
+
+        // Count frequency of lines in oldRange and newRange
+        var oldCounts: [String: Int] = [:]
+        for i in oldRange {
+            oldCounts[oldLines[i], default: 0] += 1
+        }
+        var newCounts: [String: Int] = [:]
+        for j in newRange {
+            newCounts[newLines[j], default: 0] += 1
+        }
+
+        var newUniqueMap: [String: Int] = [:]
+        for j in newRange {
+            let s = newLines[j]
+            if newCounts[s] == 1 && oldCounts[s] == 1 {
+                newUniqueMap[s] = j
+            }
+        }
+
+        var anchors: [(oldIdx: Int, newIdx: Int)] = []
+        var lastNewIdx = -1
+        for i in oldRange {
+            let s = oldLines[i]
+            if oldCounts[s] == 1, let newIdx = newUniqueMap[s], newIdx > lastNewIdx {
+                anchors.append((i, newIdx))
+                lastNewIdx = newIdx
+            }
+        }
+
+        if anchors.isEmpty {
+            return computeMyersDiffCore(
+                oldLines: oldLines,
+                oldRange: oldRange,
+                newLines: newLines,
+                newRange: newRange,
+                oldStartLine: oldStartLine,
+                newStartLine: newStartLine
+            )
+        }
+
+        var result: [DiffLine] = []
+        result.reserveCapacity(n + m)
+
+        var curOld = oldRange.lowerBound
+        var curNew = newRange.lowerBound
+
+        for anchor in anchors {
+            let subOldRange = curOld..<anchor.oldIdx
+            let subNewRange = curNew..<anchor.newIdx
+            let subOldStart = oldStartLine + (curOld - oldRange.lowerBound)
+            let subNewStart = newStartLine + (curNew - newRange.lowerBound)
+
+            if !subOldRange.isEmpty || !subNewRange.isEmpty {
+                let subDiff = computeMyersDiffWithAnchors(
+                    oldLines: oldLines,
+                    oldRange: subOldRange,
+                    newLines: newLines,
+                    newRange: subNewRange,
+                    oldStartLine: subOldStart,
+                    newStartLine: subNewStart
+                )
+                result.append(contentsOf: subDiff)
+            }
+
+            let anchorOldLineNum = oldStartLine + (anchor.oldIdx - oldRange.lowerBound)
+            let anchorNewLineNum = newStartLine + (anchor.newIdx - newRange.lowerBound)
+            result.append(DiffLine(
+                kind: .unchanged,
+                text: oldLines[anchor.oldIdx],
+                oldLineNumber: anchorOldLineNum,
+                newLineNumber: anchorNewLineNum
+            ))
+
+            curOld = anchor.oldIdx + 1
+            curNew = anchor.newIdx + 1
+        }
+
+        let tailOldRange = curOld..<oldRange.upperBound
+        let tailNewRange = curNew..<newRange.upperBound
+        let tailOldStart = oldStartLine + (curOld - oldRange.lowerBound)
+        let tailNewStart = newStartLine + (curNew - newRange.lowerBound)
+
+        if !tailOldRange.isEmpty || !tailNewRange.isEmpty {
+            let tailDiff = computeMyersDiffWithAnchors(
+                oldLines: oldLines,
+                oldRange: tailOldRange,
+                newLines: newLines,
+                newRange: tailNewRange,
+                oldStartLine: tailOldStart,
+                newStartLine: tailNewStart
+            )
+            result.append(contentsOf: tailDiff)
+        }
+
+        return result
+    }
+
+    /// Core Myers algorithm executed on direct integer hash ranges with trace vector
     private func computeMyersDiffCore(
         oldLines: [String],
         oldRange: Range<Int>? = nil,
@@ -329,15 +450,49 @@ public final class LineDiffEngine: Sendable {
             }
         }
 
+        // Fast integer hashing of lines: cmp instruction vs String equality
+        var stringToId: [String: Int] = [:]
+        stringToId.reserveCapacity(n + m)
+        var nextId = 1
+
+        var oldIds = [Int]()
+        oldIds.reserveCapacity(n)
+        for i in oRange {
+            let s = oldLines[i]
+            if let id = stringToId[s] {
+                oldIds.append(id)
+            } else {
+                let id = nextId
+                nextId += 1
+                stringToId[s] = id
+                oldIds.append(id)
+            }
+        }
+
+        var newIds = [Int]()
+        newIds.reserveCapacity(m)
+        for i in nRange {
+            let s = newLines[i]
+            if let id = stringToId[s] {
+                newIds.append(id)
+            } else {
+                let id = nextId
+                nextId += 1
+                stringToId[s] = id
+                newIds.append(id)
+            }
+        }
+
         let offset = maxD
         var v = [Int](repeating: 0, count: 2 * maxD + 1)
         v[1 + offset] = 0
 
         var trace: [[Int]] = []
-        trace.reserveCapacity(maxD + 1)
+        trace.reserveCapacity(min(maxD + 1, 500))
 
         var foundD: Int? = nil
-        outer: for d in 0...maxD {
+        let searchLimit = min(maxD, 400)
+        outer: for d in 0...searchLimit {
             trace.append(v)
             for k in stride(from: -d, through: d, by: 2) {
                 let kOffset = k + offset
@@ -349,7 +504,8 @@ public final class LineDiffEngine: Sendable {
                 }
                 var y = x - k
 
-                while x < n && y < m && oldLines[oRange.lowerBound + x] == newLines[nRange.lowerBound + y] {
+                // Integer comparison is a single 1-cycle CPU instruction
+                while x < n && y < m && oldIds[x] == newIds[y] {
                     x += 1
                     y += 1
                 }
@@ -397,6 +553,15 @@ public final class LineDiffEngine: Sendable {
                     }
                 }
             }
+        } else {
+            // Fallback for extreme diffs (>400 edits)
+            for i in 0..<n {
+                editScript.append((.deleted, oRange.lowerBound + i, nil))
+            }
+            for j in 0..<m {
+                editScript.append((.added, nil, nRange.lowerBound + j))
+            }
+            editScript.reverse()
         }
 
         editScript.reverse()

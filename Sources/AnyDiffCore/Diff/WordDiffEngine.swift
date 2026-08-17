@@ -118,33 +118,39 @@ public final class WordDiffEngine: Sendable {
         return tokens
     }
 
-    /// Computes Longest Common Subsequence of tokens (capped at 200 tokens)
+    /// Computes Longest Common Subsequence of tokens (capped at 200 tokens) using a flat 1D buffer
     private func computeLCS(_ a: [String], _ b: [String]) -> [String] {
         let n = min(a.count, 200)
         let m = min(b.count, 200)
         guard n > 0 && m > 0 else { return [] }
 
-        var dp = Array(repeating: Array(repeating: 0, count: m + 1), count: n + 1)
+        let stride = m + 1
+        var dp = [Int](repeating: 0, count: (n + 1) * stride)
 
         for i in 0..<n {
+            let rowOffset = (i + 1) * stride
+            let prevRowOffset = i * stride
             for j in 0..<m {
                 if a[i] == b[j] {
-                    dp[i + 1][j + 1] = dp[i][j] + 1
+                    dp[rowOffset + j + 1] = dp[prevRowOffset + j] + 1
                 } else {
-                    dp[i + 1][j + 1] = max(dp[i + 1][j], dp[i][j + 1])
+                    dp[rowOffset + j + 1] = max(dp[prevRowOffset + j + 1], dp[rowOffset + j])
                 }
             }
         }
 
         var lcs: [String] = []
+        lcs.reserveCapacity(min(n, m))
         var i = n
         var j = m
         while i > 0 && j > 0 {
+            let rowOffset = i * stride
+            let prevRowOffset = (i - 1) * stride
             if a[i - 1] == b[j - 1] {
                 lcs.append(a[i - 1])
                 i -= 1
                 j -= 1
-            } else if dp[i - 1][j] >= dp[i][j - 1] {
+            } else if dp[prevRowOffset + j] >= dp[rowOffset + j - 1] {
                 i -= 1
             } else {
                 j -= 1

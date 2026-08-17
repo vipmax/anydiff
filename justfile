@@ -4,12 +4,12 @@ default:
     @just --list
 
 # Run the app with Debug configuration.
-dev:
-    swift run -c debug
+dev path="":
+    swift run -c debug AnyDiff {{path}}
 
 # Run the app with Release optimizations.
-release:
-    swift run -c release
+release path="":
+    swift run -c release AnyDiff {{path}}
 
 # Build the optimized Release binary without running it.
 build:

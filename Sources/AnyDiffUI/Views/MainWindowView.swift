@@ -51,9 +51,6 @@ public struct MainWindowView: View {
     @State private var contextLines: Int = 3
     @State private var fontSize: CGFloat = 13
 
-    @State private var cursorLocation: ExcerptLocation? = nil
-    @State private var cursorPoint: MultiBufferPoint = .zero
-
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var commentTarget: (filePath: String, lineNumber: Int)? = nil
     @State private var currentFolderName: String = ""
@@ -218,10 +215,7 @@ public struct MainWindowView: View {
                         fontSize: fontSize,
                         isEditable: (comparisonTarget == .workingTree),
                         selectedFilePath: selectedFilePath,
-                        onCursorChange: { loc, pt in
-                            cursorLocation = loc
-                            cursorPoint = pt
-                        },
+                        onCursorChange: { _, _ in },
                         onAddCommentRequest: { path, line in
                             commentTarget = (filePath: path, lineNumber: line)
                         }
@@ -1037,9 +1031,7 @@ public struct MainWindowView: View {
     }
 
     private func collapseAllExcerpts() {
-        for i in 0..<multiBuffer.excerpts.count {
-            multiBuffer.toggleCollapse(at: i)
-        }
+        multiBuffer.collapseAll()
         displayMap.rebuild()
     }
 }

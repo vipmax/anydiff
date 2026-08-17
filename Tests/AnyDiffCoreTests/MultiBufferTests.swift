@@ -517,4 +517,243 @@ final class MultiBufferTests: XCTestCase {
         XCTAssertEqual(savedLines[21], "item 22 (edited)")
         XCTAssertEqual(savedLines[49], "item 50")
     }
+
+    func testToggleCollapsePerformanceOnLargeDiff() {
+        let mb = MultiBuffer()
+        let rm = ReviewManager()
+
+        // Create 200 files, each with 50 diff lines = 10,000 lines
+        for f in 0..<200 {
+            let hunkLines = (0..<50).map { i in
+                DiffLine(kind: (i % 5 == 0) ? .added : .unchanged, text: "let var_\(f)_\(i) = calculateValue(\(i))", oldLineNumber: i + 1, newLineNumber: i + 1)
+            }
+            let hunk = DiffHunk(
+                oldRange: 1..<51,
+                newRange: 1..<51,
+                header: "@@ -1,50 +1,50 @@",
+                lines: hunkLines
+            )
+            let buffer = Buffer(
+                filePath: "File_\(f).swift",
+                text: hunkLines.map(\.text).joined(separator: "\n"),
+                language: "swift",
+                totalAdditions: 10,
+                totalDeletions: 0,
+                startLineNumber: 1
+            )
+            mb.addBuffer(buffer)
+            let excerpt = Excerpt(
+                bufferId: buffer.id,
+                filePath: "File_\(f).swift",
+                fileStatus: .modified,
+                bufferRange: 0..<50,
+                hunk: hunk,
+                isCollapsed: false,
+                isFileStart: true
+            )
+            mb.addExcerpt(excerpt)
+        }
+
+        let dm = DisplayMap(multiBuffer: mb, reviewManager: rm)
+        // 200 headers + 10,000 code lines = 10,200 lines
+        XCTAssertEqual(dm.displayLines.count, 10_200)
+        XCTAssertGreaterThan(dm.maxLineChars, 20)
+
+        // Toggle collapse on first file
+        let t0 = Date()
+        mb.toggleCollapse(at: 0)
+        dm.rebuild()
+        let elapsed = Date().timeIntervalSince(t0)
+
+        // Should take well123123 under 50ms for 10k lines
+        XCTAssertLessThan(elapsed, 0.05)
+        // 1st file collapsed (only header remains, 50 code lines removed) -> 10,150 lines
+        XCTAssertEqual(dm.displayLines.count, 10_150)
+
+        if case .excerptHeader(let h) = dm.displayLines[0] {
+            XCTAssertTrue(h.isCollapsed)
+            XCTAssertEqual(h.filePath, "File_0.swift")
+        } else {
+            XCTFail("First line should be header")
+        }
+
+        // Toggle back to expanded
+        mb.toggleCollapse(at: 0)
+        dm.rebuild()
+        XCTAssertEqual(dm.displayLines.count, 10_200)
+        if case .excerptHeader(let h) = dm.displayLines[0] {
+            XCTAssertFalse(h.isCollapsed)
+        } else {
+            XCTFail("First line should be header")
+        }
+    }
+
+    func testRepeatedExcerptExpansionAndMergingMaintainsValidIndices() {
+        let mb = MultiBuffer()
+        let rm = ReviewManager()
+
+        // File 1: Buffer with 50 lines, 2 separate excerpts (0..<10 and 20..<30)
+        let f1Lines = (0..<50).map { "func f1_line_\($0)() {}" }
+        let buf1 = Buffer(filePath: "File1.swift", text: f1Lines.joined(separator: "\n"), language: "swift", startLineNumber: 1)
+        mb.addBuffer(buf1)
+
+        let exc1_a = Excerpt(bufferId: buf1.id, filePath: "File1.swift", bufferRange: 0..<10, hunk: nil, isCollapsed: false, isFileStart: true)
+        let exc1_b = Excerpt(bufferId: buf1.id, filePath: "File1.swift", bufferRange: 20..<30, hunk: nil, isCollapsed: false, isFileStart: false)
+        mb.addExcerpt(exc1_a)
+        mb.addExcerpt(exc1_b)
+
+        // File 2: Buffer with 30 lines, 1 excerpt (0..<15)
+        let f2Lines = (0..<30).map { "func f2_line_\($0)() {}" }
+        let buf2 = Buffer(filePath: "File2.swift", text: f2Lines.joined(separator: "\n"), language: "swift", startLineNumber: 1)
+        mb.addBuffer(buf2)
+
+        let exc2 = Excerpt(bufferId: buf2.id, filePath: "File2.swift", bufferRange: 0..<15, hunk: nil, isCollapsed: false, isFileStart: true)
+        mb.addExcerpt(exc2)
+
+        let dm = DisplayMap(multiBuffer: mb, reviewManager: rm)
+        XCTAssertEqual(mb.excerpts.count, 3)
+
+        // Verify all code lines have valid bufferLocations
+        for row in 0..<dm.codeLineCount {
+            let loc = dm.bufferLocation(for: MultiBufferPoint(row: row, column: 0))
+            XCTAssertNotNil(loc, "Location must be valid for row \(row)")
+        }
+
+        // Expand excerpt 0 down by 10 lines (0..<20)
+        mb.expandExcerpt(at: 0, up: 0, down: 10)
+        dm.rebuild()
+
+        // Excerpt 0 (0..<20) and Excerpt 1 (20..<30) should now be merged by mergeAdjacentExcerpts()!
+        XCTAssertEqual(mb.excerpts.count, 2)
+        XCTAssertEqual(mb.excerpts[0].filePath, "File1.swift")
+        XCTAssertEqual(mb.excerpts[0].bufferRange, 0..<30)
+        XCTAssertEqual(mb.excerpts[1].filePath, "File2.swift")
+
+        // CRITICAL CHECK: Make sure all code lines in File2 now have excerptIndex == 1 (not stale 2!)
+        for row in 0..<dm.codeLineCount {
+            guard let loc = dm.bufferLocation(for: MultiBufferPoint(row: row, column: 0)) else {
+                XCTFail("Location became nil for row \(row) after expansion/merge!")
+                continue
+            }
+            if loc.buffer.filePath == "File2.swift" {
+                XCTAssertEqual(loc.excerptIndex, 1, "File2 excerptIndex must be 1 after merge of File1 excerpts")
+            } else {
+                XCTAssertEqual(loc.excerptIndex, 0, "File1 excerptIndex must be 0")
+            }
+        }
+
+        // Expand again multiple times
+        mb.expandExcerpt(at: 1, up: 0, down: 5)
+        dm.rebuild()
+
+        for row in 0..<dm.codeLineCount {
+            let loc = dm.bufferLocation(for: MultiBufferPoint(row: row, column: 0))
+            XCTAssertNotNil(loc, "Location must be valid for row \(row)")
+        }
+
+        // Toggle collapse on File1
+        mb.toggleCollapse(at: 0)
+        dm.rebuild()
+
+        // File2 should still be completely valid
+        for row in 0..<dm.codeLineCount {
+            guard let loc = dm.bufferLocation(for: MultiBufferPoint(row: row, column: 0)) else {
+                XCTFail("Location became nil after collapsing File1 for row \(row)")
+                continue
+            }
+            XCTAssertEqual(loc.buffer.filePath, "File2.swift")
+            XCTAssertEqual(loc.excerptIndex, 1)
+        }
+
+        // Toggle back to expand File
+        mb.toggleCollapse(at: 0)
+        dm.rebuild()
+        XCTAssertEqual(mb.excerpts[0].isCollapsed, false)
+        for row in 0..<dm.codeLineCount {
+            let loc = dm.bufferLocation(for: MultiBufferPoint(row: row, column: 0))
+            XCTAssertNotNil(loc)
+        }
+    }
+
+    func testExpandDownAndToggleCollapseSubsequentHeader() {
+        let text1 = (0..<100).map { "FileA line \($0)" }.joined(separator: "\n")
+        let text2 = (0..<50).map { "justfile line \($0)" }.joined(separator: "\n")
+        let text3 = (0..<50).map { "FileC line \($0)" }.joined(separator: "\n")
+
+        let buf1 = Buffer(filePath: "FileA.swift", text: text1)
+        let buf2 = Buffer(filePath: "justfile", text: text2)
+        let buf3 = Buffer(filePath: "FileC.swift", text: text3)
+
+        let mb = MultiBuffer()
+        mb.addBuffer(buf1)
+        mb.addBuffer(buf2)
+        mb.addBuffer(buf3)
+
+        // FileA has two excerpts that can merge upon expansion
+        let exc1A = Excerpt(bufferId: buf1.id, filePath: "FileA.swift", bufferRange: 0..<10, isFileStart: true)
+        let exc1B = Excerpt(bufferId: buf1.id, filePath: "FileA.swift", bufferRange: 15..<25, isFileStart: false)
+        let exc2 = Excerpt(bufferId: buf2.id, filePath: "justfile", bufferRange: 0..<10, isFileStart: true)
+        let exc3 = Excerpt(bufferId: buf3.id, filePath: "FileC.swift", bufferRange: 0..<10, isFileStart: true)
+
+        mb.setExcerpts([exc1A, exc1B, exc2, exc3])
+        let rm = ReviewManager()
+        let dm = DisplayMap(multiBuffer: mb, reviewManager: rm)
+        dm.rebuild()
+
+        XCTAssertEqual(mb.excerpts.count, 4)
+
+        // 1. Expand excerpt 0 down by 5 lines (0..<15) -> merges exc1A and exc1B into 0..<25
+        mb.expandExcerpt(at: 0, up: 0, down: 5)
+        dm.rebuild()
+
+        // Excerpts count reduced from 4 to 3 (exc2 "justfile" is now at index 1)
+        XCTAssertEqual(mb.excerpts.count, 3)
+        XCTAssertEqual(mb.excerpts[0].filePath, "FileA.swift")
+        XCTAssertEqual(mb.excerpts[1].filePath, "justfile")
+        XCTAssertEqual(mb.excerpts[2].filePath, "FileC.swift")
+
+        // 2. Locate the DisplayLine for "justfile" header
+        var justfileHeaderFound = false
+        for line in dm.displayLines {
+            if case .excerptHeader(let headerInfo) = line, headerInfo.filePath == "justfile" {
+                justfileHeaderFound = true
+                XCTAssertEqual(headerInfo.excerptIndex, 1, "Header excerptIndex must reflect current index 1 after previous merge")
+                
+                // 3. Simulate clicking the header via toggleCollapse(filePath:) and toggleCollapse(at:)
+                mb.toggleCollapse(filePath: headerInfo.filePath)
+                break
+            }
+        }
+        XCTAssertTrue(justfileHeaderFound, "justfile header must exist in displayLines")
+
+        dm.rebuild()
+
+        // 4. Verify justfile is collapsed
+        XCTAssertTrue(mb.excerpts[1].isCollapsed, "justfile excerpt must be collapsed")
+        let justfileCodeLines = dm.displayLines.filter {
+            if case .code(let c) = $0, c.excerptIndex == 1 { return true }
+            return false
+        }
+        XCTAssertEqual(justfileCodeLines.count, 0, "No code lines should be displayed for collapsed justfile")
+
+        // 5. Click header again to un-collapse
+        mb.toggleCollapse(filePath: "justfile")
+        dm.rebuild()
+
+        XCTAssertFalse(mb.excerpts[1].isCollapsed, "justfile excerpt must be un-collapsed")
+        let justfileCodeLinesAfter = dm.displayLines.filter {
+            if case .code(let c) = $0, c.excerptIndex == 1 { return true }
+            return false
+        }
+        XCTAssertGreaterThan(justfileCodeLinesAfter.count, 0, "Code lines must be restored when un-collapsed")
+
+        // 6. Test expanding justfile down and collapsing FileC
+        mb.expandExcerpt(at: 1, up: 0, down: 5)
+        dm.rebuild()
+
+        mb.toggleCollapse(filePath: "FileC.swift")
+        dm.rebuild()
+
+        XCTAssertTrue(mb.excerpts[2].isCollapsed, "FileC must be collapsed after toggle")
+    }
 }

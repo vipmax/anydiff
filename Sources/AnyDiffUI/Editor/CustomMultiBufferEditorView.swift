@@ -21,7 +21,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                 .receive(on: DispatchQueue.main)
                 .sink { [weak self] _ in
                     guard let self = self, let dm = self.displayMap else { return }
-                    if self.lineYOffsets.count != dm.displayLines.count + 1 {
+                    if self.excerptLayouts.count != dm.excerptLocations.count {
                         self.invalidateLayout()
                     }
                 }
@@ -88,23 +88,11 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         return anchor != cursorPoint
     }
 
-    // Selection Granularity Mode (1-click char, 2-click word, 3-click line)
-    private enum SelectionGranularity {
-        case character
-        case word(initialStart: Int, initialEnd: Int, initialRow: MultiBufferRow)
-        case line(initialRow: MultiBufferRow)
-    }
     private var activeSelectionGranularity: SelectionGranularity = .character
     private var isDraggingSelection: Bool = false
 
-    // Spatial Line Indexing for 120 FPS Virtualization on 1M+ Lines
-    private struct FileSection {
-        let info: ExcerptHeaderInfo
-        let headerMinY: CGFloat
-        var contentMaxY: CGFloat
-    }
-
-    private var lineYOffsets: [CGFloat] = []
+    public private(set) var excerptLayouts: [ExcerptLayout] = []
+    private var excerptStartYs: [CGFloat] = []
     private var filePathToY: [String: CGFloat] = [:]
     private var cachedFileSections: [FileSection] = []
 
@@ -122,10 +110,6 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     private var scrollbarFadeTimer: Timer?
     private var fadeAnimationTimer: Timer?
 
-    private enum ScrollbarDragAxis {
-        case vertical
-        case horizontal
-    }
     private var scrollbarDragAxis: ScrollbarDragAxis?
     private var scrollbarDragStartMousePosition: CGFloat = 0
     private var scrollbarDragStartOffset: CGFloat = 0
@@ -283,10 +267,6 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     }
 
     // Zed-style Axis Lock & Ongoing Scroll Filter
-    private enum ScrollAxis {
-        case vertical
-        case horizontal
-    }
     private var scrollLockAxis: ScrollAxis? = nil
     private var lastScrollEventTime: Date = .distantPast
 
@@ -356,18 +336,17 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     }
 
     public func syncLayoutIfNeeded() {
-        let expectedCount = (displayMap?.displayLines.count ?? 0) + 1
-        if lineYOffsets.count != expectedCount {
+        let expectedCount = displayMap?.excerptLocations.count ?? 0
+        if excerptLayouts.count != expectedCount {
             invalidateLayout()
         }
     }
 
-    public func lineIndex(atY y: CGFloat) -> Int {
-        let totalLines = displayMap?.displayLines.count ?? 0
-        guard totalLines > 0, lineYOffsets.count == totalLines + 1 else { return 0 }
-        let maxIdx = totalLines - 1
+    public func excerptIndex(atY y: CGFloat) -> Int {
+        guard !excerptStartYs.isEmpty else { return 0 }
+        let maxIdx = excerptStartYs.count - 1
         if y <= 0 { return 0 }
-        if y >= lineYOffsets[maxIdx] { return maxIdx }
+        if y >= excerptStartYs[maxIdx] { return maxIdx }
 
         var low = 0
         var high = maxIdx
@@ -375,7 +354,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
         while low <= high {
             let mid = (low + high) / 2
-            if lineYOffsets[mid] <= y {
+            if excerptStartYs[mid] <= y {
                 best = mid
                 low = mid + 1
             } else {
@@ -385,84 +364,244 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         return min(maxIdx, max(0, best))
     }
 
+    public func excerptIndex(forDisplayLineIndex lineIdx: Int) -> Int {
+        guard !excerptLayouts.isEmpty else { return 0 }
+        let maxIdx = excerptLayouts.count - 1
+        var low = 0
+        var high = maxIdx
+        var best = 0
+
+        while low <= high {
+            let mid = (low + high) / 2
+            if excerptLayouts[mid].displayRange.lowerBound <= lineIdx {
+                best = mid
+                low = mid + 1
+            } else {
+                high = mid - 1
+            }
+        }
+        return min(maxIdx, max(0, best))
+    }
+
+    public func lineIndex(atY y: CGFloat) -> Int {
+        let totalLines = displayMap?.displayLines.count ?? 0
+        guard totalLines > 0, !excerptLayouts.isEmpty else { return 0 }
+        let exIdx = excerptIndex(atY: y)
+        guard exIdx < excerptLayouts.count else { return 0 }
+        let ex = excerptLayouts[exIdx]
+        guard !ex.displayRange.isEmpty else { return 0 }
+
+        let relY = y - ex.startY
+        let count = ex.lineRelativeY.count
+        guard count > 0 else { return ex.displayRange.lowerBound }
+
+        var low = 0
+        var high = count - 1
+        var best = 0
+
+        while low <= high {
+            let mid = (low + high) / 2
+            if ex.lineRelativeY[mid] <= relY {
+                best = mid
+                low = mid + 1
+            } else {
+                high = mid - 1
+            }
+        }
+        return min(ex.displayRange.upperBound - 1, ex.displayRange.lowerBound + best)
+    }
+
+    public func yOffset(forDisplayLineIndex lineIdx: Int) -> CGFloat {
+        guard !excerptLayouts.isEmpty else { return 0 }
+        let exIdx = excerptIndex(forDisplayLineIndex: lineIdx)
+        guard exIdx < excerptLayouts.count else { return 0 }
+        let ex = excerptLayouts[exIdx]
+        let offset = lineIdx - ex.displayRange.lowerBound
+        guard offset >= 0 && offset < ex.lineRelativeY.count else { return ex.startY }
+        return ex.startY + ex.lineRelativeY[offset]
+    }
+
+    public func lineHeight(forDisplayLineIndex lineIdx: Int) -> CGFloat {
+        guard !excerptLayouts.isEmpty else { return lineHeight }
+        let exIdx = excerptIndex(forDisplayLineIndex: lineIdx)
+        guard exIdx < excerptLayouts.count else { return lineHeight }
+        let ex = excerptLayouts[exIdx]
+        let offset = lineIdx - ex.displayRange.lowerBound
+        guard offset >= 0 && offset < ex.lineRelativeY.count else { return lineHeight }
+        if offset + 1 < ex.lineRelativeY.count {
+            return ex.lineRelativeY[offset + 1] - ex.lineRelativeY[offset]
+        } else {
+            return ex.height - ex.lineRelativeY[offset]
+        }
+    }
+
     public func invalidateLayout() {
         guard let displayMap = displayMap else {
             contentTotalHeight = 0
             contentNeededWidth = 0
             totalDocumentHeight = 0
             totalDocumentWidth = 0
-            lineYOffsets = []
-            filePathToY = [:]
-            cachedFileSections = []
+            excerptLayouts.removeAll(keepingCapacity: false)
+            excerptStartYs.removeAll(keepingCapacity: false)
+            filePathToY.removeAll(keepingCapacity: false)
+            cachedFileSections.removeAll(keepingCapacity: false)
             needsDisplay = true
             return
         }
 
         var totalHeight: CGFloat = 0
-        var maxLineChars: Int = 80
-        let count = displayMap.displayLines.count
+        let maxLineChars: Int = displayMap.maxLineChars
+        let totalExcerpts = displayMap.excerptLocations.count
 
-        var offsets: [CGFloat] = []
-        offsets.reserveCapacity(count + 1)
-        var fileToY: [String: CGFloat] = [:]
-        fileToY.reserveCapacity(displayMap.multiBuffer.excerpts.count)
-        var fileSections: [FileSection] = []
-        fileSections.reserveCapacity(displayMap.multiBuffer.excerpts.count)
+        excerptLayouts.removeAll(keepingCapacity: true)
+        excerptLayouts.reserveCapacity(totalExcerpts)
+        excerptStartYs.removeAll(keepingCapacity: true)
+        excerptStartYs.reserveCapacity(totalExcerpts)
+        filePathToY.removeAll(keepingCapacity: true)
+        filePathToY.reserveCapacity(totalExcerpts)
+        cachedFileSections.removeAll(keepingCapacity: true)
+        cachedFileSections.reserveCapacity(totalExcerpts)
 
-        for line in displayMap.displayLines {
-            offsets.append(totalHeight)
-            let height: CGFloat
-            switch line {
-            case .excerptHeader(let info):
-                height = excerptHeaderHeight
-                let headerY = totalHeight
-                if let lastIdx = fileSections.indices.last {
-                    fileSections[lastIdx].contentMaxY = headerY
-                }
-                fileSections.append(FileSection(info: info, headerMinY: headerY, contentMaxY: headerY + height))
-                if fileToY[info.filePath] == nil {
-                    fileToY[info.filePath] = headerY
-                    if let lastSlash = info.filePath.lastIndex(of: "/") {
-                        let name = String(info.filePath[info.filePath.index(after: lastSlash)...])
-                        if fileToY[name] == nil {
-                            fileToY[name] = headerY
+        for (exIdx, loc) in displayMap.excerptLocations.enumerated() {
+            let startY = totalHeight
+            excerptStartYs.append(startY)
+
+            let excerpt = displayMap.multiBuffer.excerpts[exIdx]
+            var relOffsets: [CGFloat] = []
+            relOffsets.reserveCapacity(loc.displayRange.count)
+            var currentRelY: CGFloat = 0
+
+            for lineIdx in loc.displayRange {
+                relOffsets.append(currentRelY)
+                let line = displayMap.displayLines[lineIdx]
+                let h: CGFloat
+                switch line {
+                case .excerptHeader(let info):
+                    h = excerptHeaderHeight
+                    let headerY = startY + currentRelY
+                    if let lastIdx = cachedFileSections.indices.last {
+                        cachedFileSections[lastIdx].contentMaxY = headerY
+                    }
+                    cachedFileSections.append(FileSection(info: info, headerMinY: headerY, contentMaxY: headerY + h))
+                    if filePathToY[info.filePath] == nil {
+                        filePathToY[info.filePath] = headerY
+                        if let lastSlash = info.filePath.lastIndex(of: "/") {
+                            let name = String(info.filePath[info.filePath.index(after: lastSlash)...])
+                            if filePathToY[name] == nil {
+                                filePathToY[name] = headerY
+                            }
                         }
                     }
+                case .code:
+                    h = lineHeight
+                case .foldGap:
+                    h = foldGapHeight
+                case .inlineComment:
+                    h = commentHeight
                 }
-            case .code(let info):
-                height = lineHeight
-                maxLineChars = max(maxLineChars, info.text.count)
-            case .foldGap:
-                height = foldGapHeight
-            case .inlineComment:
-                height = commentHeight
+                currentRelY += h
             }
-            totalHeight += height
+
+            let exHeight = currentRelY
+            excerptLayouts.append(ExcerptLayout(
+                excerptIndex: exIdx,
+                filePath: excerpt.filePath,
+                displayRange: loc.displayRange,
+                codeRange: loc.codeRange,
+                startY: startY,
+                height: exHeight,
+                lineRelativeY: relOffsets
+            ))
+            totalHeight += exHeight
         }
-        if let lastIdx = fileSections.indices.last {
-            fileSections[lastIdx].contentMaxY = totalHeight
+
+        if let lastIdx = cachedFileSections.indices.last {
+            cachedFileSections[lastIdx].contentMaxY = totalHeight
         }
-        offsets.append(totalHeight)
         totalHeight += 8 // Clean minimal 8px margin at bottom
 
         let charWidth = font.pointSize * 0.75
         let neededWidth = gutterWidth + CGFloat(maxLineChars) * charWidth + 100
-
-        self.lineYOffsets = offsets
-        self.filePathToY = fileToY
-        self.cachedFileSections = fileSections
         self.contentTotalHeight = totalHeight
         self.contentNeededWidth = neededWidth
 
         updateViewportMetrics()
         clampCursorToValidBounds()
+        needsDisplay = true
+    }
+
+    /// O(1) Fast scoped layout mutation for ONLY the edited excerpt
+    private func updateLayoutAfterExcerptRebuild(excerptIdx: Int, displayDelta: Int, oldDisplayRange: Range<Int>) {
+        guard let dm = displayMap, excerptIdx >= 0 && excerptIdx < excerptLayouts.count else {
+            invalidateLayout()
+            return
+        }
+
+        let loc = dm.excerptLocations[excerptIdx]
+        let excerpt = dm.multiBuffer.excerpts[excerptIdx]
+        let oldHeight = excerptLayouts[excerptIdx].height
+        let startY = excerptLayouts[excerptIdx].startY
+
+        var relOffsets: [CGFloat] = []
+        relOffsets.reserveCapacity(loc.displayRange.count)
+        var currentRelY: CGFloat = 0
+
+        for lineIdx in loc.displayRange {
+            relOffsets.append(currentRelY)
+            let line = dm.displayLines[lineIdx]
+            let h: CGFloat
+            switch line {
+            case .excerptHeader: h = excerptHeaderHeight
+            case .code: h = lineHeight
+            case .foldGap: h = foldGapHeight
+            case .inlineComment: h = commentHeight
+            }
+            currentRelY += h
+        }
+
+        let newHeight = currentRelY
+        let heightDelta = newHeight - oldHeight
+
+        // 1. Update ONLY this excerpt layout
+        excerptLayouts[excerptIdx] = ExcerptLayout(
+            excerptIndex: excerptIdx,
+            filePath: excerpt.filePath,
+            displayRange: loc.displayRange,
+            codeRange: loc.codeRange,
+            startY: startY,
+            height: newHeight,
+            lineRelativeY: relOffsets
+        )
+
+        // 2. If height or line count changed, shift subsequent excerpt start positions
+        if heightDelta != 0 || displayDelta != 0 {
+            for j in (excerptIdx + 1)..<excerptLayouts.count {
+                excerptLayouts[j].startY += heightDelta
+                excerptLayouts[j].displayRange = dm.excerptLocations[j].displayRange
+                excerptLayouts[j].codeRange = dm.excerptLocations[j].codeRange
+                excerptStartYs[j] += heightDelta
+            }
+
+            if excerptIdx < cachedFileSections.count {
+                for j in (excerptIdx + 1)..<cachedFileSections.count {
+                    cachedFileSections[j].headerMinY += heightDelta
+                    cachedFileSections[j].contentMaxY += heightDelta
+                }
+            }
+
+            self.contentTotalHeight += heightDelta
+            self.totalDocumentHeight = contentTotalHeight
+        }
+
+        updateViewportMetrics()
+        clampCursorToValidBounds()
+        needsDisplay = true
     }
 
     public func yOffset(for multiBufferRow: MultiBufferRow) -> CGFloat? {
         guard let dm = displayMap,
-              let codeInfo = dm.codeInfo(for: multiBufferRow),
-              codeInfo.displayLineIndex < lineYOffsets.count else { return nil }
-        return lineYOffsets[codeInfo.displayLineIndex]
+              let codeInfo = dm.codeInfo(for: multiBufferRow) else { return nil }
+        return yOffset(forDisplayLineIndex: codeInfo.displayLineIndex)
     }
 
     public func clampCursorToValidBounds() {
@@ -577,11 +716,11 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             return
         }
 
-        if lineYOffsets.count != totalLines + 1 {
+        if excerptLayouts.count != displayMap.excerptLocations.count {
             invalidateLayout()
         }
 
-        guard lineYOffsets.count == totalLines + 1 else {
+        guard !excerptLayouts.isEmpty else {
             context.saveGState()
             context.setFillColor(theme.background.cgColor)
             context.fill(bounds)
@@ -610,27 +749,31 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
         // 2. Pass 1: Draw Code Lines (content that scrolls horizontally under gutter)
         for lineIdx in startIdx...endIdx {
-            guard lineIdx >= 0 && lineIdx < totalLines && lineIdx + 1 < lineYOffsets.count else { continue }
+            guard lineIdx >= 0 && lineIdx < totalLines else { continue }
             let line = displayMap.displayLines[lineIdx]
-            if case .code(let info) = line {
-                let lineMinY = lineYOffsets[lineIdx]
-                let height = lineYOffsets[lineIdx + 1] - lineMinY
+            if case .code(var info) = line {
+                let lineMinY = yOffset(forDisplayLineIndex: lineIdx)
+                let height = lineHeight(forDisplayLineIndex: lineIdx)
                 let screenLineFrame = CGRect(
                     x: -scrollOffsetX,
                     y: lineMinY - scrollOffsetY,
                     width: lineWidth,
                     height: height
                 )
+                if let mbRow = displayMap.multiBufferRow(forDisplayLineIndex: lineIdx) {
+                    info.multiBufferRow = mbRow
+                }
+                info.displayLineIndex = lineIdx
                 drawCodeLine(info: info, lineIdx: lineIdx, in: screenLineFrame, context: context)
             }
         }
 
         // 3. Pass 2: Draw Sticky Gutters, Excerpt Headers, Fold Gaps & Comments (Sticky UI)
         for lineIdx in startIdx...endIdx {
-            guard lineIdx >= 0 && lineIdx < totalLines && lineIdx + 1 < lineYOffsets.count else { continue }
+            guard lineIdx >= 0 && lineIdx < totalLines else { continue }
             let line = displayMap.displayLines[lineIdx]
-            let lineMinY = lineYOffsets[lineIdx]
-            let height = lineYOffsets[lineIdx + 1] - lineMinY
+            let lineMinY = yOffset(forDisplayLineIndex: lineIdx)
+            let height = lineHeight(forDisplayLineIndex: lineIdx)
             let screenY = lineMinY - scrollOffsetY
 
             switch line {
@@ -638,7 +781,11 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                 let headerFrame = CGRect(x: 0, y: screenY, width: bounds.width, height: height)
                 drawExcerptHeader(info: info, in: headerFrame, context: context)
 
-            case .code(let info):
+            case .code(var info):
+                if let mbRow = displayMap.multiBufferRow(forDisplayLineIndex: lineIdx) {
+                    info.multiBufferRow = mbRow
+                }
+                info.displayLineIndex = lineIdx
                 let gutterRect = CGRect(x: 0, y: screenY, width: gutterWidth, height: height)
                 context.setFillColor(theme.background.cgColor)
                 context.fill(gutterRect)
@@ -682,11 +829,6 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     }
 
     // MARK: - Pixel-Perfect Viewport Scroll Anchoring
-
-    private enum ScrollAnchor {
-        case header(filePath: String)
-        case code(bufferId: BufferId, bufferRow: BufferRow)
-    }
 
     private func preserveScreenPosition(ofAnchor anchor: ScrollAnchor?, originalScreenY: CGFloat) {
         guard let dm = displayMap else { return }
@@ -1206,7 +1348,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
         // 1. Check if user clicked on Sticky Excerpt Header
         if let (stickyInfo, stickyFrame) = currentStickyHeader(), stickyFrame.contains(screenPoint) {
-            displayMap.multiBuffer.toggleCollapse(at: stickyInfo.excerptIndex)
+            displayMap.multiBuffer.toggleCollapse(filePath: stickyInfo.filePath)
             displayMap.rebuild()
             invalidateLayout()
             return
@@ -1218,14 +1360,14 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
         let lineIdx = lineIndex(atY: docY)
         let line = displayMap.displayLines[lineIdx]
-        let lineMinY = lineYOffsets[lineIdx]
-        let height = lineYOffsets[lineIdx + 1] - lineMinY
+        let lineMinY = yOffset(forDisplayLineIndex: lineIdx)
+        let height = lineHeight(forDisplayLineIndex: lineIdx)
         let lineMaxY = lineMinY + height
 
         if docY >= lineMinY && docY <= lineMaxY {
             switch line {
             case .excerptHeader(let header):
-                displayMap.multiBuffer.toggleCollapse(at: header.excerptIndex)
+                displayMap.multiBuffer.toggleCollapse(filePath: header.filePath)
                 displayMap.rebuild()
                 invalidateLayout()
                 return
@@ -1240,7 +1382,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                             let exc = displayMap.multiBuffer.excerpts[c.excerptIndex]
                             anchor = .code(bufferId: exc.bufferId, bufferRow: c.bufferRow)
                         }
-                        anchorScreenY = lineYOffsets[lineIdx + 1] - scrollOffsetY
+                        anchorScreenY = yOffset(forDisplayLineIndex: lineIdx + 1) - scrollOffsetY
                     }
                 } else {
                     if lineIdx > 0 {
@@ -1248,13 +1390,13 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                         switch prevLine {
                         case .excerptHeader(let h):
                             anchor = .header(filePath: h.filePath)
-                            anchorScreenY = lineYOffsets[lineIdx - 1] - scrollOffsetY
+                            anchorScreenY = yOffset(forDisplayLineIndex: lineIdx - 1) - scrollOffsetY
                         case .code(let c):
                             if c.excerptIndex >= 0 && c.excerptIndex < displayMap.multiBuffer.excerpts.count {
                                 let exc = displayMap.multiBuffer.excerpts[c.excerptIndex]
                                 anchor = .code(bufferId: exc.bufferId, bufferRow: c.bufferRow)
                             }
-                            anchorScreenY = lineYOffsets[lineIdx - 1] - scrollOffsetY
+                            anchorScreenY = yOffset(forDisplayLineIndex: lineIdx - 1) - scrollOffsetY
                         default:
                             break
                         }
@@ -1379,7 +1521,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         let screenPoint = convert(event.locationInWindow, from: nil)
         let docY = screenPoint.y + scrollOffsetY
         let docX = screenPoint.x + scrollOffsetX
-        guard let displayMap = displayMap, !lineYOffsets.isEmpty else { return }
+        guard let displayMap = displayMap, !excerptLayouts.isEmpty else { return }
 
         let lineIdx = lineIndex(atY: docY)
         guard lineIdx >= 0 && lineIdx < displayMap.displayLines.count else { return }
@@ -1897,15 +2039,30 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
         mb.scheduleDebouncedSave(delayMs: 200)
 
-        displayMap.rebuild()
-        invalidateLayout()
-
-        if let newVisualPt = displayMap.visualPoint(for: buf.id, bufferPoint: newBufRange.upperBound) {
-            cursorPoint = newVisualPt
+        let excerptIdx = startLoc.excerptIndex
+        if let deltas = displayMap.rebuildExcerpt(at: excerptIdx) {
+            updateLayoutAfterExcerptRebuild(
+                excerptIdx: excerptIdx,
+                displayDelta: deltas.displayDelta,
+                oldDisplayRange: deltas.oldDisplayRange
+            )
+            if let newVisualPt = displayMap.visualPoint(for: buf.id, bufferPoint: newBufRange.upperBound) {
+                cursorPoint = newVisualPt
+            } else {
+                cursorPoint = MultiBufferPoint(row: rangeToReplace.lowerBound.row, column: newBufRange.upperBound.column)
+            }
         } else {
-            cursorPoint = MultiBufferPoint(row: rangeToReplace.lowerBound.row, column: newBufRange.upperBound.column)
+            displayMap.rebuild()
+            invalidateLayout()
+            if let newVisualPt = displayMap.visualPoint(for: buf.id, bufferPoint: newBufRange.upperBound) {
+                cursorPoint = newVisualPt
+            } else {
+                cursorPoint = MultiBufferPoint(row: rangeToReplace.lowerBound.row, column: newBufRange.upperBound.column)
+            }
         }
         selectionAnchor = cursorPoint
+        ensureCursorVisible()
+        resetCursorBlink()
         needsDisplay = true
     }
 
@@ -1941,14 +2098,31 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             let tx = EditTransaction(edits: [edit], selectionBefore: cursorPoint..<cursorPoint, selectionAfter: nil)
             mb.undoManager.push(transaction: tx)
             mb.scheduleDebouncedSave(delayMs: 200)
-            displayMap.rebuild()
-            invalidateLayout()
-            if let vPt = displayMap.visualPoint(for: buf.id, bufferPoint: newRange.upperBound) {
-                cursorPoint = vPt
+
+            let excerptIdx = loc.excerptIndex
+            if let deltas = displayMap.rebuildExcerpt(at: excerptIdx) {
+                updateLayoutAfterExcerptRebuild(
+                    excerptIdx: excerptIdx,
+                    displayDelta: deltas.displayDelta,
+                    oldDisplayRange: deltas.oldDisplayRange
+                )
+                if let vPt = displayMap.visualPoint(for: buf.id, bufferPoint: newRange.upperBound) {
+                    cursorPoint = vPt
+                } else {
+                    cursorPoint = MultiBufferPoint(row: cursorPoint.row, column: max(0, cursorPoint.column - 1))
+                }
             } else {
-                cursorPoint = MultiBufferPoint(row: cursorPoint.row, column: max(0, cursorPoint.column - 1))
+                displayMap.rebuild()
+                invalidateLayout()
+                if let vPt = displayMap.visualPoint(for: buf.id, bufferPoint: newRange.upperBound) {
+                    cursorPoint = vPt
+                } else {
+                    cursorPoint = MultiBufferPoint(row: cursorPoint.row, column: max(0, cursorPoint.column - 1))
+                }
             }
             selectionAnchor = cursorPoint
+            ensureCursorVisible()
+            resetCursorBlink()
             needsDisplay = true
         } else if bPt.row > 0 {
             let prevLen = buf.lineLength(at: bPt.row - 1)
@@ -1961,14 +2135,31 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             let tx = EditTransaction(edits: [edit], selectionBefore: cursorPoint..<cursorPoint, selectionAfter: nil)
             mb.undoManager.push(transaction: tx)
             mb.scheduleDebouncedSave(delayMs: 200)
-            displayMap.rebuild()
-            invalidateLayout()
-            if let vPt = displayMap.visualPoint(for: buf.id, bufferPoint: newRange.upperBound) {
-                cursorPoint = vPt
+
+            let excerptIdx = loc.excerptIndex
+            if let deltas = displayMap.rebuildExcerpt(at: excerptIdx) {
+                updateLayoutAfterExcerptRebuild(
+                    excerptIdx: excerptIdx,
+                    displayDelta: deltas.displayDelta,
+                    oldDisplayRange: deltas.oldDisplayRange
+                )
+                if let vPt = displayMap.visualPoint(for: buf.id, bufferPoint: newRange.upperBound) {
+                    cursorPoint = vPt
+                } else {
+                    cursorPoint = MultiBufferPoint(row: max(0, cursorPoint.row - 1), column: prevLen)
+                }
             } else {
-                cursorPoint = MultiBufferPoint(row: max(0, cursorPoint.row - 1), column: prevLen)
+                displayMap.rebuild()
+                invalidateLayout()
+                if let vPt = displayMap.visualPoint(for: buf.id, bufferPoint: newRange.upperBound) {
+                    cursorPoint = vPt
+                } else {
+                    cursorPoint = MultiBufferPoint(row: max(0, cursorPoint.row - 1), column: prevLen)
+                }
             }
             selectionAnchor = cursorPoint
+            ensureCursorVisible()
+            resetCursorBlink()
             needsDisplay = true
         }
     }
@@ -2006,12 +2197,27 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             let tx = EditTransaction(edits: [edit], selectionBefore: cursorPoint..<cursorPoint, selectionAfter: nil)
             mb.undoManager.push(transaction: tx)
             mb.scheduleDebouncedSave(delayMs: 200)
-            displayMap.rebuild()
-            invalidateLayout()
-            if let vPt = displayMap.visualPoint(for: buf.id, bufferPoint: newRange.upperBound) {
-                cursorPoint = vPt
+
+            let excerptIdx = loc.excerptIndex
+            if let deltas = displayMap.rebuildExcerpt(at: excerptIdx) {
+                updateLayoutAfterExcerptRebuild(
+                    excerptIdx: excerptIdx,
+                    displayDelta: deltas.displayDelta,
+                    oldDisplayRange: deltas.oldDisplayRange
+                )
+                if let vPt = displayMap.visualPoint(for: buf.id, bufferPoint: newRange.upperBound) {
+                    cursorPoint = vPt
+                }
+            } else {
+                displayMap.rebuild()
+                invalidateLayout()
+                if let vPt = displayMap.visualPoint(for: buf.id, bufferPoint: newRange.upperBound) {
+                    cursorPoint = vPt
+                }
             }
             selectionAnchor = cursorPoint
+            ensureCursorVisible()
+            resetCursorBlink()
             needsDisplay = true
         } else if bPt.row < buf.lineCount - 1 {
             let end = BufferPoint(row: bPt.row + 1, column: 0)
@@ -2023,12 +2229,27 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             let tx = EditTransaction(edits: [edit], selectionBefore: cursorPoint..<cursorPoint, selectionAfter: nil)
             mb.undoManager.push(transaction: tx)
             mb.scheduleDebouncedSave(delayMs: 200)
-            displayMap.rebuild()
-            invalidateLayout()
-            if let vPt = displayMap.visualPoint(for: buf.id, bufferPoint: newRange.upperBound) {
-                cursorPoint = vPt
+
+            let excerptIdx = loc.excerptIndex
+            if let deltas = displayMap.rebuildExcerpt(at: excerptIdx) {
+                updateLayoutAfterExcerptRebuild(
+                    excerptIdx: excerptIdx,
+                    displayDelta: deltas.displayDelta,
+                    oldDisplayRange: deltas.oldDisplayRange
+                )
+                if let vPt = displayMap.visualPoint(for: buf.id, bufferPoint: newRange.upperBound) {
+                    cursorPoint = vPt
+                }
+            } else {
+                displayMap.rebuild()
+                invalidateLayout()
+                if let vPt = displayMap.visualPoint(for: buf.id, bufferPoint: newRange.upperBound) {
+                    cursorPoint = vPt
+                }
             }
             selectionAnchor = cursorPoint
+            ensureCursorVisible()
+            resetCursorBlink()
             needsDisplay = true
         }
     }

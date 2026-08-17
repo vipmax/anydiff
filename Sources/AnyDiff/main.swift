@@ -31,7 +31,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mainWindow.toolbar = windowToolbar
         mainWindow.isReleasedWhenClosed = false
         mainWindow.minSize = NSSize(width: 900, height: 500)
-        let customPath = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : nil
+        let arg = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : nil
+        let customPath = (arg?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false) ? arg : nil
         mainWindow.contentView = NSHostingView(rootView: MainWindowView(initialPath: customPath))
         mainWindow.makeKeyAndOrderFront(nil)
         mainWindow.orderFrontRegardless()

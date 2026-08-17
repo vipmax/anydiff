@@ -42,14 +42,39 @@ public enum ReviewDecision: String, Codable, Sendable {
 
 /// Manager maintaining PR reviews, inline comments and reviewed files state
 public final class ReviewManager: ObservableObject, @unchecked Sendable {
-    @Published public var comments: [ReviewComment] = []
+    @Published public var comments: [ReviewComment] = [] {
+        didSet {
+            rebuildIndex()
+            version &+= 1
+        }
+    }
     @Published public var reviewedFiles: Set<String> = []
     @Published public var decision: ReviewDecision = .pending
+
+    public private(set) var version: UInt64 = 0
+    private var index: [String: [Int: [ReviewComment]]] = [:]
+
+    public var hasComments: Bool {
+        !comments.isEmpty
+    }
 
     public init(comments: [ReviewComment] = [], reviewedFiles: Set<String> = [], decision: ReviewDecision = .pending) {
         self.comments = comments
         self.reviewedFiles = reviewedFiles
         self.decision = decision
+        rebuildIndex()
+    }
+
+    private func rebuildIndex() {
+        guard !comments.isEmpty else {
+            index = [:]
+            return
+        }
+        var newIndex: [String: [Int: [ReviewComment]]] = [:]
+        for comment in comments {
+            newIndex[comment.filePath, default: [:]][comment.lineNumber, default: []].append(comment)
+        }
+        self.index = newIndex
     }
 
     public func addComment(filePath: String, lineNumber: Int, author: String = "You", content: String) -> ReviewComment {
@@ -81,6 +106,7 @@ public final class ReviewManager: ObservableObject, @unchecked Sendable {
     }
 
     public func comments(for filePath: String, lineNumber: Int) -> [ReviewComment] {
-        comments.filter { $0.filePath == filePath && $0.lineNumber == lineNumber }
+        guard !comments.isEmpty else { return [] }
+        return index[filePath]?[lineNumber] ?? []
     }
 }

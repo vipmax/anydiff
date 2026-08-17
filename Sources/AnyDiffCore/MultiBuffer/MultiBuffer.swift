@@ -341,6 +341,9 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
                     var updatedLast = last
                     let combinedUpper = max(last.bufferRange.upperBound, excerpt.bufferRange.upperBound)
                     updatedLast.bufferRange = last.bufferRange.lowerBound..<combinedUpper
+                    if last.hunk != nil || excerpt.hunk != nil {
+                        updatedLast.hunk = nil
+                    }
                     merged[merged.count - 1] = updatedLast
                     continue
                 }
@@ -375,6 +378,11 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
             }
         }
         version &+= 1
+    }
+
+    public func toggleCollapse(filePath: String) {
+        guard let firstIdx = excerpts.firstIndex(where: { $0.filePath == filePath }) else { return }
+        toggleCollapse(at: firstIdx)
     }
 
     public func collapseAll() {

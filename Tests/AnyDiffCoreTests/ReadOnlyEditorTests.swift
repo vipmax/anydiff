@@ -118,4 +118,81 @@ final class ReadOnlyEditorTests: XCTestCase {
         let isDirectBranchEditable = (directBranch == .workingTree)
         XCTAssertFalse(isDirectBranchEditable, "Direct branch comparison mode must be read-only")
     }
+
+    func testEditorUIMouseClickHeaderCollapseAndExpand() {
+        let text1 = (0..<50).map { "FileA line \($0)" }.joined(separator: "\n")
+        let text2 = (0..<50).map { "justfile line \($0)" }.joined(separator: "\n")
+
+        let buf1 = Buffer(filePath: "FileA.swift", text: text1)
+        let buf2 = Buffer(filePath: "justfile", text: text2)
+
+        let mb = MultiBuffer()
+        mb.addBuffer(buf1)
+        mb.addBuffer(buf2)
+
+        let exc1A = Excerpt(bufferId: buf1.id, filePath: "FileA.swift", bufferRange: 0..<5, isFileStart: true)
+        let exc1B = Excerpt(bufferId: buf1.id, filePath: "FileA.swift", bufferRange: 8..<15, isFileStart: false)
+        let exc2 = Excerpt(bufferId: buf2.id, filePath: "justfile", bufferRange: 0..<10, isFileStart: true)
+
+        mb.setExcerpts([exc1A, exc1B, exc2])
+        let rm = ReviewManager()
+        let dm = DisplayMap(multiBuffer: mb, reviewManager: rm)
+
+        let editor = CustomMultiBufferEditorView(displayMap: dm, theme: .unifiedDark)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600), styleMask: .borderless, backing: .buffered, defer: false)
+        window.contentView = editor
+        editor.frame = NSRect(x: 0, y: 0, width: 800, height: 600)
+        editor.invalidateLayout()
+
+        // 1. Expand excerpt 0 down (which merges exc1A and exc1B)
+        mb.expandExcerpt(at: 0, up: 0, down: 5)
+        dm.rebuild()
+        editor.invalidateLayout()
+
+        // 2. Find exact display line index of "justfile" header
+        guard let justfileLineIdx = dm.displayLines.firstIndex(where: {
+            if case .excerptHeader(let h) = $0, h.filePath == "justfile" { return true }
+            return false
+        }) else {
+            XCTFail("justfile header not found")
+            return
+        }
+
+        // 3. Compute exact pixel screen coordinates of justfile header
+        let headerY = editor.yOffset(forDisplayLineIndex: justfileLineIdx)
+        let headerHeight = editor.lineHeight(forDisplayLineIndex: justfileLineIdx)
+        let clickDocY = headerY + headerHeight / 2
+        let clickScreenY = clickDocY - editor.scrollOffsetY
+
+        let clickScreenPoint = NSPoint(x: 100, y: clickScreenY)
+        let windowPoint = editor.convert(clickScreenPoint, to: nil)
+        guard let clickEvent = NSEvent.mouseEvent(
+            with: .leftMouseDown,
+            location: windowPoint,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 1,
+            pressure: 1.0
+        ) else {
+            XCTFail("Failed to create NSEvent")
+            return
+        }
+
+        // 4. Dispatch real mouseDown to CustomMultiBufferEditorView
+        editor.mouseDown(with: clickEvent)
+
+        // 5. Verify justfile is now collapsed both in model and visually in ExcerptLayout
+        XCTAssertTrue(mb.excerpts.first(where: { $0.filePath == "justfile" })?.isCollapsed == true)
+        XCTAssertEqual(editor.excerptLayouts.first(where: { $0.filePath == "justfile" })?.height, headerHeight)
+
+        // 6. Dispatch click again at the same header position
+        editor.mouseDown(with: clickEvent)
+
+        // 7. Verify justfile is un-collapsed and full layout height is restored
+        XCTAssertTrue(mb.excerpts.first(where: { $0.filePath == "justfile" })?.isCollapsed == false)
+        XCTAssertTrue((editor.excerptLayouts.first(where: { $0.filePath == "justfile" })?.height ?? 0) > headerHeight)
+    }
 }
