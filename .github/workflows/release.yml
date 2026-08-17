@@ -1,0 +1,58 @@
+name: Release AnyDiff
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release tag (e.g. v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build & Publish Release
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Select Xcode version
+        run: |
+          sudo xcode-select -s /Applications/Xcode_15.4.app || sudo xcode-select -s /Applications/Xcode_16.0.app || true
+          swift --version
+
+      - name: Run Test Suite
+        run: swift test
+
+      - name: Package AnyDiff.app & DMG
+        run: |
+          chmod +x ./scripts/package_app.sh
+          ./scripts/package_app.sh
+
+      - name: Determine Tag
+        id: get_tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.get_tag.outputs.tag }}
+          name: AnyDiff ${{ steps.get_tag.outputs.tag }}
+          files: |
+            dist/AnyDiff.dmg
+            dist/AnyDiff-macOS.zip
+          generate_release_notes: true
+          draft: false
+          prerelease: false
