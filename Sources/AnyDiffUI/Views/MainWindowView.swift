@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 import AnyDiffCore
 
 private final class SystemAppearanceObserver: ObservableObject {
@@ -55,7 +56,8 @@ public struct MainWindowView: View {
     @State private var commentTarget: (filePath: String, lineNumber: Int)? = nil
     @State private var currentFolderName: String = ""
     @State private var showThemePicker: Bool = false
-    @State private var showOpenURLSheet: Bool = false
+    @State private var showOpenSourcePopover: Bool = false
+    @State private var isWindowDropTargeted: Bool = false
     @State private var remoteTarget: GitHubDiffReference? = nil
     @State private var remoteErrorMessage: String? = nil
     @State private var remoteLoadTask: Task<Void, Never>? = nil
@@ -82,331 +84,38 @@ public struct MainWindowView: View {
         followsSystemAppearance ? "System (\(systemAppearance.isDark ? "Dark" : "Light"))" : selectedTheme.name
     }
 
+    private var commentModalBinding: Binding<IdentifiableCommentTarget?> {
+        Binding(
+            get: { commentTarget.map { IdentifiableCommentTarget(filePath: $0.filePath, lineNumber: $0.lineNumber) } },
+            set: { _ in commentTarget = nil }
+        )
+    }
+
     public var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            SidebarFileListView(
-                fileDiffs: fileDiffs,
-                theme: activeTheme,
-                emptyMessage: repoStatus == .notGitRepository ? "Not a Git repository" : "No changed files",
-                isReloading: isReloading,
-                isStreaming: isStreaming,
-                streamingCount: streamingCount,
-                comparisonTarget: comparisonTarget,
-                currentBranch: currentBranch,
-                reviewManager: reviewManager,
-                selectedFilePath: $selectedFilePath,
-                onReload: { reloadCurrentDiff() }
-            )
-            .navigationSplitViewColumnWidth(min: 200, ideal: 280, max: 800)
-            .toolbar {
-                ToolbarItem(placement: .automatic) {
-                    if columnVisibility != .detailOnly {
-                        Button(action: { showThemePicker.toggle() }) {
-                            Image(systemName: "paintpalette")
-                                .font(.system(size: 13.0, weight: .regular))
-                                .foregroundColor(Color(NSColor.secondaryLabelColor))
-                        }
-                        .buttonStyle(ToolbarHoverButtonStyle())
-                        .help("Select Color Theme (\(activeThemeName))")
-                        .popover(isPresented: $showThemePicker, arrowEdge: .bottom) {
-                            ThemePickerPopoverView(
-                                selectedTheme: $selectedTheme,
-                                followsSystemAppearance: $followsSystemAppearance,
-                                isPresented: $showThemePicker
-                            )
-                        }
-                    }
-                }
-            }
+            sidebarView
         } detail: {
-            Group {
-                if fileDiffs.isEmpty {
-                    VStack(spacing: 16) {
-                        switch repoStatus {
-                        case .notGitRepository:
-                            Image(systemName: "folder.badge.questionmark")
-                                .font(.system(size: 44, weight: .ultraLight))
-                                .foregroundColor(Color(activeTheme.gutterForeground).opacity(0.8))
-
-                            Text("Not a Git Repository")
-                                .font(.system(size: 16, weight: .semibold))
-                                .foregroundColor(Color(activeTheme.foreground))
-
-                            Text(currentFolderName.isEmpty ? "The selected directory has no Git repository initialized." : "Directory \"\(currentFolderName)\" is not a Git repository.")
-                                .font(.system(size: 12))
-                                .foregroundColor(Color(activeTheme.gutterForeground))
-
-                            HStack(spacing: 10) {
-                                Button(action: { openGitRepositoryFolder() }) {
-                                    Label("Open Git Project...", systemImage: "folder")
-                                        .font(.system(size: 12, weight: .medium))
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .controlSize(.small)
-
-                                Button(action: { showOpenURLSheet = true }) {
-                                    Label("Open GitHub PR / URL...", systemImage: "globe")
-                                        .font(.system(size: 12, weight: .medium))
-                                }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
-                            }
-                            .padding(.top, 4)
-
-                            // Quick Links (DiffsHub style)
-                            quickExamplesSection
-
-                        case .clean, .hasChanges:
-                            Image(systemName: "checkmark.circle")
-                                .font(.system(size: 44, weight: .ultraLight))
-                                .foregroundColor(Color(activeTheme.gutterForeground).opacity(0.8))
-
-                            Text("No Uncommitted Changes")
-                                .font(.system(size: 16, weight: .semibold))
-                                .foregroundColor(Color(activeTheme.foreground))
-
-                            Text("Working tree in \(currentFolderName.isEmpty ? "project" : "\"\(currentFolderName)\"") is clean.")
-                                .font(.system(size: 12))
-                                .foregroundColor(Color(activeTheme.gutterForeground))
-
-                            HStack(spacing: 10) {
-                                Button(action: { openGitRepositoryFolder() }) {
-                                    Label("Open Project...", systemImage: "folder")
-                                        .font(.system(size: 12, weight: .medium))
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .controlSize(.small)
-
-                                Button(action: { showOpenURLSheet = true }) {
-                                    Label("Open GitHub PR...", systemImage: "globe")
-                                        .font(.system(size: 12, weight: .medium))
-                                }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
-
-                                Button(action: { reloadCurrentDiff() }) {
-                                    HStack(spacing: 6) {
-                                        if isReloading {
-                                            ProgressView()
-                                                .controlSize(.small)
-                                        } else {
-                                            Image(systemName: "arrow.clockwise")
-                                        }
-                                        Text(isReloading ? "Reloading..." : "Reload Diff")
-                                    }
-                                    .font(.system(size: 12, weight: .medium))
-                                }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
-                                .disabled(isReloading)
-                            }
-                            .padding(.top, 4)
-
-                            // Quick Links (DiffsHub style)
-                            quickExamplesSection
-                        }
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Color(activeTheme.background))
-                } else {
-                    EditorHostView(
-                        displayMap: displayMap,
-                        theme: activeTheme,
-                        fontSize: fontSize,
-                        isEditable: (comparisonTarget == .workingTree),
-                        selectedFilePath: selectedFilePath,
-                        onCursorChange: { _, _ in },
-                        onAddCommentRequest: { path, line in
-                            commentTarget = (filePath: path, lineNumber: line)
-                        }
-                    )
-                    .clipped()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-            }
-            .toolbar {
-                ToolbarItem(placement: .navigation) {
-                    HStack(spacing: 6) {
-                        if case .remote(let ref) = comparisonTarget {
-                            // Remote Diff Navigation Item
-                            Button(action: {
-                                if let webURL = ref.webURL {
-                                    NSWorkspace.shared.open(webURL)
-                                }
-                            }) {
-                                HStack(spacing: 6) {
-                                    Image(systemName: "globe")
-                                        .font(.system(size: 12))
-                                        .foregroundColor(.accentColor)
-                                    Text(ref.displayTitle)
-                                        .font(.system(size: 13, weight: .bold))
-                                        .foregroundColor(.primary)
-                                    Image(systemName: "arrow.up.right")
-                                        .font(.system(size: 9, weight: .bold))
-                                        .foregroundColor(.secondary)
-                                }
-                            }
-                            .buttonStyle(ToolbarHoverButtonStyle())
-                            .help("Open Pull Request in Browser (Cmd+Shift+B)")
-
-                            Button(action: { showOpenURLSheet = true }) {
-                                Image(systemName: "pencil.circle")
-                                    .font(.system(size: 13))
-                                    .foregroundColor(.secondary)
-                            }
-                            .buttonStyle(ToolbarHoverButtonStyle())
-                            .help("Open Another GitHub Diff or URL (Cmd+Shift+O)")
-
-                            Button(action: { openGitRepositoryFolder() }) {
-                                HStack(spacing: 4) {
-                                    Image(systemName: "folder")
-                                        .font(.system(size: 11))
-                                    Text("Open Local...")
-                                        .font(.system(size: 11))
-                                }
-                                .foregroundColor(.secondary)
-                            }
-                            .buttonStyle(ToolbarHoverButtonStyle())
-                            .help("Switch back to Local Git Repository (Cmd+O)")
-
-                            HStack(spacing: 4) {
-                                Image(systemName: "lock.fill")
-                                    .font(.system(size: 9.5))
-                                Text("Read-Only")
-                                    .font(.system(size: 11, weight: .semibold))
-                            }
-                            .foregroundColor(.secondary)
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 3.5)
-                            .background(Color.secondary.opacity(0.12))
-                            .cornerRadius(5)
-                            .help("Remote diff is read-only.")
-
-                        } else {
-                            // Local Git Repository Navigation Item
-                            Button(action: { openGitRepositoryFolder() }) {
-                                HStack(spacing: 6) {
-                                    Image(systemName: "folder.fill")
-                                        .font(.system(size: 12))
-                                        .foregroundColor(.secondary)
-                                    Text(currentFolderName.isEmpty ? "AnyDiff" : currentFolderName)
-                                        .font(.system(size: 13, weight: .bold))
-                                        .foregroundColor(.primary)
-                                }
-                            }
-                            .buttonStyle(ToolbarHoverButtonStyle())
-                            .help("Open Git Repository (Cmd+O)")
-
-                            if repoStatus != .notGitRepository && !currentBranch.isEmpty {
-                                BranchPickerView(
-                                    currentBranch: currentBranch,
-                                    localBranches: localBranches,
-                                    remoteBranches: remoteBranches,
-                                    comparisonTarget: $comparisonTarget,
-                                    onSelectTarget: { target in
-                                        self.comparisonTarget = target
-                                        loadCurrentDirectoryDiff()
-                                    }
-                                )
-                            }
-
-                            Button(action: { showOpenURLSheet = true }) {
-                                Image(systemName: "globe")
-                                    .font(.system(size: 12))
-                                    .foregroundColor(.secondary)
-                            }
-                            .buttonStyle(ToolbarHoverButtonStyle())
-                            .help("Open GitHub PR or Diff URL (Cmd+Shift+O)")
-
-                            if comparisonTarget != .workingTree {
-                                HStack(spacing: 4) {
-                                    Image(systemName: "lock.fill")
-                                        .font(.system(size: 9.5))
-                                    Text("Read-Only")
-                                        .font(.system(size: 11, weight: .semibold))
-                                }
-                                .foregroundColor(.secondary)
-                                .padding(.horizontal, 7)
-                                .padding(.vertical, 3.5)
-                                .background(Color.secondary.opacity(0.12))
-                                .cornerRadius(5)
-                                .help("Branch comparison is read-only. Switch to 'Working Tree' in the branch menu to edit.")
-                            }
-                        }
-                    }
-                }
-            }
-            .background(
-                Group {
-                    Button(action: { reloadCurrentDiff() }) {}
-                        .keyboardShortcut("r", modifiers: .command)
-                    Button(action: { openGitRepositoryFolder() }) {}
-                        .keyboardShortcut("o", modifiers: .command)
-                    Button(action: { showOpenURLSheet = true }) {}
-                        .keyboardShortcut("o", modifiers: [.command, .shift])
-                    Button(action: { showOpenURLSheet = true }) {}
-                        .keyboardShortcut("u", modifiers: .command)
-                    Button(action: { openInBrowser() }) {}
-                        .keyboardShortcut("b", modifiers: [.command, .shift])
-                    Button(action: { fontSize = max(9, fontSize - 1) }) {}
-                        .keyboardShortcut("-", modifiers: .command)
-                    Button(action: { fontSize = min(28, fontSize + 1) }) {}
-                        .keyboardShortcut("+", modifiers: .command)
-                    Button(action: { fontSize = min(28, fontSize + 1) }) {}
-                        .keyboardShortcut("=", modifiers: .command)
-                }
-                .opacity(0)
-            )
+            detailView
         }
         .toolbarBackground(Color(activeTheme.background), for: .windowToolbar)
         .toolbarBackground(.visible, for: .windowToolbar)
         .toolbarColorScheme(activeTheme.isDark ? .dark : .light, for: .windowToolbar)
         .background(Color(activeTheme.background).ignoresSafeArea())
-        .sheet(isPresented: $showOpenURLSheet) {
-            OpenRemoteDiffSheetView(
-                isPresented: $showOpenURLSheet,
-                theme: activeTheme,
-                onOpen: { url in
-                    loadRemoteDiff(from: url)
-                }
-            )
+        .onDrop(of: [UTType.fileURL, UTType.url, UTType.text], isTargeted: $isWindowDropTargeted) { providers in
+            handleWindowDrop(providers: providers)
         }
-        .sheet(item: Binding(
-            get: { commentTarget.map { IdentifiableCommentTarget(filePath: $0.filePath, lineNumber: $0.lineNumber) } },
-            set: { _ in commentTarget = nil }
-        )) { target in
-            AddCommentModal(
-                filePath: target.filePath,
-                lineNumber: target.lineNumber,
-                onAdd: { author, content in
-                    _ = reviewManager.addComment(filePath: target.filePath, lineNumber: target.lineNumber, author: author, content: content)
-                    displayMap.rebuild()
-                    commentTarget = nil
-                },
-                onCancel: {
-                    commentTarget = nil
-                }
-            )
+        .overlay(windowDropOverlayView)
+        .sheet(item: commentModalBinding) { target in
+            commentModalView(for: target)
         }
-        .onAppear {
-            if let initial = initialPath, (initial.hasPrefix("http://") || initial.hasPrefix("https://") || initial.contains("github.com") || initial.contains("diffshub.com") || initial.contains("#")) {
-                loadRemoteDiff(from: initial)
-            } else {
-                loadCurrentDirectoryDiff()
-            }
-            updateWindowAppearance()
-        }
-        .onChange(of: selectedTheme.id) { _ in
-            updateWindowAppearance()
-        }
-        .onChange(of: followsSystemAppearance) { _ in
-            updateWindowAppearance()
-        }
+        .onAppear(perform: handleOnAppear)
+        .onChange(of: selectedTheme.id) { _ in updateWindowAppearance() }
+        .onChange(of: followsSystemAppearance) { _ in updateWindowAppearance() }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffOpenProject"))) { _ in
-            openGitRepositoryFolder()
+            showOpenSourcePopover = true
         }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffOpenURL"))) { _ in
-            showOpenURLSheet = true
+            showOpenSourcePopover = true
         }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffOpenInBrowser"))) { _ in
             openInBrowser()
@@ -416,60 +125,427 @@ public struct MainWindowView: View {
         }
     }
 
-    private var quickExamplesSection: some View {
-        VStack(spacing: 8) {
-            Text("OR TRY POPULAR DIFFS (DIFFSHUB STYLE):")
-                .font(.system(size: 9.5, weight: .bold))
-                .foregroundColor(Color(activeTheme.gutterForeground).opacity(0.8))
-                .padding(.top, 8)
-
-            HStack(spacing: 8) {
-                Button(action: { loadRemoteDiff(from: "https://github.com/oven-sh/bun/pull/30412") }) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "flame.fill")
-                            .font(.system(size: 10))
-                            .foregroundColor(.orange)
-                        Text("oven-sh/bun #30412 (1M+ lines)")
-                            .font(.system(size: 11, weight: .medium))
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color.orange.opacity(0.12))
-                    .cornerRadius(5)
+    @ViewBuilder
+    private var sidebarView: some View {
+        SidebarFileListView(
+            fileDiffs: fileDiffs,
+            theme: activeTheme,
+            emptyMessage: repoStatus == .notGitRepository ? "Not a Git repository" : "No changed files",
+            isReloading: isReloading,
+            isStreaming: isStreaming,
+            streamingCount: streamingCount,
+            comparisonTarget: comparisonTarget,
+            currentBranch: currentBranch,
+            reviewManager: reviewManager,
+            selectedFilePath: $selectedFilePath,
+            onReload: { reloadCurrentDiff() }
+        )
+        .navigationSplitViewColumnWidth(min: 200, ideal: 280, max: 800)
+        .toolbar {
+            ToolbarItem(placement: .automatic) {
+                if columnVisibility != .detailOnly {
+                    themePickerButton
                 }
-                .buttonStyle(.plain)
-
-                Button(action: { loadRemoteDiff(from: "https://github.com/ghostty-org/ghostty/pull/12291") }) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "arrow.triangle.pull")
-                            .font(.system(size: 10))
-                            .foregroundColor(.accentColor)
-                        Text("ghostty #12291")
-                            .font(.system(size: 11, weight: .medium))
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color.accentColor.opacity(0.12))
-                    .cornerRadius(5)
-                }
-                .buttonStyle(.plain)
-
-                Button(action: { loadRemoteDiff(from: "https://github.com/nodejs/node/pull/59805") }) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "arrow.triangle.pull")
-                            .font(.system(size: 10))
-                            .foregroundColor(.accentColor)
-                        Text("nodejs #59805")
-                            .font(.system(size: 11, weight: .medium))
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color.accentColor.opacity(0.12))
-                    .cornerRadius(5)
-                }
-                .buttonStyle(.plain)
             }
         }
+    }
+
+    @ViewBuilder
+    private var themePickerButton: some View {
+        Button(action: { showThemePicker.toggle() }) {
+            Image(systemName: "paintpalette")
+                .font(.system(size: 13.0, weight: .regular))
+                .foregroundColor(Color(NSColor.secondaryLabelColor))
+        }
+        .buttonStyle(ToolbarHoverButtonStyle())
+        .help("Select Color Theme (\(activeThemeName))")
+        .popover(isPresented: $showThemePicker, arrowEdge: .bottom) {
+            ThemePickerPopoverView(
+                selectedTheme: $selectedTheme,
+                followsSystemAppearance: $followsSystemAppearance,
+                isPresented: $showThemePicker
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var detailView: some View {
+        Group {
+            if fileDiffs.isEmpty {
+                emptyStateDetailView
+            } else {
+                editorDetailView
+            }
+        }
+        .toolbar {
+            ToolbarItem(placement: .navigation) {
+                toolbarNavigationItems
+            }
+        }
+        .background(hiddenKeyboardShortcuts)
+    }
+
+    @ViewBuilder
+    private var emptyStateDetailView: some View {
+        VStack(spacing: 0) {
+            Spacer()
+            VStack(spacing: 16) {
+                emptyStatusHeaderView
+
+                OpenSourceContentView(
+                    theme: activeTheme,
+                    currentLocalPath: currentPath,
+                    currentComparisonTarget: comparisonTarget,
+                    isInline: true,
+                    onOpenLocalFolder: { openGitRepositoryFolder() },
+                    onSelectLocalPath: { path in
+                        self.currentPath = path
+                        loadCurrentDirectoryDiff()
+                    },
+                    onOpenRemoteURL: { url in
+                        loadRemoteDiff(from: url)
+                    },
+                    onOpenInBrowser: { openInBrowser() }
+                )
+            }
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(activeTheme.background))
+    }
+
+    @ViewBuilder
+    private var emptyStatusHeaderView: some View {
+        VStack(spacing: 6) {
+            if repoStatus == .notGitRepository {
+                Image(systemName: "folder.badge.questionmark")
+                    .font(.system(size: 34, weight: .light))
+                    .foregroundColor(Color(activeTheme.gutterForeground).opacity(0.8))
+
+                Text("Not a Git Repository")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(Color(activeTheme.foreground))
+
+                Text(currentFolderName.isEmpty ? "Current folder is not a Git repository." : "\"\(currentFolderName)\" is not a Git repository.")
+                    .font(.system(size: 12))
+                    .foregroundColor(Color(activeTheme.gutterForeground))
+            } else {
+                Image(systemName: "checkmark.circle")
+                    .font(.system(size: 34, weight: .ultraLight))
+                    .foregroundColor(Color(activeTheme.gutterForeground).opacity(0.8))
+
+                Text("No Uncommitted Changes")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(Color(activeTheme.foreground))
+
+                Text("Working tree in \(currentFolderName.isEmpty ? "project" : "\"\(currentFolderName)\"") is clean.")
+                    .font(.system(size: 12))
+                    .foregroundColor(Color(activeTheme.gutterForeground))
+            }
+        }
+        .padding(.bottom, 4)
+    }
+
+    @ViewBuilder
+    private var editorDetailView: some View {
+        EditorHostView(
+            displayMap: displayMap,
+            theme: activeTheme,
+            fontSize: fontSize,
+            isEditable: (comparisonTarget == .workingTree),
+            selectedFilePath: selectedFilePath,
+            onCursorChange: { _, _ in },
+            onAddCommentRequest: { path, line in
+                commentTarget = (filePath: path, lineNumber: line)
+            }
+        )
+        .clipped()
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    @ViewBuilder
+    private var toolbarNavigationItems: some View {
+        HStack(spacing: 6) {
+            if case .remote(let ref) = comparisonTarget {
+                remoteHeaderButton(for: ref)
+
+                Button(action: openInBrowser) {
+                    Image(systemName: "arrow.up.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(ToolbarHoverButtonStyle())
+                .help("Open Pull Request in Browser (Cmd+Shift+B)")
+
+                readOnlyBadge
+            } else {
+                localHeaderButton
+
+                if repoStatus != .notGitRepository && !currentBranch.isEmpty {
+                    BranchPickerView(
+                        currentBranch: currentBranch,
+                        localBranches: localBranches,
+                        remoteBranches: remoteBranches,
+                        comparisonTarget: $comparisonTarget,
+                        onSelectTarget: { target in
+                            self.comparisonTarget = target
+                            loadCurrentDirectoryDiff()
+                        }
+                    )
+                }
+
+                if comparisonTarget != .workingTree {
+                    readOnlyBadge
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func remoteHeaderButton(for ref: GitHubDiffReference) -> some View {
+        Button(action: { showOpenSourcePopover.toggle() }) {
+            HStack(spacing: 5) {
+                Image(systemName: "globe")
+                    .font(.system(size: 12))
+                    .foregroundColor(.accentColor)
+                Text(ref.displayTitle)
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(.primary)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8.5, weight: .bold))
+                    .foregroundColor(.secondary.opacity(0.8))
+            }
+        }
+        .buttonStyle(ToolbarHoverButtonStyle())
+        .help("Switch Project or Remote Diff (Cmd+O)")
+        .popover(isPresented: $showOpenSourcePopover, arrowEdge: .bottom) {
+            openSourcePopoverContentView
+        }
+    }
+
+    @ViewBuilder
+    private var localHeaderButton: some View {
+        Button(action: { showOpenSourcePopover.toggle() }) {
+            HStack(spacing: 5) {
+                Image(systemName: "folder.fill")
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+                Text(currentFolderName.isEmpty ? "AnyDiff" : currentFolderName)
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(.primary)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8.5, weight: .bold))
+                    .foregroundColor(.secondary.opacity(0.8))
+            }
+        }
+        .buttonStyle(ToolbarHoverButtonStyle())
+        .help("Open Git Repository or Diff (Cmd+O)")
+        .popover(isPresented: $showOpenSourcePopover, arrowEdge: .bottom) {
+            openSourcePopoverContentView
+        }
+    }
+
+    @ViewBuilder
+    private var readOnlyBadge: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "lock.fill")
+                .font(.system(size: 9.5))
+            Text("Read-Only")
+                .font(.system(size: 11, weight: .semibold))
+        }
+        .foregroundColor(.secondary)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 3.5)
+        .background(Color.secondary.opacity(0.12))
+        .cornerRadius(5)
+        .help("Read-only mode.")
+    }
+
+    @ViewBuilder
+    private var openSourcePopoverContentView: some View {
+        OpenSourceContentView(
+            theme: activeTheme,
+            currentLocalPath: currentPath,
+            currentComparisonTarget: comparisonTarget,
+            isInline: false,
+            onOpenLocalFolder: {
+                showOpenSourcePopover = false
+                openGitRepositoryFolder()
+            },
+            onSelectLocalPath: { path in
+                showOpenSourcePopover = false
+                self.currentPath = path
+                loadCurrentDirectoryDiff()
+            },
+            onOpenRemoteURL: { url in
+                showOpenSourcePopover = false
+                loadRemoteDiff(from: url)
+            },
+            onOpenInBrowser: {
+                openInBrowser()
+            },
+            onClose: {
+                showOpenSourcePopover = false
+            }
+        )
+    }
+
+    @ViewBuilder
+    private var hiddenKeyboardShortcuts: some View {
+        Group {
+            Button(action: { reloadCurrentDiff() }) {}
+                .keyboardShortcut("r", modifiers: .command)
+            Button(action: { handleOpenShortcut() }) {}
+                .keyboardShortcut("o", modifiers: .command)
+            Button(action: { openGitRepositoryFolder() }) {}
+                .keyboardShortcut("o", modifiers: [.command, .shift])
+            Button(action: { showOpenSourcePopover = true }) {}
+                .keyboardShortcut("u", modifiers: .command)
+            Button(action: { openInBrowser() }) {}
+                .keyboardShortcut("b", modifiers: [.command, .shift])
+            Button(action: { fontSize = max(9, fontSize - 1) }) {}
+                .keyboardShortcut("-", modifiers: .command)
+            Button(action: { fontSize = min(28, fontSize + 1) }) {}
+                .keyboardShortcut("+", modifiers: .command)
+            Button(action: { fontSize = min(28, fontSize + 1) }) {}
+                .keyboardShortcut("=", modifiers: .command)
+        }
+        .opacity(0)
+    }
+
+    private func handleOpenShortcut() {
+        if showOpenSourcePopover {
+            showOpenSourcePopover = false
+            openGitRepositoryFolder()
+        } else if fileDiffs.isEmpty {
+            openGitRepositoryFolder()
+        } else {
+            showOpenSourcePopover = true
+        }
+    }
+
+    @ViewBuilder
+    private var windowDropOverlayView: some View {
+        if isWindowDropTargeted {
+            ZStack {
+                Color.black.opacity(0.45)
+                VStack(spacing: 12) {
+                    Image(systemName: "folder.badge.plus")
+                        .font(.system(size: 44, weight: .light))
+                        .foregroundColor(.accentColor)
+                    Text("Drop folder or URL to open")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundColor(.white)
+                }
+                .padding(28)
+                .background(
+                    RoundedRectangle(cornerRadius: 14)
+                        .fill(Color(activeTheme.background).opacity(0.95))
+                        .shadow(color: .black.opacity(0.35), radius: 24)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14)
+                        .stroke(Color.accentColor, lineWidth: 2)
+                )
+            }
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
+            .transition(.opacity)
+        }
+    }
+
+    @ViewBuilder
+    private func commentModalView(for target: IdentifiableCommentTarget) -> some View {
+        AddCommentModal(
+            filePath: target.filePath,
+            lineNumber: target.lineNumber,
+            onAdd: { author, content in
+                _ = reviewManager.addComment(filePath: target.filePath, lineNumber: target.lineNumber, author: author, content: content)
+                displayMap.rebuild()
+                commentTarget = nil
+            },
+            onCancel: {
+                commentTarget = nil
+            }
+        )
+    }
+
+    private func handleOnAppear() {
+        if let initial = initialPath, (initial.hasPrefix("http://") || initial.hasPrefix("https://") || initial.contains("github.com") || initial.contains("diffshub.com") || initial.contains("#")) {
+            loadRemoteDiff(from: initial)
+        } else {
+            loadCurrentDirectoryDiff()
+        }
+        updateWindowAppearance()
+    }
+
+    private func handleWindowDrop(providers: [NSItemProvider]) -> Bool {
+        guard let provider = providers.first else { return false }
+
+        if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                var targetURL: URL?
+                if let url = item as? URL {
+                    targetURL = url
+                } else if let data = item as? Data, let url = URL(dataRepresentation: data, relativeTo: nil) {
+                    targetURL = url
+                } else if let string = item as? String, let url = URL(string: string) {
+                    targetURL = url
+                }
+                if let url = targetURL {
+                    DispatchQueue.main.async {
+                        let path = url.path
+                        var isDir: ObjCBool = false
+                        if FileManager.default.fileExists(atPath: path, isDirectory: &isDir) {
+                            self.showOpenSourcePopover = false
+                            if isDir.boolValue {
+                                self.currentPath = path
+                            } else {
+                                self.currentPath = (path as NSString).deletingLastPathComponent
+                            }
+                            self.loadCurrentDirectoryDiff()
+                        }
+                    }
+                }
+            }
+            return true
+        } else if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
+            provider.loadItem(forTypeIdentifier: UTType.url.identifier, options: nil) { item, _ in
+                var stringVal: String?
+                if let url = item as? URL {
+                    stringVal = url.absoluteString
+                } else if let str = item as? String {
+                    stringVal = str
+                }
+                if let str = stringVal {
+                    DispatchQueue.main.async {
+                        self.showOpenSourcePopover = false
+                        self.loadRemoteDiff(from: str)
+                    }
+                }
+            }
+            return true
+        } else if provider.hasItemConformingToTypeIdentifier(UTType.text.identifier) {
+            provider.loadItem(forTypeIdentifier: UTType.text.identifier, options: nil) { item, _ in
+                if let text = item as? String {
+                    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    DispatchQueue.main.async {
+                        self.showOpenSourcePopover = false
+                        if trimmed.hasPrefix("/") || trimmed.hasPrefix("~") {
+                            let expanded = (trimmed as NSString).expandingTildeInPath
+                            if FileManager.default.fileExists(atPath: expanded) {
+                                self.currentPath = expanded
+                                self.loadCurrentDirectoryDiff()
+                                return
+                            }
+                        }
+                        self.loadRemoteDiff(from: trimmed)
+                    }
+                }
+            }
+            return true
+        }
+        return false
     }
 
     private func openInBrowser() {
@@ -503,6 +579,7 @@ public struct MainWindowView: View {
         guard !isReloading else { return }
         switch GitHubDiffService.shared.parseReference(from: urlString) {
         case .success(let ref):
+            RecentSourcesManager.shared.addRemoteURL(urlString)
             loadRemoteDiff(reference: ref)
         case .failure(let err):
             self.remoteErrorMessage = err.localizedDescription
@@ -511,6 +588,9 @@ public struct MainWindowView: View {
 
     public func loadRemoteDiff(reference: GitHubDiffReference) {
         guard !isReloading else { return }
+        if let webURL = reference.webURL?.absoluteString {
+            RecentSourcesManager.shared.addRemoteURL(webURL)
+        }
         loadGeneration &+= 1
         let generation = loadGeneration
         isReloading = true
@@ -741,6 +821,7 @@ public struct MainWindowView: View {
                     self.isReloading = false
                     return
                 }
+                RecentSourcesManager.shared.addLocalPath(currentDir)
                 if let diff = diff, !diff.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     self.repoStatus = .hasChanges
                     self.loadDiff(text: diff)
