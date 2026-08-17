@@ -46,13 +46,12 @@ jobs:
           fi
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.get_tag.outputs.tag }}
-          name: AnyDiff ${{ steps.get_tag.outputs.tag }}
-          files: |
-            dist/AnyDiff.dmg
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.get_tag.outputs.tag }}"
+          gh release create "$TAG" \
+            --title "AnyDiff $TAG" \
+            --generate-notes \
+            dist/AnyDiff.dmg \
             dist/AnyDiff-macOS.zip
-          generate_release_notes: true
-          draft: false
-          prerelease: false
