@@ -159,6 +159,167 @@ final class MultiBufferTests: XCTestCase {
         }
     }
 
+    func testInsertingMultipleNewlinesInModifiedHunk() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let originalDiskContent = """
+        import Foundation
+        
+        /// Fast and robust parser for Git Unified Diffs
+        public final class GitDiffParser: Sendable {
+            public static let shared = GitDiffParser()
+        }
+        """
+        let filePath = "GitDiffParser.swift"
+        let fullPath = tempDir.appendingPathComponent(filePath).path
+        try originalDiskContent.write(toFile: fullPath, atomically: true, encoding: .utf8)
+
+        let diffSample = """
+        diff --git a/GitDiffParser.swift b/GitDiffParser.swift
+        --- a/GitDiffParser.swift
+        +++ b/GitDiffParser.swift
+        @@ -1,3 +1,6 @@
+         import Foundation
+         
+        +/// Splits streaming byte chunks
+        +/// using fast SIMD
+        +public final class ChunkLineSplitter {
+        """
+        let parsed = GitDiffParser.shared.parse(diffText: diffSample)
+        let file = parsed[0]
+        let hunk = file.hunks[0]
+
+        let mb = MultiBuffer()
+        let rm = ReviewManager()
+        let newFile = hunk.lines.filter { $0.kind == .added || $0.kind == .unchanged }.map(\.text)
+        let oldBaseline = hunk.lines.filter { $0.kind == .deleted || $0.kind == .unchanged }.map(\.text)
+        let buffer = Buffer(filePath: file.displayPath, lines: newFile, baselineLines: oldBaseline, startLineNumber: 1, fullDiskPath: fullPath)
+        buffer.isFullFile = false
+        mb.addBuffer(buffer)
+        let excerpt = Excerpt(
+            bufferId: buffer.id,
+            filePath: file.displayPath,
+            fileStatus: .modified,
+            bufferRange: 0..<buffer.lineCount,
+            hunk: hunk
+        )
+        mb.addExcerpt(excerpt)
+
+        let dm = DisplayMap(multiBuffer: mb, reviewManager: rm)
+        XCTAssertEqual(dm.codeLines.count, 5)
+
+        // 1. Press Enter at line 1 (row 1, column 0) and trigger auto-save
+        let pt1 = MultiBufferPoint(row: 1, column: 0)
+        mb.replace(range: pt1..<pt1, with: "\n")
+        dm.rebuild()
+        try buffer.saveToFile()
+
+        // 2. Press Enter again at line 2 and trigger auto-save
+        let pt2 = MultiBufferPoint(row: 2, column: 0)
+        mb.replace(range: pt2..<pt2, with: "\n")
+        dm.rebuild()
+        try buffer.saveToFile()
+
+        // 3. Press Enter 3rd time at line 3 and trigger auto-save
+        let pt3 = MultiBufferPoint(row: 3, column: 0)
+        mb.replace(range: pt3..<pt3, with: "\n")
+        dm.rebuild()
+        try buffer.saveToFile()
+
+        // Total lines should be 8: 1 unchanged, 1 unchanged (original empty line), 3 added empty lines, 3 added ChunkLineSplitter lines
+        XCTAssertEqual(dm.codeLines.count, 8)
+        XCTAssertEqual(dm.codeLines[0].diffKind, .unchanged)
+        XCTAssertEqual(dm.codeLines[0].text, "import Foundation")
+        XCTAssertEqual(dm.codeLines[1].diffKind, .unchanged)
+        XCTAssertEqual(dm.codeLines[1].text, "")
+
+        // The next 3 newly inserted empty lines and the 3 ChunkLineSplitter lines must all be .added
+        for i in 2..<8 {
+            XCTAssertEqual(dm.codeLines[i].diffKind, .added, "Line at index \(i) must have .added diffKind")
+        }
+
+        // Verify the saved file on disk: must contain the new lines without any duplication or truncation of the rest of the file
+        let diskSaved = try String(contentsOfFile: fullPath, encoding: .utf8)
+        let diskLines = diskSaved.components(separatedBy: "\n")
+        XCTAssertTrue(diskLines.contains("public final class GitDiffParser: Sendable {"))
+        XCTAssertTrue(diskLines.contains("public final class ChunkLineSplitter {"))
+        XCTAssertEqual(diskLines.first, "import Foundation")
+    }
+
+    func testMultiHunkIndependentEditingAndSaving() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        var lines: [String] = []
+        for i in 1...100 {
+            lines.append("line_\(i)")
+        }
+        let fullPath = tempDir.appendingPathComponent("MultiHunk.swift").path
+        try lines.joined(separator: "\n").write(toFile: fullPath, atomically: true, encoding: .utf8)
+
+        let mb = MultiBuffer()
+
+        // Hunk 1 at line 10 (lines 10..12)
+        let hunk1Lines = ["line_10", "line_11", "line_12"]
+        let buf1 = Buffer(filePath: "MultiHunk.swift", lines: hunk1Lines, baselineLines: hunk1Lines, startLineNumber: 10, fullDiskPath: fullPath)
+        buf1.isFullFile = false
+        mb.addBuffer(buf1)
+        let ex1 = Excerpt(bufferId: buf1.id, filePath: "MultiHunk.swift", fileStatus: .modified, bufferRange: 0..<3)
+        mb.addExcerpt(ex1)
+
+        // Hunk 2 at line 50 (lines 50..52)
+        let hunk2Lines = ["line_50", "line_51", "line_52"]
+        let buf2 = Buffer(filePath: "MultiHunk.swift", lines: hunk2Lines, baselineLines: hunk2Lines, startLineNumber: 50, fullDiskPath: fullPath)
+        buf2.isFullFile = false
+        mb.addBuffer(buf2)
+        let ex2 = Excerpt(bufferId: buf2.id, filePath: "MultiHunk.swift", fileStatus: .modified, bufferRange: 0..<3)
+        mb.addExcerpt(ex2)
+
+        // 1. Edit Hunk 1: insert 2 new lines in Hunk 1
+        let pt1 = MultiBufferPoint(row: 1, column: 7) // end of line_11
+        mb.replace(range: pt1..<pt1, with: "\nnew_hunk1_a\nnew_hunk1_b")
+
+        // buf2 startLineNumber should be shifted from 50 to 52!
+        XCTAssertEqual(buf2.startLineNumber, 52)
+
+        // Save Hunk 1 to disk
+        try buf1.saveToFile()
+
+        // 2. Now edit Hunk 2: insert 1 new line in Hunk 2
+        let pt2 = MultiBufferPoint(row: 5, column: 7) // end of line_50 in second excerpt (ex1 has 5 rows now: 0..4, so row 5 is line_50)
+        mb.replace(range: pt2..<pt2, with: "\nnew_hunk2_a")
+
+        // Save Hunk 2 to disk
+        try buf2.saveToFile()
+
+        // Verify disk contents
+        let savedText = try String(contentsOfFile: fullPath, encoding: .utf8)
+        let savedLines = savedText.components(separatedBy: "\n")
+
+        // Line count should be 100 + 2 + 1 = 103 lines
+        XCTAssertEqual(savedLines.count, 103)
+
+        // Verify Hunk 1 additions at lines 11, 12
+        XCTAssertEqual(savedLines[9], "line_10")
+        XCTAssertEqual(savedLines[10], "line_11")
+        XCTAssertEqual(savedLines[11], "new_hunk1_a")
+        XCTAssertEqual(savedLines[12], "new_hunk1_b")
+        XCTAssertEqual(savedLines[13], "line_12")
+
+        // Verify Hunk 2 additions at line 53 (shifted by +2 from Hunk 1)
+        XCTAssertEqual(savedLines[51], "line_50")
+        XCTAssertEqual(savedLines[52], "new_hunk2_a")
+        XCTAssertEqual(savedLines[53], "line_51")
+        XCTAssertEqual(savedLines[54], "line_52")
+
+        // Verify original first and last lines are completely intact
+        XCTAssertEqual(savedLines.first, "line_1")
+        XCTAssertEqual(savedLines.last, "line_100")
+    }
+
     func testMultiBufferDeleteAndLineMerging() {
         let buffer = Buffer(filePath: "Merge.swift", text: "line 1\nline 2\nline 3")
         let mb = MultiBuffer()

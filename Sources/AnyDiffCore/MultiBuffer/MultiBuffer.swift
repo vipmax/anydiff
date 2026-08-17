@@ -157,6 +157,13 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
                     excerpts[i].bufferRange = newLower..<newUpperSub
                 }
             }
+
+            // Shift startLineNumber of all other buffers for the same file that follow this buffer
+            for otherBuf in buffers.values where otherBuf.filePath == buf.filePath && otherBuf.id != buf.id {
+                if otherBuf.startLineNumber >= buf.startLineNumber {
+                    otherBuf.startLineNumber += lineDelta
+                }
+            }
         }
 
         if recordUndo {
@@ -236,12 +243,19 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
 
     @discardableResult
     public func saveAllDirtyBuffers() throws -> [String] {
-        var savedFiles: [String] = []
-        for buffer in buffers.values where buffer.isDirty {
-            try buffer.saveToFile(baseDirectory: baseDirectory)
-            savedFiles.append(buffer.filePath)
+        var savedFiles = Set<String>()
+        let dirtyBuffers = buffers.values.filter(\.isDirty)
+        let grouped = Dictionary(grouping: dirtyBuffers, by: \.filePath)
+
+        for (filePath, fileBuffers) in grouped {
+            // Sort in reverse order (bottom to top) so that line additions/deletions in earlier hunks do not affect later hunk offsets
+            let sortedBuffers = fileBuffers.sorted { $0.startLineNumber > $1.startLineNumber }
+            for buffer in sortedBuffers {
+                try buffer.saveToFile(baseDirectory: baseDirectory)
+            }
+            savedFiles.insert(filePath)
         }
-        return savedFiles
+        return Array(savedFiles)
     }
 
     // MARK: - Context Expansion
@@ -335,17 +349,48 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
         guard excerpts.count > 1 else { return }
         var merged: [Excerpt] = []
         for excerpt in excerpts {
-            if let last = merged.last, last.filePath == excerpt.filePath && last.bufferId == excerpt.bufferId {
-                let gap = excerpt.bufferRange.lowerBound - last.bufferRange.upperBound
-                if gap <= 2 {
-                    var updatedLast = last
-                    let combinedUpper = max(last.bufferRange.upperBound, excerpt.bufferRange.upperBound)
-                    updatedLast.bufferRange = last.bufferRange.lowerBound..<combinedUpper
-                    if last.hunk != nil || excerpt.hunk != nil {
-                        updatedLast.hunk = nil
+            if let last = merged.last, last.filePath == excerpt.filePath {
+                if last.bufferId == excerpt.bufferId {
+                    let gap = excerpt.bufferRange.lowerBound - last.bufferRange.upperBound
+                    if gap <= 2 {
+                        var updatedLast = last
+                        let combinedUpper = max(last.bufferRange.upperBound, excerpt.bufferRange.upperBound)
+                        updatedLast.bufferRange = last.bufferRange.lowerBound..<combinedUpper
+                        if last.hunk != nil || excerpt.hunk != nil {
+                            updatedLast.hunk = nil
+                        }
+                        merged[merged.count - 1] = updatedLast
+                        continue
                     }
-                    merged[merged.count - 1] = updatedLast
-                    continue
+                } else if let buf1 = buffers[last.bufferId], let buf2 = buffers[excerpt.bufferId] {
+                    let endLine1 = buf1.startLineNumber + buf1.lineCount - 1
+                    let startLine2 = buf2.startLineNumber
+                    let gap = startLine2 - endLine1 - 1
+
+                    if gap <= 2 {
+                        let diskPath = buf1.fullDiskPath ?? baseDirectory.map { ($0 as NSString).appendingPathComponent(buf1.filePath) }
+                        let diskLines = diskPath.flatMap { try? String(contentsOfFile: $0, encoding: .utf8) }?.components(separatedBy: "\n")
+
+                        if gap > 0, let allLines = diskLines {
+                            let sliceStart = endLine1
+                            let sliceEnd = endLine1 + gap
+                            if sliceStart >= 0 && sliceEnd <= allLines.count && sliceStart < sliceEnd {
+                                let bridge = Array(allLines[sliceStart..<sliceEnd])
+                                buf1.appendContextLines(bridge)
+                            }
+                        }
+
+                        let newEndLine1 = buf1.startLineNumber + buf1.lineCount - 1
+                        let overlap = max(0, (newEndLine1 + 1) - startLine2)
+                        buf1.mergeFrom(buffer: buf2, overlap: overlap)
+
+                        var updatedLast = last
+                        updatedLast.bufferRange = 0..<buf1.lineCount
+                        updatedLast.hunk = nil
+                        buffers.removeValue(forKey: buf2.id)
+                        merged[merged.count - 1] = updatedLast
+                        continue
+                    }
                 }
             }
             merged.append(excerpt)

@@ -2269,6 +2269,14 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                 mb.updateExcerptBufferRange(at: i, range: newLower..<newUpperSub)
             }
         }
+
+        if let curB = mb.buffers[bufferId] {
+            for otherBuf in mb.buffers.values where otherBuf.filePath == curB.filePath && otherBuf.id != curB.id {
+                if otherBuf.startLineNumber >= curB.startLineNumber {
+                    otherBuf.startLineNumber += lineDelta
+                }
+            }
+        }
     }
 
     public override func insertNewline(_ sender: Any?) {

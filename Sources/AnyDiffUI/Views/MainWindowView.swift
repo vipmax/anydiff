@@ -820,7 +820,7 @@ public struct MainWindowView: View {
             let isGit = self.isGitRepository(at: currentDir)
             let branch = isGit ? self.fetchCurrentBranch(at: currentDir) : ""
             let branches = isGit ? self.fetchAvailableBranches(at: currentDir) : (local: [], remote: [])
-            let diff = isGit ? self.fetchGitDiff(at: currentDir, target: self.comparisonTarget) : nil
+            let files = isGit ? self.fetchGitDiffFiles(at: currentDir, target: self.comparisonTarget) : []
 
             DispatchQueue.main.async {
                 guard self.loadGeneration == generation else { return }
@@ -830,17 +830,17 @@ public struct MainWindowView: View {
 
                 guard isGit else {
                     self.repoStatus = .notGitRepository
-                    self.loadDiff(text: "")
+                    self.loadDiff(files: [])
                     self.isReloading = false
                     return
                 }
                 RecentSourcesManager.shared.addLocalPath(currentDir)
-                if let diff = diff, !diff.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if !files.isEmpty {
                     self.repoStatus = .hasChanges
-                    self.loadDiff(text: diff)
+                    self.loadDiff(files: files)
                 } else {
                     self.repoStatus = .clean
-                    self.loadDiff(text: "")
+                    self.loadDiff(files: [])
                 }
                 self.isReloading = false
             }
@@ -865,43 +865,70 @@ public struct MainWindowView: View {
         return (local, remote)
     }
 
-    private func fetchGitDiff(at path: String, target: ComparisonTarget = .workingTree) -> String? {
+    private func fetchGitDiffFiles(at path: String, target: ComparisonTarget = .workingTree) -> [FileDiff] {
+        let argumentSets: [[String]]
         switch target {
         case .workingTree:
-            // 1. Try uncommitted (staged + unstaged) changes: git diff HEAD
-            if let out = runGit(arguments: ["-C", path, "diff", "HEAD"]), !out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                return out
-            }
-            // 2. Try unstaged changes: git diff
-            if let out = runGit(arguments: ["-C", path, "diff"]), !out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                return out
-            }
-            // 3. Try staged changes: git diff --staged
-            if let out = runGit(arguments: ["-C", path, "diff", "--staged"]), !out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                return out
-            }
-            return nil
-
+            argumentSets = [
+                ["-C", path, "diff", "HEAD"],
+                ["-C", path, "diff"],
+                ["-C", path, "diff", "--staged"]
+            ]
         case .baseBranch(let base):
-            // Triple-dot diff: git diff <base>...
-            if let out = runGit(arguments: ["-C", path, "diff", "\(base)..."]), !out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                return out
-            }
-            if let out = runGit(arguments: ["-C", path, "diff", "\(base)..HEAD"]), !out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                return out
-            }
-            return nil
-
+            argumentSets = [
+                ["-C", path, "diff", "\(base)..."],
+                ["-C", path, "diff", "\(base)..HEAD"]
+            ]
         case .directBranch(let branch):
-            // Direct diff against branch: git diff <branch>
-            if let out = runGit(arguments: ["-C", path, "diff", branch]), !out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                return out
-            }
-            return nil
-
+            argumentSets = [
+                ["-C", path, "diff", branch]
+            ]
         case .remote:
-            return nil
+            return []
         }
+
+        var allFiles: [FileDiff] = []
+        for args in argumentSets {
+            if let files = try? GitStreamReader.shared.readGitDiff(arguments: args), !files.isEmpty {
+                allFiles = files
+                break
+            }
+        }
+        if case .workingTree = target {
+            let untracked = fetchUntrackedFiles(at: path)
+            allFiles.append(contentsOf: untracked)
+        }
+        return allFiles
+    }
+
+    private func fetchUntrackedFiles(at path: String) -> [FileDiff] {
+        guard let output = runGit(arguments: ["-C", path, "ls-files", "--others", "--exclude-standard"]), !output.isEmpty else {
+            return []
+        }
+        let filePaths = output.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        var result: [FileDiff] = []
+        for relPath in filePaths {
+            let fullPath = URL(fileURLWithPath: path).appendingPathComponent(relPath).path
+            guard let content = try? String(contentsOfFile: fullPath, encoding: .utf8) else { continue }
+            let lines = content.components(separatedBy: "\n")
+            let diffLines = lines.enumerated().map { (idx, text) in
+                DiffLine(kind: .added, text: text, oldLineNumber: nil, newLineNumber: idx + 1)
+            }
+            let hunk = DiffHunk(
+                oldRange: 0..<0,
+                newRange: 1..<(lines.count + 1),
+                header: "",
+                lines: diffLines
+            )
+            let fileDiff = FileDiff(
+                oldPath: relPath,
+                newPath: relPath,
+                status: .added,
+                hunks: [hunk]
+            )
+            result.append(fileDiff)
+        }
+        return result
     }
 
     private func runGit(arguments: [String]) -> String? {
@@ -926,6 +953,10 @@ public struct MainWindowView: View {
 
     public func loadDiff(text: String) {
         let parsedFiles = GitDiffParser.shared.parse(diffText: text)
+        loadDiff(files: parsedFiles)
+    }
+
+    public func loadDiff(files parsedFiles: [FileDiff]) {
         self.fileDiffs = parsedFiles
 
         multiBuffer.clear()
@@ -948,68 +979,35 @@ public struct MainWindowView: View {
                     }
                 }
             }
-            let fileExists = FileManager.default.fileExists(atPath: fullPath)
-            let fullDiskText = fileExists ? (try? String(contentsOfFile: fullPath, encoding: .utf8)) : nil
-            let fullDiskLineCount = fullDiskText?.components(separatedBy: "\n").count
 
             let fileAdds = file.additions
             let fileDels = file.deletions
 
-            if let diskText = fullDiskText, let diskCount = fullDiskLineCount {
-                // 1. File exists on disk: build ONE full-file buffer with exact baseline lines
-                var baselineLines = diskText.components(separatedBy: "\n")
-                let sortedHunks = file.hunks.sorted { $0.newRange.lowerBound > $1.newRange.lowerBound }
-                for hunk in sortedHunks {
-                    let newStart = max(0, min(baselineLines.count, hunk.newRange.lowerBound - 1))
-                    let newCount = hunk.lines.filter { $0.kind == .added || $0.kind == .unchanged }.count
-                    let newEnd = max(newStart, min(baselineLines.count, newStart + newCount))
-                    let oldHunkLines = hunk.lines.filter { $0.kind == .deleted || $0.kind == .unchanged }.map(\.text)
-                    baselineLines.replaceSubrange(newStart..<newEnd, with: oldHunkLines)
-                }
-                let baselineText = baselineLines.joined(separator: "\n")
-
+            if file.hunks.isEmpty {
                 let buffer = Buffer(
                     filePath: file.displayPath,
-                    text: diskText,
+                    lines: [],
                     language: Buffer.detectLanguage(for: file.displayPath),
-                    baselineText: baselineText,
+                    baselineLines: [],
                     totalAdditions: fileAdds,
                     totalDeletions: fileDels,
                     startLineNumber: 1,
                     fullDiskPath: fullPath,
-                    diskFileLineCount: diskCount
+                    diskFileLineCount: nil
                 )
                 buffer.isFullFile = true
                 multiBuffer.addBuffer(buffer)
 
-                if file.hunks.isEmpty {
-                    let excerpt = Excerpt(
-                        bufferId: buffer.id,
-                        filePath: file.displayPath,
-                        fileStatus: file.status,
-                        bufferRange: 0..<buffer.lineCount,
-                        hunk: nil,
-                        isCollapsed: false,
-                        isFileStart: true
-                    )
-                    multiBuffer.addExcerpt(excerpt)
-                } else {
-                    for (hIdx, hunk) in file.hunks.enumerated() {
-                        let startRow = max(0, min(buffer.lineCount, hunk.newRange.lowerBound - 1))
-                        let newCount = hunk.lines.filter { $0.kind == .added || $0.kind == .unchanged }.count
-                        let endRow = max(startRow, min(buffer.lineCount, startRow + newCount))
-                        let excerpt = Excerpt(
-                            bufferId: buffer.id,
-                            filePath: file.displayPath,
-                            fileStatus: file.status,
-                            bufferRange: startRow..<endRow,
-                            hunk: hunk,
-                            isCollapsed: false,
-                            isFileStart: (hIdx == 0)
-                        )
-                        multiBuffer.addExcerpt(excerpt)
-                    }
-                }
+                let excerpt = Excerpt(
+                    bufferId: buffer.id,
+                    filePath: file.displayPath,
+                    fileStatus: file.status,
+                    bufferRange: 0..<0,
+                    hunk: nil,
+                    isCollapsed: false,
+                    isFileStart: true
+                )
+                multiBuffer.addExcerpt(excerpt)
             } else if file.status == .deleted {
                 var oldLines: [String] = []
                 for hunk in file.hunks {
@@ -1021,14 +1019,14 @@ public struct MainWindowView: View {
                 }
                 let buffer = Buffer(
                     filePath: file.displayPath,
-                    text: "",
+                    lines: [],
                     language: Buffer.detectLanguage(for: file.displayPath),
-                    baselineText: oldLines.joined(separator: "\n"),
+                    baselineLines: oldLines,
                     totalAdditions: 0,
                     totalDeletions: fileDels,
                     startLineNumber: 1,
-                    fullDiskPath: nil,
-                    diskFileLineCount: 0
+                    fullDiskPath: fullPath,
+                    diskFileLineCount: oldLines.count
                 )
                 buffer.isFullFile = true
                 multiBuffer.addBuffer(buffer)
@@ -1044,63 +1042,35 @@ public struct MainWindowView: View {
                 )
                 multiBuffer.addExcerpt(excerpt)
             } else {
-                // File does NOT exist on disk (pasted / mock diff / remote PR)
-                if file.hunks.isEmpty {
+                for (hIdx, hunk) in file.hunks.enumerated() {
+                    let newFileLines = hunk.lines.filter { $0.kind == .added || $0.kind == .unchanged }.map(\.text)
+                    let oldBaselineLines = hunk.lines.filter { $0.kind == .deleted || $0.kind == .unchanged }.map(\.text)
+                    let startLine = hunk.newRange.lowerBound
+
                     let buffer = Buffer(
                         filePath: file.displayPath,
-                        text: "",
+                        lines: newFileLines,
                         language: Buffer.detectLanguage(for: file.displayPath),
-                        baselineText: "",
+                        baselineLines: oldBaselineLines,
                         totalAdditions: fileAdds,
                         totalDeletions: fileDels,
-                        startLineNumber: 1,
-                        fullDiskPath: nil,
-                        diskFileLineCount: 0
+                        startLineNumber: startLine,
+                        fullDiskPath: fullPath,
+                        diskFileLineCount: nil
                     )
-                    buffer.isFullFile = true
+                    buffer.isFullFile = (file.status == .added && file.hunks.count == 1)
                     multiBuffer.addBuffer(buffer)
 
                     let excerpt = Excerpt(
                         bufferId: buffer.id,
                         filePath: file.displayPath,
                         fileStatus: file.status,
-                        bufferRange: 0..<0,
-                        hunk: nil,
+                        bufferRange: 0..<buffer.lineCount,
+                        hunk: hunk,
                         isCollapsed: false,
-                        isFileStart: true
+                        isFileStart: (hIdx == 0)
                     )
                     multiBuffer.addExcerpt(excerpt)
-                } else {
-                    for (hIdx, hunk) in file.hunks.enumerated() {
-                        let newFileLines = hunk.lines.filter { $0.kind == .added || $0.kind == .unchanged }.map(\.text)
-                        let oldBaselineLines = hunk.lines.filter { $0.kind == .deleted || $0.kind == .unchanged }.map(\.text)
-                        let startLine = hunk.newRange.lowerBound
-
-                        let buffer = Buffer(
-                            filePath: file.displayPath,
-                            lines: newFileLines,
-                            language: Buffer.detectLanguage(for: file.displayPath),
-                            baselineLines: oldBaselineLines,
-                            totalAdditions: fileAdds,
-                            totalDeletions: fileDels,
-                            startLineNumber: startLine,
-                            fullDiskPath: nil,
-                            diskFileLineCount: nil
-                        )
-                        buffer.isFullFile = (file.status == .added && file.hunks.count == 1)
-                        multiBuffer.addBuffer(buffer)
-
-                        let excerpt = Excerpt(
-                            bufferId: buffer.id,
-                            filePath: file.displayPath,
-                            fileStatus: file.status,
-                            bufferRange: 0..<buffer.lineCount,
-                            hunk: hunk,
-                            isCollapsed: false,
-                            isFileStart: (hIdx == 0)
-                        )
-                        multiBuffer.addExcerpt(excerpt)
-                    }
                 }
             }
         }

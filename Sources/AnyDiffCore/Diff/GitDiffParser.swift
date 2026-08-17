@@ -1,13 +1,155 @@
 import Foundation
 
+ 
+/// Splits streaming byte chunks (e.g. 64KB buffers from posix_read or file/memory chunks) into line slices
+/// using fast SIMD memchr (0x0A) with zero string copies and rollover handling.
+public final class ChunkLineSplitter {
+    private var remainder = [UInt8]()
+    private let onLine: (UnsafeBufferPointer<UInt8>) -> Void
+
+    public init(onLine: @escaping (UnsafeBufferPointer<UInt8>) -> Void) {
+        self.onLine = onLine
+    }
+
+    /// Processes an incoming raw chunk of bytes, extracting full lines and invoking `onLine`.
+    public func processChunk(_ chunk: UnsafeBufferPointer<UInt8>) {
+        guard let chunkBase = chunk.baseAddress, !chunk.isEmpty else { return }
+
+        var currentOffset = 0
+        let totalCount = chunk.count
+
+        // 1. If we have a pending partial line from the previous chunk, find first newline to complete it
+        if !remainder.isEmpty {
+            if let newlinePtr = memchr(chunkBase, 0x0A, totalCount) {
+                let leadingLen = chunkBase.distance(to: newlinePtr.assumingMemoryBound(to: UInt8.self))
+                remainder.append(contentsOf: UnsafeBufferPointer(start: chunkBase, count: leadingLen))
+                if remainder.last == 0x0D {
+                    remainder.removeLast()
+                }
+                remainder.withUnsafeBufferPointer { lineBuf in
+                    onLine(lineBuf)
+                }
+                remainder.removeAll(keepingCapacity: true)
+                currentOffset = leadingLen + 1
+            } else {
+                remainder.append(contentsOf: chunk)
+                return
+            }
+        }
+
+        // 2. Scan lines in the current chunk using vectorized memchr
+        while currentOffset < totalCount {
+            let currentBase = chunkBase.advanced(by: currentOffset)
+            let remainingBytes = totalCount - currentOffset
+
+            guard let newlinePtr = memchr(currentBase, 0x0A, remainingBytes) else {
+                // No more newlines in this chunk: store remainder for next chunk
+                remainder.append(contentsOf: UnsafeBufferPointer(start: currentBase, count: remainingBytes))
+                break
+            }
+
+            var lineLen = currentBase.distance(to: newlinePtr.assumingMemoryBound(to: UInt8.self))
+            if lineLen > 0 && currentBase[lineLen - 1] == 0x0D {
+                lineLen -= 1
+            }
+
+            let lineSlice = UnsafeBufferPointer(start: currentBase, count: lineLen)
+            onLine(lineSlice)
+            currentOffset += currentBase.distance(to: newlinePtr.assumingMemoryBound(to: UInt8.self)) + 1
+        }
+    }
+
+    /// Flushes any pending line at EOF.
+    public func finish() {
+        if !remainder.isEmpty {
+            if remainder.last == 0x0D {
+                remainder.removeLast()
+            }
+            remainder.withUnsafeBufferPointer { lineBuf in
+                onLine(lineBuf)
+            }
+            remainder.removeAll(keepingCapacity: false)
+        }
+    }
+}
+
 /// Fast and robust parser for Git Unified Diffs
 public final class GitDiffParser: Sendable {
     public static let shared = GitDiffParser()
 
     public init() {}
 
-    /// Parses unified diff text into a list of FileDiffs
+    /// High-performance zero-allocation parser for unified diff text (using fast UTF-8 byte scanning)
     public func parse(diffText: String) -> [FileDiff] {
+        var fileDiffs: [FileDiff] = []
+        let streamer = StreamingGitDiffParser()
+        let splitter = ChunkLineSplitter { lineBytes in
+            if let file = streamer.feed(lineBytes: lineBytes) {
+                fileDiffs.append(file)
+            }
+        }
+
+        let utf8View = diffText.utf8
+        let handled = utf8View.withContiguousStorageIfAvailable { buffer -> Bool in
+            splitter.processChunk(buffer)
+            splitter.finish()
+            return true
+        } ?? false
+
+        if !handled {
+            let data = Data(diffText.utf8)
+            data.withUnsafeBytes { rawBuffer in
+                let buffer = rawBuffer.bindMemory(to: UInt8.self)
+                splitter.processChunk(buffer)
+                splitter.finish()
+            }
+        }
+
+        if let finalFile = streamer.finish() {
+            fileDiffs.append(finalFile)
+        }
+        return fileDiffs
+    }
+
+    /// Fast parser directly from raw Data (zero-copy buffer scanning)
+    public func parse(data: Data) -> [FileDiff] {
+        var fileDiffs: [FileDiff] = []
+        let streamer = StreamingGitDiffParser()
+        let splitter = ChunkLineSplitter { lineBytes in
+            if let file = streamer.feed(lineBytes: lineBytes) {
+                fileDiffs.append(file)
+            }
+        }
+        data.withUnsafeBytes { rawBuffer in
+            let buffer = rawBuffer.bindMemory(to: UInt8.self)
+            splitter.processChunk(buffer)
+            splitter.finish()
+        }
+        if let finalFile = streamer.finish() {
+            fileDiffs.append(finalFile)
+        }
+        return fileDiffs
+    }
+
+    /// Fast parser directly from an UnsafeBufferPointer of bytes
+    public func parse(bytes: UnsafeBufferPointer<UInt8>) -> [FileDiff] {
+        var fileDiffs: [FileDiff] = []
+        let streamer = StreamingGitDiffParser()
+        let splitter = ChunkLineSplitter { lineBytes in
+            if let file = streamer.feed(lineBytes: lineBytes) {
+                fileDiffs.append(file)
+            }
+        }
+        splitter.processChunk(bytes)
+        splitter.finish()
+        if let finalFile = streamer.finish() {
+            fileDiffs.append(finalFile)
+        }
+        return fileDiffs
+    }
+
+    /// Legacy parser implementation using String.enumerateLines and grapheme cluster iteration
+    public func parseLegacy(diffText: String) -> [FileDiff] {
         var fileDiffs: [FileDiff] = []
         let streamer = StreamingGitDiffParser()
         diffText.enumerateLines { line, _ in
@@ -19,6 +161,15 @@ public final class GitDiffParser: Sendable {
             fileDiffs.append(finalFile)
         }
         return fileDiffs
+    }
+
+    /// Fast scanner for hunk header from byte buffer `@@ -oldStart,oldCount +newStart,newCount @@ header`
+    public func parseHunkHeaderBytes(_ bytes: UnsafeBufferPointer<UInt8>) -> (Range<Int>, Range<Int>, String)? {
+        guard let base = bytes.baseAddress, bytes.count >= 4 else { return nil }
+        guard base[0] == 0x40 && base[1] == 0x40 else { return nil } // @@
+
+        let str = String(decoding: bytes, as: UTF8.self)
+        return parseHunkHeader(str)
     }
 
     /// Ultra-fast zero-allocation scanner for hunk header line `@@ -oldStart,oldCount +newStart,newCount @@ header`

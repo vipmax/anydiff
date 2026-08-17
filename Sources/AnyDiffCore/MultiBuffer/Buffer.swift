@@ -78,6 +78,9 @@ public final class Buffer: Identifiable, @unchecked Sendable {
         set { baselineLines = newValue.components(separatedBy: "\n") }
     }
 
+    /// Number of lines this buffer occupied on disk during last save (for safe incremental splicing)
+    public var lastSavedLineCount: Int
+
     public var totalAdditions: Int
     public var totalDeletions: Int
     public var startLineNumber: Int
@@ -89,7 +92,7 @@ public final class Buffer: Identifiable, @unchecked Sendable {
         filePath: String,
         lines: [String],
         language: String = "",
-        baselineLines: [String] = [],
+        baselineLines: [String]? = nil,
         totalAdditions: Int = 0,
         totalDeletions: Int = 0,
         startLineNumber: Int = 1,
@@ -105,7 +108,9 @@ public final class Buffer: Identifiable, @unchecked Sendable {
         self.fullDiskPath = fullDiskPath
         self.diskFileLineCount = diskFileLineCount
         self._lines = lines
-        self.baselineLines = baselineLines.isEmpty ? lines : baselineLines
+        let bLines = baselineLines ?? lines
+        self.baselineLines = bLines
+        self.lastSavedLineCount = bLines.count
     }
 
     public init(
@@ -113,7 +118,7 @@ public final class Buffer: Identifiable, @unchecked Sendable {
         filePath: String,
         text: String,
         language: String = "",
-        baselineText: String = "",
+        baselineText: String? = nil,
         totalAdditions: Int = 0,
         totalDeletions: Int = 0,
         startLineNumber: Int = 1,
@@ -135,10 +140,13 @@ public final class Buffer: Identifiable, @unchecked Sendable {
             self._lines = text.components(separatedBy: "\n")
         }
 
-        if baselineText.isEmpty {
-            self.baselineLines = text.isEmpty ? [] : text.components(separatedBy: "\n")
+        if let bText = baselineText {
+            let bLines = bText.isEmpty ? [] : bText.components(separatedBy: "\n")
+            self.baselineLines = bLines
+            self.lastSavedLineCount = bLines.count
         } else {
-            self.baselineLines = baselineText.components(separatedBy: "\n")
+            self.baselineLines = self._lines
+            self.lastSavedLineCount = self._lines.count
         }
     }
 
@@ -277,6 +285,7 @@ public final class Buffer: Identifiable, @unchecked Sendable {
         guard !lines.isEmpty else { return }
         _lines.insert(contentsOf: lines, at: 0)
         baselineLines.insert(contentsOf: lines, at: 0)
+        lastSavedLineCount += lines.count
         startLineNumber = max(1, startLineNumber - lines.count)
         version &+= 1
     }
@@ -285,6 +294,22 @@ public final class Buffer: Identifiable, @unchecked Sendable {
         guard !lines.isEmpty else { return }
         _lines.append(contentsOf: lines)
         baselineLines.append(contentsOf: lines)
+        lastSavedLineCount += lines.count
+        version &+= 1
+    }
+
+    public func mergeFrom(buffer: Buffer, overlap: Int) {
+        let linesToAppend = Array(buffer.lines.dropFirst(overlap))
+        let baselineToAppend = Array(buffer.baselineLines.dropFirst(overlap))
+        if !linesToAppend.isEmpty {
+            _lines.append(contentsOf: linesToAppend)
+        }
+        if !baselineToAppend.isEmpty {
+            baselineLines.append(contentsOf: baselineToAppend)
+        }
+        lastSavedLineCount += max(0, buffer.lastSavedLineCount - overlap)
+        totalAdditions += buffer.totalAdditions
+        totalDeletions += buffer.totalDeletions
         version &+= 1
     }
 
@@ -312,17 +337,18 @@ public final class Buffer: Identifiable, @unchecked Sendable {
         if isFullFile || !FileManager.default.fileExists(atPath: resolvedPath) {
             let fullText = text()
             try fullText.write(to: fileURL, atomically: true, encoding: .utf8)
+            lastSavedLineCount = _lines.count
         } else {
             // Defensive partial-hunk splicing fallback: never truncate existing file
             let diskText = try String(contentsOfFile: resolvedPath, encoding: .utf8)
             var diskLines = diskText.components(separatedBy: "\n")
             let replaceStart = max(0, min(diskLines.count, startLineNumber - 1))
-            let replaceCount = max(0, baselineLines.count)
+            let replaceCount = max(0, lastSavedLineCount)
             let replaceEnd = max(replaceStart, min(diskLines.count, replaceStart + replaceCount))
             diskLines.replaceSubrange(replaceStart..<replaceEnd, with: _lines)
             let fullText = diskLines.joined(separator: "\n")
             try fullText.write(to: fileURL, atomically: true, encoding: .utf8)
-            baselineLines = _lines
+            lastSavedLineCount = _lines.count
         }
         _isDirty = false
     }

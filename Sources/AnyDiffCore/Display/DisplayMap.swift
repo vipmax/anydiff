@@ -354,7 +354,7 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
                     mappedLines.append((line: dLine, bufferRow: bRow))
                 }
                 diffLinesToRender = mappedLines
-            } else if !buffer.baselineLines.isEmpty && (buffer.baselineLines != buffer.lines || excerpt.hunk != nil || buffer.fullDiskPath != nil) {
+            } else if excerpt.fileStatus == .added || !buffer.baselineLines.isEmpty || excerpt.hunk != nil || buffer.fullDiskPath != nil {
                 if let cachedDiff = excerptDiffCache[excerpt.id],
                    cachedDiff.bufferVersion == buffer.version,
                    cachedDiff.bufferRange == excerpt.bufferRange {
