@@ -2,22 +2,13 @@
 
 High-performance native macOS MultiBuffer Diff editor for lightning-fast code reviews and in-place editing in Swift, built upon the Zed architecture (`multi_buffer`).
 
-![AnyDiff Screenshot](https://i.imgur.com/SgdOxs2.png)
+![AnyDiff Overview](https://i.imgur.com/SgdOxs2.png)
 
 ![macOS](https://img.shields.io/badge/macOS-14.0%2B-blue?style=flat-square&logo=apple)
 ![Swift](https://img.shields.io/badge/Swift-6.0-orange?style=flat-square&logo=swift)
 ![Build](https://img.shields.io/badge/build-passing-brightgreen?style=flat-square)
 ![Tests](https://img.shields.io/badge/tests-39%2F39%20passing-brightgreen?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
-
----
-
-## ⚡ Performance Highlights
-
-- **1,000,000+ Lines in Seconds**: Opens massive multi-file diffs (2,000+ files, 1M+ lines) in 1–2 seconds where other editors freeze, run out of memory, or drop frames.
-- **Pure 120 FPS ProMotion Virtualization**: Built entirely on native AppKit and CoreText without WebViews or Electron layers. Only visible lines are rendered on screen.
-- **Hierarchical `ExcerptLayout`**: $O(\log M)$ 2-level binary search layout engine (~15 ops, <15 ns lookup). No flat million-element coordinate arrays in memory.
-- **$O(\text{File Lines})$ Incremental Myers Diff Engine**: Keystrokes, text insertions, and newlines (`\n`) recalculate diffs only for the active excerpt in <0.1 ms without touching unrelated files.
 
 ---
 
@@ -43,6 +34,19 @@ High-performance native macOS MultiBuffer Diff editor for lightning-fast code re
 - **Minimalist macOS Titlebar & Dark Themes**:
   - Curated themes: `Zed Dark`, `Unified Dark`, `Tokyo Night`, `GitHub Dark`, and `Monokai Pro`.
   - Tokenized syntax highlighting for Swift, Rust, TypeScript, JavaScript, Python, C++, Go, and JSON.
+
+---
+
+![AnyDiff MultiBuffer Editing](https://i.imgur.com/5Oq71Iy.png)
+
+---
+
+## ⚡ Performance Highlights
+
+- **1,000,000+ Lines in Seconds**: Opens massive multi-file diffs (2,000+ files, 1M+ lines) in 1–2 seconds where other editors freeze, run out of memory, or drop frames.
+- **Pure 120 FPS ProMotion Virtualization**: Built entirely on native AppKit and CoreText without WebViews or Electron layers. Only visible lines are rendered on screen.
+- **Hierarchical `ExcerptLayout`**: $O(\log M)$ 2-level binary search layout engine (~15 ops, <15 ns lookup). No flat million-element coordinate arrays in memory.
+- **$O(\text{File Lines})$ Incremental Myers Diff Engine**: Keystrokes, text insertions, and newlines (`\n`) recalculate diffs only for the active excerpt in <0.1 ms without touching unrelated files.
 
 ---
 
