@@ -121,6 +121,15 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
     /// Replaces text in the MultiBuffer, executing the edit in the corresponding underlying Buffer
     @discardableResult
     public func replace(range: Range<MultiBufferPoint>, with newText: String, recordUndo: Bool = true) -> Range<MultiBufferPoint> {
+        guard let initialStartLoc = location(for: range.lowerBound),
+              let initialBuf = buffers[initialStartLoc.bufferId] else {
+            return range
+        }
+
+        if initialBuf.isLazySlice {
+            promoteBufferToFullFile(for: initialStartLoc.bufferId)
+        }
+
         guard let startLoc = location(for: range.lowerBound),
               let endLoc = location(for: range.upperBound),
               startLoc.bufferId == endLoc.bufferId,
@@ -258,7 +267,76 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
         return Array(savedFiles)
     }
 
-    // MARK: - Context Expansion
+    // MARK: - Lazy Buffer Promotion & Context Expansion
+
+    /// Promotes a lazy hunk slice buffer to a full-file buffer on first edit or expand
+    @discardableResult
+    public func promoteBufferToFullFile(for bufferId: BufferId) -> Buffer? {
+        guard let targetBuf = buffers[bufferId] else { return nil }
+        guard targetBuf.isLazySlice else { return targetBuf }
+
+        let diskPath = targetBuf.fullDiskPath ?? baseDirectory.map { ($0 as NSString).appendingPathComponent(targetBuf.filePath) }
+        guard let fullPath = diskPath, let diskText = try? String(contentsOfFile: fullPath, encoding: .utf8) else {
+            targetBuf.isLazySlice = false
+            return targetBuf
+        }
+
+        let diskLines = diskText.components(separatedBy: "\n")
+
+        // Find all excerpts belonging to this file to compute baseline and adjust bufferRanges
+        let fileExcerpts = excerpts.enumerated().filter { $0.element.filePath == targetBuf.filePath }
+
+        // Compute baseline by un-applying all hunks of this file to diskLines
+        var baseline = diskLines
+        var sortedHunks: [DiffHunk] = []
+        for (_, ex) in fileExcerpts {
+            if let h = ex.hunk {
+                sortedHunks.append(h)
+            }
+        }
+        sortedHunks.sort { $0.newRange.lowerBound > $1.newRange.lowerBound }
+
+        for hunk in sortedHunks {
+            let startRow = max(0, min(baseline.count, hunk.newRange.lowerBound - 1))
+            let newCount = hunk.lines.filter { $0.kind == .added || $0.kind == .unchanged }.count
+            let endRow = max(startRow, min(baseline.count, startRow + newCount))
+            let oldHunkLines = hunk.lines.filter { $0.kind == .deleted || $0.kind == .unchanged }.map(\.text)
+            baseline.replaceSubrange(startRow..<endRow, with: oldHunkLines)
+        }
+
+        let oldTargetStartLine = targetBuf.startLineNumber
+
+        // Re-point all excerpts for this file to targetBuf with full-file ranges
+        for (idx, ex) in fileExcerpts {
+            var updated = ex
+            let startLine: Int
+            if let h = ex.hunk {
+                startLine = h.newRange.lowerBound
+            } else if ex.bufferId == targetBuf.id {
+                startLine = oldTargetStartLine
+            } else if let b = buffers[ex.bufferId] {
+                startLine = b.startLineNumber
+            } else {
+                startLine = 1
+            }
+
+            let count = ex.bufferRange.count
+            let lower = max(0, min(diskLines.count, startLine - 1))
+            let upper = max(lower, min(diskLines.count, lower + count))
+            updated.bufferId = targetBuf.id
+            updated.bufferRange = lower..<upper
+            excerpts[idx] = updated
+
+            if ex.bufferId != targetBuf.id {
+                buffers.removeValue(forKey: ex.bufferId)
+            }
+        }
+
+        // Promote the target buffer to full file
+        targetBuf.promoteToFullFile(diskLines: diskLines, baselineDiskLines: baseline)
+
+        return targetBuf
+    }
 
     public enum ExpandExcerptDirection {
         case up
@@ -269,9 +347,17 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
     @discardableResult
     public func expandExcerpt(at index: ExcerptIndex, up: Int = 0, down: Int = 0) -> (linesAddedUp: Int, linesAddedDown: Int) {
         guard index >= 0 && index < excerpts.count else { return (0, 0) }
-        var excerpt = excerpts[index]
-        guard let buf = buffers[excerpt.bufferId] else { return (0, 0) }
+        let currentExcerpt = excerpts[index]
+        guard let initialBuf = buffers[currentExcerpt.bufferId] else { return (0, 0) }
 
+        let buf: Buffer
+        if initialBuf.isLazySlice {
+            buf = promoteBufferToFullFile(for: currentExcerpt.bufferId) ?? initialBuf
+        } else {
+            buf = initialBuf
+        }
+
+        var excerpt = excerpts[index]
         var addedUp = 0
         var addedDown = 0
 
@@ -288,37 +374,6 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
             excerpt.bufferRange = excerpt.bufferRange.lowerBound..<newUpper
         }
 
-        let diskPath = buf.fullDiskPath ?? baseDirectory.map { ($0 as NSString).appendingPathComponent(buf.filePath) }
-        if (up > addedUp || down > addedDown), let fullPath = diskPath, let fullText = try? String(contentsOfFile: fullPath, encoding: .utf8) {
-            let allLines = fullText.components(separatedBy: "\n")
-            let neededUp = up - addedUp
-            if neededUp > 0 && buf.startLineNumber > 1 {
-                let actualUp = min(neededUp, buf.startLineNumber - 1)
-                let sliceStart = buf.startLineNumber - 1 - actualUp
-                let sliceEnd = buf.startLineNumber - 1
-                if sliceStart >= 0 && sliceEnd <= allLines.count && sliceStart < sliceEnd {
-                    let prepended = Array(allLines[sliceStart..<sliceEnd])
-                    buf.prependContextLines(prepended)
-                    addedUp += prepended.count
-                    excerpt.bufferRange = 0..<excerpt.bufferRange.upperBound + prepended.count
-                }
-            }
-
-            let neededDown = down - addedDown
-            let currentEndLine = buf.startLineNumber + buf.lineCount - 1
-            if neededDown > 0 && currentEndLine < allLines.count {
-                let actualDown = min(neededDown, allLines.count - currentEndLine)
-                let sliceStart = currentEndLine
-                let sliceEnd = currentEndLine + actualDown
-                if sliceStart >= 0 && sliceEnd <= allLines.count && sliceStart < sliceEnd {
-                    let appended = Array(allLines[sliceStart..<sliceEnd])
-                    buf.appendContextLines(appended)
-                    addedDown += appended.count
-                    excerpt.bufferRange = excerpt.bufferRange.lowerBound..<buf.lineCount
-                }
-            }
-        }
-
         excerpts[index] = excerpt
         mergeAdjacentExcerpts()
         version &+= 1
@@ -328,20 +383,18 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
     @discardableResult
     public func expandExcerptAll(at index: ExcerptIndex) -> (linesAddedUp: Int, linesAddedDown: Int) {
         guard index >= 0 && index < excerpts.count else { return (0, 0) }
-        let excerpt = excerpts[index]
-        guard let buf = buffers[excerpt.bufferId] else { return (0, 0) }
+        let currentExcerpt = excerpts[index]
+        guard let initialBuf = buffers[currentExcerpt.bufferId] else { return (0, 0) }
 
-        let diskPath = buf.fullDiskPath ?? baseDirectory.map { ($0 as NSString).appendingPathComponent(buf.filePath) }
-        if buf.isFullFile || diskPath == nil {
-            return expandExcerpt(at: index, up: excerpt.bufferRange.lowerBound, down: buf.lineCount - excerpt.bufferRange.upperBound)
-        } else if let fullPath = diskPath, let fullText = try? String(contentsOfFile: fullPath, encoding: .utf8) {
-            let allLines = fullText.components(separatedBy: "\n")
-            let neededUp = max(0, buf.startLineNumber - 1) + excerpt.bufferRange.lowerBound
-            let neededDown = max(0, allLines.count - (buf.startLineNumber + buf.lineCount - 1)) + (buf.lineCount - excerpt.bufferRange.upperBound)
-            return expandExcerpt(at: index, up: neededUp, down: neededDown)
+        let buf: Buffer
+        if initialBuf.isLazySlice {
+            buf = promoteBufferToFullFile(for: currentExcerpt.bufferId) ?? initialBuf
         } else {
-            return expandExcerpt(at: index, up: excerpt.bufferRange.lowerBound, down: buf.lineCount - excerpt.bufferRange.upperBound)
+            buf = initialBuf
         }
+
+        let excerpt = excerpts[index]
+        return expandExcerpt(at: index, up: excerpt.bufferRange.lowerBound, down: buf.lineCount - excerpt.bufferRange.upperBound)
     }
 
     /// Merges contiguous or overlapping excerpts

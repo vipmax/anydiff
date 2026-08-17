@@ -320,6 +320,104 @@ final class MultiBufferTests: XCTestCase {
         XCTAssertEqual(savedLines.last, "line_100")
     }
 
+    func testLazyPromotionOnEditAndAtomicSaving() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        var originalLines: [String] = []
+        for i in 1...50 {
+            originalLines.append("func step\(i)() { print(\(i)) }")
+        }
+        let fullPath = tempDir.appendingPathComponent("LazyPromo.swift").path
+        try originalLines.joined(separator: "\n").write(toFile: fullPath, atomically: true, encoding: .utf8)
+
+        let mb = MultiBuffer()
+
+        // Initialize lazy slice buffer at line 10
+        let hunkLines = [originalLines[9], originalLines[10]]
+        let buf = Buffer(filePath: "LazyPromo.swift", lines: hunkLines, baselineLines: hunkLines, startLineNumber: 10, fullDiskPath: fullPath, isLazySlice: true)
+        buf.isFullFile = false
+        mb.addBuffer(buf)
+
+        let ex = Excerpt(bufferId: buf.id, filePath: "LazyPromo.swift", fileStatus: .modified, bufferRange: 0..<2)
+        mb.addExcerpt(ex)
+
+        XCTAssertTrue(buf.isLazySlice)
+        XCTAssertFalse(buf.isFullFile)
+        XCTAssertEqual(buf.lineCount, 2)
+
+        // Perform edit in the lazy buffer: insert text
+        let editPt = MultiBufferPoint(row: 0, column: hunkLines[0].count)
+        mb.replace(range: editPt..<editPt, with: "\n    // newly added line in step10")
+
+        // Buffer should now be promoted to full file!
+        XCTAssertFalse(buf.isLazySlice)
+        XCTAssertTrue(buf.isFullFile)
+        XCTAssertEqual(buf.lineCount, 51)
+        XCTAssertEqual(buf.startLineNumber, 1)
+
+        // Excerpt should now point to full file range (9..<12)
+        XCTAssertEqual(mb.excerpts[0].bufferRange, 9..<12)
+
+        // Save to disk
+        try buf.saveToFile()
+
+        // Verify disk contents
+        let diskText = try String(contentsOfFile: fullPath, encoding: .utf8)
+        let diskLines = diskText.components(separatedBy: "\n")
+        XCTAssertEqual(diskLines.count, 51)
+        XCTAssertEqual(diskLines[0], "func step1() { print(1) }")
+        XCTAssertEqual(diskLines[9], "func step10() { print(10) }")
+        XCTAssertEqual(diskLines[10], "    // newly added line in step10")
+        XCTAssertEqual(diskLines[11], "func step11() { print(11) }")
+        XCTAssertEqual(diskLines[50], "func step50() { print(50) }")
+    }
+
+    func testLazyPromotionOnExpand() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        var originalLines: [String] = []
+        for i in 1...50 {
+            originalLines.append("item_\(i)")
+        }
+        let fullPath = tempDir.appendingPathComponent("LazyExpand.swift").path
+        try originalLines.joined(separator: "\n").write(toFile: fullPath, atomically: true, encoding: .utf8)
+
+        let mb = MultiBuffer()
+
+        // Hunk at line 20 (items 20..22)
+        let hunkLines = ["item_20", "item_21", "item_22"]
+        let buf = Buffer(filePath: "LazyExpand.swift", lines: hunkLines, baselineLines: hunkLines, startLineNumber: 20, fullDiskPath: fullPath, isLazySlice: true)
+        buf.isFullFile = false
+        mb.addBuffer(buf)
+
+        let ex = Excerpt(bufferId: buf.id, filePath: "LazyExpand.swift", fileStatus: .modified, bufferRange: 0..<3)
+        mb.addExcerpt(ex)
+
+        XCTAssertTrue(buf.isLazySlice)
+
+        // Expand up 5 lines and down 5 lines
+        let result = mb.expandExcerpt(at: 0, up: 5, down: 5)
+        XCTAssertEqual(result.linesAddedUp, 5)
+        XCTAssertEqual(result.linesAddedDown, 5)
+
+        // Buffer should be promoted to full file with 50 lines
+        XCTAssertFalse(buf.isLazySlice)
+        XCTAssertTrue(buf.isFullFile)
+        XCTAssertEqual(buf.lineCount, 50)
+
+        // Excerpt range expanded from 19..<22 to 14..<27 (13 lines)
+        XCTAssertEqual(mb.excerpts[0].bufferRange, 14..<27)
+        XCTAssertEqual(mb.excerpts[0].bufferRange.count, 13)
+
+        // First visible line is item_15 (index 14) and last is item_27 (index 26)
+        XCTAssertEqual(buf.lines[14], "item_15")
+        XCTAssertEqual(buf.lines[26], "item_27")
+    }
+
     func testMultiBufferDeleteAndLineMerging() {
         let buffer = Buffer(filePath: "Merge.swift", text: "line 1\nline 2\nline 3")
         let mb = MultiBuffer()

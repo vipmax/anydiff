@@ -81,6 +81,9 @@ public final class Buffer: Identifiable, @unchecked Sendable {
     /// Number of lines this buffer occupied on disk during last save (for safe incremental splicing)
     public var lastSavedLineCount: Int
 
+    /// True when this buffer holds a lightweight diff hunk slice loaded lazily without disk I/O
+    public var isLazySlice: Bool = false
+
     public var totalAdditions: Int
     public var totalDeletions: Int
     public var startLineNumber: Int
@@ -97,7 +100,8 @@ public final class Buffer: Identifiable, @unchecked Sendable {
         totalDeletions: Int = 0,
         startLineNumber: Int = 1,
         fullDiskPath: String? = nil,
-        diskFileLineCount: Int? = nil
+        diskFileLineCount: Int? = nil,
+        isLazySlice: Bool = false
     ) {
         self.id = id
         self.filePath = filePath
@@ -111,6 +115,18 @@ public final class Buffer: Identifiable, @unchecked Sendable {
         let bLines = baselineLines ?? lines
         self.baselineLines = bLines
         self.lastSavedLineCount = bLines.count
+        self.isLazySlice = isLazySlice
+    }
+
+    /// Promotes this lightweight slice buffer to a full-file buffer using the full content on disk
+    public func promoteToFullFile(diskLines: [String], baselineDiskLines: [String]) {
+        self._lines = diskLines
+        self.baselineLines = baselineDiskLines
+        self.lastSavedLineCount = diskLines.count
+        self.startLineNumber = 1
+        self.isFullFile = true
+        self.isLazySlice = false
+        self.version &+= 1
     }
 
     public init(

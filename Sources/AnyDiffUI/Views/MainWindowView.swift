@@ -1047,6 +1047,7 @@ public struct MainWindowView: View {
                     let oldBaselineLines = hunk.lines.filter { $0.kind == .deleted || $0.kind == .unchanged }.map(\.text)
                     let startLine = hunk.newRange.lowerBound
 
+                    let isLazy = (file.status != .added || file.hunks.count > 1)
                     let buffer = Buffer(
                         filePath: file.displayPath,
                         lines: newFileLines,
@@ -1056,7 +1057,8 @@ public struct MainWindowView: View {
                         totalDeletions: fileDels,
                         startLineNumber: startLine,
                         fullDiskPath: fullPath,
-                        diskFileLineCount: nil
+                        diskFileLineCount: nil,
+                        isLazySlice: isLazy
                     )
                     buffer.isFullFile = (file.status == .added && file.hunks.count == 1)
                     multiBuffer.addBuffer(buffer)

@@ -2008,6 +2008,12 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             return
         }
 
+        if let initialLoc = displayMap.bufferLocation(for: rangeToReplace.lowerBound), initialLoc.buffer.isLazySlice {
+            mb.promoteBufferToFullFile(for: initialLoc.buffer.id)
+            displayMap.rebuild()
+            invalidateLayout()
+        }
+
         guard let startLoc = displayMap.bufferLocation(for: rangeToReplace.lowerBound),
               let endLoc = displayMap.bufferLocation(for: rangeToReplace.upperBound),
               !startLoc.isDeleted && !endLoc.isDeleted else {
@@ -2078,6 +2084,12 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             }
             insertText("", replacementRange: NSRange(location: NSNotFound, length: 0))
             return
+        }
+
+        if let initialLoc = displayMap.bufferLocation(for: cursorPoint), initialLoc.buffer.isLazySlice {
+            mb.promoteBufferToFullFile(for: initialLoc.buffer.id)
+            displayMap.rebuild()
+            invalidateLayout()
         }
 
         guard let loc = displayMap.bufferLocation(for: cursorPoint), !loc.isDeleted else {
@@ -2176,6 +2188,12 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             }
             insertText("", replacementRange: NSRange(location: NSNotFound, length: 0))
             return
+        }
+
+        if let initialLoc = displayMap.bufferLocation(for: cursorPoint), initialLoc.buffer.isLazySlice {
+            mb.promoteBufferToFullFile(for: initialLoc.buffer.id)
+            displayMap.rebuild()
+            invalidateLayout()
         }
 
         guard let loc = displayMap.bufferLocation(for: cursorPoint), !loc.isDeleted else {
