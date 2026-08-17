@@ -88,7 +88,27 @@ AnyDiff
 
 ---
 
-## 🛠️ Building and Running
+## 📦 Installation
+
+### One-Line Install (macOS)
+
+```bash
+# Via GitHub CLI (for private/authorized access)
+gh release download v1.0.0 -R vipmax/anydiff -p "AnyDiff-macOS.zip" -O - | tar -x -C /Applications && xattr -cr /Applications/AnyDiff.app
+
+# Or run the install script:
+gh api repos/vipmax/anydiff/contents/scripts/install.sh -H "Accept: application/vnd.github.raw" | bash
+```
+
+Once installed, use the CLI anywhere:
+```bash
+anydiff .                      # Open diff in current git repo
+anydiff ~/dev/my-project       # Open specific project
+```
+
+---
+
+## 🛠️ Building and Running from Source
 
 ### Prerequisites
 - macOS 14.0+ (Sonoma or later)
