@@ -314,23 +314,55 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
         self.maxLineChars = calculatedMaxChars
     }
 
-    /// O(File Lines) Scoped recomputation of ONLY the edited excerpt/file
+    /// O(Excerpt Lines) Scoped recomputation of ONLY the edited excerpt/file
     @discardableResult
     public func rebuildExcerpt(at excerptIdx: Int) -> (displayDelta: Int, codeDelta: Int, oldDisplayRange: Range<Int>)? {
-        guard excerptIdx >= 0 && excerptIdx < excerptLocations.count else {
+        guard excerptIdx >= 0 && excerptIdx < excerptLocations.count && excerptIdx < multiBuffer.excerpts.count else {
             rebuild()
             return nil
         }
+        let excerpt = multiBuffer.excerpts[excerptIdx]
+        guard let buffer = multiBuffer.buffer(for: excerpt.bufferId) else {
+            rebuild()
+            return nil
+        }
+
         let oldLoc = excerptLocations[excerptIdx]
         let oldDisplayRange = oldLoc.displayRange
-        let oldCodeRange = oldLoc.codeRange
+        let oldDisplayCount = oldDisplayRange.count
+        let oldCodeCount = oldLoc.codeLineCount
 
-        rebuild()
-        guard excerptIdx < excerptLocations.count else { return nil }
-        let newLoc = excerptLocations[excerptIdx]
+        // 1. Invalidate only this excerpt's cache entry
+        excerptDiffCache.removeValue(forKey: excerpt.id)
 
-        let displayDelta = newLoc.displayRange.count - oldDisplayRange.count
-        let codeDelta = newLoc.codeRange.count - oldCodeRange.count
+        // 2. Recompute codeCount for this excerpt ONLY
+        let newCodeCount: Int
+        if excerpt.isCollapsed {
+            newCodeCount = 0
+        } else if let hunk = excerpt.hunk, usesOriginalHunk(excerpt: excerpt, buffer: buffer) {
+            newCodeCount = !hunk.lineSpans.isEmpty ? hunk.lineSpans.count : hunk.lines.count
+        } else {
+            newCodeCount = getCachedDiffLines(for: excerptIdx).count
+        }
+
+        // 3. Recompute total display line count for this excerpt ONLY
+        let newTotalDisplayCount = (oldLoc.hasHeader ? 1 : 0) + (oldLoc.hasTopGap ? 1 : 0) + newCodeCount + (oldLoc.hasBottomGap ? 1 : 0)
+
+        let displayDelta = newTotalDisplayCount - oldDisplayCount
+        let codeDelta = newCodeCount - oldCodeCount
+
+        // 4. Update the excerpt slice in-place
+        excerptLocations[excerptIdx].displayCount = UInt32(newTotalDisplayCount)
+        excerptLocations[excerptIdx].codeCount = UInt32(newCodeCount)
+
+        // 5. If counts changed (e.g. newline added/deleted), shift subsequent excerpts with fast SIMD-friendly integer additions
+        if displayDelta != 0 || codeDelta != 0 {
+            for i in (excerptIdx + 1)..<excerptLocations.count {
+                excerptLocations[i].displayStart = UInt32(Int(excerptLocations[i].displayStart) + displayDelta)
+                excerptLocations[i].codeStart = UInt32(Int(excerptLocations[i].codeStart) + codeDelta)
+            }
+        }
+
         return (displayDelta: displayDelta, codeDelta: codeDelta, oldDisplayRange: oldDisplayRange)
     }
 

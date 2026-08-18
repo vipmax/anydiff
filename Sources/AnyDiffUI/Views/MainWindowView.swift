@@ -944,6 +944,7 @@ public struct MainWindowView: View {
         // Keep concrete relative paths. A watcher batch can contain unrelated
         // files; only these paths are fetched and replaced below.
         var changedPaths = Set<String>()
+        var hasRenameEvents = false
         for event in meaningful {
             let eventURL = URL(fileURLWithPath: event.path).resolvingSymlinksInPath()
             let resolvedEventPath = eventURL.path
@@ -964,41 +965,52 @@ public struct MainWindowView: View {
             guard resolvedEventPath.hasPrefix(prefix) else { continue }
             let relative = String(resolvedEventPath.dropFirst(prefix.count))
             guard !relative.isEmpty else { continue }
+
+            // Skip files currently being typed in by the user or recently saved
+            if multiBuffer.isFileDirty(filePath: relative) || multiBuffer.isSelfSavedRecently(filePath: relative, threshold: 3.0) {
+                continue
+            }
+
             changedPaths.insert(relative)
             if event.changeTypes.contains(.renamed) {
-                changedPaths.formUnion(renamedPaths(at: resolvedCurrentDir, relatedTo: relative))
+                hasRenameEvents = true
             }
         }
 
         guard !changedPaths.isEmpty else { return }
         pendingWatchPaths.formUnion(changedPaths)
         guard !watchRefreshInFlight else { return }
-        startPendingWatchRefresh(directory: resolvedCurrentDir)
+        startPendingWatchRefresh(directory: resolvedCurrentDir, checkRenames: hasRenameEvents)
     }
 
     /// Serializes watch reads while coalescing events that arrive during an
     /// in-flight read. No path is discarded when a second event batch arrives.
-    private func startPendingWatchRefresh(directory: String) {
+    private func startPendingWatchRefresh(directory: String, checkRenames: Bool = false) {
         guard !pendingWatchPaths.isEmpty, !watchRefreshInFlight else { return }
         let paths = pendingWatchPaths
         pendingWatchPaths.removeAll()
         watchRefreshInFlight = true
 
-        // Snapshot all currently displayed buffers. Rename diffs can mention
-        // an old path that was not present in the FSEvents path list.
-        let snapshots: [String: [(BufferId, Int)]] = multiBuffer.excerpts.reduce(into: [String: [(BufferId, Int)]]()) { result, excerpt in
-            if result[excerpt.filePath] == nil {
-                result[excerpt.filePath] = multiBuffer.excerpts.filter { $0.filePath == excerpt.filePath }.map {
-                    ($0.bufferId, multiBuffer.buffer(for: $0.bufferId)?.version ?? -1)
-                }
-            }
+        // Snapshot all currently displayed buffers in O(Excerpts)
+        var snapshots: [String: [(BufferId, Int)]] = [:]
+        snapshots.reserveCapacity(multiBuffer.excerpts.count)
+        for excerpt in multiBuffer.excerpts {
+            let version = multiBuffer.buffer(for: excerpt.bufferId)?.version ?? -1
+            snapshots[excerpt.filePath, default: []].append((excerpt.bufferId, version))
         }
         watchRefreshGeneration &+= 1
         let refreshGeneration = watchRefreshGeneration
         let target = comparisonTarget
 
         DispatchQueue.global(qos: .userInitiated).async {
-            let result = self.fetchGitDiffFiles(at: directory, target: target, pathFilter: paths)
+            var effectivePaths = paths
+            if checkRenames {
+                for path in paths {
+                    let renames = self.renamedPaths(at: directory, relatedTo: path)
+                    effectivePaths.formUnion(renames)
+                }
+            }
+            let result = self.fetchGitDiffFiles(at: directory, target: target, pathFilter: effectivePaths)
             DispatchQueue.main.async {
                 defer {
                     self.watchRefreshInFlight = false
@@ -1011,17 +1023,22 @@ public struct MainWindowView: View {
                       self.watchRefreshGeneration == refreshGeneration,
                       self.comparisonTarget == target else { return }
 
+                // Group current excerpts by path for fast O(1) comparison
+                var currentByPath: [String: [(BufferId, Int)]] = [:]
+                for excerpt in self.multiBuffer.excerpts {
+                    let version = self.multiBuffer.buffer(for: excerpt.bufferId)?.version ?? -1
+                    currentByPath[excerpt.filePath, default: []].append((excerpt.bufferId, version))
+                }
+
                 // Dirty buffers and any buffer edited since the read began are
                 // left untouched. They will be reflected on a later explicit
                 // reload after the user saves/finishes editing.
-                let candidatePaths = paths
+                let candidatePaths = effectivePaths
                     .union(result.files.map(\.displayPath))
                     .union(result.files.filter { $0.status == .renamed }.map(\.oldPath))
                 var safePaths = Set(candidatePaths.filter { path in
                     guard !self.multiBuffer.isFileDirty(filePath: path) else { return false }
-                    let current = self.multiBuffer.excerpts.filter { $0.filePath == path }.map {
-                        ($0.bufferId, self.multiBuffer.buffer(for: $0.bufferId)?.version ?? -1)
-                    }
+                    let current = currentByPath[path] ?? []
                     guard let expected = snapshots[path] else { return current.isEmpty }
                     guard expected.count == current.count else { return false }
                     return expected.elementsEqual(current) { lhs, rhs in
@@ -1101,7 +1118,11 @@ public struct MainWindowView: View {
             selectedFilePath = nil
         } else {
             repoStatus = .hasChanges
-            if selectedFilePath == nil || !fileDiffs.contains(where: { $0.displayPath == selectedFilePath }) {
+            if let current = selectedFilePath,
+               (fileDiffs.contains(where: { $0.displayPath == current || $0.newPath == current || $0.oldPath == current }) ||
+                multiBuffer.excerpts.contains(where: { $0.filePath == current })) {
+                // Keep existing selection intact, do not jump to first file
+            } else {
                 selectedFilePath = fileDiffs.first?.displayPath
             }
         }
@@ -1171,7 +1192,11 @@ public struct MainWindowView: View {
     }
 
     private func fetchUntrackedFiles(at path: String, pathFilter: Set<String>? = nil) -> [FileDiff] {
-        guard let output = runGit(arguments: ["-C", path, "ls-files", "--others", "--exclude-standard"]), !output.isEmpty else {
+        var args = ["-C", path, "ls-files", "--others", "--exclude-standard"]
+        if let pathFilter, !pathFilter.isEmpty {
+            args += ["--"] + pathFilter.sorted()
+        }
+        guard let output = runGit(arguments: args), !output.isEmpty else {
             return []
         }
         let filePaths = output.components(separatedBy: "\n")

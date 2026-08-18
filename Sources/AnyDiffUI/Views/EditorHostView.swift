@@ -82,9 +82,11 @@ public struct EditorHostView: NSViewRepresentable {
 
         if let path = selectedFilePath, path != context.coordinator.lastScrolledFilePath {
             context.coordinator.lastScrolledFilePath = path
-            DispatchQueue.main.async {
-                editorView.scrollToFilePath(path)
-                context.coordinator.savedViewState = editorView.captureViewState()
+            if editorView.window?.firstResponder !== editorView {
+                DispatchQueue.main.async {
+                    editorView.scrollToFilePath(path)
+                    context.coordinator.savedViewState = editorView.captureViewState()
+                }
             }
         }
     }

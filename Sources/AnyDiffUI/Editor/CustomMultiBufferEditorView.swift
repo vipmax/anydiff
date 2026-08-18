@@ -730,8 +730,9 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                 excerptStartYs[j] += heightDelta
             }
 
-            if excerptIdx < cachedFileSections.count {
-                for j in (excerptIdx + 1)..<cachedFileSections.count {
+            if let fileSecIdx = cachedFileSections.firstIndex(where: { $0.headerMinY <= startY && $0.contentMaxY >= startY }) {
+                cachedFileSections[fileSecIdx].contentMaxY += heightDelta
+                for j in (fileSecIdx + 1)..<cachedFileSections.count {
                     cachedFileSections[j].headerMinY += heightDelta
                     cachedFileSections[j].contentMaxY += heightDelta
                 }

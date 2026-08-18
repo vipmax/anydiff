@@ -297,6 +297,10 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
         if let base = baseDirectory {
             let full = (base as NSString).appendingPathComponent(filePath)
             lastSavedTimestamps[(full as NSString).standardizingPath] = now
+            lastSavedTimestamps[URL(fileURLWithPath: full).resolvingSymlinksInPath().path] = now
+        }
+        if (filePath as NSString).isAbsolutePath {
+            lastSavedTimestamps[URL(fileURLWithPath: filePath).resolvingSymlinksInPath().path] = now
         }
     }
 
@@ -325,7 +329,7 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
                     return true
                 }
                 // Handle atomic save temporary files (e.g. main.swift.sb-XXXXX or .main.swift.tmp)
-                if lastComp.hasPrefix(savedLast) || lastComp.contains(savedLast) {
+                if lastComp.hasPrefix(savedLast) || lastComp.contains(savedLast) || savedLast.contains(lastComp) {
                     return true
                 }
                 if savedPath.hasPrefix(normalized) {
@@ -358,7 +362,12 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
             let savedURL = URL(fileURLWithPath: saved)
             guard savedURL.deletingLastPathComponent().path == candidateParent else { continue }
             let savedName = savedURL.lastPathComponent
-            if candidateName.hasPrefix(savedName) || candidateName.contains(savedName) {
+            if candidateName.hasPrefix(savedName) || candidateName.contains(savedName) || savedName.contains(candidateName) {
+                return true
+            }
+            let rawSavedBase = (savedName as NSString).deletingPathExtension
+            let rawCandidateBase = (candidateName as NSString).deletingPathExtension
+            if !rawSavedBase.isEmpty && (candidateName.contains(rawSavedBase) || rawCandidateBase.contains(rawSavedBase)) {
                 return true
             }
         }

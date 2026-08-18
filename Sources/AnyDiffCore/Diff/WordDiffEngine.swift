@@ -15,16 +15,28 @@ public final class WordDiffEngine: Sendable {
     public func diffWords(oldText: String, newText: String) -> (oldDiffRanges: [Range<Int>], newDiffRanges: [Range<Int>]) {
         guard oldText != newText else { return ([], []) }
 
+        // Skip lines exceeding 512 bytes (MAX_WORD_DIFF_LEN)
+        if oldText.utf8.count > 512 || newText.utf8.count > 512 {
+            return ([], [])
+        }
+
         let oldTokens = tokenize(oldText)
         let newTokens = tokenize(newText)
 
         guard !oldTokens.isEmpty && !newTokens.isEmpty else {
-            let oldR: [Range<Int>] = oldText.isEmpty ? [] : [0..<oldText.count]
-            let newR: [Range<Int>] = newText.isEmpty ? [] : [0..<newText.count]
-            return (oldR, newR)
+            return ([], [])
         }
 
         let lcs = computeLCS(oldTokens, newTokens)
+        let totalTokens = oldTokens.count + newTokens.count
+        guard !lcs.isEmpty, totalTokens > 0 else { return ([], []) }
+
+        // Similarity check: if shared tokens are less than 25% of total tokens,
+        // it's a completely different line — suppress word diff to avoid noise.
+        let similarity = Double(lcs.count * 2) / Double(totalTokens)
+        if similarity < 0.25 {
+            return ([], [])
+        }
 
         var oldDiffs: [Range<Int>] = []
         var newDiffs: [Range<Int>] = []
@@ -230,6 +242,49 @@ public final class WordDiffEngine: Sendable {
             }
 
             return lcs.reversed()
+        }
+    }
+
+    /// Computes intra-line word diffs for adjacent deleted/added lines in a hunk
+    /// following balanced word-diff rules:
+    /// 1. Equal line count (1:1 or N:N line replacement only).
+    /// 2. Line count cap (<= 8 lines).
+    /// 3. Similarity check (skips completely unrelated code rewrites).
+    public func processWordDiffs(lines: inout [DiffLine]) {
+        guard lines.count <= 250 else { return }
+        var i = 0
+        while i < lines.count {
+            if lines[i].kind == .deleted {
+                var deletedIndices: [Int] = []
+                while i < lines.count && lines[i].kind == .deleted {
+                    deletedIndices.append(i)
+                    i += 1
+                }
+                var addedIndices: [Int] = []
+                while i < lines.count && lines[i].kind == .added {
+                    addedIndices.append(i)
+                    i += 1
+                }
+
+                // Only perform word diff if deletedCount == addedCount (1:1 or N:N replacement)
+                // and the count does not exceed MAX_WORD_DIFF_LINE_COUNT (8).
+                guard deletedIndices.count == addedIndices.count && deletedIndices.count <= 8 else {
+                    continue
+                }
+
+                for k in 0..<deletedIndices.count {
+                    let dIdx = deletedIndices[k]
+                    let aIdx = addedIndices[k]
+                    let (oldRanges, newRanges) = diffWords(
+                        oldText: lines[dIdx].text,
+                        newText: lines[aIdx].text
+                    )
+                    lines[dIdx].wordDiffRanges = oldRanges
+                    lines[aIdx].wordDiffRanges = newRanges
+                }
+            } else {
+                i += 1
+            }
         }
     }
 }

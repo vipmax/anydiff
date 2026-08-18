@@ -46,7 +46,9 @@ public final class LineDiffEngine: Sendable {
         } else {
             lines = computeMyersDiffCore(
                 oldLines: oldLines,
+                oldRange: 0..<oldLines.count,
                 newLines: newLines,
+                newRange: 0..<newLines.count,
                 oldStartLine: oldStartLine,
                 newStartLine: newStartLine
             )
@@ -577,34 +579,6 @@ public final class LineDiffEngine: Sendable {
 
     /// Computes intra-line word diffs for adjacent deleted/added lines in a hunk
     private func processWordDiffs(lines: inout [DiffLine]) {
-        var i = 0
-        while i < lines.count {
-            if lines[i].kind == .deleted {
-                var deletedIndices: [Int] = []
-                while i < lines.count && lines[i].kind == .deleted {
-                    deletedIndices.append(i)
-                    i += 1
-                }
-                var addedIndices: [Int] = []
-                while i < lines.count && lines[i].kind == .added {
-                    addedIndices.append(i)
-                    i += 1
-                }
-
-                let pairCount = min(deletedIndices.count, addedIndices.count)
-                for k in 0..<pairCount {
-                    let dIdx = deletedIndices[k]
-                    let aIdx = addedIndices[k]
-                    let (oldRanges, newRanges) = WordDiffEngine.shared.diffWords(
-                        oldText: lines[dIdx].text,
-                        newText: lines[aIdx].text
-                    )
-                    lines[dIdx].wordDiffRanges = oldRanges
-                    lines[aIdx].wordDiffRanges = newRanges
-                }
-            } else {
-                i += 1
-            }
-        }
+        WordDiffEngine.shared.processWordDiffs(lines: &lines)
     }
 }

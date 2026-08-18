@@ -12,6 +12,7 @@ final class WordDiffTests: XCTestCase {
         @@ -32,1 +32,1 @@
         -# Run the test suite in Debug configuration.
         +# Run fast unit tests in Debug configuration.
+
         """
         let data = Data(patch.utf8)
         let file = try XCTUnwrap(GitDiffParser.shared.parseZeroCopy(data: data).first)
