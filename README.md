@@ -7,7 +7,7 @@ High-performance native macOS MultiBuffer Diff editor for lightning-fast code re
 ![macOS](https://img.shields.io/badge/macOS-14.0%2B-blue?style=flat-square&logo=apple)
 ![Swift](https://img.shields.io/badge/Swift-6.0-orange?style=flat-square&logo=swift)
 ![Build](https://img.shields.io/badge/build-passing-brightgreen?style=flat-square)
-![Tests](https://img.shields.io/badge/tests-39%2F39%20passing-brightgreen?style=flat-square)
+![Tests](https://img.shields.io/badge/tests-56%2F56%20passing-brightgreen?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 
 ---
