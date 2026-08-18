@@ -79,7 +79,7 @@ public struct BranchPickerView: View {
             searchField
             Divider()
             ScrollView {
-                VStack(alignment: .leading, spacing: 4) {
+                LazyVStack(alignment: .leading, spacing: 2) {
                     if searchText.isEmpty {
                         comparisonModesSection
                         Divider()
@@ -91,8 +91,10 @@ public struct BranchPickerView: View {
                     }
 
                     if !filteredRemoteBranches.isEmpty {
-                        Divider()
-                            .padding(.vertical, 4)
+                        if !filteredLocalBranches.isEmpty || searchText.isEmpty {
+                            Divider()
+                                .padding(.vertical, 4)
+                        }
                         remoteBranchesSection
                     }
                 }

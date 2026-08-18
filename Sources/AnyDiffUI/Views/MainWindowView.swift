@@ -978,9 +978,8 @@ public struct MainWindowView: View {
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         process.arguments = arguments
         let pipe = Pipe()
-        let errPipe = Pipe()
         process.standardOutput = pipe
-        process.standardError = errPipe
+        process.standardError = FileHandle.nullDevice
         do {
             try process.run()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
