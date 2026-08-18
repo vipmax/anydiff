@@ -79,10 +79,11 @@ public final class LineDiffEngine: Sendable {
         }
 
         // 3. Common Suffix in O(N)
-        var suffixCount = 0
-        while suffixCount < (minCount - prefixCount) && oldLines[n - 1 - suffixCount] == newLines[m - 1 - suffixCount] {
-            suffixCount += 1
-        }
+        let suffixCount = stableCommonSuffixCount(
+            oldLines: oldLines,
+            newLines: newLines,
+            prefixCount: prefixCount
+        )
 
         var result: [(line: DiffLine, bufferRow: Int)] = []
         var additions = 0
@@ -249,10 +250,11 @@ public final class LineDiffEngine: Sendable {
         }
 
         // 2. Common Suffix Pruning: strip identical lines at the end in O(N)
-        var suffixCount = 0
-        while suffixCount < (minCount - prefixCount) && oldLines[n - 1 - suffixCount] == newLines[m - 1 - suffixCount] {
-            suffixCount += 1
-        }
+        let suffixCount = stableCommonSuffixCount(
+            oldLines: oldLines,
+            newLines: newLines,
+            prefixCount: prefixCount
+        )
 
         // If entire arrays matched via prefix + suffix
         if prefixCount + suffixCount == n && prefixCount + suffixCount == m {
@@ -317,15 +319,61 @@ public final class LineDiffEngine: Sendable {
         let n = oldRange.count
         let m = newRange.count
 
-        if n <= 60 && m <= 60 {
-            return computeMyersDiffCore(
-                oldLines: oldLines,
-                oldRange: oldRange,
-                newLines: newLines,
-                newRange: newRange,
-                oldStartLine: oldStartLine,
-                newStartLine: newStartLine
-            )
+        // Preserve local edit boundaries before looking for patience anchors. This
+        // matters for nested segments containing repeated structural lines (`}`,
+        // blank lines, etc.): Myers may otherwise align the old closing braces with
+        // identical braces at the end of a newly appended block and paint the
+        // original braces as additions.
+        var commonPrefix = 0
+        let commonLimit = min(n, m)
+        while commonPrefix < commonLimit &&
+                oldLines[oldRange.lowerBound + commonPrefix] == newLines[newRange.lowerBound + commonPrefix] {
+            commonPrefix += 1
+        }
+
+        // Do not prune a suffix inside recursive segments. With repeated braces at
+        // both the old boundary and the end of an inserted block, suffix-first
+        // matching recreates the unstable boundary we are preventing. The public
+        // entry points already prune the one unambiguous file-level suffix.
+        let commonSuffix = 0
+
+        if commonPrefix > 0 {
+            var result: [DiffLine] = []
+            result.reserveCapacity(n + m)
+
+            for offset in 0..<commonPrefix {
+                result.append(DiffLine(
+                    kind: .unchanged,
+                    text: oldLines[oldRange.lowerBound + offset],
+                    oldLineNumber: oldStartLine + offset,
+                    newLineNumber: newStartLine + offset
+                ))
+            }
+
+            let middleOldRange = (oldRange.lowerBound + commonPrefix)..<(oldRange.upperBound - commonSuffix)
+            let middleNewRange = (newRange.lowerBound + commonPrefix)..<(newRange.upperBound - commonSuffix)
+            if !middleOldRange.isEmpty || !middleNewRange.isEmpty {
+                result.append(contentsOf: computeMyersDiffWithAnchors(
+                    oldLines: oldLines,
+                    oldRange: middleOldRange,
+                    newLines: newLines,
+                    newRange: middleNewRange,
+                    oldStartLine: oldStartLine + commonPrefix,
+                    newStartLine: newStartLine + commonPrefix
+                ))
+            }
+
+            for offset in 0..<commonSuffix {
+                let oldOffset = n - commonSuffix + offset
+                let newOffset = m - commonSuffix + offset
+                result.append(DiffLine(
+                    kind: .unchanged,
+                    text: oldLines[oldRange.lowerBound + oldOffset],
+                    oldLineNumber: oldStartLine + oldOffset,
+                    newLineNumber: newStartLine + newOffset
+                ))
+            }
+            return result
         }
 
         // Count frequency of lines in oldRange and newRange
@@ -422,6 +470,41 @@ public final class LineDiffEngine: Sendable {
         }
 
         return result
+    }
+
+    /// Returns a common suffix whose first line is a useful edit boundary.
+    ///
+    /// A raw suffix scan is ambiguous when an inserted block ends with the same
+    /// structural lines as the pre-existing block (`}`, `}`, blank). Matching that
+    /// entire suffix moves the old closing lines to the end of the insertion. Keep
+    /// the final EOF line as an anchor, but peel low-information boundary lines so
+    /// the recursive diff can preserve the earlier, prefix-adjacent occurrence.
+    private func stableCommonSuffixCount(
+        oldLines: [String],
+        newLines: [String],
+        prefixCount: Int
+    ) -> Int {
+        let n = oldLines.count
+        let m = newLines.count
+        let limit = min(n, m) - prefixCount
+        guard limit > 0 else { return 0 }
+
+        var suffixCount = 0
+        while suffixCount < limit &&
+                oldLines[n - 1 - suffixCount] == newLines[m - 1 - suffixCount] {
+            suffixCount += 1
+        }
+
+        while suffixCount > 1 && isLowInformationBoundaryLine(oldLines[n - suffixCount]) {
+            suffixCount -= 1
+        }
+        return suffixCount
+    }
+
+    private func isLowInformationBoundaryLine(_ line: String) -> Bool {
+        let structuralCharacters = CharacterSet(charactersIn: "{}[](),;")
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        return trimmed.isEmpty || trimmed.unicodeScalars.allSatisfy { structuralCharacters.contains($0) }
     }
 
     /// Core Myers algorithm executed on direct integer hash ranges with trace vector

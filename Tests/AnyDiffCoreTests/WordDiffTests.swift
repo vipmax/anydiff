@@ -2,6 +2,47 @@ import XCTest
 @testable import AnyDiffCore
 
 final class WordDiffTests: XCTestCase {
+
+    func testLiveDiffPreservesAppendBoundaryWithRepeatedClosingLines() {
+        let oldLines = [
+            "let top = 1",
+            "let stableAnchor = 2",
+            "func existing() {",
+            "    }",
+            "}",
+            ""
+        ]
+        let appendedLines = [
+            "",
+            "/// New parser",
+            "final class Parser {",
+            "    }",
+            "}"
+        ]
+        var newLines = oldLines
+        newLines.insert("let earlierAddition = true", at: 1)
+        newLines.insert(contentsOf: appendedLines, at: newLines.count - 1)
+
+        let result = LineDiffEngine.shared.diffLinesForSlice(
+            oldLines: oldLines,
+            newLines: newLines,
+            targetRange: 0..<newLines.count
+        )
+        XCTAssertEqual(result.lines.filter { $0.line.kind == .added }.count, appendedLines.count + 1)
+        XCTAssertEqual(result.lines.filter { $0.line.kind == .deleted }.count, 0)
+
+        let existingInnerBraceRow = 4
+        let existingOuterBraceRow = 5
+        XCTAssertEqual(result.lines.first { $0.bufferRow == existingInnerBraceRow && $0.line.kind != .deleted }?.line.kind, .unchanged,
+                       "The existing closing brace must not move into the added block")
+        XCTAssertEqual(result.lines.first { $0.bufferRow == existingOuterBraceRow && $0.line.kind != .deleted }?.line.kind, .unchanged,
+                       "The existing outer brace must remain context")
+
+        let appendedBlankRow = newLines.count - appendedLines.count - 1
+        XCTAssertEqual(result.lines.first { $0.bufferRow == appendedBlankRow && $0.line.kind != .deleted }?.line.kind, .added,
+                       "The newly appended blank line must remain part of the added block")
+    }
+
     func testWordDiffIntraLine() {
         let oldLine = "let total = calculateSum(a, b)"
         let newLine = "let total = calculateTotal(a, b, c)"

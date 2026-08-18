@@ -39,9 +39,14 @@ public struct EditorHostView: NSViewRepresentable {
         editorView.isEditable = isEditable
         editorView.delegate = context.coordinator
         context.coordinator.editorView = editorView
-        if let path = selectedFilePath {
-            context.coordinator.lastScrolledFilePath = path
-            DispatchQueue.main.async {
+        context.coordinator.lastLoadRevision = displayMap.loadRevision
+        DispatchQueue.main.async {
+            // The DisplayMap may already contain loaded content when SwiftUI
+            // creates this view, so there may be no revision transition to
+            // trigger the initial cursor/focus setup.
+            editorView.resetCursorToFirstVisibleLine()
+            if let path = selectedFilePath {
+                context.coordinator.lastScrolledFilePath = path
                 editorView.scrollToFilePath(path)
             }
         }
@@ -53,6 +58,10 @@ public struct EditorHostView: NSViewRepresentable {
             editorView.displayMap = displayMap
         } else {
             editorView.syncLayoutIfNeeded()
+        }
+        if context.coordinator.lastLoadRevision != displayMap.loadRevision {
+            context.coordinator.lastLoadRevision = displayMap.loadRevision
+            editorView.resetCursorToFirstVisibleLine()
         }
         if editorView.theme.id != theme.id {
             editorView.theme = theme
@@ -76,6 +85,7 @@ public struct EditorHostView: NSViewRepresentable {
         var parent: EditorHostView
         weak var editorView: CustomMultiBufferEditorView?
         var lastScrolledFilePath: String? = nil
+        var lastLoadRevision: UInt64 = 0
 
         init(_ parent: EditorHostView) {
             self.parent = parent

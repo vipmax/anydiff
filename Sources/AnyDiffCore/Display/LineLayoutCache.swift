@@ -7,6 +7,8 @@ public final class LineLayoutCache: @unchecked Sendable {
     public static let shared = LineLayoutCache()
 
     private var lineCache: [String: CTLine] = [:]
+    private var cacheKeys: [String] = []
+    private let maxEntries = 500
     private let lock = NSLock()
 
     public init() {}
@@ -21,15 +23,19 @@ public final class LineLayoutCache: @unchecked Sendable {
         }
 
         let line = CTLineCreateWithAttributedString(attributedString)
-        if lineCache.count < 5000 {
-            lineCache[key] = line
+        if cacheKeys.count >= maxEntries {
+            let evicted = cacheKeys.removeFirst()
+            lineCache.removeValue(forKey: evicted)
         }
+        cacheKeys.append(key)
+        lineCache[key] = line
         return line
     }
 
     public func clear() {
         lock.lock()
-        lineCache.removeAll()
+        lineCache.removeAll(keepingCapacity: false)
+        cacheKeys.removeAll(keepingCapacity: false)
         lock.unlock()
     }
 

@@ -49,8 +49,8 @@ public final class Buffer: Identifiable, @unchecked Sendable {
     public var filePath: String
     public var language: String
 
-    /// Cached lines of the buffer
-    private var _lines: [String]
+    /// Underlying storage (either zero-copy raw flat slices or mutable array of strings)
+    public var storage: BufferStorage
     private var _isDirty: Bool = false
 
     public var isDirty: Bool {
@@ -58,11 +58,16 @@ public final class Buffer: Identifiable, @unchecked Sendable {
     }
 
     public var lineCount: Int {
-        _lines.count
+        storage.count
     }
 
     public var lines: [String] {
-        _lines
+        get { storage.allLines }
+        set {
+            storage = .mutable(lines: newValue)
+            _isDirty = true
+            version &+= 1
+        }
     }
 
     /// Incremented on every buffer modification to invalidate memoized diffs
@@ -71,24 +76,56 @@ public final class Buffer: Identifiable, @unchecked Sendable {
     public var cachedDiffVersion: Int = -1
 
     /// Original baseline file lines before modifications (e.g. from git HEAD)
-    public var baselineLines: [String]
+    private var _baselineLines: [String]?
+    public var baselineLines: [String] {
+        get { _baselineLines ?? [] }
+        set { _baselineLines = newValue }
+    }
 
     public var baselineText: String {
         get { baselineLines.joined(separator: "\n") }
         set { baselineLines = newValue.components(separatedBy: "\n") }
     }
 
-    /// Number of lines this buffer occupied on disk during last save (for safe incremental splicing)
+    /// Number of lines this buffer occupied on disk during last save
     public var lastSavedLineCount: Int
 
     /// True when this buffer holds a lightweight diff hunk slice loaded lazily without disk I/O
     public var isLazySlice: Bool = false
+    public var isFullFile: Bool = false
 
     public var totalAdditions: Int
     public var totalDeletions: Int
     public var startLineNumber: Int
     public var fullDiskPath: String?
     public var diskFileLineCount: Int?
+
+    public init(
+        id: BufferId = BufferId(),
+        filePath: String,
+        storage: BufferStorage,
+        language: String = "",
+        baselineLines: [String]? = nil,
+        totalAdditions: Int = 0,
+        totalDeletions: Int = 0,
+        startLineNumber: Int = 1,
+        fullDiskPath: String? = nil,
+        diskFileLineCount: Int? = nil,
+        isLazySlice: Bool = false
+    ) {
+        self.id = id
+        self.filePath = filePath
+        self.storage = storage
+        self.language = language.isEmpty ? Buffer.detectLanguage(for: filePath) : language
+        self.totalAdditions = totalAdditions
+        self.totalDeletions = totalDeletions
+        self.startLineNumber = startLineNumber
+        self.fullDiskPath = fullDiskPath
+        self.diskFileLineCount = diskFileLineCount
+        self._baselineLines = baselineLines
+        self.lastSavedLineCount = baselineLines?.count ?? storage.count
+        self.isLazySlice = isLazySlice
+    }
 
     public init(
         id: BufferId = BufferId(),
@@ -105,28 +142,17 @@ public final class Buffer: Identifiable, @unchecked Sendable {
     ) {
         self.id = id
         self.filePath = filePath
+        self.storage = .mutable(lines: lines)
         self.language = language.isEmpty ? Buffer.detectLanguage(for: filePath) : language
         self.totalAdditions = totalAdditions
         self.totalDeletions = totalDeletions
         self.startLineNumber = startLineNumber
         self.fullDiskPath = fullDiskPath
         self.diskFileLineCount = diskFileLineCount
-        self._lines = lines
         let bLines = baselineLines ?? lines
-        self.baselineLines = bLines
+        self._baselineLines = bLines
         self.lastSavedLineCount = bLines.count
         self.isLazySlice = isLazySlice
-    }
-
-    /// Promotes this lightweight slice buffer to a full-file buffer using the full content on disk
-    public func promoteToFullFile(diskLines: [String], baselineDiskLines: [String]) {
-        self._lines = diskLines
-        self.baselineLines = baselineDiskLines
-        self.lastSavedLineCount = diskLines.count
-        self.startLineNumber = 1
-        self.isFullFile = true
-        self.isLazySlice = false
-        self.version &+= 1
     }
 
     public init(
@@ -150,20 +176,28 @@ public final class Buffer: Identifiable, @unchecked Sendable {
         self.fullDiskPath = fullDiskPath
         self.diskFileLineCount = diskFileLineCount
 
-        if text.isEmpty {
-            self._lines = []
-        } else {
-            self._lines = text.components(separatedBy: "\n")
-        }
+        let lines = text.isEmpty ? [] : text.components(separatedBy: "\n")
+        self.storage = .mutable(lines: lines)
 
         if let bText = baselineText {
             let bLines = bText.isEmpty ? [] : bText.components(separatedBy: "\n")
-            self.baselineLines = bLines
+            self._baselineLines = bLines
             self.lastSavedLineCount = bLines.count
         } else {
-            self.baselineLines = self._lines
-            self.lastSavedLineCount = self._lines.count
+            self._baselineLines = lines
+            self.lastSavedLineCount = lines.count
         }
+    }
+
+    /// Promotes this lightweight slice buffer to a full-file buffer using the full content on disk
+    public func promoteToFullFile(diskLines: [String], baselineDiskLines: [String]) {
+        self.storage = .mutable(lines: diskLines)
+        self._baselineLines = baselineDiskLines
+        self.lastSavedLineCount = diskLines.count
+        self.startLineNumber = 1
+        self.isFullFile = true
+        self.isLazySlice = false
+        self.version &+= 1
     }
 
     public static func detectLanguage(for path: String) -> String {
@@ -189,17 +223,20 @@ public final class Buffer: Identifiable, @unchecked Sendable {
     }
 
     public func line(at row: BufferRow) -> String? {
-        guard row >= 0 && row < _lines.count else { return nil }
-        return _lines[row]
+        guard row >= 0 && row < storage.count else { return nil }
+        return storage.line(at: row)
+    }
+
+    public subscript(row: BufferRow) -> String {
+        storage.line(at: row)
     }
 
     public func text() -> String {
-        _lines.joined(separator: "\n")
+        storage.allLines.joined(separator: "\n")
     }
 
     public func lineLength(at row: BufferRow) -> Int {
-        guard row >= 0 && row < _lines.count else { return 0 }
-        return _lines[row].count
+        line(at: row)?.count ?? 0
     }
 
     public func text(in range: Range<BufferPoint>) -> String {
@@ -208,32 +245,43 @@ public final class Buffer: Identifiable, @unchecked Sendable {
         guard start < end else { return "" }
 
         if start.row == end.row {
-            let line = _lines[start.row]
-            let sCol = max(0, min(line.count, start.column))
-            let eCol = max(sCol, min(line.count, end.column))
-            let startIdx = line.index(line.startIndex, offsetBy: sCol)
-            let endIdx = line.index(line.startIndex, offsetBy: eCol)
-            return String(line[startIdx..<endIdx])
+            let lineStr = storage.line(at: start.row)
+            let sCol = max(0, min(lineStr.count, start.column))
+            let eCol = max(sCol, min(lineStr.count, end.column))
+            let startIdx = lineStr.index(lineStr.startIndex, offsetBy: sCol)
+            let endIdx = lineStr.index(lineStr.startIndex, offsetBy: eCol)
+            return String(lineStr[startIdx..<endIdx])
         }
 
         var result: [String] = []
-        let firstLine = _lines[start.row]
+        let firstLine = storage.line(at: start.row)
         let firstCol = max(0, min(firstLine.count, start.column))
         let firstIdx = firstLine.index(firstLine.startIndex, offsetBy: firstCol)
         result.append(String(firstLine[firstIdx...]))
 
         if (start.row + 1) < end.row {
             for r in (start.row + 1)..<end.row {
-                result.append(_lines[r])
+                result.append(storage.line(at: r))
             }
         }
 
-        let lastLine = _lines[end.row]
+        let lastLine = storage.line(at: end.row)
         let lastCol = max(0, min(lastLine.count, end.column))
         let lastIdx = lastLine.index(lastLine.startIndex, offsetBy: lastCol)
         result.append(String(lastLine[..<lastIdx]))
 
         return result.joined(separator: "\n")
+    }
+
+    private func ensureMutableLines() -> [String] {
+        switch storage {
+        case .mutable(let lines):
+            return lines
+        case .flat, .diffFlat:
+            let m = storage.allLines
+            storage = .mutable(lines: m)
+            return m
+        }
     }
 
     /// Mutates the buffer by replacing a range of text
@@ -246,10 +294,11 @@ public final class Buffer: Identifiable, @unchecked Sendable {
             return clampedStart..<clampedStart
         }
 
+        var currentLines = ensureMutableLines()
         let replacementLines = newText.components(separatedBy: "\n")
 
-        let startLine = _lines[clampedStart.row]
-        let endLine = _lines[clampedEnd.row]
+        let startLine = currentLines[clampedStart.row]
+        let endLine = currentLines[clampedEnd.row]
 
         let prefix = String(startLine.prefix(clampedStart.column))
         let suffix = String(endLine.suffix(max(0, endLine.count - clampedEnd.column)))
@@ -269,7 +318,8 @@ public final class Buffer: Identifiable, @unchecked Sendable {
             newContentLines.append(last)
         }
 
-        _lines.replaceSubrange(clampedStart.row...clampedEnd.row, with: newContentLines)
+        currentLines.replaceSubrange(clampedStart.row...clampedEnd.row, with: newContentLines)
+        storage = .mutable(lines: currentLines)
         _isDirty = true
         version &+= 1
 
@@ -299,85 +349,92 @@ public final class Buffer: Identifiable, @unchecked Sendable {
 
     public func prependContextLines(_ lines: [String]) {
         guard !lines.isEmpty else { return }
-        _lines.insert(contentsOf: lines, at: 0)
-        baselineLines.insert(contentsOf: lines, at: 0)
-        lastSavedLineCount += lines.count
+        var currentLines = ensureMutableLines()
+        currentLines.insert(contentsOf: lines, at: 0)
+        storage = .mutable(lines: currentLines)
         startLineNumber = max(1, startLineNumber - lines.count)
         version &+= 1
     }
 
     public func appendContextLines(_ lines: [String]) {
         guard !lines.isEmpty else { return }
-        _lines.append(contentsOf: lines)
-        baselineLines.append(contentsOf: lines)
-        lastSavedLineCount += lines.count
+        var currentLines = ensureMutableLines()
+        currentLines.append(contentsOf: lines)
+        storage = .mutable(lines: currentLines)
         version &+= 1
     }
 
-    public func mergeFrom(buffer: Buffer, overlap: Int) {
-        let linesToAppend = Array(buffer.lines.dropFirst(overlap))
-        let baselineToAppend = Array(buffer.baselineLines.dropFirst(overlap))
-        if !linesToAppend.isEmpty {
-            _lines.append(contentsOf: linesToAppend)
-        }
-        if !baselineToAppend.isEmpty {
-            baselineLines.append(contentsOf: baselineToAppend)
-        }
-        lastSavedLineCount += max(0, buffer.lastSavedLineCount - overlap)
-        totalAdditions += buffer.totalAdditions
-        totalDeletions += buffer.totalDeletions
-        version &+= 1
+    public func clamp(row: BufferRow) -> BufferRow {
+        max(0, min(storage.count > 0 ? storage.count - 1 : 0, row))
     }
 
-    public var isFullFile: Bool = true
-    public var absolutePath: String?
+    public func clamp(column: BufferColumn, in row: BufferRow) -> BufferColumn {
+        let r = clamp(row: row)
+        guard r < storage.count else { return 0 }
+        return max(0, min(lineLength(at: r), column))
+    }
 
-    public func saveToFile(baseDirectory: String? = nil) throws {
-        let resolvedPath: String
-        if let abs = fullDiskPath {
-            resolvedPath = abs
-        } else if let abs = absolutePath {
-            resolvedPath = abs
-        } else if let base = baseDirectory {
-            resolvedPath = URL(fileURLWithPath: base).appendingPathComponent(filePath).path
+    public func clamp(point: BufferPoint) -> BufferPoint {
+        let r = clamp(row: point.row)
+        let c = clamp(column: point.column, in: r)
+        return BufferPoint(row: r, column: c)
+    }
+
+    public func markSaved() {
+        _isDirty = false
+        lastSavedLineCount = storage.count
+    }
+
+    public func mergeFrom(buffer other: Buffer, overlap: Int) {
+        var currentLines = ensureMutableLines()
+        let otherLines = other.storage.allLines
+        let toAppend: [String]
+        if overlap > 0 && overlap <= otherLines.count {
+            toAppend = Array(otherLines[overlap...])
+        } else if overlap > 0 {
+            toAppend = []
         } else {
-            resolvedPath = filePath
+            toAppend = otherLines
+        }
+        currentLines.append(contentsOf: toAppend)
+        storage = .mutable(lines: currentLines)
+        version &+= 1
+    }
+
+    /// Saves the current in-memory contents to the underlying disk file.
+    public func saveToFile(baseDirectory: String? = nil) throws {
+        let diskPath: String
+        if let directPath = fullDiskPath, !directPath.isEmpty {
+            diskPath = directPath
+        } else if let base = baseDirectory, !base.isEmpty {
+            diskPath = (base as NSString).appendingPathComponent(filePath)
+        } else {
+            diskPath = filePath
         }
 
-        let fileURL = URL(fileURLWithPath: resolvedPath)
-        let parentDir = fileURL.deletingLastPathComponent()
-        if !FileManager.default.fileExists(atPath: parentDir.path) {
-            try FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true)
+        let fileURL = URL(fileURLWithPath: diskPath)
+        let directoryURL = fileURL.deletingLastPathComponent()
+
+        if !FileManager.default.fileExists(atPath: directoryURL.path) {
+            try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
         }
 
-        if isFullFile || !FileManager.default.fileExists(atPath: resolvedPath) {
+        if isFullFile || !FileManager.default.fileExists(atPath: diskPath) {
             let fullText = text()
             try fullText.write(to: fileURL, atomically: true, encoding: .utf8)
-            lastSavedLineCount = _lines.count
+            lastSavedLineCount = storage.count
         } else {
             // Defensive partial-hunk splicing fallback: never truncate existing file
-            let diskText = try String(contentsOfFile: resolvedPath, encoding: .utf8)
+            let diskText = try String(contentsOfFile: diskPath, encoding: .utf8)
             var diskLines = diskText.components(separatedBy: "\n")
             let replaceStart = max(0, min(diskLines.count, startLineNumber - 1))
             let replaceCount = max(0, lastSavedLineCount)
             let replaceEnd = max(replaceStart, min(diskLines.count, replaceStart + replaceCount))
-            diskLines.replaceSubrange(replaceStart..<replaceEnd, with: _lines)
+            diskLines.replaceSubrange(replaceStart..<replaceEnd, with: lines)
             let fullText = diskLines.joined(separator: "\n")
             try fullText.write(to: fileURL, atomically: true, encoding: .utf8)
-            lastSavedLineCount = _lines.count
+            lastSavedLineCount = storage.count
         }
-        _isDirty = false
-    }
-
-    public func markClean() {
-        _isDirty = false
-    }
-
-    public func clamp(point: BufferPoint) -> BufferPoint {
-        let maxRow = max(0, _lines.count - 1)
-        let row = min(max(0, point.row), maxRow)
-        let lineLen = lineLength(at: row)
-        let col = min(max(0, point.column), lineLen)
-        return BufferPoint(row: row, column: col)
+        markSaved()
     }
 }

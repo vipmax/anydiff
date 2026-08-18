@@ -85,13 +85,15 @@ public struct DisplayFoldGapInfo: Sendable, Equatable {
     public var excerptIndex: Int
     public var nextExcerptIndex: Int?
     public var hiddenCount: Int
+    public var isCountKnown: Bool
     public var isTopGap: Bool
     public var isBottomGap: Bool
 
-    public init(excerptIndex: Int, nextExcerptIndex: Int? = nil, hiddenCount: Int, isTopGap: Bool = false, isBottomGap: Bool = false) {
+    public init(excerptIndex: Int, nextExcerptIndex: Int? = nil, hiddenCount: Int, isCountKnown: Bool = true, isTopGap: Bool = false, isBottomGap: Bool = false) {
         self.excerptIndex = excerptIndex
         self.nextExcerptIndex = nextExcerptIndex
         self.hiddenCount = hiddenCount
+        self.isCountKnown = isCountKnown
         self.isTopGap = isTopGap
         self.isBottomGap = isBottomGap
     }

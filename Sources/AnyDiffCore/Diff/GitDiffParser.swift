@@ -111,6 +111,27 @@ public final class GitDiffParser: Sendable {
         return fileDiffs
     }
 
+    /// Ultra-fast Zero-Copy parser directly from raw Data (records byte spans without allocating String instances)
+    public func parseZeroCopy(data: Data) -> [FileDiff] {
+        var fileDiffs: [FileDiff] = []
+        data.withUnsafeBytes { rawBuffer in
+            guard let basePtr = rawBuffer.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
+            let streamer = ZeroCopyStreamingGitDiffParser(baseAddress: basePtr, dataSize: data.count)
+            let splitter = ChunkLineSplitter { lineBytes in
+                if let file = streamer.feed(lineBytes: lineBytes) {
+                    fileDiffs.append(file)
+                }
+            }
+            let buffer = rawBuffer.bindMemory(to: UInt8.self)
+            splitter.processChunk(buffer)
+            splitter.finish()
+            if let finalFile = streamer.finish() {
+                fileDiffs.append(finalFile)
+            }
+        }
+        return fileDiffs
+    }
+
     /// Fast parser directly from raw Data (zero-copy buffer scanning)
     public func parse(data: Data) -> [FileDiff] {
         var fileDiffs: [FileDiff] = []
@@ -212,6 +233,14 @@ public final class StreamingGitDiffParser {
         if var hunk = currentHunk {
             processWordDiffs(lines: &hunkLines)
             hunk.lines = hunkLines
+            var adds = 0 
+            var dels = 0
+            for line in hunkLines {
+                if line.kind == .added { adds += 1 }
+                else if line.kind == .deleted { dels += 1 }
+            }
+            hunk.addedLineCount = adds
+            hunk.deletedLineCount = dels
             currentFile?.hunks.append(hunk)
             currentHunk = nil
             hunkLines.removeAll(keepingCapacity: true)
@@ -384,5 +413,145 @@ public final class StreamingGitDiffParser {
                 i += 1
             }
         }
+    }
+}
+
+/// Zero-copy streaming parser123 that records byte offsets (LineSpan) directly into continuous Data
+public final class ZeroCopyStreamingGitDiffParser {
+    private var currentFile: FileDiff?
+    private var currentHunk: DiffHunk?
+    private var hunkSpans: [LineSpan] = []
+    private var oldLineNumber: Int = 0
+    private var newLineNumber: Int = 0
+    private let baseAddress: UnsafePointer<UInt8>
+    private let dataSize: Int
+
+    public init(baseAddress: UnsafePointer<UInt8>, dataSize: Int = 0) {
+        self.baseAddress = baseAddress
+        self.dataSize = dataSize
+    }
+
+    private func safeOffset(for lineBase: UnsafePointer<UInt8>) -> UInt32 {
+        let ptr = lineBase.advanced(by: 1)
+        if ptr >= baseAddress && (dataSize == 0 || ptr <= baseAddress.advanced(by: dataSize)) {
+            let dist = baseAddress.distance(to: ptr)
+            return UInt32(clamping: max(0, dist))
+        }
+        return 0
+    }
+
+    private func flushHunk() {
+        if var hunk = currentHunk {
+            hunk.lineSpans = hunkSpans
+            var adds = 0
+            var dels = 0
+            for span in hunkSpans {
+                if span.kind == .added { adds += 1 }
+                else if span.kind == .deleted { dels += 1 }
+            }
+            hunk.addedLineCount = adds
+            hunk.deletedLineCount = dels
+            currentFile?.hunks.append(hunk)
+            currentHunk = nil
+            hunkSpans.removeAll(keepingCapacity: true)
+        }
+    }
+
+    private func flushFile() -> FileDiff? {
+        flushHunk()
+        if let file = currentFile {
+            currentFile = nil
+            return file
+        }
+        return nil
+    }
+
+    public func feed(lineBytes: UnsafeBufferPointer<UInt8>) -> FileDiff? {
+        guard let lineBase = lineBytes.baseAddress, !lineBytes.isEmpty else {
+            return nil
+        }
+
+        if currentHunk != nil {
+            let firstByte = lineBytes[0]
+            let offset = safeOffset(for: lineBase)
+            let len = UInt16(clamping: max(0, lineBytes.count - 1))
+            let safeOldNum = oldLineNumber > 0 ? UInt32(clamping: oldLineNumber) : 0
+            let safeNewNum = newLineNumber > 0 ? UInt32(clamping: newLineNumber) : 0
+
+            switch firstByte {
+            case 0x2B: // +
+                hunkSpans.append(LineSpan(offset: offset, length: len, kind: .added, oldLineNumber: 0, newLineNumber: safeNewNum))
+                newLineNumber += 1
+                return nil
+            case 0x2D: // -
+                hunkSpans.append(LineSpan(offset: offset, length: len, kind: .deleted, oldLineNumber: safeOldNum, newLineNumber: 0))
+                oldLineNumber += 1
+                return nil
+            case 0x20: // context ' '
+                hunkSpans.append(LineSpan(offset: offset, length: len, kind: .unchanged, oldLineNumber: safeOldNum, newLineNumber: safeNewNum))
+                oldLineNumber += 1
+                newLineNumber += 1
+                return nil
+            case 0x5C: // \\ No newline at end of file
+                return nil
+            default:
+                break
+            }
+        }
+
+        // Decode metadata lines only outside hunk bodies
+        let line = String(decoding: lineBytes, as: UTF8.self)
+        var completedFile: FileDiff? = nil
+
+        if line.hasPrefix("diff --git ") {
+            completedFile = flushFile()
+            let parts = line.components(separatedBy: " ")
+            let oldPath = parts.count > 2 ? String(parts[2].dropFirst(2)) : "old"
+            let newPath = parts.count > 3 ? String(parts[3].dropFirst(2)) : "new"
+            currentFile = FileDiff(oldPath: oldPath, newPath: newPath, status: .modified)
+        } else if line.hasPrefix("new file mode") {
+            currentFile?.status = .added
+        } else if line.hasPrefix("deleted file mode") {
+            currentFile?.status = .deleted
+        } else if line.hasPrefix("rename from ") {
+            currentFile?.status = .renamed
+            currentFile?.oldPath = String(line.dropFirst("rename from ".count))
+        } else if line.hasPrefix("rename to ") {
+            currentFile?.newPath = String(line.dropFirst("rename to ".count))
+        } else if line.hasPrefix("--- ") {
+            if line.hasPrefix("--- /dev/null") {
+                currentFile?.status = .added
+            }
+        } else if line.hasPrefix("+++ ") {
+            if line.hasPrefix("+++ /dev/null") {
+                currentFile?.status = .deleted
+            } else if currentFile == nil {
+                let p = String(line.dropFirst(4)).trimmingCharacters(in: .whitespaces)
+                let cleanPath = p.hasPrefix("b/") ? String(p.dropFirst(2)) : p
+                currentFile = FileDiff(oldPath: cleanPath, newPath: cleanPath, status: .modified)
+            }
+        } else if line.hasPrefix("@@ ") || line.hasPrefix("@@") {
+            flushHunk()
+            if currentFile == nil {
+                currentFile = FileDiff(oldPath: "File", newPath: "File", status: .modified)
+            }
+            if let (oldRange, newRange, header) = GitDiffParser.shared.parseHunkHeader(line) {
+                oldLineNumber = oldRange.lowerBound
+                newLineNumber = newRange.lowerBound
+                currentHunk = DiffHunk(
+                    oldRange: oldRange,
+                    newRange: newRange,
+                    header: header,
+                    lines: [],
+                    lineSpans: []
+                )
+            }
+        }
+
+        return completedFile
+    }
+
+    public func finish() -> FileDiff? {
+        flushFile()
     }
 }

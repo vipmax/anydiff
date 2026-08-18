@@ -288,19 +288,37 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
 
         // Compute baseline by un-applying all hunks of this file to diskLines
         var baseline = diskLines
-        var sortedHunks: [DiffHunk] = []
+        var sortedHunks: [(hunk: DiffHunk, storage: BufferStorage)] = []
         for (_, ex) in fileExcerpts {
-            if let h = ex.hunk {
-                sortedHunks.append(h)
+            if let hunk = ex.hunk, let sourceBuffer = buffers[ex.bufferId] {
+                sortedHunks.append((hunk: hunk, storage: sourceBuffer.storage))
             }
         }
-        sortedHunks.sort { $0.newRange.lowerBound > $1.newRange.lowerBound }
+        sortedHunks.sort { $0.hunk.newRange.lowerBound > $1.hunk.newRange.lowerBound }
 
-        for hunk in sortedHunks {
+        for (hunk, sourceStorage) in sortedHunks {
             let startRow = max(0, min(baseline.count, hunk.newRange.lowerBound - 1))
-            let newCount = hunk.lines.filter { $0.kind == .added || $0.kind == .unchanged }.count
+            let newCount: Int
+            let oldHunkLines: [String]
+
+            if !hunk.lineSpans.isEmpty {
+                newCount = hunk.lineSpans.reduce(into: 0) { count, span in
+                    if span.kind != .deleted { count += 1 }
+                }
+                oldHunkLines = hunk.lineSpans.compactMap { span in
+                    guard span.kind != .added else { return nil }
+                    return sourceStorage.text(for: span) ?? ""
+                }
+            } else {
+                newCount = hunk.lines.reduce(into: 0) { count, line in
+                    if line.kind != .deleted { count += 1 }
+                }
+                oldHunkLines = hunk.lines.compactMap { line in
+                    line.kind != .added ? line.text : nil
+                }
+            }
+
             let endRow = max(startRow, min(baseline.count, startRow + newCount))
-            let oldHunkLines = hunk.lines.filter { $0.kind == .deleted || $0.kind == .unchanged }.map(\.text)
             baseline.replaceSubrange(startRow..<endRow, with: oldHunkLines)
         }
 

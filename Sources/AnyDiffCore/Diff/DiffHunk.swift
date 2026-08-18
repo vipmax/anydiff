@@ -46,28 +46,41 @@ public struct DiffHunk: Identifiable, Sendable, Equatable {
     public var newRange: Range<Int> // 1-based new line range
     public var header: String       // e.g. "@@ -10,15 +10,18 @@ func start()"
     public var lines: [DiffLine]
+    public var lineSpans: [LineSpan]
     public var status: DiffHunkStatus
-
-    public var addedLineCount: Int {
-        lines.filter { $0.kind == .added }.count
-    }
-
-    public var deletedLineCount: Int {
-        lines.filter { $0.kind == .deleted }.count
-    }
+    public var addedLineCount: Int
+    public var deletedLineCount: Int
 
     public init(
         oldRange: Range<Int>,
         newRange: Range<Int>,
         header: String,
-        lines: [DiffLine],
-        status: DiffHunkStatus = .modified
+        lines: [DiffLine] = [],
+        lineSpans: [LineSpan] = [],
+        status: DiffHunkStatus = .modified,
+        addedLineCount: Int? = nil,
+        deletedLineCount: Int? = nil
     ) {
         self.oldRange = oldRange
         self.newRange = newRange
         self.header = header
         self.lines = lines
+        self.lineSpans = lineSpans
         self.status = status
+        if let adds = addedLineCount {
+            self.addedLineCount = adds
+        } else if !lineSpans.isEmpty {
+            self.addedLineCount = lineSpans.reduce(into: 0) { if $1.kind == .added { $0 += 1 } }
+        } else {
+            self.addedLineCount = lines.reduce(into: 0) { if $1.kind == .added { $0 += 1 } }
+        }
+        if let dels = deletedLineCount {
+            self.deletedLineCount = dels
+        } else if !lineSpans.isEmpty {
+            self.deletedLineCount = lineSpans.reduce(into: 0) { if $1.kind == .deleted { $0 += 1 } }
+        } else {
+            self.deletedLineCount = lines.reduce(into: 0) { if $1.kind == .deleted { $0 += 1 } }
+        }
     }
 }
 

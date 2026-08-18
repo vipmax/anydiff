@@ -152,6 +152,36 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         needsDisplay = true
     }
 
+    public func resetCursorToFirstVisibleLine() {
+        guard let displayMap, let firstRow = displayMap.firstVisibleCodeRow else {
+            selectionAnchor = nil
+            cursorPoint = .zero
+            focusAfterLoadIfPossible()
+            return
+        }
+
+        selectionAnchor = nil
+        cursorPoint = MultiBufferPoint(row: firstRow, column: 0)
+        scrollOffsetY = 0
+        scrollOffsetX = 0
+        focusAfterLoadIfPossible()
+    }
+
+    private func focusAfterLoadIfPossible() {
+        if let window {
+            window.makeFirstResponder(self)
+            needsDisplay = true
+        } else {
+            // SwiftUI can update the representable before it is attached to a
+            // window. Try again once the view has entered the window hierarchy.
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let window = self.window else { return }
+                window.makeFirstResponder(self)
+                self.needsDisplay = true
+            }
+        }
+    }
+
     private func startScrollbarFadeOut() {
         guard scrollbarDragAxis == nil else { return }
         fadeAnimationTimer?.invalidate()
@@ -384,31 +414,21 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     }
 
     public func lineIndex(atY y: CGFloat) -> Int {
-        let totalLines = displayMap?.displayLines.count ?? 0
+        let totalLines = displayMap?.displayLineCount ?? 0
         guard totalLines > 0, !excerptLayouts.isEmpty else { return 0 }
         let exIdx = excerptIndex(atY: y)
         guard exIdx < excerptLayouts.count else { return 0 }
         let ex = excerptLayouts[exIdx]
         guard !ex.displayRange.isEmpty else { return 0 }
 
-        let relY = y - ex.startY
-        let count = ex.lineRelativeY.count
-        guard count > 0 else { return ex.displayRange.lowerBound }
-
-        var low = 0
-        var high = count - 1
-        var best = 0
-
-        while low <= high {
-            let mid = (low + high) / 2
-            if ex.lineRelativeY[mid] <= relY {
-                best = mid
-                low = mid + 1
-            } else {
-                high = mid - 1
-            }
-        }
-        return min(ex.displayRange.upperBound - 1, ex.displayRange.lowerBound + best)
+        let relY = max(0, y - ex.startY)
+        let offset = ex.lineOffset(
+            atRelativeY: relY,
+            headerHeight: excerptHeaderHeight,
+            foldGapHeight: foldGapHeight,
+            lineHeight: lineHeight
+        )
+        return min(ex.displayRange.upperBound - 1, ex.displayRange.lowerBound + offset)
     }
 
     public func yOffset(forDisplayLineIndex lineIdx: Int) -> CGFloat {
@@ -417,8 +437,13 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         guard exIdx < excerptLayouts.count else { return 0 }
         let ex = excerptLayouts[exIdx]
         let offset = lineIdx - ex.displayRange.lowerBound
-        guard offset >= 0 && offset < ex.lineRelativeY.count else { return ex.startY }
-        return ex.startY + ex.lineRelativeY[offset]
+        guard offset >= 0 && offset < ex.displayRange.count else { return ex.startY }
+        return ex.startY + ex.relativeY(
+            for: offset,
+            headerHeight: excerptHeaderHeight,
+            foldGapHeight: foldGapHeight,
+            lineHeight: lineHeight
+        )
     }
 
     public func lineHeight(forDisplayLineIndex lineIdx: Int) -> CGFloat {
@@ -427,12 +452,13 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         guard exIdx < excerptLayouts.count else { return lineHeight }
         let ex = excerptLayouts[exIdx]
         let offset = lineIdx - ex.displayRange.lowerBound
-        guard offset >= 0 && offset < ex.lineRelativeY.count else { return lineHeight }
-        if offset + 1 < ex.lineRelativeY.count {
-            return ex.lineRelativeY[offset + 1] - ex.lineRelativeY[offset]
-        } else {
-            return ex.height - ex.lineRelativeY[offset]
-        }
+        guard offset >= 0 && offset < ex.displayRange.count else { return lineHeight }
+        return ex.lineHeight(
+            for: offset,
+            headerHeight: excerptHeaderHeight,
+            foldGapHeight: foldGapHeight,
+            lineHeight: lineHeight
+        )
     }
 
     public func invalidateLayout() {
@@ -450,7 +476,6 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         }
 
         var totalHeight: CGFloat = 0
-        let maxLineChars: Int = displayMap.maxLineChars
         let totalExcerpts = displayMap.excerptLocations.count
 
         excerptLayouts.removeAll(keepingCapacity: true)
@@ -467,42 +492,36 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             excerptStartYs.append(startY)
 
             let excerpt = displayMap.multiBuffer.excerpts[exIdx]
-            var relOffsets: [CGFloat] = []
-            relOffsets.reserveCapacity(loc.displayRange.count)
-            var currentRelY: CGFloat = 0
+            let headerH = loc.hasHeader ? excerptHeaderHeight : 0
+            let topGapH = (!loc.isCollapsed && loc.hasTopGap) ? foldGapHeight : 0
+            let codeH = !loc.isCollapsed ? CGFloat(loc.codeLineCount) * lineHeight : 0
+            let bottomGapH = (!loc.isCollapsed && loc.hasBottomGap) ? foldGapHeight : 0
+            let exHeight = headerH + topGapH + codeH + bottomGapH
 
-            for lineIdx in loc.displayRange {
-                relOffsets.append(currentRelY)
-                let line = displayMap.displayLines[lineIdx]
-                let h: CGFloat
-                switch line {
-                case .excerptHeader(let info):
-                    h = excerptHeaderHeight
-                    let headerY = startY + currentRelY
-                    if let lastIdx = cachedFileSections.indices.last {
-                        cachedFileSections[lastIdx].contentMaxY = headerY
-                    }
-                    cachedFileSections.append(FileSection(info: info, headerMinY: headerY, contentMaxY: headerY + h))
-                    if filePathToY[info.filePath] == nil {
-                        filePathToY[info.filePath] = headerY
-                        if let lastSlash = info.filePath.lastIndex(of: "/") {
-                            let name = String(info.filePath[info.filePath.index(after: lastSlash)...])
-                            if filePathToY[name] == nil {
-                                filePathToY[name] = headerY
-                            }
+            if loc.hasHeader {
+                let header = ExcerptHeaderInfo(
+                    excerptIndex: exIdx,
+                    filePath: excerpt.filePath,
+                    fileStatus: excerpt.fileStatus,
+                    additions: displayMap.multiBuffer.buffer(for: excerpt.bufferId)?.totalAdditions ?? 0,
+                    deletions: displayMap.multiBuffer.buffer(for: excerpt.bufferId)?.totalDeletions ?? 0,
+                    isCollapsed: excerpt.isCollapsed
+                )
+                if let lastIdx = cachedFileSections.indices.last {
+                    cachedFileSections[lastIdx].contentMaxY = startY
+                }
+                cachedFileSections.append(FileSection(info: header, headerMinY: startY, contentMaxY: startY + headerH))
+                if filePathToY[header.filePath] == nil {
+                    filePathToY[header.filePath] = startY
+                    if let lastSlash = header.filePath.lastIndex(of: "/") {
+                        let name = String(header.filePath[header.filePath.index(after: lastSlash)...])
+                        if filePathToY[name] == nil {
+                            filePathToY[name] = startY
                         }
                     }
-                case .code:
-                    h = lineHeight
-                case .foldGap:
-                    h = foldGapHeight
-                case .inlineComment:
-                    h = commentHeight
                 }
-                currentRelY += h
             }
 
-            let exHeight = currentRelY
             excerptLayouts.append(ExcerptLayout(
                 excerptIndex: exIdx,
                 filePath: excerpt.filePath,
@@ -510,7 +529,11 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                 codeRange: loc.codeRange,
                 startY: startY,
                 height: exHeight,
-                lineRelativeY: relOffsets
+                hasHeader: loc.hasHeader,
+                hasTopGap: loc.hasTopGap,
+                hasBottomGap: loc.hasBottomGap,
+                codeLineCount: loc.codeLineCount,
+                isCollapsed: loc.isCollapsed
             ))
             totalHeight += exHeight
         }
@@ -521,7 +544,8 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         totalHeight += 8 // Clean minimal 8px margin at bottom
 
         let charWidth = font.pointSize * 0.75
-        let neededWidth = gutterWidth + CGFloat(maxLineChars) * charWidth + 100
+        let maxChars = displayMap.maxLineChars
+        let neededWidth = gutterWidth + CGFloat(maxChars) * charWidth + 100
         self.contentTotalHeight = totalHeight
         self.contentNeededWidth = neededWidth
 
@@ -542,24 +566,11 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         let oldHeight = excerptLayouts[excerptIdx].height
         let startY = excerptLayouts[excerptIdx].startY
 
-        var relOffsets: [CGFloat] = []
-        relOffsets.reserveCapacity(loc.displayRange.count)
-        var currentRelY: CGFloat = 0
-
-        for lineIdx in loc.displayRange {
-            relOffsets.append(currentRelY)
-            let line = dm.displayLines[lineIdx]
-            let h: CGFloat
-            switch line {
-            case .excerptHeader: h = excerptHeaderHeight
-            case .code: h = lineHeight
-            case .foldGap: h = foldGapHeight
-            case .inlineComment: h = commentHeight
-            }
-            currentRelY += h
-        }
-
-        let newHeight = currentRelY
+        let headerH = loc.hasHeader ? excerptHeaderHeight : 0
+        let topGapH = (!loc.isCollapsed && loc.hasTopGap) ? foldGapHeight : 0
+        let codeH = !loc.isCollapsed ? CGFloat(loc.codeLineCount) * lineHeight : 0
+        let bottomGapH = (!loc.isCollapsed && loc.hasBottomGap) ? foldGapHeight : 0
+        let newHeight = headerH + topGapH + codeH + bottomGapH
         let heightDelta = newHeight - oldHeight
 
         // 1. Update ONLY this excerpt layout
@@ -570,7 +581,11 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             codeRange: loc.codeRange,
             startY: startY,
             height: newHeight,
-            lineRelativeY: relOffsets
+            hasHeader: loc.hasHeader,
+            hasTopGap: loc.hasTopGap,
+            hasBottomGap: loc.hasBottomGap,
+            codeLineCount: loc.codeLineCount,
+            isCollapsed: loc.isCollapsed
         )
 
         // 2. If height or line count changed, shift subsequent excerpt start positions
@@ -707,7 +722,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             return
         }
 
-        let totalLines = displayMap.displayLines.count
+        let totalLines = displayMap.displayLineCount
         guard totalLines > 0 else {
             context.saveGState()
             context.setFillColor(theme.background.cgColor)
@@ -747,11 +762,13 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             return
         }
 
+        // Pre-fetch all visible items in a single batch query for this frame
+        let visibleItems = displayMap.visibleLines(in: startIdx..<(endIdx + 1))
+
         // 2. Pass 1: Draw Code Lines (content that scrolls horizontally under gutter)
-        for lineIdx in startIdx...endIdx {
-            guard lineIdx >= 0 && lineIdx < totalLines else { continue }
-            let line = displayMap.displayLines[lineIdx]
-            if case .code(var info) = line {
+        for item in visibleItems {
+            let lineIdx = item.displayLineIndex
+            if case .code(var info) = item.line {
                 let lineMinY = yOffset(forDisplayLineIndex: lineIdx)
                 let height = lineHeight(forDisplayLineIndex: lineIdx)
                 let screenLineFrame = CGRect(
@@ -760,7 +777,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                     width: lineWidth,
                     height: height
                 )
-                if let mbRow = displayMap.multiBufferRow(forDisplayLineIndex: lineIdx) {
+                if let mbRow = item.multiBufferRow {
                     info.multiBufferRow = mbRow
                 }
                 info.displayLineIndex = lineIdx
@@ -769,20 +786,19 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         }
 
         // 3. Pass 2: Draw Sticky Gutters, Excerpt Headers, Fold Gaps & Comments (Sticky UI)
-        for lineIdx in startIdx...endIdx {
-            guard lineIdx >= 0 && lineIdx < totalLines else { continue }
-            let line = displayMap.displayLines[lineIdx]
+        for item in visibleItems {
+            let lineIdx = item.displayLineIndex
             let lineMinY = yOffset(forDisplayLineIndex: lineIdx)
             let height = lineHeight(forDisplayLineIndex: lineIdx)
             let screenY = lineMinY - scrollOffsetY
 
-            switch line {
+            switch item.line {
             case .excerptHeader(let info):
                 let headerFrame = CGRect(x: 0, y: screenY, width: bounds.width, height: height)
                 drawExcerptHeader(info: info, in: headerFrame, context: context)
 
             case .code(var info):
-                if let mbRow = displayMap.multiBufferRow(forDisplayLineIndex: lineIdx) {
+                if let mbRow = item.multiBufferRow {
                     info.multiBufferRow = mbRow
                 }
                 info.displayLineIndex = lineIdx
@@ -1149,6 +1165,19 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     // MARK: - Gutter Drawing
 
     private func drawGutter(for info: DisplayCodeLineInfo, lineIdx: Int, in rect: CGRect, context: CGContext) {
+        // Keep the line tint continuous through the gutter so line numbers have
+        // the same background as the corresponding code line.
+        switch info.diffKind {
+        case .added:
+            context.setFillColor(theme.diffAddedBackground.cgColor)
+            context.fill(rect)
+        case .deleted:
+            context.setFillColor(theme.diffDeletedBackground.cgColor)
+            context.fill(rect)
+        case .unchanged, .header:
+            break
+        }
+
         // Diff Status Left Bar (3px stripe on left edge)
         if info.diffKind == .added {
             context.setFillColor(theme.diffAddedGutter.cgColor)
@@ -1270,7 +1299,9 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         context.setFillColor(theme.background.cgColor)
         context.fill(rect)
 
-        let label = "⋯   \(info.hiddenCount) hidden lines   [Expand all]   ⋯"
+        let label = info.isCountKnown
+            ? "⋯   \(info.hiddenCount) hidden lines   [Expand all]   ⋯"
+            : "⋯   hidden lines   [Expand]   ⋯"
         let str = NSAttributedString(string: label, attributes: [
             .font: NSFont.systemFont(ofSize: 11, weight: .medium),
             .foregroundColor: theme.foldPlaceholderForeground
@@ -1355,11 +1386,11 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         }
 
         // 2. Search through visible display lines using O(log N) line index
-        let totalLines = displayMap.displayLines.count
+        let totalLines = displayMap.displayLineCount
         guard totalLines > 0 else { return }
 
         let lineIdx = lineIndex(atY: docY)
-        let line = displayMap.displayLines[lineIdx]
+        guard let line = displayMap.displayLine(at: lineIdx) else { return }
         let lineMinY = yOffset(forDisplayLineIndex: lineIdx)
         let height = lineHeight(forDisplayLineIndex: lineIdx)
         let lineMaxY = lineMinY + height
@@ -1377,7 +1408,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                 var anchorScreenY: CGFloat = 0
 
                 if gap.isTopGap {
-                    if lineIdx + 1 < totalLines, case .code(let c) = displayMap.displayLines[lineIdx + 1] {
+                    if lineIdx + 1 < totalLines, let nextLine = displayMap.displayLine(at: lineIdx + 1), case .code(let c) = nextLine {
                         if c.excerptIndex >= 0 && c.excerptIndex < displayMap.multiBuffer.excerpts.count {
                             let exc = displayMap.multiBuffer.excerpts[c.excerptIndex]
                             anchor = .code(bufferId: exc.bufferId, bufferRow: c.bufferRow)
@@ -1385,8 +1416,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                         anchorScreenY = yOffset(forDisplayLineIndex: lineIdx + 1) - scrollOffsetY
                     }
                 } else {
-                    if lineIdx > 0 {
-                        let prevLine = displayMap.displayLines[lineIdx - 1]
+                    if lineIdx > 0, let prevLine = displayMap.displayLine(at: lineIdx - 1) {
                         switch prevLine {
                         case .excerptHeader(let h):
                             anchor = .header(filePath: h.filePath)
@@ -1404,15 +1434,16 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                 }
 
                 preserveCursorAndSelection {
+                    let expansionCount = gap.isCountKnown ? gap.hiddenCount : 5
                     if gap.isTopGap {
-                        displayMap.multiBuffer.expandExcerpt(at: gap.excerptIndex, up: gap.hiddenCount, down: 0)
+                        displayMap.multiBuffer.expandExcerpt(at: gap.excerptIndex, up: expansionCount, down: 0)
                     } else if gap.isBottomGap {
-                        displayMap.multiBuffer.expandExcerpt(at: gap.excerptIndex, up: 0, down: gap.hiddenCount)
+                        displayMap.multiBuffer.expandExcerpt(at: gap.excerptIndex, up: 0, down: expansionCount)
                     } else if let _ = gap.nextExcerptIndex {
-                        displayMap.multiBuffer.expandExcerpt(at: gap.excerptIndex, up: 0, down: gap.hiddenCount)
+                        displayMap.multiBuffer.expandExcerpt(at: gap.excerptIndex, up: 0, down: expansionCount)
                         displayMap.multiBuffer.mergeAdjacentExcerpts()
                     } else {
-                        displayMap.multiBuffer.expandExcerpt(at: gap.excerptIndex, up: 0, down: gap.hiddenCount)
+                        displayMap.multiBuffer.expandExcerpt(at: gap.excerptIndex, up: 0, down: expansionCount)
                     }
                 }
 
@@ -1524,8 +1555,8 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         guard let displayMap = displayMap, !excerptLayouts.isEmpty else { return }
 
         let lineIdx = lineIndex(atY: docY)
-        guard lineIdx >= 0 && lineIdx < displayMap.displayLines.count else { return }
-        let line = displayMap.displayLines[lineIdx]
+        guard lineIdx >= 0 && lineIdx < displayMap.displayLineCount,
+              let line = displayMap.displayLine(at: lineIdx) else { return }
 
         if case .code(let codeInfo) = line {
             let text = codeInfo.text

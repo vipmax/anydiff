@@ -374,6 +374,164 @@ final class MultiBufferTests: XCTestCase {
         XCTAssertEqual(diskLines[50], "func step50() { print(50) }")
     }
 
+    func testEditingLargeZeroCopyAdditionPreservesExistingDiff() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let originalLines = (1...200).map { "let original_\($0) = \($0)" }
+        let addedLines = (1...159).map { "public func generated_\($0)() { return }" }
+        var currentLines = originalLines
+        currentLines.insert(contentsOf: addedLines, at: 113)
+
+        let fileURL = tempDir.appendingPathComponent("LargeAddition.swift")
+        try currentLines.joined(separator: "\n").write(to: fileURL, atomically: true, encoding: .utf8)
+
+        var diffLines = [
+            "diff --git a/LargeAddition.swift b/LargeAddition.swift",
+            "--- a/LargeAddition.swift",
+            "+++ b/LargeAddition.swift",
+            "@@ -111,6 +111,165 @@"
+        ]
+        diffLines.append(contentsOf: originalLines[110..<113].map { " \($0)" })
+        diffLines.append(contentsOf: addedLines.map { "+\($0)" })
+        diffLines.append(contentsOf: originalLines[113..<116].map { " \($0)" })
+        let diffData = Data((diffLines.joined(separator: "\n") + "\n").utf8)
+
+        let parsedFiles = GitDiffParser.shared.parseZeroCopy(data: diffData)
+        let hunk = try XCTUnwrap(parsedFiles.first?.hunks.first)
+        XCTAssertEqual(hunk.lines.count, 0, "The regression requires the zero-copy LineSpan path")
+        XCTAssertEqual(hunk.lineSpans.count, 165)
+
+        let buffer = Buffer(
+            filePath: "LargeAddition.swift",
+            storage: .makeDiffFlat(data: diffData, spans: hunk.lineSpans, side: .new),
+            totalAdditions: 159,
+            totalDeletions: 0,
+            startLineNumber: hunk.newRange.lowerBound,
+            fullDiskPath: fileURL.path,
+            diskFileLineCount: currentLines.count,
+            isLazySlice: true
+        )
+
+        let multiBuffer = MultiBuffer()
+        multiBuffer.addBuffer(buffer)
+        multiBuffer.addExcerpt(Excerpt(
+            bufferId: buffer.id,
+            filePath: "LargeAddition.swift",
+            fileStatus: .modified,
+            bufferRange: 0..<buffer.lineCount,
+            hunk: hunk
+        ))
+
+        let displayMap = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
+        XCTAssertEqual((0..<displayMap.codeLineCount).compactMap { displayMap.codeInfo(for: $0) }.filter { $0.diffKind == .added }.count, 159)
+
+        // Edit one of the already-added lines, matching the UI bug: a single digit
+        // must not make the other 158 green lines disappear after lazy promotion.
+        let editedRow = 3
+        let insertionPoint = MultiBufferPoint(row: editedRow, column: addedLines[0].count)
+        multiBuffer.replace(range: insertionPoint..<insertionPoint, with: "1")
+        displayMap.rebuild()
+
+        XCTAssertEqual(buffer.baselineLines, originalLines)
+        let afterEdit = (0..<displayMap.codeLineCount).compactMap { displayMap.codeInfo(for: $0) }
+        XCTAssertEqual(afterEdit.filter { $0.diffKind == .added }.count, 159)
+        XCTAssertEqual(afterEdit.filter { $0.diffKind == .deleted }.count, 0)
+        XCTAssertTrue(afterEdit.contains { $0.text == addedLines[0] + "1" && $0.diffKind == .added })
+    }
+
+    func testEditingLastOfMultipleZeroCopyHunksPreservesAllDiffBoundaries() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        var originalLines = (1...15).map { "let line_\($0) = \($0)" }
+        originalLines.append(contentsOf: ["func existing() {", "    }", "}", ""])
+
+        var currentLines = originalLines
+        currentLines.insert(contentsOf: ["let first_addition = true", "let second_addition = true"], at: 2)
+        currentLines.insert("let middle_addition = true", at: 12)
+        currentLines.insert(contentsOf: ["", "/// New parser", "final class Parser {", "    }", "}"], at: currentLines.count - 1)
+
+        let fileURL = tempDir.appendingPathComponent("MultipleHunks.swift")
+        try currentLines.joined(separator: "\n").write(to: fileURL, atomically: true, encoding: .utf8)
+
+        let diffText = """
+        diff --git a/MultipleHunks.swift b/MultipleHunks.swift
+        --- a/MultipleHunks.swift
+        +++ b/MultipleHunks.swift
+        @@ -2,2 +2,4 @@
+         let line_2 = 2
+        +let first_addition = true
+        +let second_addition = true
+         let line_3 = 3
+        @@ -10,2 +12,3 @@
+         let line_10 = 10
+        +let middle_addition = true
+         let line_11 = 11
+        @@ -16,4 +19,9 @@
+         func existing() {
+             }
+         }
+        +
+        +/// New parser
+        +final class Parser {
+        +    }
+        +}
+        \(String(repeating: " ", count: 1))
+        """
+        let diffData = Data(diffText.utf8)
+        let parsedFiles = GitDiffParser.shared.parseZeroCopy(data: diffData)
+        let parsedFile = try XCTUnwrap(parsedFiles.first)
+        XCTAssertEqual(parsedFile.hunks.count, 3)
+        XCTAssertTrue(parsedFile.hunks.allSatisfy { $0.lines.isEmpty && !$0.lineSpans.isEmpty })
+
+        let multiBuffer = MultiBuffer()
+        var hunkBuffers: [Buffer] = []
+        for hunk in parsedFile.hunks {
+            let additions = hunk.lineSpans.filter { $0.kind == .added }.count
+            let deletions = hunk.lineSpans.filter { $0.kind == .deleted }.count
+            let buffer = Buffer(
+                filePath: "MultipleHunks.swift",
+                storage: .makeDiffFlat(data: diffData, spans: hunk.lineSpans, side: .new),
+                totalAdditions: additions,
+                totalDeletions: deletions,
+                startLineNumber: hunk.newRange.lowerBound,
+                fullDiskPath: fileURL.path,
+                diskFileLineCount: currentLines.count,
+                isLazySlice: true
+            )
+            multiBuffer.addBuffer(buffer)
+            multiBuffer.addExcerpt(Excerpt(
+                bufferId: buffer.id,
+                filePath: "MultipleHunks.swift",
+                fileStatus: .modified,
+                bufferRange: 0..<buffer.lineCount,
+                hunk: hunk
+            ))
+            hunkBuffers.append(buffer)
+        }
+
+        let targetBuffer = try XCTUnwrap(hunkBuffers.last)
+        let rowInLastHunk = 4 // "/// New parser"
+        let multiBufferRow = hunkBuffers.dropLast().reduce(0) { $0 + $1.lineCount } + rowInLastHunk
+        let insertionPoint = MultiBufferPoint(row: multiBufferRow, column: "/// New parser".count)
+        multiBuffer.replace(range: insertionPoint..<insertionPoint, with: "1")
+
+        XCTAssertEqual(targetBuffer.baselineLines, originalLines)
+        XCTAssertEqual(multiBuffer.buffers.count, 1, "All excerpts should share the promoted full-file buffer")
+        XCTAssertTrue(multiBuffer.excerpts.allSatisfy { $0.bufferId == targetBuffer.id })
+
+        let displayMap = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
+        let visibleCode = (0..<displayMap.codeLineCount).compactMap { displayMap.codeInfo(for: $0) }
+        XCTAssertEqual(visibleCode.filter { $0.diffKind == .added }.count, 8)
+        XCTAssertEqual(visibleCode.filter { $0.diffKind == .deleted }.count, 0)
+        XCTAssertEqual(visibleCode.first { $0.bufferRow == 19 }?.diffKind, .unchanged)
+        XCTAssertEqual(visibleCode.first { $0.bufferRow == 20 }?.diffKind, .unchanged)
+        XCTAssertEqual(visibleCode.first { $0.text == "/// New parser1" }?.diffKind, .added)
+    }
+
     func testLazyPromotionOnExpand() throws {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -546,6 +704,50 @@ final class MultiBufferTests: XCTestCase {
         // Bottom line has ExpandDown
         XCTAssertEqual(codeLines.last?.expandInfo?.direction, .down)
         XCTAssertEqual(codeLines.last?.expandInfo?.excerptIndex, 0)
+    }
+
+    func testLazyLocalLastHunkShowsExpandWithoutReadingFileLineCount() throws {
+        let visibleLines = (21...30).map { "line \($0)" }
+        let hunkLines = visibleLines.enumerated().map { offset, text in
+            DiffLine(kind: .unchanged, text: text, oldLineNumber: 21 + offset, newLineNumber: 21 + offset)
+        }
+        let hunk = DiffHunk(
+            oldRange: 21..<31,
+            newRange: 21..<31,
+            header: "@@ -21,10 +21,10 @@",
+            lines: hunkLines
+        )
+        let buffer = Buffer(
+            filePath: "LongFile.swift",
+            lines: visibleLines,
+            startLineNumber: 21,
+            fullDiskPath: "/path/is/intentionally/not/read/LongFile.swift",
+            diskFileLineCount: nil,
+            isLazySlice: true
+        )
+
+        let multiBuffer = MultiBuffer()
+        multiBuffer.addBuffer(buffer)
+        multiBuffer.addExcerpt(Excerpt(
+            bufferId: buffer.id,
+            filePath: "LongFile.swift",
+            fileStatus: .modified,
+            bufferRange: 0..<buffer.lineCount,
+            hunk: hunk
+        ))
+
+        let displayMap = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
+        let location = try XCTUnwrap(displayMap.excerptLocations.first)
+        XCTAssertNil(buffer.diskFileLineCount)
+        XCTAssertEqual(location.bottomHidden, 0)
+        XCTAssertTrue(location.hasBottomGap)
+        XCTAssertEqual(displayMap.codeLines.last?.expandInfo?.direction, .down)
+        let bottomGap = displayMap.displayLines.compactMap { line -> DisplayFoldGapInfo? in
+            guard case .foldGap(let info) = line, !info.isTopGap else { return nil }
+            return info
+        }.first
+        XCTAssertEqual(bottomGap?.hiddenCount, 0)
+        XCTAssertEqual(bottomGap?.isCountKnown, false, "Unknown tails must not show a fake hidden-line count")
     }
 
     func testExcerptExpansionAndMerging() {

@@ -36,6 +36,8 @@ public final class SyntaxHighlighter: @unchecked Sendable {
     }
 
     private var cache: [CacheKey: NSAttributedString] = [:]
+    private var cacheKeys: [CacheKey] = []
+    private let maxEntries = 1000
     private let cacheLock = NSLock()
 
     private let swiftKeywords: Set<String> = [
@@ -65,7 +67,8 @@ public final class SyntaxHighlighter: @unchecked Sendable {
 
     public func clearCache() {
         cacheLock.lock()
-        cache.removeAll()
+        cache.removeAll(keepingCapacity: false)
+        cacheKeys.removeAll(keepingCapacity: false)
         cacheLock.unlock()
     }
 
@@ -108,9 +111,12 @@ public final class SyntaxHighlighter: @unchecked Sendable {
         }
 
         cacheLock.lock()
-        if cache.count < 10000 {
-            cache[key] = attr
+        if cacheKeys.count >= maxEntries {
+            let evicted = cacheKeys.removeFirst()
+            cache.removeValue(forKey: evicted)
         }
+        cacheKeys.append(key)
+        cache[key] = attr
         cacheLock.unlock()
 
         return attr

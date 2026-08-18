@@ -1,13 +1,13 @@
 import Foundation
 
-/// Word-level and character-level diff calculator for intra-line highlighting
+/// Word-level and character-level diff calculator for intra-line highlighting (Zero-Allocation)
 public final class WordDiffEngine: Sendable {
     public static let shared = WordDiffEngine()
 
     public init() {}
 
     public struct Token: Sendable {
-        public let text: String
+        public let hash: UInt32
         public let range: Range<Int>
     }
 
@@ -24,7 +24,7 @@ public final class WordDiffEngine: Sendable {
             return (oldR, newR)
         }
 
-        let lcs = computeLCS(oldTokens.map(\.text), newTokens.map(\.text))
+        let lcs = computeLCS(oldTokens.map(\.hash), newTokens.map(\.hash))
 
         var oldDiffs: [Range<Int>] = []
         var newDiffs: [Range<Int>] = []
@@ -35,13 +35,13 @@ public final class WordDiffEngine: Sendable {
 
         while oldIdx < oldTokens.count || newIdx < newTokens.count {
             if lcsIdx < lcs.count && oldIdx < oldTokens.count && newIdx < newTokens.count &&
-                oldTokens[oldIdx].text == lcs[lcsIdx] && newTokens[newIdx].text == lcs[lcsIdx] {
+                oldTokens[oldIdx].hash == lcs[lcsIdx] && newTokens[newIdx].hash == lcs[lcsIdx] {
                 oldIdx += 1
                 newIdx += 1
                 lcsIdx += 1
             } else {
                 let oldStart = oldIdx
-                while oldIdx < oldTokens.count && (lcsIdx >= lcs.count || oldTokens[oldIdx].text != lcs[lcsIdx]) {
+                while oldIdx < oldTokens.count && (lcsIdx >= lcs.count || oldTokens[oldIdx].hash != lcs[lcsIdx]) {
                     oldIdx += 1
                 }
                 if oldIdx > oldStart {
@@ -51,7 +51,7 @@ public final class WordDiffEngine: Sendable {
                 }
 
                 let newStart = newIdx
-                while newIdx < newTokens.count && (lcsIdx >= lcs.count || newTokens[newIdx].text != lcs[lcsIdx]) {
+                while newIdx < newTokens.count && (lcsIdx >= lcs.count || newTokens[newIdx].hash != lcs[lcsIdx]) {
                     newIdx += 1
                 }
                 if newIdx > newStart {
@@ -62,10 +62,10 @@ public final class WordDiffEngine: Sendable {
 
                 // Safety guarantee: always advance to prevent any infinite loop
                 if oldIdx == oldStart && newIdx == newStart {
-                    if oldIdx < oldTokens.count && (lcsIdx >= lcs.count || oldTokens[oldIdx].text != lcs[lcsIdx]) {
+                    if oldIdx < oldTokens.count && (lcsIdx >= lcs.count || oldTokens[oldIdx].hash != lcs[lcsIdx]) {
                         oldDiffs.append(oldTokens[oldIdx].range)
                         oldIdx += 1
-                    } else if newIdx < newTokens.count && (lcsIdx >= lcs.count || newTokens[newIdx].text != lcs[lcsIdx]) {
+                    } else if newIdx < newTokens.count && (lcsIdx >= lcs.count || newTokens[newIdx].hash != lcs[lcsIdx]) {
                         newDiffs.append(newTokens[newIdx].range)
                         newIdx += 1
                     } else {
@@ -88,7 +88,7 @@ public final class WordDiffEngine: Sendable {
         return (oldDiffs, newDiffs)
     }
 
-    /// Splits text into word/punctuation/whitespace tokens with character offsets
+    /// Splits text into word/punctuation/whitespace tokens with character offsets and 32-bit FNV-1a hashes
     public func tokenize(_ text: String) -> [Token] {
         var tokens: [Token] = []
         let chars = Array(text)
@@ -99,27 +99,36 @@ public final class WordDiffEngine: Sendable {
             let start = i
             let ch = chars[i]
 
+            var h: UInt32 = 2166136261
             if ch.isWhitespace {
                 while i < count && chars[i].isWhitespace {
+                    if let scalar = chars[i].unicodeScalars.first?.value {
+                        h = (h ^ scalar) &* 16777619
+                    }
                     i += 1
                 }
             } else if ch.isLetter || ch.isNumber || ch == "_" {
                 while i < count && (chars[i].isLetter || chars[i].isNumber || chars[i] == "_") {
+                    if let scalar = chars[i].unicodeScalars.first?.value {
+                        h = (h ^ scalar) &* 16777619
+                    }
                     i += 1
                 }
             } else {
+                if let scalar = ch.unicodeScalars.first?.value {
+                    h = (h ^ scalar) &* 16777619
+                }
                 i += 1
             }
 
-            let tokenStr = String(chars[start..<i])
-            tokens.append(Token(text: tokenStr, range: start..<i))
+            tokens.append(Token(hash: h, range: start..<i))
         }
 
         return tokens
     }
 
-    /// Computes Longest Common Subsequence of tokens (capped at 200 tokens) using a flat 1D buffer
-    private func computeLCS(_ a: [String], _ b: [String]) -> [String] {
+    /// Computes Longest Common Subsequence of 32-bit token hashes (capped at 200 tokens) using a flat 1D buffer
+    private func computeLCS(_ a: [UInt32], _ b: [UInt32]) -> [UInt32] {
         let n = min(a.count, 200)
         let m = min(b.count, 200)
         guard n > 0 && m > 0 else { return [] }
@@ -139,7 +148,7 @@ public final class WordDiffEngine: Sendable {
             }
         }
 
-        var lcs: [String] = []
+        var lcs: [UInt32] = []
         lcs.reserveCapacity(min(n, m))
         var i = n
         var j = m

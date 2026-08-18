@@ -632,6 +632,7 @@ public struct MainWindowView: View {
                             self.fileDiffs = firstBatch
                             self.appendFileDiffsToMultiBuffer(firstBatch)
                             self.displayMap.rebuild()
+                            self.displayMap.markContentLoaded()
                             if let first = firstBatch.first {
                                 self.selectedFilePath = first.displayPath
                             }
@@ -659,6 +660,7 @@ public struct MainWindowView: View {
                     self.fileDiffs = finalFiles
                     self.appendFileDiffsToMultiBuffer(finalFiles)
                     self.displayMap.rebuild()
+                    self.displayMap.markContentLoaded()
 
                     self.isStreaming = false
                     self.isReloading = false
@@ -684,37 +686,46 @@ public struct MainWindowView: View {
         remoteLoadTask = task
     }
 
-    private func appendFileDiffsToMultiBuffer(_ files: [FileDiff]) {
+    private func appendFileDiffsToMultiBuffer(_ files: [FileDiff], rawData: Data? = nil) {
         for file in files {
-            var fileAdds: Int = 0
-            var fileDels: Int = 0
-            var oldLines: [String] = []
-
-            for hunk in file.hunks {
-                for line in hunk.lines {
-                    if line.kind == .added {
-                        fileAdds += 1
-                    } else if line.kind == .deleted {
-                        fileDels += 1
-                        oldLines.append(line.text)
-                    } else if line.kind == .unchanged {
-                        oldLines.append(line.text)
-                    }
-                }
-            }
+            let fileAdds = file.additions
+            let fileDels = file.deletions
 
             if file.status == .deleted {
-                let buffer = Buffer(
-                    filePath: file.displayPath,
-                    lines: [],
-                    language: Buffer.detectLanguage(for: file.displayPath),
-                    baselineLines: oldLines,
-                    totalAdditions: 0,
-                    totalDeletions: fileDels,
-                    startLineNumber: 1,
-                    fullDiskPath: nil,
-                    diskFileLineCount: 0
-                )
+                let hunk = file.hunks.first
+                let buffer: Buffer
+                if let rawData = rawData, let h = hunk, !h.lineSpans.isEmpty {
+                    buffer = Buffer(
+                        filePath: file.displayPath,
+                        storage: .makeDiffFlat(data: rawData, spans: h.lineSpans, side: .old),
+                        language: Buffer.detectLanguage(for: file.displayPath),
+                        totalAdditions: 0,
+                        totalDeletions: fileDels,
+                        startLineNumber: 1,
+                        fullDiskPath: nil,
+                        diskFileLineCount: h.lineSpans.count - h.addedLineCount
+                    )
+                } else {
+                    var oldLines: [String] = []
+                    for hunk in file.hunks {
+                        for line in hunk.lines {
+                            if line.kind == .deleted || line.kind == .unchanged {
+                                oldLines.append(line.text)
+                            }
+                        }
+                    }
+                    buffer = Buffer(
+                        filePath: file.displayPath,
+                        lines: [],
+                        language: Buffer.detectLanguage(for: file.displayPath),
+                        baselineLines: oldLines,
+                        totalAdditions: 0,
+                        totalDeletions: fileDels,
+                        startLineNumber: 1,
+                        fullDiskPath: nil,
+                        diskFileLineCount: oldLines.count
+                    )
+                }
                 buffer.isFullFile = true
                 multiBuffer.addBuffer(buffer)
 
@@ -723,7 +734,7 @@ public struct MainWindowView: View {
                     filePath: file.displayPath,
                     fileStatus: .deleted,
                     bufferRange: 0..<0,
-                    hunk: file.hunks.first,
+                    hunk: hunk,
                     isCollapsed: false,
                     isFileStart: true
                 )
@@ -755,21 +766,38 @@ public struct MainWindowView: View {
                 multiBuffer.addExcerpt(excerpt)
             } else {
                 for (hIdx, hunk) in file.hunks.enumerated() {
-                    let newFileLines = hunk.lines.filter { $0.kind == .added || $0.kind == .unchanged }.map(\.text)
-                    let oldBaselineLines = hunk.lines.filter { $0.kind == .deleted || $0.kind == .unchanged }.map(\.text)
                     let startLine = hunk.newRange.lowerBound
+                    let isLazy = (file.status != .added || file.hunks.count > 1)
+                    let buffer: Buffer
 
-                    let buffer = Buffer(
-                        filePath: file.displayPath,
-                        lines: newFileLines,
-                        language: Buffer.detectLanguage(for: file.displayPath),
-                        baselineLines: oldBaselineLines,
-                        totalAdditions: fileAdds,
-                        totalDeletions: fileDels,
-                        startLineNumber: startLine,
-                        fullDiskPath: nil,
-                        diskFileLineCount: nil
-                    )
+                    if let rawData = rawData, !hunk.lineSpans.isEmpty {
+                        buffer = Buffer(
+                            filePath: file.displayPath,
+                            storage: .makeDiffFlat(data: rawData, spans: hunk.lineSpans, side: .new),
+                            language: Buffer.detectLanguage(for: file.displayPath),
+                            totalAdditions: fileAdds,
+                            totalDeletions: fileDels,
+                            startLineNumber: startLine,
+                            fullDiskPath: nil,
+                            diskFileLineCount: nil,
+                            isLazySlice: isLazy
+                        )
+                    } else {
+                        let newFileLines = hunk.lines.filter { $0.kind == .added || $0.kind == .unchanged }.map(\.text)
+                        let oldBaselineLines = hunk.lines.filter { $0.kind == .deleted || $0.kind == .unchanged }.map(\.text)
+                        buffer = Buffer(
+                            filePath: file.displayPath,
+                            lines: newFileLines,
+                            language: Buffer.detectLanguage(for: file.displayPath),
+                            baselineLines: oldBaselineLines,
+                            totalAdditions: fileAdds,
+                            totalDeletions: fileDels,
+                            startLineNumber: startLine,
+                            fullDiskPath: nil,
+                            diskFileLineCount: nil,
+                            isLazySlice: isLazy
+                        )
+                    }
                     buffer.isFullFile = (file.status == .added && file.hunks.count == 1)
                     multiBuffer.addBuffer(buffer)
 
@@ -820,7 +848,7 @@ public struct MainWindowView: View {
             let isGit = self.isGitRepository(at: currentDir)
             let branch = isGit ? self.fetchCurrentBranch(at: currentDir) : ""
             let branches = isGit ? self.fetchAvailableBranches(at: currentDir) : (local: [], remote: [])
-            let files = isGit ? self.fetchGitDiffFiles(at: currentDir, target: self.comparisonTarget) : []
+            let (files, rawData) = isGit ? self.fetchGitDiffFiles(at: currentDir, target: self.comparisonTarget) : (files: [], data: nil)
 
             DispatchQueue.main.async {
                 guard self.loadGeneration == generation else { return }
@@ -837,7 +865,7 @@ public struct MainWindowView: View {
                 RecentSourcesManager.shared.addLocalPath(currentDir)
                 if !files.isEmpty {
                     self.repoStatus = .hasChanges
-                    self.loadDiff(files: files)
+                    self.loadDiff(files: files, rawData: rawData)
                 } else {
                     self.repoStatus = .clean
                     self.loadDiff(files: [])
@@ -865,7 +893,7 @@ public struct MainWindowView: View {
         return (local, remote)
     }
 
-    private func fetchGitDiffFiles(at path: String, target: ComparisonTarget = .workingTree) -> [FileDiff] {
+    private func fetchGitDiffFiles(at path: String, target: ComparisonTarget = .workingTree) -> (files: [FileDiff], data: Data?) {
         let argumentSets: [[String]]
         switch target {
         case .workingTree:
@@ -884,21 +912,26 @@ public struct MainWindowView: View {
                 ["-C", path, "diff", branch]
             ]
         case .remote:
-            return []
+            return (files: [], data: nil)
         }
 
         var allFiles: [FileDiff] = []
+        var rawData: Data? = nil
         for args in argumentSets {
-            if let files = try? GitStreamReader.shared.readGitDiff(arguments: args), !files.isEmpty {
-                allFiles = files
-                break
+            if let data = runGitData(arguments: args) {
+                let files = GitDiffParser.shared.parseZeroCopy(data: data)
+                if !files.isEmpty {
+                    allFiles = files
+                    rawData = data
+                    break
+                }
             }
         }
         if case .workingTree = target {
             let untracked = fetchUntrackedFiles(at: path)
             allFiles.append(contentsOf: untracked)
         }
-        return allFiles
+        return (files: allFiles, data: rawData)
     }
 
     private func fetchUntrackedFiles(at path: String) -> [FileDiff] {
@@ -918,7 +951,9 @@ public struct MainWindowView: View {
                 oldRange: 0..<0,
                 newRange: 1..<(lines.count + 1),
                 header: "",
-                lines: diffLines
+                lines: diffLines,
+                addedLineCount: lines.count,
+                deletedLineCount: 0
             )
             let fileDiff = FileDiff(
                 oldPath: relPath,
@@ -932,6 +967,13 @@ public struct MainWindowView: View {
     }
 
     private func runGit(arguments: [String]) -> String? {
+        if let data = runGitData(arguments: arguments) {
+            return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return nil
+    }
+
+    private func runGitData(arguments: [String]) -> Data? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         process.arguments = arguments
@@ -943,7 +985,7 @@ public struct MainWindowView: View {
             try process.run()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
-            return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return data.isEmpty ? nil : data
         } catch {
             return nil
         }
@@ -952,11 +994,16 @@ public struct MainWindowView: View {
     // MARK: - Diff Loading & MultiBuffer Assembly
 
     public func loadDiff(text: String) {
-        let parsedFiles = GitDiffParser.shared.parse(diffText: text)
-        loadDiff(files: parsedFiles)
+        let data = Data(text.utf8)
+        loadDiff(data: data)
     }
 
-    public func loadDiff(files parsedFiles: [FileDiff]) {
+    public func loadDiff(data: Data) {
+        let parsedFiles = GitDiffParser.shared.parseZeroCopy(data: data)
+        loadDiff(files: parsedFiles, rawData: data)
+    }
+
+    public func loadDiff(files parsedFiles: [FileDiff], rawData: Data? = nil) {
         self.fileDiffs = parsedFiles
 
         multiBuffer.clear()
@@ -1009,25 +1056,40 @@ public struct MainWindowView: View {
                 )
                 multiBuffer.addExcerpt(excerpt)
             } else if file.status == .deleted {
-                var oldLines: [String] = []
-                for hunk in file.hunks {
-                    for line in hunk.lines {
-                        if line.kind == .deleted || line.kind == .unchanged {
-                            oldLines.append(line.text)
+                let hunk = file.hunks.first
+                let buffer: Buffer
+                if let rawData = rawData, let h = hunk, !h.lineSpans.isEmpty {
+                    buffer = Buffer(
+                        filePath: file.displayPath,
+                        storage: .makeDiffFlat(data: rawData, spans: h.lineSpans, side: .old),
+                        language: Buffer.detectLanguage(for: file.displayPath),
+                        totalAdditions: 0,
+                        totalDeletions: fileDels,
+                        startLineNumber: 1,
+                        fullDiskPath: fullPath,
+                        diskFileLineCount: h.lineSpans.count - h.addedLineCount
+                    )
+                } else {
+                    var oldLines: [String] = []
+                    for hunk in file.hunks {
+                        for line in hunk.lines {
+                            if line.kind == .deleted || line.kind == .unchanged {
+                                oldLines.append(line.text)
+                            }
                         }
                     }
+                    buffer = Buffer(
+                        filePath: file.displayPath,
+                        lines: [],
+                        language: Buffer.detectLanguage(for: file.displayPath),
+                        baselineLines: oldLines,
+                        totalAdditions: 0,
+                        totalDeletions: fileDels,
+                        startLineNumber: 1,
+                        fullDiskPath: fullPath,
+                        diskFileLineCount: oldLines.count
+                    )
                 }
-                let buffer = Buffer(
-                    filePath: file.displayPath,
-                    lines: [],
-                    language: Buffer.detectLanguage(for: file.displayPath),
-                    baselineLines: oldLines,
-                    totalAdditions: 0,
-                    totalDeletions: fileDels,
-                    startLineNumber: 1,
-                    fullDiskPath: fullPath,
-                    diskFileLineCount: oldLines.count
-                )
                 buffer.isFullFile = true
                 multiBuffer.addBuffer(buffer)
 
@@ -1036,30 +1098,45 @@ public struct MainWindowView: View {
                     filePath: file.displayPath,
                     fileStatus: .deleted,
                     bufferRange: 0..<0,
-                    hunk: file.hunks.first,
+                    hunk: hunk,
                     isCollapsed: false,
                     isFileStart: true
                 )
                 multiBuffer.addExcerpt(excerpt)
             } else {
                 for (hIdx, hunk) in file.hunks.enumerated() {
-                    let newFileLines = hunk.lines.filter { $0.kind == .added || $0.kind == .unchanged }.map(\.text)
-                    let oldBaselineLines = hunk.lines.filter { $0.kind == .deleted || $0.kind == .unchanged }.map(\.text)
                     let startLine = hunk.newRange.lowerBound
-
                     let isLazy = (file.status != .added || file.hunks.count > 1)
-                    let buffer = Buffer(
-                        filePath: file.displayPath,
-                        lines: newFileLines,
-                        language: Buffer.detectLanguage(for: file.displayPath),
-                        baselineLines: oldBaselineLines,
-                        totalAdditions: fileAdds,
-                        totalDeletions: fileDels,
-                        startLineNumber: startLine,
-                        fullDiskPath: fullPath,
-                        diskFileLineCount: nil,
-                        isLazySlice: isLazy
-                    )
+                    let buffer: Buffer
+
+                    if let rawData = rawData, !hunk.lineSpans.isEmpty {
+                        buffer = Buffer(
+                            filePath: file.displayPath,
+                            storage: .makeDiffFlat(data: rawData, spans: hunk.lineSpans, side: .new),
+                            language: Buffer.detectLanguage(for: file.displayPath),
+                            totalAdditions: fileAdds,
+                            totalDeletions: fileDels,
+                            startLineNumber: startLine,
+                            fullDiskPath: fullPath,
+                            diskFileLineCount: nil,
+                            isLazySlice: isLazy
+                        )
+                    } else {
+                        let newFileLines = hunk.lines.filter { $0.kind == .added || $0.kind == .unchanged }.map(\.text)
+                        let oldBaselineLines = hunk.lines.filter { $0.kind == .deleted || $0.kind == .unchanged }.map(\.text)
+                        buffer = Buffer(
+                            filePath: file.displayPath,
+                            lines: newFileLines,
+                            language: Buffer.detectLanguage(for: file.displayPath),
+                            baselineLines: oldBaselineLines,
+                            totalAdditions: fileAdds,
+                            totalDeletions: fileDels,
+                            startLineNumber: startLine,
+                            fullDiskPath: fullPath,
+                            diskFileLineCount: nil,
+                            isLazySlice: isLazy
+                        )
+                    }
                     buffer.isFullFile = (file.status == .added && file.hunks.count == 1)
                     multiBuffer.addBuffer(buffer)
 
@@ -1078,6 +1155,7 @@ public struct MainWindowView: View {
         }
 
         displayMap.rebuild()
+        displayMap.markContentLoaded()
     }
 
     private func openGitRepositoryFolder() {
