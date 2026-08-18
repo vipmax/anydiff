@@ -54,14 +54,21 @@ public struct EditorHostView: NSViewRepresentable {
     }
 
     public func updateNSView(_ editorView: CustomMultiBufferEditorView, context: Context) {
+        context.coordinator.parent = self
+
         if editorView.displayMap !== displayMap {
             editorView.displayMap = displayMap
         } else {
             editorView.syncLayoutIfNeeded()
         }
+
         if context.coordinator.lastLoadRevision != displayMap.loadRevision {
             context.coordinator.lastLoadRevision = displayMap.loadRevision
-            editorView.resetCursorToFirstVisibleLine()
+            if let state = context.coordinator.savedViewState {
+                editorView.restoreViewState(state)
+            } else {
+                editorView.resetCursorToFirstVisibleLine()
+            }
         }
         if editorView.theme.id != theme.id {
             editorView.theme = theme
@@ -77,6 +84,7 @@ public struct EditorHostView: NSViewRepresentable {
             context.coordinator.lastScrolledFilePath = path
             DispatchQueue.main.async {
                 editorView.scrollToFilePath(path)
+                context.coordinator.savedViewState = editorView.captureViewState()
             }
         }
     }
@@ -86,17 +94,33 @@ public struct EditorHostView: NSViewRepresentable {
         weak var editorView: CustomMultiBufferEditorView?
         var lastScrolledFilePath: String? = nil
         var lastLoadRevision: UInt64 = 0
+        var savedViewState: EditorViewState? = nil
 
         init(_ parent: EditorHostView) {
             self.parent = parent
         }
 
         public func editorDidChangeCursor(location: ExcerptLocation?, point: MultiBufferPoint) {
+            if let ev = editorView {
+                savedViewState = ev.captureViewState()
+            }
+            if let path = location?.filePath {
+                lastScrolledFilePath = path
+            }
             parent.onCursorChange(location, point)
         }
 
         public func editorDidRequestAddComment(filePath: String, lineNumber: Int) {
             parent.onAddCommentRequest(filePath, lineNumber)
+        }
+
+        public func editorDidScroll() {
+            if let ev = editorView {
+                savedViewState = ev.captureViewState()
+                if let file = savedViewState?.selectedFilePath {
+                    lastScrolledFilePath = file
+                }
+            }
         }
     }
 }

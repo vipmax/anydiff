@@ -1,3 +1,10 @@
+//
+//  main.swift
+//  AnyDiff — High Performance MultiBuffer Git Diff Viewer & Review Tool
+
+//  Created for macOS with native FSEvents Watch Mode & Zero-Copy SIMD parsing.
+//  Copyright © 2026 AnyDiff. All rights reserved.
+
 import SwiftUI
 import AppKit
 import AnyDiffUI
@@ -47,7 +54,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func setupMainMenu() {
         let mainMenu = NSMenu()
 
-        // App Menu
+        // App Menu (Standard Application metadata & quit)
         let appMenuItem = NSMenuItem()
         let appMenu = NSMenu()
         appMenu.addItem(NSMenuItem(title: "About AnyDiff", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: ""))
@@ -66,8 +73,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let openBrowserItem = NSMenuItem(title: "Open in Browser", action: #selector(openInBrowserAction(_:)), keyEquivalent: "B")
         openBrowserItem.keyEquivalentModifierMask = [.command, .shift]
         fileMenu.addItem(openBrowserItem)
+        let openTerminalItem = NSMenuItem(title: "Open in Terminal", action: #selector(openInTerminalAction(_:)), keyEquivalent: "T")
+        openTerminalItem.keyEquivalentModifierMask = [.command, .shift]
+        fileMenu.addItem(openTerminalItem)
         fileMenu.addItem(NSMenuItem.separator())
         fileMenu.addItem(NSMenuItem(title: "Reload Diff", action: #selector(reloadDiffAction(_:)), keyEquivalent: "r"))
+        let watchItem = NSMenuItem(title: "Toggle Watch Mode", action: #selector(toggleWatchModeAction(_:)), keyEquivalent: "w")
+        watchItem.keyEquivalentModifierMask = [.command, .option]
+        fileMenu.addItem(watchItem)
         fileMenu.addItem(NSMenuItem.separator())
         fileMenu.addItem(NSMenuItem(title: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w"))
         fileMenuItem.submenu = fileMenu
@@ -82,6 +95,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         editMenu.addItem(NSMenuItem.separator())
         editMenu.addItem(NSMenuItem(title: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x"))
         editMenu.addItem(NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c"))
+        let copyDiffItem = NSMenuItem(title: "Copy Raw Git Diff", action: #selector(copyRawDiffAction(_:)), keyEquivalent: "C")
+        copyDiffItem.keyEquivalentModifierMask = [.command, .shift]
+        editMenu.addItem(copyDiffItem)
         editMenu.addItem(NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v"))
         editMenu.addItem(NSMenuItem(title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
         editMenuItem.submenu = editMenu
@@ -91,6 +107,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let viewMenuItem = NSMenuItem()
         let viewMenu = NSMenu(title: "View")
         viewMenu.addItem(NSMenuItem(title: "Toggle Full Screen", action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f"))
+        viewMenu.addItem(NSMenuItem.separator())
+        viewMenu.addItem(NSMenuItem(title: "Zoom In", action: #selector(zoomInAction(_:)), keyEquivalent: "+"))
+        viewMenu.addItem(NSMenuItem(title: "Zoom Out", action: #selector(zoomOutAction(_:)), keyEquivalent: "-"))
+        viewMenu.addItem(NSMenuItem(title: "Actual Size (Reset Zoom)", action: #selector(resetZoomAction(_:)), keyEquivalent: "0"))
         viewMenuItem.submenu = viewMenu
         mainMenu.addItem(viewMenuItem)
 
@@ -109,8 +129,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.post(name: Notification.Name("anyDiffOpenInBrowser"), object: nil)
     }
 
+    @objc func openInTerminalAction(_ sender: Any?) {
+        NotificationCenter.default.post(name: Notification.Name("anyDiffOpenInTerminal"), object: nil)
+    }
+
     @objc func reloadDiffAction(_ sender: Any?) {
         NotificationCenter.default.post(name: Notification.Name("anyDiffReloadDiff"), object: nil)
+    }
+
+    @objc func toggleWatchModeAction(_ sender: Any?) {
+        NotificationCenter.default.post(name: Notification.Name("anyDiffToggleWatchMode"), object: nil)
+    }
+
+    @objc func copyRawDiffAction(_ sender: Any?) {
+        NotificationCenter.default.post(name: Notification.Name("anyDiffCopyRawDiff"), object: nil)
+    }
+
+    @objc func zoomInAction(_ sender: Any?) {
+        NotificationCenter.default.post(name: Notification.Name("anyDiffZoomIn"), object: nil)
+    }
+
+    @objc func zoomOutAction(_ sender: Any?) {
+        NotificationCenter.default.post(name: Notification.Name("anyDiffZoomOut"), object: nil)
+    }
+
+    @objc func resetZoomAction(_ sender: Any?) {
+        NotificationCenter.default.post(name: Notification.Name("anyDiffResetZoom"), object: nil)
     }
 
     private var cachedIcon: NSImage?

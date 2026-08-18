@@ -3,6 +3,44 @@ import XCTest
 
 final class WordDiffTests: XCTestCase {
 
+    func testZeroCopyHunkHasWordDiffOnFirstDisplay() throws {
+        let patch = """
+        diff --git a/justfile b/justfile
+        index 1111111..2222222 100644
+        --- a/justfile
+        +++ b/justfile
+        @@ -32,1 +32,1 @@
+        -# Run the test suite in Debug configuration.
+        +# Run fast unit tests in Debug configuration.
+        """
+        let data = Data(patch.utf8)
+        let file = try XCTUnwrap(GitDiffParser.shared.parseZeroCopy(data: data).first)
+        let hunk = try XCTUnwrap(file.hunks.first)
+        XCTAssertFalse(hunk.lineSpans.isEmpty)
+
+        let buffer = Buffer(
+            filePath: "justfile",
+            storage: .makeDiffFlat(data: data, spans: hunk.lineSpans, side: .new),
+            startLineNumber: hunk.newRange.lowerBound,
+            isLazySlice: true
+        )
+        let multiBuffer = MultiBuffer()
+        multiBuffer.addBuffer(buffer)
+        multiBuffer.addExcerpt(Excerpt(
+            bufferId: buffer.id,
+            filePath: "justfile",
+            bufferRange: 0..<buffer.lineCount,
+            hunk: hunk
+        ))
+        let displayMap = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
+        let lines = (0..<displayMap.codeLineCount).compactMap { displayMap.codeInfo(for: $0) }
+        let deleted = try XCTUnwrap(lines.first { $0.diffKind == .deleted })
+        let added = try XCTUnwrap(lines.first { $0.diffKind == .added })
+
+        XCTAssertFalse(deleted.wordDiffRanges.isEmpty)
+        XCTAssertFalse(added.wordDiffRanges.isEmpty)
+    }
+
     func testLiveDiffPreservesAppendBoundaryWithRepeatedClosingLines() {
         let oldLines = [
             "let top = 1",

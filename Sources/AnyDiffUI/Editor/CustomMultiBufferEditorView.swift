@@ -7,6 +7,11 @@ import AnyDiffCore
 public protocol CustomMultiBufferEditorDelegate: AnyObject {
     func editorDidChangeCursor(location: ExcerptLocation?, point: MultiBufferPoint)
     func editorDidRequestAddComment(filePath: String, lineNumber: Int)
+    func editorDidScroll()
+}
+
+public extension CustomMultiBufferEditorDelegate {
+    func editorDidScroll() {}
 }
 
 /// A high-performance, virtualized MultiBuffer Code Reviewer & Editor View built with CoreText
@@ -58,6 +63,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     // Virtual Scrolling
     public var scrollOffsetY: CGFloat = 0 {
         didSet {
+            delegate?.editorDidScroll()
             needsDisplay = true
         }
     }
@@ -162,6 +168,131 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         cursorPoint = MultiBufferPoint(row: firstRow, column: 0)
         scrollOffsetY = 0
         scrollOffsetX = 0
+        focusAfterLoadIfPossible()
+    }
+
+    /// Captures the active cursor position, source line numbers, and top visible line scroll anchor
+    public func captureViewState() -> EditorViewState {
+        guard let dm = displayMap else {
+            return EditorViewState(cursorAnchor: nil, scrollAnchor: nil, scrollOffsetX: scrollOffsetX, selectedFilePath: nil)
+        }
+
+        // 1. Capture Cursor Anchor
+        var cursorAnchor: EditorCursorAnchor? = nil
+        if let info = dm.codeInfo(for: cursorPoint.row),
+           info.excerptIndex >= 0 && info.excerptIndex < dm.multiBuffer.excerpts.count {
+            let excerpt = dm.multiBuffer.excerpts[info.excerptIndex]
+            let lineNum = info.newLineNumber ?? info.oldLineNumber ?? 1
+            cursorAnchor = EditorCursorAnchor(
+                filePath: excerpt.filePath,
+                lineNumber: lineNum,
+                column: cursorPoint.column
+            )
+        }
+
+        // 2. Capture Scroll Anchor (top visible line on screen)
+        var scrollAnchor: EditorScrollAnchor? = nil
+        let topLineIdx = lineIndex(atY: scrollOffsetY)
+        if topLineIdx >= 0 && topLineIdx < dm.displayLineCount {
+            let lineY = yOffset(forDisplayLineIndex: topLineIdx)
+            let pixelOffset = scrollOffsetY - lineY
+            if let displayL = dm.displayLine(at: topLineIdx) {
+                switch displayL {
+                case .excerptHeader(let hInfo):
+                    scrollAnchor = EditorScrollAnchor(
+                        filePath: hInfo.filePath,
+                        lineNumber: nil,
+                        isHeader: true,
+                        pixelOffsetInLine: pixelOffset
+                    )
+                case .code(let cInfo):
+                    if cInfo.excerptIndex >= 0 && cInfo.excerptIndex < dm.multiBuffer.excerpts.count {
+                        let file = dm.multiBuffer.excerpts[cInfo.excerptIndex].filePath
+                        let lineNum = cInfo.newLineNumber ?? cInfo.oldLineNumber
+                        scrollAnchor = EditorScrollAnchor(
+                            filePath: file,
+                            lineNumber: lineNum,
+                            isHeader: false,
+                            pixelOffsetInLine: pixelOffset
+                        )
+                    }
+                case .foldGap(let gInfo):
+                    if gInfo.excerptIndex >= 0 && gInfo.excerptIndex < dm.multiBuffer.excerpts.count {
+                        let file = dm.multiBuffer.excerpts[gInfo.excerptIndex].filePath
+                        scrollAnchor = EditorScrollAnchor(
+                            filePath: file,
+                            lineNumber: nil,
+                            isHeader: false,
+                            pixelOffsetInLine: pixelOffset
+                        )
+                    }
+                case .inlineComment(let cInfo):
+                    if cInfo.excerptIndex >= 0 && cInfo.excerptIndex < dm.multiBuffer.excerpts.count {
+                        let file = dm.multiBuffer.excerpts[cInfo.excerptIndex].filePath
+                        scrollAnchor = EditorScrollAnchor(
+                            filePath: file,
+                            lineNumber: cInfo.lineNumber,
+                            isHeader: false,
+                            pixelOffsetInLine: pixelOffset
+                        )
+                    }
+                }
+            }
+        }
+
+        let currentFile = cursorAnchor?.filePath ?? scrollAnchor?.filePath
+        return EditorViewState(
+            cursorAnchor: cursorAnchor,
+            scrollAnchor: scrollAnchor,
+            scrollOffsetX: scrollOffsetX,
+            selectedFilePath: currentFile
+        )
+    }
+
+    /// Restores the editor's cursor and viewport anchor across diff reloads
+    public func restoreViewState(_ state: EditorViewState) {
+        invalidateLayout()
+        syncLayoutIfNeeded()
+
+        guard let dm = displayMap, dm.displayLineCount > 0 else {
+            resetCursorToFirstVisibleLine()
+            return
+        }
+
+        // 1. Restore Cursor Anchor
+        var restoredCursor = false
+        if let cAnchor = state.cursorAnchor, let mbRow = dm.codeRow(forFilePath: cAnchor.filePath, lineNumber: cAnchor.lineNumber) {
+            let maxCol = dm.lineLength(at: mbRow)
+            let clampedCol = max(0, min(maxCol, cAnchor.column))
+            self.selectionAnchor = nil
+            self.cursorPoint = MultiBufferPoint(row: mbRow, column: clampedCol)
+            restoredCursor = true
+        }
+
+        // 2. Restore Scroll Position using Scroll Anchor (keeps viewport pinned)
+        var restoredScroll = false
+        if let sAnchor = state.scrollAnchor,
+           let targetLineIdx = dm.displayLineIndex(forFilePath: sAnchor.filePath, lineNumber: sAnchor.lineNumber, isHeader: sAnchor.isHeader) {
+            let targetY = yOffset(forDisplayLineIndex: targetLineIdx)
+            let maxScrollY = max(0, totalDocumentHeight - bounds.height)
+            self.scrollOffsetY = max(0, min(maxScrollY, targetY + sAnchor.pixelOffsetInLine))
+            self.scrollOffsetX = max(0, state.scrollOffsetX)
+            restoredScroll = true
+        }
+
+        if !restoredScroll {
+            if let path = state.selectedFilePath,
+               dm.displayLineIndex(forFilePath: path, lineNumber: nil, isHeader: false) != nil {
+                scrollToFilePath(path)
+            } else if !restoredCursor {
+                // The selected file may have disappeared (for example after
+                // a rename/delete). Never leave the viewport at an obsolete
+                // offset or silently keep a cursor in a missing anchor.
+                resetCursorToFirstVisibleLine()
+            }
+        }
+
+        needsDisplay = true
         focusAfterLoadIfPossible()
     }
 
@@ -2036,17 +2167,44 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         }
         let mb = displayMap.multiBuffer
 
-        let rangeToReplace = normalizedSelectionRange() ?? (cursorPoint..<cursorPoint)
+        var rangeToReplace = normalizedSelectionRange() ?? (cursorPoint..<cursorPoint)
+        let preservesAddedLineHunkShape = rangeToReplace.lowerBound.row == rangeToReplace.upperBound.row
+            && displayMap.codeInfo(for: rangeToReplace.lowerBound.row)?.diffKind == .added
         let affectedRows = rangeToReplace.lowerBound.row..<(rangeToReplace.upperBound.row + 1)
         if displayMap.isDeleted(rowRange: affectedRows) {
             NSSound.beep()
             return
         }
 
+        var promotedLazyBuffer = false
         if let initialLoc = displayMap.bufferLocation(for: rangeToReplace.lowerBound), initialLoc.buffer.isLazySlice {
-            mb.promoteBufferToFullFile(for: initialLoc.buffer.id)
+            let bufId = initialLoc.buffer.id
+            let fullFileRowOffset = max(0, initialLoc.buffer.startLineNumber - 1)
+            let startBufferPoint = BufferPoint(
+                row: fullFileRowOffset + initialLoc.point.row,
+                column: initialLoc.point.column
+            )
+            guard let initialEndLoc = displayMap.bufferLocation(for: rangeToReplace.upperBound),
+                  initialEndLoc.buffer.id == bufId else {
+                NSSound.beep()
+                return
+            }
+            let endBufferPoint = BufferPoint(
+                row: fullFileRowOffset + initialEndLoc.point.row,
+                column: initialEndLoc.point.column
+            )
+            mb.promoteBufferToFullFile(for: bufId)
             displayMap.rebuild()
             invalidateLayout()
+            guard let newVisualStart = displayMap.visualPoint(for: bufId, bufferPoint: startBufferPoint),
+                  let newVisualEnd = displayMap.visualPoint(for: bufId, bufferPoint: endBufferPoint) else {
+                NSSound.beep()
+                return
+            }
+            rangeToReplace = min(newVisualStart, newVisualEnd)..<max(newVisualStart, newVisualEnd)
+            cursorPoint = newVisualEnd
+            selectionAnchor = newVisualStart
+            promotedLazyBuffer = true
         }
 
         guard let startLoc = displayMap.bufferLocation(for: rangeToReplace.lowerBound),
@@ -2064,6 +2222,9 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         let newBufRange = buf.replace(start: oldStart, end: oldEnd, with: text)
         let lineDelta = (newBufRange.upperBound.row - oldEnd.row)
         updateExcerptsAfterEdit(bufferId: buf.id, excerptIndex: startLoc.excerptIndex, lineDelta: lineDelta)
+        if preservesAddedLineHunkShape && lineDelta == 0 {
+            mb.refreshStableHunkPresentation(for: buf.id)
+        }
 
         let edit = TextEdit(
             bufferId: buf.id,
@@ -2078,10 +2239,23 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         )
         mb.undoManager.push(transaction: transaction)
 
+        mb.recordSelfEdit(for: buf.filePath)
         mb.scheduleDebouncedSave(delayMs: 200)
 
         let excerptIdx = startLoc.excerptIndex
-        if let deltas = displayMap.rebuildExcerpt(at: excerptIdx) {
+        if promotedLazyBuffer {
+            // Promotion changes every excerpt for this file from slice-relative
+            // coordinates to full-file coordinates. The incremental layout still
+            // describes the old slices, so rebuild it atomically on the first edit.
+            displayMap.rebuild()
+            invalidateLayout()
+            syncLayoutIfNeeded()
+            if let newVisualPt = displayMap.visualPoint(for: buf.id, bufferPoint: newBufRange.upperBound) {
+                cursorPoint = newVisualPt
+            } else {
+                cursorPoint = MultiBufferPoint(row: rangeToReplace.lowerBound.row, column: newBufRange.upperBound.column)
+            }
+        } else if let deltas = displayMap.rebuildExcerpt(at: excerptIdx) {
             updateLayoutAfterExcerptRebuild(
                 excerptIdx: excerptIdx,
                 displayDelta: deltas.displayDelta,
@@ -2122,9 +2296,18 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         }
 
         if let initialLoc = displayMap.bufferLocation(for: cursorPoint), initialLoc.buffer.isLazySlice {
-            mb.promoteBufferToFullFile(for: initialLoc.buffer.id)
+            let bufId = initialLoc.buffer.id
+            let fullFileRowOffset = max(0, initialLoc.buffer.startLineNumber - 1)
+            let startBufferPoint = BufferPoint(
+                row: fullFileRowOffset + initialLoc.point.row,
+                column: initialLoc.point.column
+            )
+            mb.promoteBufferToFullFile(for: bufId)
             displayMap.rebuild()
             invalidateLayout()
+            if let newVisualPt = displayMap.visualPoint(for: bufId, bufferPoint: startBufferPoint) {
+                cursorPoint = newVisualPt
+            }
         }
 
         guard let loc = displayMap.bufferLocation(for: cursorPoint), !loc.isDeleted else {
@@ -2144,6 +2327,8 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             let edit = TextEdit(bufferId: buf.id, range: start..<newRange.upperBound, oldText: oldExact, newText: "")
             let tx = EditTransaction(edits: [edit], selectionBefore: cursorPoint..<cursorPoint, selectionAfter: nil)
             mb.undoManager.push(transaction: tx)
+
+            mb.recordSelfEdit(for: buf.filePath)
             mb.scheduleDebouncedSave(delayMs: 200)
 
             let excerptIdx = loc.excerptIndex
@@ -2181,6 +2366,8 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             let edit = TextEdit(bufferId: buf.id, range: start..<newRange.upperBound, oldText: oldExact, newText: "")
             let tx = EditTransaction(edits: [edit], selectionBefore: cursorPoint..<cursorPoint, selectionAfter: nil)
             mb.undoManager.push(transaction: tx)
+
+            mb.recordSelfEdit(for: buf.filePath)
             mb.scheduleDebouncedSave(delayMs: 200)
 
             let excerptIdx = loc.excerptIndex
@@ -2226,9 +2413,18 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         }
 
         if let initialLoc = displayMap.bufferLocation(for: cursorPoint), initialLoc.buffer.isLazySlice {
-            mb.promoteBufferToFullFile(for: initialLoc.buffer.id)
+            let bufId = initialLoc.buffer.id
+            let fullFileRowOffset = max(0, initialLoc.buffer.startLineNumber - 1)
+            let startBufferPoint = BufferPoint(
+                row: fullFileRowOffset + initialLoc.point.row,
+                column: initialLoc.point.column
+            )
+            mb.promoteBufferToFullFile(for: bufId)
             displayMap.rebuild()
             invalidateLayout()
+            if let newVisualPt = displayMap.visualPoint(for: bufId, bufferPoint: startBufferPoint) {
+                cursorPoint = newVisualPt
+            }
         }
 
         guard let loc = displayMap.bufferLocation(for: cursorPoint), !loc.isDeleted else {
@@ -2249,6 +2445,8 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             let edit = TextEdit(bufferId: buf.id, range: bPt..<newRange.upperBound, oldText: oldExact, newText: "")
             let tx = EditTransaction(edits: [edit], selectionBefore: cursorPoint..<cursorPoint, selectionAfter: nil)
             mb.undoManager.push(transaction: tx)
+
+            mb.recordSelfEdit(for: buf.filePath)
             mb.scheduleDebouncedSave(delayMs: 200)
 
             let excerptIdx = loc.excerptIndex
@@ -2281,6 +2479,8 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             let edit = TextEdit(bufferId: buf.id, range: bPt..<newRange.upperBound, oldText: oldExact, newText: "")
             let tx = EditTransaction(edits: [edit], selectionBefore: cursorPoint..<cursorPoint, selectionAfter: nil)
             mb.undoManager.push(transaction: tx)
+
+            mb.recordSelfEdit(for: buf.filePath)
             mb.scheduleDebouncedSave(delayMs: 200)
 
             let excerptIdx = loc.excerptIndex

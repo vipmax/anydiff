@@ -510,12 +510,23 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
             let clamped = max(0, requestedRange.lowerBound)..<min(totalCount, requestedRange.upperBound)
             guard !clamped.isEmpty else { return [] }
 
-            var currentBufferRow = bufferRow(beforeHunkLine: clamped.lowerBound, in: hunk)
+            // Small zero-copy hunks are materialized as a unit so adjacent
+            // deleted/added pairs receive word highlights on the first paint.
+            // Large hunks retain viewport-only materialization.
+            let materializedRange: Range<Int>
+            if !hunk.lineSpans.isEmpty && totalCount <= 4_096 {
+                materializedRange = 0..<totalCount
+            } else {
+                materializedRange = clamped
+            }
+            let hunkBufferBaseRow = buffer.isFullFile ? excerpt.bufferRange.lowerBound : 0
+            var currentBufferRow = hunkBufferBaseRow
+                + bufferRow(beforeHunkLine: materializedRange.lowerBound, in: hunk)
             var mappedLines: [(line: DiffLine, bufferRow: Int)] = []
-            mappedLines.reserveCapacity(clamped.count)
+            mappedLines.reserveCapacity(materializedRange.count)
 
             if !hunk.lineSpans.isEmpty {
-                for index in clamped {
+                for index in materializedRange {
                     let span = hunk.lineSpans[index]
                     let dLine = DiffLine(
                         kind: span.kind,
@@ -528,8 +539,13 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
                         currentBufferRow += 1
                     }
                 }
+                var presentationLines = mappedLines.map(\.line)
+                LineDiffEngine.shared.refreshWordDiffs(in: &presentationLines)
+                for index in mappedLines.indices {
+                    mappedLines[index].line = presentationLines[index]
+                }
             } else {
-                for index in clamped {
+                for index in materializedRange {
                     let dLine = hunk.lines[index]
                     mappedLines.append((line: dLine, bufferRow: currentBufferRow))
                     if dLine.kind != .deleted {
@@ -537,7 +553,9 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
                     }
                 }
             }
-            return mappedLines
+            let requestedStart = clamped.lowerBound - materializedRange.lowerBound
+            let requestedEnd = clamped.upperBound - materializedRange.lowerBound
+            return Array(mappedLines[requestedStart..<requestedEnd])
         }
 
         let allLines = getCachedDiffLines(for: excerptIdx)
@@ -637,11 +655,20 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
     }
 
     private func usesOriginalHunk(excerpt: Excerpt, buffer: Buffer) -> Bool {
-        guard buffer.version == 0, excerpt.hunk != nil else { return false }
-        if excerpt.fileStatus == .deleted {
-            return excerpt.bufferRange.isEmpty
+        guard let hunk = excerpt.hunk else { return false }
+        if buffer.version == 0 {
+            if excerpt.fileStatus == .deleted {
+                return excerpt.bufferRange.isEmpty
+            }
+            return excerpt.bufferRange == 0..<buffer.lineCount
         }
-        return excerpt.bufferRange == 0..<buffer.lineCount
+        guard excerpt.stableHunkBufferVersion == buffer.version,
+              hunk.lineSpans.isEmpty,
+              excerpt.fileStatus != .deleted else { return false }
+        let editableCount = hunk.lines.reduce(into: 0) { count, line in
+            if line.kind != .deleted { count += 1 }
+        }
+        return editableCount == excerpt.bufferRange.count
     }
 
     // MARK: - Lookups & Coordinate Mapping Helpers (Binary Search O(log N))
@@ -763,6 +790,101 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
             bufferRow: info.bufferRow,
             bufferColumn: point.column
         )
+    }
+
+    /// Resolves an ExcerptLocation (filePath + bufferRow + bufferColumn) to the visual MultiBufferPoint
+    public func multiBufferPoint(for location: ExcerptLocation) -> MultiBufferPoint? {
+        guard !multiBuffer.excerpts.isEmpty else { return nil }
+
+        var bestMatch: (excerptIndex: Int, row: Int)? = nil
+
+        for (idx, excerpt) in multiBuffer.excerpts.enumerated() {
+            if excerpt.filePath == location.filePath {
+                if excerpt.bufferRange.contains(location.bufferRow) {
+                    bestMatch = (idx, location.bufferRow)
+                    break
+                } else if bestMatch == nil {
+                    let clampedRow = max(excerpt.bufferRange.lowerBound, min(max(excerpt.bufferRange.lowerBound, excerpt.bufferRange.upperBound - 1), location.bufferRow))
+                    bestMatch = (idx, clampedRow)
+                }
+            }
+        }
+
+        if let match = bestMatch, let mbRow = multiBuffer.multiBufferRow(excerptIndex: match.excerptIndex, bufferRow: match.row) {
+            let maxCol = lineLength(at: mbRow)
+            let clampedCol = max(0, min(maxCol, location.bufferColumn))
+            return MultiBufferPoint(row: mbRow, column: clampedCol)
+        }
+
+        return nil
+    }
+
+    /// Finds the code row in DisplayMap closest to the given file path and line number
+    public func codeRow(forFilePath filePath: String, lineNumber: Int) -> MultiBufferRow? {
+        guard !multiBuffer.excerpts.isEmpty else { return nil }
+
+        var bestRow: MultiBufferRow? = nil
+        var minDiff = Int.max
+        var exactOldRow: MultiBufferRow? = nil
+
+        for loc in excerptLocations {
+            guard loc.excerptIndex >= 0 && loc.excerptIndex < multiBuffer.excerpts.count else { continue }
+            let excerpt = multiBuffer.excerpts[loc.excerptIndex]
+            guard excerpt.filePath == filePath else { continue }
+
+            for row in loc.codeRange {
+                if let info = codeInfo(for: row) {
+                    // A replacement has both an old/deleted and a new/added
+                    // line with the same number. Cursor/viewport restoration
+                    // must target the editable new side.
+                    if info.newLineNumber == lineNumber && info.diffKind != .deleted {
+                        return row
+                    }
+                    if info.oldLineNumber == lineNumber && exactOldRow == nil {
+                        exactOldRow = row
+                    }
+                    let lineNum = info.newLineNumber ?? info.oldLineNumber ?? 0
+                    let diff = abs(lineNum - lineNumber)
+                    if diff < minDiff {
+                        minDiff = diff
+                        bestRow = row
+                    }
+                }
+            }
+        }
+
+        return exactOldRow ?? bestRow
+    }
+
+    /// Finds the display line index closest to the given file path and line number
+    public func displayLineIndex(forFilePath filePath: String, lineNumber: Int?, isHeader: Bool = false) -> Int? {
+        guard !multiBuffer.excerpts.isEmpty else { return nil }
+
+        for loc in excerptLocations {
+            guard loc.excerptIndex >= 0 && loc.excerptIndex < multiBuffer.excerpts.count else { continue }
+            let excerpt = multiBuffer.excerpts[loc.excerptIndex]
+            guard excerpt.filePath == filePath else { continue }
+
+            if isHeader && loc.hasHeader {
+                return loc.displayRange.lowerBound
+            }
+            if lineNumber == nil && loc.hasHeader {
+                return loc.displayRange.lowerBound
+            }
+        }
+
+        if let targetLine = lineNumber, let codeR = codeRow(forFilePath: filePath, lineNumber: targetLine) {
+            return displayLineIndex(forMultiBufferRow: codeR)
+        }
+
+        for loc in excerptLocations {
+            guard loc.excerptIndex >= 0 && loc.excerptIndex < multiBuffer.excerpts.count else { continue }
+            if multiBuffer.excerpts[loc.excerptIndex].filePath == filePath {
+                return loc.displayRange.lowerBound
+            }
+        }
+
+        return nil
     }
 
     public func isDeleted(multiBufferRow: MultiBufferRow) -> Bool {

@@ -32,6 +32,11 @@ let package = Package(
             name: "AnyDiffCoreTests",
             dependencies: ["AnyDiffCore", "AnyDiffUI"],
             path: "Tests/AnyDiffCoreTests"
+        ),
+        .testTarget(
+            name: "AnyDiffBenchmarks",
+            dependencies: ["AnyDiffCore", "AnyDiffUI"],
+            path: "Tests/AnyDiffBenchmarks"
         )
     ]
 )

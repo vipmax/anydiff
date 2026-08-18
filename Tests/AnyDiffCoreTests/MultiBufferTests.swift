@@ -1217,4 +1217,226 @@ final class MultiBufferTests: XCTestCase {
 
         XCTAssertTrue(mb.excerpts[2].isCollapsed, "FileC must be collapsed after toggle")
     }
+
+    func testCollapsedFilePreservationAcrossDiffReload() {
+        let mb = MultiBuffer()
+        let buf1 = Buffer(filePath: "main.swift", text: "line 1\nline 2\nline 3")
+        let buf2 = Buffer(filePath: "DisplayMap.swift", text: "func a() {}\nfunc b() {}\nfunc c() {}")
+        mb.addBuffer(buf1)
+        mb.addBuffer(buf2)
+
+        let exc1 = Excerpt(bufferId: buf1.id, filePath: "main.swift", bufferRange: 0..<3, isFileStart: true)
+        let exc2 = Excerpt(bufferId: buf2.id, filePath: "DisplayMap.swift", bufferRange: 0..<3, isFileStart: true)
+        mb.setExcerpts([exc1, exc2])
+
+        let rm = ReviewManager()
+        let dm = DisplayMap(multiBuffer: mb, reviewManager: rm)
+        dm.rebuild()
+
+        // 1. User collapses main.swift
+        mb.toggleCollapse(filePath: "main.swift")
+        dm.rebuild()
+        XCTAssertTrue(mb.excerpts[0].isCollapsed, "main.swift must be collapsed")
+        XCTAssertFalse(mb.excerpts[1].isCollapsed, "DisplayMap.swift must remain expanded")
+
+        // 2. Simulate diff reload with modified main.swift (gained 5 new lines)
+        let collapsedFilePaths = Set(mb.excerpts.filter { $0.isCollapsed }.map { $0.filePath })
+        XCTAssertTrue(collapsedFilePaths.contains("main.swift"))
+
+        // Rebuild MultiBuffer with new contents
+        let newMB = MultiBuffer()
+        let newBuf1 = Buffer(filePath: "main.swift", text: "line 1\nline 2\nnew 1\nnew 2\nnew 3\nnew 4\nline 3")
+        let newBuf2 = Buffer(filePath: "DisplayMap.swift", text: "func a() {}\nfunc b() {}\nfunc c() {}")
+        newMB.addBuffer(newBuf1)
+        newMB.addBuffer(newBuf2)
+
+        let newExc1 = Excerpt(
+            bufferId: newBuf1.id,
+            filePath: "main.swift",
+            bufferRange: 0..<7,
+            isCollapsed: collapsedFilePaths.contains("main.swift"),
+            isFileStart: true
+        )
+        let newExc2 = Excerpt(
+            bufferId: newBuf2.id,
+            filePath: "DisplayMap.swift",
+            bufferRange: 0..<3,
+            isCollapsed: collapsedFilePaths.contains("DisplayMap.swift"),
+            isFileStart: true
+        )
+        newMB.setExcerpts([newExc1, newExc2])
+
+        let newDM = DisplayMap(multiBuffer: newMB, reviewManager: rm)
+        newDM.rebuild()
+
+        // 3. Verify main.swift is STILL collapsed after reload!
+        XCTAssertTrue(newMB.excerpts[0].isCollapsed, "main.swift must preserve collapsed state across reload")
+        XCTAssertFalse(newMB.excerpts[1].isCollapsed, "DisplayMap.swift must preserve expanded state across reload")
+
+        // Verify DisplayMap only renders the header for main.swift, not its 7 lines
+        let mainCodeLines = newDM.displayLines.filter {
+            if case .code(let c) = $0, c.excerptIndex == 0 { return true }
+            return false
+        }
+        XCTAssertEqual(mainCodeLines.count, 0, "No code lines should be visible for collapsed main.swift")
+
+        // Verify DisplayMap.swift code rows are intact
+        let displayMapCodeLines = newDM.displayLines.filter {
+            if case .code(let c) = $0, c.excerptIndex == 1 { return true }
+            return false
+        }
+        XCTAssertEqual(displayMapCodeLines.count, 3, "DisplayMap.swift code lines must be visible")
+    }
+
+    func testCursorAndScrollAnchorPreservationAcrossReload() {
+        let mb = MultiBuffer()
+        let buf1 = Buffer(filePath: "FileA.swift", text: "A1\nA2\nA3")
+        let buf2 = Buffer(filePath: "FileB.swift", text: "B1\nB2\nB3\nB4\nB5")
+        mb.addBuffer(buf1)
+        mb.addBuffer(buf2)
+
+        let exc1 = Excerpt(bufferId: buf1.id, filePath: "FileA.swift", bufferRange: 0..<3, isFileStart: true)
+        let exc2 = Excerpt(bufferId: buf2.id, filePath: "FileB.swift", bufferRange: 0..<5, isFileStart: true)
+        mb.setExcerpts([exc1, exc2])
+
+        let rm = ReviewManager()
+        let dm = DisplayMap(multiBuffer: mb, reviewManager: rm)
+        dm.rebuild()
+
+        // Cursor is at FileB.swift line 3 (B3)
+        let targetRow = dm.codeRow(forFilePath: "FileB.swift", lineNumber: 3)
+        XCTAssertNotNil(targetRow)
+        let targetDisplayIdx = dm.displayLineIndex(forFilePath: "FileB.swift", lineNumber: 3)
+        XCTAssertNotNil(targetDisplayIdx)
+
+        // Now FileA.swift gains 20 lines in a diff reload
+        let newMB = MultiBuffer()
+        let linesA = (1...25).map { "A\($0)" }.joined(separator: "\n")
+        let newBuf1 = Buffer(filePath: "FileA.swift", text: linesA)
+        let newBuf2 = Buffer(filePath: "FileB.swift", text: "B1\nB2\nB3\nB4\nB5")
+        newMB.addBuffer(newBuf1)
+        newMB.addBuffer(newBuf2)
+
+        let newExc1 = Excerpt(bufferId: newBuf1.id, filePath: "FileA.swift", bufferRange: 0..<25, isFileStart: true)
+        let newExc2 = Excerpt(bufferId: newBuf2.id, filePath: "FileB.swift", bufferRange: 0..<5, isFileStart: true)
+        newMB.setExcerpts([newExc1, newExc2])
+
+        let newDM = DisplayMap(multiBuffer: newMB, reviewManager: rm)
+        newDM.rebuild()
+
+        // Locate FileB.swift line 3 in new DisplayMap
+        let restoredRow = newDM.codeRow(forFilePath: "FileB.swift", lineNumber: 3)
+        XCTAssertNotNil(restoredRow)
+        let restoredCodeInfo = newDM.codeInfo(for: restoredRow!)
+        XCTAssertEqual(restoredCodeInfo?.text, "B3")
+        XCTAssertEqual(restoredCodeInfo?.bufferRow, 2)
+
+        // Check header display line index lookup
+        let headerLineIdx = newDM.displayLineIndex(forFilePath: "FileB.swift", lineNumber: nil, isHeader: true)
+        XCTAssertNotNil(headerLineIdx)
+        if case .excerptHeader(let h) = newDM.displayLine(at: headerLineIdx!) {
+            XCTAssertEqual(h.filePath, "FileB.swift")
+        } else {
+            XCTFail("Must find header line for FileB.swift")
+        }
+    }
+
+    func testPerFileSelfSaveSuppressionAndDirtyCheck() {
+        let mb = MultiBuffer()
+        let bufA = Buffer(filePath: "FileA.swift", text: "line 1\nline 2")
+        let bufB = Buffer(filePath: "FileB.swift", text: "line 1\nline 2")
+        mb.addBuffer(bufA)
+        mb.addBuffer(bufB)
+
+        // Initially neither file is dirty or self-saved
+        XCTAssertFalse(mb.isFileDirty(filePath: "FileA.swift"))
+        XCTAssertFalse(mb.isFileDirty(filePath: "FileB.swift"))
+        XCTAssertFalse(mb.isSelfSavedRecently(filePath: "FileA.swift"))
+        XCTAssertFalse(mb.isSelfSavedRecently(filePath: "FileB.swift"))
+
+        // User edits FileA.swift
+        let excA = Excerpt(bufferId: bufA.id, filePath: "FileA.swift", bufferRange: 0..<2, isFileStart: true)
+        mb.setExcerpts([excA])
+        mb.replace(range: MultiBufferPoint(row: 0, column: 0)..<MultiBufferPoint(row: 0, column: 4), with: "edit")
+
+        // Only FileA.swift is dirty, FileB.swift is NOT dirty
+        XCTAssertTrue(mb.isFileDirty(filePath: "FileA.swift"))
+        XCTAssertFalse(mb.isFileDirty(filePath: "FileB.swift"))
+
+        // Record self-save on FileA.swift
+        mb.recordSelfSave(for: "FileA.swift")
+        XCTAssertTrue(mb.isSelfSavedRecently(filePath: "FileA.swift"))
+        XCTAssertFalse(mb.isSelfSavedRecently(filePath: "FileB.swift"), "External file must NOT be marked as self-saved")
+
+        // Also test relative/absolute path matching
+        XCTAssertTrue(mb.isSelfSavedRecently(filePath: "/some/deep/path/FileA.swift"))
+    }
+
+    func testExactSelfSaveDoesNotSuppressSameBasenameInAnotherDirectory() {
+        let mb = MultiBuffer()
+        mb.baseDirectory = "/tmp/anydiff-watch"
+        mb.recordSelfSave(for: "Sources/File.swift")
+
+        XCTAssertTrue(mb.isSelfSavedRecentlyExact(filePath: "/tmp/anydiff-watch/Sources/File.swift"))
+        XCTAssertFalse(mb.isSelfSavedRecentlyExact(filePath: "/tmp/anydiff-watch/Tests/File.swift"))
+    }
+
+    func testReplacingOneFilePreservesUnchangedBufferAndExcerptIdentity() {
+        let mb = MultiBuffer()
+        let oldA = Buffer(filePath: "FileA.swift", text: "old A")
+        let oldB = Buffer(filePath: "FileB.swift", text: "stable B")
+        let exA = Excerpt(bufferId: oldA.id, filePath: oldA.filePath, bufferRange: 0..<1)
+        let exB = Excerpt(bufferId: oldB.id, filePath: oldB.filePath, bufferRange: 0..<1)
+        mb.addBuffer(oldA)
+        mb.addBuffer(oldB)
+        mb.setExcerpts([exA, exB])
+
+        let newA = Buffer(filePath: "FileA.swift", text: "new A")
+        let newExA = Excerpt(bufferId: newA.id, filePath: newA.filePath, bufferRange: 0..<1)
+        mb.replaceFile(filePath: "FileA.swift", buffers: [newA], excerpts: [newExA])
+
+        XCTAssertNil(mb.buffer(for: oldA.id))
+        XCTAssertEqual(mb.buffer(for: oldB.id)?.id, oldB.id)
+        XCTAssertEqual(mb.excerpts[1].id, exB.id)
+        XCTAssertEqual(mb.excerpts[1].bufferId, oldB.id)
+        XCTAssertEqual(mb.line(at: 1), "stable B")
+    }
+
+    func testRenamedFileRemovesOldPathAndAddsNewPathWithoutTouchingOthers() {
+        let mb = MultiBuffer()
+        let old = Buffer(filePath: "old.swift", text: "renamed")
+        let stable = Buffer(filePath: "stable.swift", text: "untouched")
+        let oldExcerpt = Excerpt(bufferId: old.id, filePath: old.filePath, bufferRange: 0..<1)
+        let stableExcerpt = Excerpt(bufferId: stable.id, filePath: stable.filePath, bufferRange: 0..<1)
+        mb.addBuffer(old)
+        mb.addBuffer(stable)
+        mb.setExcerpts([oldExcerpt, stableExcerpt])
+
+        mb.replaceFile(filePath: "old.swift", buffers: [], excerpts: [])
+        let renamed = Buffer(filePath: "new.swift", text: "renamed")
+        mb.replaceFile(
+            filePath: "new.swift",
+            buffers: [renamed],
+            excerpts: [Excerpt(bufferId: renamed.id, filePath: "new.swift", bufferRange: 0..<1)]
+        )
+
+        XCTAssertTrue(mb.excerpts.allSatisfy { $0.filePath != "old.swift" })
+        XCTAssertEqual(mb.buffer(for: stable.id)?.id, stable.id)
+        XCTAssertTrue(mb.excerpts.contains { $0.filePath == "new.swift" })
+    }
+
+    func testEditChangesBufferVersionSoInFlightRefreshCannotBeApplied() {
+        let mb = MultiBuffer()
+        let buffer = Buffer(filePath: "FileA.swift", text: "line")
+        mb.addBuffer(buffer)
+        mb.addExcerpt(Excerpt(bufferId: buffer.id, filePath: buffer.filePath, bufferRange: 0..<1))
+
+        let versionBeforeRefresh = buffer.version
+        mb.replace(range: MultiBufferPoint(row: 0, column: 4)..<MultiBufferPoint(row: 0, column: 4), with: "\nnew")
+
+        XCTAssertGreaterThan(buffer.version, versionBeforeRefresh)
+        XCTAssertTrue(mb.isFileDirty(filePath: "FileA.swift"))
+        // MainWindow's refresh gate uses exactly this version/dirty pair to
+        // discard a stale asynchronous filesystem result.
+    }
 }

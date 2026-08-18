@@ -92,6 +92,10 @@ final class GitHubDiffServiceTests: XCTestCase {
     }
 
     func testLiveFetchGitHubDiff() async throws {
+        guard ProcessInfo.processInfo.environment["ENABLE_NETWORK_TESTS"] == "1" ||
+              ProcessInfo.processInfo.environment["LIVE_NETWORK"] == "1" else {
+            throw XCTSkip("Live network test skipped. Set ENABLE_NETWORK_TESTS=1 or LIVE_NETWORK=1 to run.")
+        }
         let input = "https://github.com/ghostty-org/ghostty/pull/12291"
         let (ref, diffText) = try await GitHubDiffService.shared.fetchDiff(from: input)
         XCTAssertEqual(ref.displayTitle, "ghostty-org/ghostty #12291")

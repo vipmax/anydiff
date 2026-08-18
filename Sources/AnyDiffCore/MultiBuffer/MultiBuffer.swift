@@ -35,6 +35,28 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
         version &+= 1
     }
 
+    /// Replaces the excerpts and buffers belonging to one file while retaining
+    /// the ordering and identities of every other file. Watch mode uses this
+    /// to apply a filesystem refresh without rebuilding the whole document.
+    public func replaceFile(filePath: String, buffers newBuffers: [Buffer], excerpts newExcerpts: [Excerpt]) {
+        let oldExcerptIndices = excerpts.indices.filter { excerpts[$0].filePath == filePath }
+        let insertionIndex = oldExcerptIndices.first ?? excerpts.firstIndex(where: { $0.filePath > filePath }) ?? excerpts.count
+        let oldBufferIDs = Set(oldExcerptIndices.map { excerpts[$0].bufferId })
+
+        excerpts.removeAll { $0.filePath == filePath }
+        for id in oldBufferIDs {
+            buffers.removeValue(forKey: id)
+        }
+
+        for buffer in newBuffers {
+            buffers[buffer.id] = buffer
+        }
+
+        let clampedIndex = min(insertionIndex, excerpts.count)
+        excerpts.insert(contentsOf: newExcerpts, at: clampedIndex)
+        version &+= 1
+    }
+
     public func updateExcerptBufferRange(at index: ExcerptIndex, range: Range<BufferRow>) {
         guard index >= 0 && index < excerpts.count else { return }
         excerpts[index].bufferRange = range
@@ -192,6 +214,9 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
             undoManager.push(transaction: transaction)
         }
 
+        // Immediately record edit activity on this file
+        recordSelfEdit(for: buf.filePath)
+
         // Schedule 200ms debounced auto-save to disk
         scheduleDebouncedSave(delayMs: 200)
 
@@ -222,14 +247,141 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
 
     public var baseDirectory: String?
     public var onEdit: (() -> Void)?
+    public static let autoSaveDebounceMs: Int = 200
     private var saveDebounceWorkItem: DispatchWorkItem?
+    private let saveLock = NSLock()
+    private var lastSavedTimestamps: [String: Date] = [:]
 
     public var isDirty: Bool {
         buffers.values.contains { $0.isDirty }
     }
 
+    /// Checks if a specific file path (or directory containing it) has any dirty/unsaved buffers in memory.
+    public func isFileDirty(filePath: String) -> Bool {
+        let normalized = (filePath as NSString).standardizingPath
+        let lastComp = (filePath as NSString).lastPathComponent
+        return buffers.values.contains { buf in
+            guard buf.isDirty else { return false }
+            if buf.filePath == filePath || (buf.filePath as NSString).standardizingPath == normalized {
+                return true
+            }
+            if let full = buf.fullDiskPath, (full as NSString).standardizingPath == normalized {
+                return true
+            }
+            if (buf.filePath as NSString).lastPathComponent == lastComp {
+                return true
+            }
+            let bufNorm = (buf.fullDiskPath.map { ($0 as NSString).standardizingPath } ?? (buf.filePath as NSString).standardizingPath)
+            if bufNorm.hasPrefix(normalized) {
+                return true
+            }
+            return false
+        }
+    }
+
+    /// Records edit activity immediately upon keystroke.
+    public func recordSelfEdit(for filePath: String) {
+        version &+= 1
+        recordSelfSave(for: filePath)
+        onEdit?()
+    }
+
+    /// Records that a file was saved by AnyDiff directly.
+    public func recordSelfSave(for filePath: String) {
+        saveLock.lock()
+        defer { saveLock.unlock() }
+        let now = Date()
+        lastSavedTimestamps[filePath] = now
+        let normalized = (filePath as NSString).standardizingPath
+        lastSavedTimestamps[normalized] = now
+        if let base = baseDirectory {
+            let full = (base as NSString).appendingPathComponent(filePath)
+            lastSavedTimestamps[(full as NSString).standardizingPath] = now
+        }
+    }
+
+    /// Checks if a file (or directory containing saved files) was recently edited or saved by AnyDiff itself (default: 1.2s).
+    public func isSelfSavedRecently(filePath: String, threshold: TimeInterval = 1.2) -> Bool {
+        saveLock.lock()
+        defer { saveLock.unlock() }
+        let now = Date()
+        let normalized = (filePath as NSString).standardizingPath
+        let lastComp = (filePath as NSString).lastPathComponent
+
+        // Clean up entries older than 30s
+        let staleThreshold = now.addingTimeInterval(-30)
+        lastSavedTimestamps = lastSavedTimestamps.filter { $0.value > staleThreshold }
+
+        if let date = lastSavedTimestamps[filePath], now.timeIntervalSince(date) <= threshold {
+            return true
+        }
+        if let date = lastSavedTimestamps[normalized], now.timeIntervalSince(date) <= threshold {
+            return true
+        }
+        for (savedPath, date) in lastSavedTimestamps {
+            if now.timeIntervalSince(date) <= threshold {
+                let savedLast = (savedPath as NSString).lastPathComponent
+                if savedLast == lastComp {
+                    return true
+                }
+                // Handle atomic save temporary files (e.g. main.swift.sb-XXXXX or .main.swift.tmp)
+                if lastComp.hasPrefix(savedLast) || lastComp.contains(savedLast) {
+                    return true
+                }
+                if savedPath.hasPrefix(normalized) {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    /// Exact canonical-path variant for filesystem watchers. Unlike the
+    /// legacy fuzzy query above, this never matches another directory merely
+    /// because its basename is equal.
+    public func isSelfSavedRecentlyExact(filePath: String, threshold: TimeInterval = 1.2) -> Bool {
+        saveLock.lock()
+        defer { saveLock.unlock() }
+        let now = Date()
+        let candidate = canonicalSavedPath(filePath)
+        let candidateURL = URL(fileURLWithPath: candidate)
+        let candidateParent = candidateURL.deletingLastPathComponent().path
+        let candidateName = candidateURL.lastPathComponent
+
+        for (savedPath, date) in lastSavedTimestamps where now.timeIntervalSince(date) <= threshold {
+            let saved = canonicalSavedPath(savedPath)
+            if saved == candidate {
+                return true
+            }
+            // Atomic saves can briefly surface a sibling temp path. Limit this
+            // allowance to the exact same directory and filename prefix.
+            let savedURL = URL(fileURLWithPath: saved)
+            guard savedURL.deletingLastPathComponent().path == candidateParent else { continue }
+            let savedName = savedURL.lastPathComponent
+            if candidateName.hasPrefix(savedName) || candidateName.contains(savedName) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func canonicalSavedPath(_ path: String) -> String {
+        let expanded: String
+        if (path as NSString).isAbsolutePath {
+            expanded = path
+        } else if let base = baseDirectory, !base.isEmpty {
+            expanded = (base as NSString).appendingPathComponent(path)
+        } else {
+            expanded = path
+        }
+        return URL(fileURLWithPath: expanded).standardizedFileURL.path
+    }
+
     /// Debounces saving all dirty buffers to disk with a 200ms delay to avoid CPU/LSP thrashing
     public func scheduleDebouncedSave(delayMs: Int = 200) {
+        for buf in buffers.values where buf.isDirty {
+            recordSelfEdit(for: buf.filePath)
+        }
         saveDebounceWorkItem?.cancel()
         let item = DispatchWorkItem { [weak self] in
             do {
@@ -262,6 +414,7 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
             for buffer in sortedBuffers {
                 try buffer.saveToFile(baseDirectory: baseDirectory)
             }
+            recordSelfSave(for: filePath)
             savedFiles.insert(filePath)
         }
         return Array(savedFiles)
@@ -322,6 +475,28 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
             baseline.replaceSubrange(startRow..<endRow, with: oldHunkLines)
         }
 
+        // A LineSpan is only meaningful with the raw storage that created it.
+        // Promotion replaces that storage with mutable full-file lines, so keep
+        // a compact materialized copy of each displayed hunk before removing the
+        // sibling slice buffers. This also lets character edits preserve git's
+        // original line alignment.
+        for (idx, ex) in fileExcerpts {
+            guard var hunk = ex.hunk,
+                  !hunk.lineSpans.isEmpty,
+                  let sourceBuffer = buffers[ex.bufferId] else { continue }
+            hunk.lines = hunk.lineSpans.map { span in
+                DiffLine(
+                    kind: span.kind,
+                    text: sourceBuffer.storage.text(for: span) ?? "",
+                    oldLineNumber: span.oldLineNumber > 0 ? Int(span.oldLineNumber) : nil,
+                    newLineNumber: span.newLineNumber > 0 ? Int(span.newLineNumber) : nil
+                )
+            }
+            LineDiffEngine.shared.refreshWordDiffs(in: &hunk.lines)
+            hunk.lineSpans.removeAll(keepingCapacity: false)
+            excerpts[idx].hunk = hunk
+        }
+
         let oldTargetStartLine = targetBuf.startLineNumber
 
         // Re-point all excerpts for this file to targetBuf with full-file ranges
@@ -354,6 +529,54 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
         targetBuf.promoteToFullFile(diskLines: diskLines, baselineDiskLines: baseline)
 
         return targetBuf
+    }
+
+    /// Refreshes the editable side of the original git hunk after a character
+    /// edit. Returns false when the hunk shape is no longer valid (for example,
+    /// after inserting a newline), in which case DisplayMap must run a new line
+    /// diff instead.
+    @discardableResult
+    public func refreshStableHunkPresentation(for bufferId: BufferId) -> Bool {
+        guard let buffer = buffers[bufferId], buffer.isFullFile else { return false }
+        let indices = excerpts.indices.filter { excerpts[$0].bufferId == bufferId }
+        guard !indices.isEmpty else { return false }
+
+        var refreshed: [(index: Int, hunk: DiffHunk)] = []
+        refreshed.reserveCapacity(indices.count)
+
+        for index in indices {
+            let excerpt = excerpts[index]
+            guard var hunk = excerpt.hunk, hunk.lineSpans.isEmpty else { return false }
+            let editableCount = hunk.lines.reduce(into: 0) { count, line in
+                if line.kind != .deleted { count += 1 }
+            }
+            guard editableCount == excerpt.bufferRange.count,
+                  excerpt.bufferRange.lowerBound >= 0,
+                  excerpt.bufferRange.upperBound <= buffer.lineCount else { return false }
+
+            var bufferRow = excerpt.bufferRange.lowerBound
+            for lineIndex in hunk.lines.indices where hunk.lines[lineIndex].kind != .deleted {
+                let currentText = buffer.line(at: bufferRow) ?? ""
+                // Editing context creates a new change and therefore requires a
+                // fresh line diff. Existing added lines may safely retain shape.
+                if hunk.lines[lineIndex].kind == .unchanged,
+                   hunk.lines[lineIndex].text != currentText {
+                    return false
+                }
+                hunk.lines[lineIndex].text = currentText
+                hunk.lines[lineIndex].newLineNumber = bufferRow + 1
+                bufferRow += 1
+            }
+            LineDiffEngine.shared.refreshWordDiffs(in: &hunk.lines)
+            refreshed.append((index, hunk))
+        }
+
+        for item in refreshed {
+            excerpts[item.index].hunk = item.hunk
+            excerpts[item.index].stableHunkBufferVersion = buffer.version
+        }
+        version &+= 1
+        return true
     }
 
     public enum ExpandExcerptDirection {

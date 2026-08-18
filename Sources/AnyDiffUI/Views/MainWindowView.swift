@@ -46,6 +46,8 @@ public struct MainWindowView: View {
     @State private var repoStatus: RepoStatus = .clean
     @State private var fileDiffs: [FileDiff] = []
     @State private var selectedFilePath: String? = nil
+    @State private var isWatchModeEnabled: Bool = true
+    @State private var folderWatcher: FolderWatcher? = nil
     @State private var selectedTheme: Theme = .unifiedDark
     @State private var followsSystemAppearance: Bool = true
     @State private var viewMode: DiffViewMode = .unified
@@ -62,6 +64,9 @@ public struct MainWindowView: View {
     @State private var remoteErrorMessage: String? = nil
     @State private var remoteLoadTask: Task<Void, Never>? = nil
     @State private var loadGeneration: UInt64 = 0
+    @State private var watchRefreshGeneration: UInt64 = 0
+    @State private var pendingWatchPaths: Set<String> = []
+    @State private var watchRefreshInFlight: Bool = false
 
     public init(initialPath: String? = nil) {
         self.initialPath = initialPath
@@ -111,6 +116,22 @@ public struct MainWindowView: View {
         .onAppear(perform: handleOnAppear)
         .onChange(of: selectedTheme.id) { _ in updateWindowAppearance() }
         .onChange(of: followsSystemAppearance) { _ in updateWindowAppearance() }
+        .onChange(of: isWatchModeEnabled) { enabled in
+            if enabled {
+                let currentDir = currentPath ?? initialPath ?? FileManager.default.currentDirectoryPath
+                restartWatcher(for: currentDir)
+                startPendingWatchRefresh(directory: URL(fileURLWithPath: currentDir).resolvingSymlinksInPath().path)
+            } else {
+                folderWatcher?.stop()
+                folderWatcher = nil
+                pendingWatchPaths.removeAll()
+                watchRefreshGeneration &+= 1
+            }
+        }
+        .onDisappear {
+            folderWatcher?.stop()
+            folderWatcher = nil
+        }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffOpenProject"))) { _ in
             showOpenSourcePopover = true
         }
@@ -122,6 +143,9 @@ public struct MainWindowView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffReloadDiff"))) { _ in
             reloadCurrentDiff()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffToggleWatchMode"))) { _ in
+            isWatchModeEnabled.toggle()
         }
     }
 
@@ -136,9 +160,11 @@ public struct MainWindowView: View {
             streamingCount: streamingCount,
             comparisonTarget: comparisonTarget,
             currentBranch: currentBranch,
+            isWatchModeEnabled: isWatchModeEnabled,
             reviewManager: reviewManager,
             selectedFilePath: $selectedFilePath,
-            onReload: { reloadCurrentDiff() }
+            onReload: { reloadCurrentDiff() },
+            onToggleWatchMode: { isWatchModeEnabled.toggle() }
         )
         .navigationSplitViewColumnWidth(min: 200, ideal: 280, max: 800)
         .toolbar {
@@ -254,7 +280,11 @@ public struct MainWindowView: View {
             fontSize: fontSize,
             isEditable: (comparisonTarget == .workingTree),
             selectedFilePath: selectedFilePath,
-            onCursorChange: { _, _ in },
+            onCursorChange: { location, _ in
+                if let path = location?.filePath, self.selectedFilePath != path {
+                    self.selectedFilePath = path
+                }
+            },
             onAddCommentRequest: { path, line in
                 commentTarget = (filePath: path, lineNumber: line)
             }
@@ -686,7 +716,8 @@ public struct MainWindowView: View {
         remoteLoadTask = task
     }
 
-    private func appendFileDiffsToMultiBuffer(_ files: [FileDiff], rawData: Data? = nil) {
+    private func appendFileDiffsToMultiBuffer(_ files: [FileDiff], rawData: Data? = nil, into destination: MultiBuffer? = nil) {
+        let target = destination ?? multiBuffer
         for file in files {
             let fileAdds = file.additions
             let fileDels = file.deletions
@@ -727,7 +758,7 @@ public struct MainWindowView: View {
                     )
                 }
                 buffer.isFullFile = true
-                multiBuffer.addBuffer(buffer)
+                target.addBuffer(buffer)
 
                 let excerpt = Excerpt(
                     bufferId: buffer.id,
@@ -738,7 +769,7 @@ public struct MainWindowView: View {
                     isCollapsed: false,
                     isFileStart: true
                 )
-                multiBuffer.addExcerpt(excerpt)
+                target.addExcerpt(excerpt)
             } else if file.hunks.isEmpty {
                 let buffer = Buffer(
                     filePath: file.displayPath,
@@ -752,7 +783,7 @@ public struct MainWindowView: View {
                     diskFileLineCount: 0
                 )
                 buffer.isFullFile = true
-                multiBuffer.addBuffer(buffer)
+                target.addBuffer(buffer)
 
                 let excerpt = Excerpt(
                     bufferId: buffer.id,
@@ -763,7 +794,7 @@ public struct MainWindowView: View {
                     isCollapsed: false,
                     isFileStart: true
                 )
-                multiBuffer.addExcerpt(excerpt)
+                target.addExcerpt(excerpt)
             } else {
                 for (hIdx, hunk) in file.hunks.enumerated() {
                     let startLine = hunk.newRange.lowerBound
@@ -799,7 +830,7 @@ public struct MainWindowView: View {
                         )
                     }
                     buffer.isFullFile = (file.status == .added && file.hunks.count == 1)
-                    multiBuffer.addBuffer(buffer)
+                    target.addBuffer(buffer)
 
                     let excerpt = Excerpt(
                         bufferId: buffer.id,
@@ -810,7 +841,7 @@ public struct MainWindowView: View {
                         isCollapsed: false,
                         isFileStart: (hIdx == 0)
                     )
-                    multiBuffer.addExcerpt(excerpt)
+                    target.addExcerpt(excerpt)
                 }
             }
         }
@@ -844,6 +875,13 @@ public struct MainWindowView: View {
             NSApp.windows.first?.title = "\(folderName)"
         }
 
+        if isWatchModeEnabled {
+            let resolvedDir = URL(fileURLWithPath: currentDir).resolvingSymlinksInPath().path
+            if folderWatcher == nil || folderWatcher?.watchedURL.path != resolvedDir {
+                restartWatcher(for: currentDir)
+            }
+        }
+
         DispatchQueue.global(qos: .userInitiated).async {
             let isGit = self.isGitRepository(at: currentDir)
             let branch = isGit ? self.fetchCurrentBranch(at: currentDir) : ""
@@ -875,6 +913,200 @@ public struct MainWindowView: View {
         }
     }
 
+    private func restartWatcher(for directoryPath: String) {
+        folderWatcher?.stop()
+        folderWatcher = nil
+
+        guard isWatchModeEnabled, !directoryPath.isEmpty else { return }
+        guard FileManager.default.fileExists(atPath: directoryPath) else { return }
+
+        let resolvedURL = URL(fileURLWithPath: directoryPath).resolvingSymlinksInPath()
+        let watcher = FolderWatcher(url: resolvedURL, latency: 0.25) { events in
+            DispatchQueue.main.async {
+                self.handleFolderWatcherEvents(events)
+            }
+        }
+        watcher.start()
+        self.folderWatcher = watcher
+    }
+
+    private func handleFolderWatcherEvents(_ events: [FileSystemChangeEvent]) {
+        guard isWatchModeEnabled else { return }
+        if case .remote = comparisonTarget { return }
+        guard !isReloading else { return }
+
+        let meaningful = events.filter { !FolderWatcher.shouldIgnore(path: $0.path) }
+        guard !meaningful.isEmpty else { return }
+
+        let currentDir = currentPath ?? initialPath ?? FileManager.default.currentDirectoryPath
+        let resolvedCurrentDir = URL(fileURLWithPath: currentDir).resolvingSymlinksInPath().path
+
+        // Keep concrete relative paths. A watcher batch can contain unrelated
+        // files; only these paths are fetched and replaced below.
+        var changedPaths = Set<String>()
+        for event in meaningful {
+            let eventURL = URL(fileURLWithPath: event.path).resolvingSymlinksInPath()
+            let resolvedEventPath = eventURL.path
+
+            // Ignore directory metadata and the repository root itself.
+            if resolvedEventPath == resolvedCurrentDir || (event.isDirectory && !event.isFile) {
+                continue
+            }
+
+            // AnyDiff's own atomic save emits FSEvents too. The exact-path
+            // marker suppresses only those events; an external edit remains
+            // eligible even when another file is dirty.
+            if multiBuffer.isSelfSavedRecentlyExact(filePath: resolvedEventPath, threshold: 3.0) {
+                continue
+            }
+
+            let prefix = resolvedCurrentDir.hasSuffix("/") ? resolvedCurrentDir : resolvedCurrentDir + "/"
+            guard resolvedEventPath.hasPrefix(prefix) else { continue }
+            let relative = String(resolvedEventPath.dropFirst(prefix.count))
+            guard !relative.isEmpty else { continue }
+            changedPaths.insert(relative)
+            if event.changeTypes.contains(.renamed) {
+                changedPaths.formUnion(renamedPaths(at: resolvedCurrentDir, relatedTo: relative))
+            }
+        }
+
+        guard !changedPaths.isEmpty else { return }
+        pendingWatchPaths.formUnion(changedPaths)
+        guard !watchRefreshInFlight else { return }
+        startPendingWatchRefresh(directory: resolvedCurrentDir)
+    }
+
+    /// Serializes watch reads while coalescing events that arrive during an
+    /// in-flight read. No path is discarded when a second event batch arrives.
+    private func startPendingWatchRefresh(directory: String) {
+        guard !pendingWatchPaths.isEmpty, !watchRefreshInFlight else { return }
+        let paths = pendingWatchPaths
+        pendingWatchPaths.removeAll()
+        watchRefreshInFlight = true
+
+        // Snapshot all currently displayed buffers. Rename diffs can mention
+        // an old path that was not present in the FSEvents path list.
+        let snapshots: [String: [(BufferId, Int)]] = multiBuffer.excerpts.reduce(into: [String: [(BufferId, Int)]]()) { result, excerpt in
+            if result[excerpt.filePath] == nil {
+                result[excerpt.filePath] = multiBuffer.excerpts.filter { $0.filePath == excerpt.filePath }.map {
+                    ($0.bufferId, multiBuffer.buffer(for: $0.bufferId)?.version ?? -1)
+                }
+            }
+        }
+        watchRefreshGeneration &+= 1
+        let refreshGeneration = watchRefreshGeneration
+        let target = comparisonTarget
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = self.fetchGitDiffFiles(at: directory, target: target, pathFilter: paths)
+            DispatchQueue.main.async {
+                defer {
+                    self.watchRefreshInFlight = false
+                    if self.isWatchModeEnabled && self.comparisonTarget == target {
+                        let currentDir = self.currentPath ?? self.initialPath ?? FileManager.default.currentDirectoryPath
+                        self.startPendingWatchRefresh(directory: URL(fileURLWithPath: currentDir).resolvingSymlinksInPath().path)
+                    }
+                }
+                guard self.isWatchModeEnabled,
+                      self.watchRefreshGeneration == refreshGeneration,
+                      self.comparisonTarget == target else { return }
+
+                // Dirty buffers and any buffer edited since the read began are
+                // left untouched. They will be reflected on a later explicit
+                // reload after the user saves/finishes editing.
+                let candidatePaths = paths
+                    .union(result.files.map(\.displayPath))
+                    .union(result.files.filter { $0.status == .renamed }.map(\.oldPath))
+                var safePaths = Set(candidatePaths.filter { path in
+                    guard !self.multiBuffer.isFileDirty(filePath: path) else { return false }
+                    let current = self.multiBuffer.excerpts.filter { $0.filePath == path }.map {
+                        ($0.bufferId, self.multiBuffer.buffer(for: $0.bufferId)?.version ?? -1)
+                    }
+                    guard let expected = snapshots[path] else { return current.isEmpty }
+                    guard expected.count == current.count else { return false }
+                    return expected.elementsEqual(current) { lhs, rhs in
+                        lhs.0 == rhs.0 && lhs.1 == rhs.1
+                    }
+                })
+                // A rename is one logical file transition. Never apply only
+                // its new side when the old side was edited or changed during
+                // the async read; that would duplicate the dirty content.
+                for rename in result.files where rename.status == .renamed {
+                    guard safePaths.contains(rename.oldPath), safePaths.contains(rename.newPath) else {
+                        safePaths.remove(rename.oldPath)
+                        safePaths.remove(rename.newPath)
+                        safePaths.remove(rename.displayPath)
+                        continue
+                    }
+                }
+                guard !safePaths.isEmpty else { return }
+
+                for path in safePaths {
+                    let diff = result.files.first { $0.displayPath == path }
+                    self.applyWatchedFile(path: path, diff: diff, rawData: result.data)
+                }
+                self.displayMap.rebuild()
+                self.displayMap.markContentLoaded()
+                self.updateWatchedFileDiffs(result.files, safePaths: safePaths)
+            }
+        }
+    }
+
+    /// FSEvents reports one side of a rename. Resolve its pair from git's
+    /// name-status metadata so the old buffer is removed together with the
+    /// new buffer being inserted.
+    private func renamedPaths(at directory: String, relatedTo path: String) -> Set<String> {
+        guard let output = runGit(arguments: ["-C", directory, "diff", "HEAD", "--name-status", "-M"]) else { return [] }
+        var paths = Set<String>()
+        for line in output.split(whereSeparator: { $0 == "\n" }) {
+            let fields = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+            guard fields.count >= 3, fields[0].hasPrefix("R") else { continue }
+            if fields[1] == path || fields[2] == path {
+                paths.insert(fields[1])
+                paths.insert(fields[2])
+            }
+        }
+        return paths
+    }
+
+    private func updateWatchedFileDiffs(_ refreshed: [FileDiff], safePaths: Set<String>) {
+        let oldFiles = fileDiffs
+        let refreshedByDisplay = Dictionary(uniqueKeysWithValues: refreshed.map { ($0.displayPath, $0) })
+        let renamedByOld = Dictionary(uniqueKeysWithValues: refreshed.filter { $0.status == .renamed }.map { ($0.oldPath, $0) })
+        var updated: [FileDiff] = []
+        var consumed = Set<String>()
+
+        for oldFile in oldFiles {
+            if let rename = renamedByOld[oldFile.displayPath], safePaths.contains(oldFile.displayPath) {
+                updated.append(rename)
+                consumed.insert(rename.displayPath)
+            } else if safePaths.contains(oldFile.displayPath) {
+                if let replacement = refreshedByDisplay[oldFile.displayPath] {
+                    updated.append(replacement)
+                    consumed.insert(replacement.displayPath)
+                }
+            } else {
+                updated.append(oldFile)
+            }
+        }
+
+        // New/untracked paths are appended in parser order, which is stable
+        // for a single filtered git invocation.
+        for file in refreshed where safePaths.contains(file.displayPath) && !consumed.contains(file.displayPath) {
+            updated.append(file)
+        }
+        fileDiffs = updated
+        if fileDiffs.isEmpty {
+            repoStatus = .clean
+            selectedFilePath = nil
+        } else {
+            repoStatus = .hasChanges
+            if selectedFilePath == nil || !fileDiffs.contains(where: { $0.displayPath == selectedFilePath }) {
+                selectedFilePath = fileDiffs.first?.displayPath
+            }
+        }
+    }
+
     private func isGitRepository(at path: String) -> Bool {
         return runGit(arguments: ["-C", path, "rev-parse", "--is-inside-work-tree"]) == "true"
     }
@@ -893,7 +1125,7 @@ public struct MainWindowView: View {
         return (local, remote)
     }
 
-    private func fetchGitDiffFiles(at path: String, target: ComparisonTarget = .workingTree) -> (files: [FileDiff], data: Data?) {
+    private func fetchGitDiffFiles(at path: String, target: ComparisonTarget = .workingTree, pathFilter: Set<String>? = nil) -> (files: [FileDiff], data: Data?) {
         let argumentSets: [[String]]
         switch target {
         case .workingTree:
@@ -917,7 +1149,11 @@ public struct MainWindowView: View {
 
         var allFiles: [FileDiff] = []
         var rawData: Data? = nil
-        for args in argumentSets {
+        for baseArgs in argumentSets {
+            var args = baseArgs
+            if let pathFilter, !pathFilter.isEmpty {
+                args += ["--"] + pathFilter.sorted()
+            }
             if let data = runGitData(arguments: args) {
                 let files = GitDiffParser.shared.parseZeroCopy(data: data)
                 if !files.isEmpty {
@@ -928,17 +1164,19 @@ public struct MainWindowView: View {
             }
         }
         if case .workingTree = target {
-            let untracked = fetchUntrackedFiles(at: path)
+            let untracked = fetchUntrackedFiles(at: path, pathFilter: pathFilter)
             allFiles.append(contentsOf: untracked)
         }
         return (files: allFiles, data: rawData)
     }
 
-    private func fetchUntrackedFiles(at path: String) -> [FileDiff] {
+    private func fetchUntrackedFiles(at path: String, pathFilter: Set<String>? = nil) -> [FileDiff] {
         guard let output = runGit(arguments: ["-C", path, "ls-files", "--others", "--exclude-standard"]), !output.isEmpty else {
             return []
         }
-        let filePaths = output.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        let filePaths = output.components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && (pathFilter == nil || pathFilter!.contains($0)) }
         var result: [FileDiff] = []
         for relPath in filePaths {
             let fullPath = URL(fileURLWithPath: path).appendingPathComponent(relPath).path
@@ -964,6 +1202,38 @@ public struct MainWindowView: View {
             result.append(fileDiff)
         }
         return result
+    }
+
+    /// Applies one watch result in-place. The temporary builder gives the
+    /// refreshed file the same construction rules as a normal diff load while
+    /// `MultiBuffer.replaceFile` keeps every unrelated buffer/excerpt intact.
+    private func applyWatchedFile(path: String, diff: FileDiff?, rawData: Data?) {
+        let collapsed = multiBuffer.excerpts
+            .filter { $0.filePath == path }
+            .contains { $0.isCollapsed }
+
+        let rebuilt = MultiBuffer()
+        rebuilt.baseDirectory = multiBuffer.baseDirectory
+        if let diff {
+            appendFileDiffsToMultiBuffer([diff], rawData: rawData, into: rebuilt)
+        }
+
+        let baseDir = multiBuffer.baseDirectory ?? FileManager.default.currentDirectoryPath
+        let fullPath = URL(fileURLWithPath: baseDir).appendingPathComponent(path).path
+        for buffer in rebuilt.buffers.values {
+            buffer.fullDiskPath = fullPath
+        }
+        var newExcerpts = rebuilt.excerpts
+        if collapsed {
+            for index in newExcerpts.indices {
+                newExcerpts[index].isCollapsed = true
+            }
+        }
+        multiBuffer.replaceFile(
+            filePath: path,
+            buffers: Array(rebuilt.buffers.values),
+            excerpts: newExcerpts
+        )
     }
 
     private func runGit(arguments: [String]) -> String? {
@@ -1003,6 +1273,7 @@ public struct MainWindowView: View {
     }
 
     public func loadDiff(files parsedFiles: [FileDiff], rawData: Data? = nil) {
+        let collapsedFilePaths = Set(multiBuffer.excerpts.filter { $0.isCollapsed }.map { $0.filePath })
         self.fileDiffs = parsedFiles
 
         multiBuffer.clear()
@@ -1014,6 +1285,7 @@ public struct MainWindowView: View {
 
         for file in parsedFiles {
             let relativePath = file.displayPath
+            let wasCollapsed = collapsedFilePaths.contains(relativePath)
             var fullPath = (baseDir as NSString).appendingPathComponent(relativePath)
             if !FileManager.default.fileExists(atPath: fullPath) {
                 let components = relativePath.components(separatedBy: "/")
@@ -1050,7 +1322,7 @@ public struct MainWindowView: View {
                     fileStatus: file.status,
                     bufferRange: 0..<0,
                     hunk: nil,
-                    isCollapsed: false,
+                    isCollapsed: wasCollapsed,
                     isFileStart: true
                 )
                 multiBuffer.addExcerpt(excerpt)
@@ -1098,7 +1370,7 @@ public struct MainWindowView: View {
                     fileStatus: .deleted,
                     bufferRange: 0..<0,
                     hunk: hunk,
-                    isCollapsed: false,
+                    isCollapsed: wasCollapsed,
                     isFileStart: true
                 )
                 multiBuffer.addExcerpt(excerpt)
@@ -1145,7 +1417,7 @@ public struct MainWindowView: View {
                         fileStatus: file.status,
                         bufferRange: 0..<buffer.lineCount,
                         hunk: hunk,
-                        isCollapsed: false,
+                        isCollapsed: wasCollapsed,
                         isFileStart: (hIdx == 0)
                     )
                     multiBuffer.addExcerpt(excerpt)
@@ -1155,6 +1427,13 @@ public struct MainWindowView: View {
 
         displayMap.rebuild()
         displayMap.markContentLoaded()
+
+        let currentSelected = selectedFilePath
+        if let sel = currentSelected, parsedFiles.contains(where: { $0.displayPath == sel }) {
+            self.selectedFilePath = sel
+        } else if self.selectedFilePath == nil || !parsedFiles.contains(where: { $0.displayPath == self.selectedFilePath }) {
+            self.selectedFilePath = parsedFiles.first?.displayPath
+        }
     }
 
     private func openGitRepositoryFolder() {

@@ -29,15 +29,23 @@ rebuild:
     just build-debug
     just build
 
-# Run the test suite in Debug configuration.
+# Run fast unit tests in Debug configuration 
 test:
+    swift test -c debug --filter AnyDiffCoreTests
+
+# Run fast unit tests in Release configuration.
+test-release:
+    swift test -c release --filter AnyDiffCoreTests
+
+# Run all tests (including benchmarks) in Debug configuration.
+test-all:
     swift test -c debug
 
-# Run the test suite in Release configuration.
-test-release:
-    swift test -c release
+# Run heavy performance benchmarks in optimized Release configuration.
+bench:
+    swift test -c release --filter AnyDiffBenchmarks
 
-# Build Release and run the Release tests.
+# Build Release and run the Release unit tests.
 check:
     just build
     just test-release

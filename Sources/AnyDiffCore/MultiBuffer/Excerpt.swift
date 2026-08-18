@@ -16,6 +16,10 @@ public struct Excerpt: Identifiable, Sendable, Equatable {
     /// Optional diff hunk associated with this excerpt
     public var hunk: DiffHunk?
 
+    /// Buffer version for which `hunk.lines` was refreshed from an edited
+    /// full-file buffer while preserving the original git hunk shape.
+    public var stableHunkBufferVersion: Int?
+
     /// Whether this excerpt is currently collapsed
     public var isCollapsed: Bool
 
@@ -34,6 +38,7 @@ public struct Excerpt: Identifiable, Sendable, Equatable {
         fileStatus: FileDiffStatus = .modified,
         bufferRange: Range<BufferRow>,
         hunk: DiffHunk? = nil,
+        stableHunkBufferVersion: Int? = nil,
         isCollapsed: Bool = false,
         isFileStart: Bool = true
     ) {
@@ -43,6 +48,7 @@ public struct Excerpt: Identifiable, Sendable, Equatable {
         self.fileStatus = fileStatus
         self.bufferRange = bufferRange
         self.hunk = hunk
+        self.stableHunkBufferVersion = stableHunkBufferVersion
         self.isCollapsed = isCollapsed
         self.isFileStart = isFileStart
     }

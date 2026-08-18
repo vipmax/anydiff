@@ -10,9 +10,11 @@ public struct SidebarFileListView: View {
     public var streamingCount: Int
     public var comparisonTarget: ComparisonTarget
     public var currentBranch: String
+    public var isWatchModeEnabled: Bool
     @ObservedObject public var reviewManager: ReviewManager
     @Binding public var selectedFilePath: String?
     public var onReload: () -> Void
+    public var onToggleWatchMode: (() -> Void)?
 
     @State private var searchText: String = ""
 
@@ -25,9 +27,11 @@ public struct SidebarFileListView: View {
         streamingCount: Int = 0,
         comparisonTarget: ComparisonTarget = .workingTree,
         currentBranch: String = "",
+        isWatchModeEnabled: Bool = true,
         reviewManager: ReviewManager,
         selectedFilePath: Binding<String?>,
-        onReload: @escaping () -> Void
+        onReload: @escaping () -> Void,
+        onToggleWatchMode: (() -> Void)? = nil
     ) {
         self.fileDiffs = fileDiffs
         self.theme = theme
@@ -37,9 +41,11 @@ public struct SidebarFileListView: View {
         self.streamingCount = streamingCount
         self.comparisonTarget = comparisonTarget
         self.currentBranch = currentBranch
+        self.isWatchModeEnabled = isWatchModeEnabled
         self.reviewManager = reviewManager
         self._selectedFilePath = selectedFilePath
         self.onReload = onReload
+        self.onToggleWatchMode = onToggleWatchMode
     }
 
     private var filteredFiles: [FileDiff] {
@@ -110,6 +116,19 @@ public struct SidebarFileListView: View {
             .buttonStyle(ToolbarHoverButtonStyle())
             .disabled(isReloading)
             .help("Reload Git Diff (Cmd+R)")
+
+            if case .remote = comparisonTarget {
+                // Remote diffs do not have a local directory watcher
+            } else if let onToggle = onToggleWatchMode {
+                Button(action: onToggle) {
+                    Image(systemName: isWatchModeEnabled ? "eye.fill" : "eye.slash")
+                        .font(.system(size: 10.5))
+                        .foregroundColor(isWatchModeEnabled ? .green : .secondary.opacity(0.6))
+                        .frame(width: 14, height: 14)
+                }
+                .buttonStyle(ToolbarHoverButtonStyle())
+                .help(isWatchModeEnabled ? "Watch Mode Active: auto-reloading on disk changes (Click to pause, Cmd+Opt+W)" : "Watch Mode Paused: click to enable auto-reload")
+            }
 
             Spacer()
 

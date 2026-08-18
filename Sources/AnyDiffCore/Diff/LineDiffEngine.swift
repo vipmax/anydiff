@@ -6,6 +6,16 @@ public final class LineDiffEngine: Sendable {
 
     public init() {}
 
+    /// Recomputes intra-line highlights without changing the line-level edit
+    /// script. Used by the editor when a character edit can retain git's
+    /// original hunk alignment.
+    public func refreshWordDiffs(in lines: inout [DiffLine]) {
+        for index in lines.indices {
+            lines[index].wordDiffRanges.removeAll(keepingCapacity: true)
+        }
+        processWordDiffs(lines: &lines)
+    }
+
     /// Computes the complete line-level diff without grouping it into hunks.
     public func diffLines(
         oldLines: [String],
@@ -108,7 +118,7 @@ public final class LineDiffEngine: Sendable {
             let trimmedOldStart = oldStartLine + prefixCount
             let trimmedNewStart = newStartLine + prefixCount
 
-            var middleDiff = computeMyersDiffWithAnchors(
+            var middleDiff = computeMyersDiffCore(
                 oldLines: oldLines,
                 oldRange: oldMiddleRange,
                 newLines: newLines,
@@ -282,7 +292,7 @@ public final class LineDiffEngine: Sendable {
         let trimmedOldStart = oldStartLine + prefixCount
         let trimmedNewStart = newStartLine + prefixCount
 
-        let middleDiff = computeMyersDiffWithAnchors(
+        let middleDiff = computeMyersDiffCore(
             oldLines: oldLines,
             oldRange: oldMiddleRange,
             newLines: newLines,
@@ -302,171 +312,6 @@ public final class LineDiffEngine: Sendable {
                 oldLineNumber: oldStartLine + oldSuffixStart + i,
                 newLineNumber: newStartLine + newSuffixStart + i
             ))
-        }
-
-        return result
-    }
-
-    /// Divide-and-Conquer Myers diff using unique line anchors (Patience diff technique)
-    private func computeMyersDiffWithAnchors(
-        oldLines: [String],
-        oldRange: Range<Int>,
-        newLines: [String],
-        newRange: Range<Int>,
-        oldStartLine: Int,
-        newStartLine: Int
-    ) -> [DiffLine] {
-        let n = oldRange.count
-        let m = newRange.count
-
-        // Preserve local edit boundaries before looking for patience anchors. This
-        // matters for nested segments containing repeated structural lines (`}`,
-        // blank lines, etc.): Myers may otherwise align the old closing braces with
-        // identical braces at the end of a newly appended block and paint the
-        // original braces as additions.
-        var commonPrefix = 0
-        let commonLimit = min(n, m)
-        while commonPrefix < commonLimit &&
-                oldLines[oldRange.lowerBound + commonPrefix] == newLines[newRange.lowerBound + commonPrefix] {
-            commonPrefix += 1
-        }
-
-        // Do not prune a suffix inside recursive segments. With repeated braces at
-        // both the old boundary and the end of an inserted block, suffix-first
-        // matching recreates the unstable boundary we are preventing. The public
-        // entry points already prune the one unambiguous file-level suffix.
-        let commonSuffix = 0
-
-        if commonPrefix > 0 {
-            var result: [DiffLine] = []
-            result.reserveCapacity(n + m)
-
-            for offset in 0..<commonPrefix {
-                result.append(DiffLine(
-                    kind: .unchanged,
-                    text: oldLines[oldRange.lowerBound + offset],
-                    oldLineNumber: oldStartLine + offset,
-                    newLineNumber: newStartLine + offset
-                ))
-            }
-
-            let middleOldRange = (oldRange.lowerBound + commonPrefix)..<(oldRange.upperBound - commonSuffix)
-            let middleNewRange = (newRange.lowerBound + commonPrefix)..<(newRange.upperBound - commonSuffix)
-            if !middleOldRange.isEmpty || !middleNewRange.isEmpty {
-                result.append(contentsOf: computeMyersDiffWithAnchors(
-                    oldLines: oldLines,
-                    oldRange: middleOldRange,
-                    newLines: newLines,
-                    newRange: middleNewRange,
-                    oldStartLine: oldStartLine + commonPrefix,
-                    newStartLine: newStartLine + commonPrefix
-                ))
-            }
-
-            for offset in 0..<commonSuffix {
-                let oldOffset = n - commonSuffix + offset
-                let newOffset = m - commonSuffix + offset
-                result.append(DiffLine(
-                    kind: .unchanged,
-                    text: oldLines[oldRange.lowerBound + oldOffset],
-                    oldLineNumber: oldStartLine + oldOffset,
-                    newLineNumber: newStartLine + newOffset
-                ))
-            }
-            return result
-        }
-
-        // Count frequency of lines in oldRange and newRange
-        var oldCounts: [String: Int] = [:]
-        for i in oldRange {
-            oldCounts[oldLines[i], default: 0] += 1
-        }
-        var newCounts: [String: Int] = [:]
-        for j in newRange {
-            newCounts[newLines[j], default: 0] += 1
-        }
-
-        var newUniqueMap: [String: Int] = [:]
-        for j in newRange {
-            let s = newLines[j]
-            if newCounts[s] == 1 && oldCounts[s] == 1 {
-                newUniqueMap[s] = j
-            }
-        }
-
-        var anchors: [(oldIdx: Int, newIdx: Int)] = []
-        var lastNewIdx = -1
-        for i in oldRange {
-            let s = oldLines[i]
-            if oldCounts[s] == 1, let newIdx = newUniqueMap[s], newIdx > lastNewIdx {
-                anchors.append((i, newIdx))
-                lastNewIdx = newIdx
-            }
-        }
-
-        if anchors.isEmpty {
-            return computeMyersDiffCore(
-                oldLines: oldLines,
-                oldRange: oldRange,
-                newLines: newLines,
-                newRange: newRange,
-                oldStartLine: oldStartLine,
-                newStartLine: newStartLine
-            )
-        }
-
-        var result: [DiffLine] = []
-        result.reserveCapacity(n + m)
-
-        var curOld = oldRange.lowerBound
-        var curNew = newRange.lowerBound
-
-        for anchor in anchors {
-            let subOldRange = curOld..<anchor.oldIdx
-            let subNewRange = curNew..<anchor.newIdx
-            let subOldStart = oldStartLine + (curOld - oldRange.lowerBound)
-            let subNewStart = newStartLine + (curNew - newRange.lowerBound)
-
-            if !subOldRange.isEmpty || !subNewRange.isEmpty {
-                let subDiff = computeMyersDiffWithAnchors(
-                    oldLines: oldLines,
-                    oldRange: subOldRange,
-                    newLines: newLines,
-                    newRange: subNewRange,
-                    oldStartLine: subOldStart,
-                    newStartLine: subNewStart
-                )
-                result.append(contentsOf: subDiff)
-            }
-
-            let anchorOldLineNum = oldStartLine + (anchor.oldIdx - oldRange.lowerBound)
-            let anchorNewLineNum = newStartLine + (anchor.newIdx - newRange.lowerBound)
-            result.append(DiffLine(
-                kind: .unchanged,
-                text: oldLines[anchor.oldIdx],
-                oldLineNumber: anchorOldLineNum,
-                newLineNumber: anchorNewLineNum
-            ))
-
-            curOld = anchor.oldIdx + 1
-            curNew = anchor.newIdx + 1
-        }
-
-        let tailOldRange = curOld..<oldRange.upperBound
-        let tailNewRange = curNew..<newRange.upperBound
-        let tailOldStart = oldStartLine + (curOld - oldRange.lowerBound)
-        let tailNewStart = newStartLine + (curNew - newRange.lowerBound)
-
-        if !tailOldRange.isEmpty || !tailNewRange.isEmpty {
-            let tailDiff = computeMyersDiffWithAnchors(
-                oldLines: oldLines,
-                oldRange: tailOldRange,
-                newLines: newLines,
-                newRange: tailNewRange,
-                oldStartLine: tailOldStart,
-                newStartLine: tailNewStart
-            )
-            result.append(contentsOf: tailDiff)
         }
 
         return result

@@ -6,6 +6,7 @@ public struct ToolbarView: View {
     @Binding public var viewMode: DiffViewMode
     @Binding public var contextLines: Int
     @Binding public var fontSize: CGFloat
+    public var isWatchMode: Binding<Bool>?
     @ObservedObject public var reviewManager: ReviewManager
     public var onOpenGitRepo: () -> Void
     public var onPasteDiff: () -> Void
@@ -18,6 +19,7 @@ public struct ToolbarView: View {
         viewMode: Binding<DiffViewMode>,
         contextLines: Binding<Int>,
         fontSize: Binding<CGFloat>,
+        isWatchMode: Binding<Bool>? = nil,
         reviewManager: ReviewManager,
         onOpenGitRepo: @escaping () -> Void,
         onPasteDiff: @escaping () -> Void,
@@ -29,6 +31,7 @@ public struct ToolbarView: View {
         self._viewMode = viewMode
         self._contextLines = contextLines
         self._fontSize = fontSize
+        self.isWatchMode = isWatchMode
         self.reviewManager = reviewManager
         self.onOpenGitRepo = onOpenGitRepo
         self.onPasteDiff = onPasteDiff
@@ -63,6 +66,15 @@ public struct ToolbarView: View {
         .help("Reload Git Diff (Cmd+R)")
         .keyboardShortcut("r", modifiers: .command)
         .buttonStyle(.plain)
+
+        if let watch = isWatchMode {
+            Button(action: { watch.wrappedValue.toggle() }) {
+                Image(systemName: watch.wrappedValue ? "bolt.fill" : "bolt.slash")
+                    .foregroundColor(watch.wrappedValue ? .green : .secondary)
+            }
+            .help(watch.wrappedValue ? "Watch Mode Active (Auto-reloads diff on file changes). Click to pause." : "Watch Mode Paused: click to enable auto-reload.")
+            .buttonStyle(.plain)
+        }
 
         Menu {
             Button(action: onReload) {
