@@ -78,7 +78,9 @@ public struct BranchPickerView: View {
                 onSelectTarget: { target in
                     comparisonTarget = target
                     onSelectTarget(target)
-                    isPresented = false
+                    DispatchQueue.main.async {
+                        isPresented = false
+                    }
                 }
             )
             .frame(width: 270, height: 280)
@@ -165,6 +167,8 @@ public struct VirtualizedBranchTableView: NSViewRepresentable {
             filteredRemote = remoteBranches.filter { $0.localizedCaseInsensitiveContains(searchText) }
         }
 
+        let commonBases = ["main", "master", "develop"].filter { localBranches.contains($0) && $0 != currentBranch }
+
         // 1. Comparison Modes Section
         if searchText.isEmpty {
             rows.append(.header(title: "COMPARISON TARGET"))
@@ -176,7 +180,6 @@ public struct VirtualizedBranchTableView: NSViewRepresentable {
                 target: .workingTree
             ))
 
-            let commonBases = ["main", "master", "develop"].filter { localBranches.contains($0) && $0 != currentBranch }
             for base in commonBases {
                 rows.append(.item(
                     title: "Compare with \(base)",
@@ -193,7 +196,21 @@ public struct VirtualizedBranchTableView: NSViewRepresentable {
             rows.append(.header(title: "BRANCHES (\(filteredLocal.count))"))
             for branch in filteredLocal {
                 let isCurrent = (branch == currentBranch)
-                let isSelected = (isCurrent && comparisonTarget == .workingTree) || comparisonTarget == .baseBranch(branch)
+                let isSelected: Bool
+                if searchText.isEmpty {
+                    if isCurrent || commonBases.contains(branch) {
+                        isSelected = false
+                    } else {
+                        isSelected = (comparisonTarget == .baseBranch(branch))
+                    }
+                } else {
+                    if isCurrent {
+                        isSelected = (comparisonTarget == .workingTree)
+                    } else {
+                        isSelected = (comparisonTarget == .baseBranch(branch))
+                    }
+                }
+
                 let target = isCurrent ? .workingTree : ComparisonTarget.baseBranch(branch)
                 rows.append(.item(
                     title: branch,
@@ -209,7 +226,7 @@ public struct VirtualizedBranchTableView: NSViewRepresentable {
         if !filteredRemote.isEmpty {
             rows.append(.header(title: "REMOTE BRANCHES (\(filteredRemote.count))"))
             for branch in filteredRemote {
-                let isSelected = comparisonTarget == .baseBranch(branch)
+                let isSelected = (comparisonTarget == .baseBranch(branch))
                 rows.append(.item(
                     title: branch,
                     subtitle: "Compare against \(branch)",
@@ -239,7 +256,7 @@ public struct VirtualizedBranchTableView: NSViewRepresentable {
         tableView.headerView = nil
         tableView.backgroundColor = .clear
         tableView.style = .plain
-        tableView.selectionHighlightStyle = .regular
+        tableView.selectionHighlightStyle = .none
         tableView.allowsMultipleSelection = false
         tableView.intercellSpacing = NSSize(width: 0, height: 2)
 
@@ -249,6 +266,8 @@ public struct VirtualizedBranchTableView: NSViewRepresentable {
 
         tableView.delegate = context.coordinator
         tableView.dataSource = context.coordinator
+        tableView.target = context.coordinator
+        tableView.action = #selector(Coordinator.onRowClicked)
 
         context.coordinator.tableView = tableView
         scrollView.documentView = tableView
@@ -277,6 +296,15 @@ public struct VirtualizedBranchTableView: NSViewRepresentable {
             if self.rows != newRows {
                 self.rows = newRows
                 tableView?.reloadData()
+            }
+        }
+
+        @objc func onRowClicked() {
+            guard let tableView = tableView else { return }
+            let row = tableView.clickedRow >= 0 ? tableView.clickedRow : tableView.selectedRow
+            guard row >= 0 && row < rows.count else { return }
+            if case .item(_, _, _, _, let target) = rows[row] {
+                parent.onSelectTarget(target)
             }
         }
 
@@ -340,20 +368,10 @@ public struct VirtualizedBranchTableView: NSViewRepresentable {
                 return cell
             }
         }
-
-        public func tableViewSelectionDidChange(_ notification: Notification) {
-            guard let tableView = tableView else { return }
-            let selectedRow = tableView.selectedRow
-            guard selectedRow >= 0 && selectedRow < rows.count else { return }
-            if case .item(_, _, _, _, let target) = rows[selectedRow] {
-                parent.onSelectTarget(target)
-            }
-            tableView.deselectAll(nil)
-        }
     }
 }
 
-// MARK: - Custom Table Row View with Hover & Selection
+// MARK: - Custom Table Row View with Hover & Pointer Cursor
 
 final class BranchTableRowView: NSTableRowView {
     private var isMouseHovered: Bool = false
@@ -374,6 +392,11 @@ final class BranchTableRowView: NSTableRowView {
         trackingArea = area
     }
 
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: .pointingHand)
+    }
+
     override func mouseEntered(with event: NSEvent) {
         isMouseHovered = true
         needsDisplay = true
@@ -384,18 +407,11 @@ final class BranchTableRowView: NSTableRowView {
         needsDisplay = true
     }
 
-    override func drawSelection(in dirtyRect: NSRect) {
-        let selectionRect = bounds.insetBy(dx: 4, dy: 1)
-        let path = NSBezierPath(roundedRect: selectionRect, xRadius: 5, yRadius: 5)
-        NSColor.controlAccentColor.withAlphaComponent(0.18).setFill()
-        path.fill()
-    }
-
     override func drawBackground(in dirtyRect: NSRect) {
-        if isMouseHovered && !isSelected {
+        if isMouseHovered {
             let hoverRect = bounds.insetBy(dx: 4, dy: 1)
             let path = NSBezierPath(roundedRect: hoverRect, xRadius: 5, yRadius: 5)
-            NSColor.textColor.withAlphaComponent(0.06).setFill()
+            NSColor.textColor.withAlphaComponent(0.08).setFill()
             path.fill()
         }
     }
