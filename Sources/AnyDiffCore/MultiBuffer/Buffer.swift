@@ -19,27 +19,47 @@ public typealias BufferRow = Int
 /// Zero-based column (character index) in an individual file buffer line
 public typealias BufferColumn = Int
 
-/// A 2D point coordinate in a file buffer
+/// A 2D point coordinate in a file buffer (compact 8-byte layout)
 public struct BufferPoint: Hashable, Equatable, Comparable, Sendable, CustomStringConvertible {
-    public var row: BufferRow
-    public var column: BufferColumn
+    public var row32: Int32
+    public var column32: Int32
 
-    public init(row: BufferRow, column: BufferColumn) {
-        self.row = row
-        self.column = column
+    @inlinable
+    public var row: BufferRow {
+        get { Int(row32) }
+        set { row32 = Int32(clamping: newValue) }
     }
 
-    public static let zero = BufferPoint(row: 0, column: 0)
+    @inlinable
+    public var column: BufferColumn {
+        get { Int(column32) }
+        set { column32 = Int32(clamping: newValue) }
+    }
 
+    @inlinable
+    public init(row: BufferRow, column: BufferColumn) {
+        self.row32 = Int32(clamping: row)
+        self.column32 = Int32(clamping: column)
+    }
+
+    @inlinable
+    public init(row32: Int32, column32: Int32) {
+        self.row32 = row32
+        self.column32 = column32
+    }
+
+    public static let zero = BufferPoint(row32: 0, column32: 0)
+
+    @inlinable
     public static func < (lhs: BufferPoint, rhs: BufferPoint) -> Bool {
-        if lhs.row != rhs.row {
-            return lhs.row < rhs.row
+        if lhs.row32 != rhs.row32 {
+            return lhs.row32 < rhs.row32
         }
-        return lhs.column < rhs.column
+        return lhs.column32 < rhs.column32
     }
 
     public var description: String {
-        "(\(row):\(column))"
+        "(\(row32):\(column32))"
     }
 }
 

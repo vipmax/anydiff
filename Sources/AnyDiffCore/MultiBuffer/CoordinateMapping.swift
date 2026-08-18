@@ -3,27 +3,47 @@ import Foundation
 /// Continuous logical row across all excerpts in a MultiBuffer
 public typealias MultiBufferRow = Int
 
-/// A 2D point in the unified coordinate space of a MultiBuffer
+/// A 2D point in the unified coordinate space of a MultiBuffer (compact 8-byte layout)
 public struct MultiBufferPoint: Hashable, Equatable, Comparable, Sendable, CustomStringConvertible {
-    public var row: MultiBufferRow
-    public var column: Int
+    public var row32: Int32
+    public var column32: Int32
 
-    public init(row: MultiBufferRow, column: Int) {
-        self.row = row
-        self.column = column
+    @inlinable
+    public var row: MultiBufferRow {
+        get { Int(row32) }
+        set { row32 = Int32(clamping: newValue) }
     }
 
-    public static let zero = MultiBufferPoint(row: 0, column: 0)
+    @inlinable
+    public var column: Int {
+        get { Int(column32) }
+        set { column32 = Int32(clamping: newValue) }
+    }
 
+    @inlinable
+    public init(row: MultiBufferRow, column: Int) {
+        self.row32 = Int32(clamping: row)
+        self.column32 = Int32(clamping: column)
+    }
+
+    @inlinable
+    public init(row32: Int32, column32: Int32) {
+        self.row32 = row32
+        self.column32 = column32
+    }
+
+    public static let zero = MultiBufferPoint(row32: 0, column32: 0)
+
+    @inlinable
     public static func < (lhs: MultiBufferPoint, rhs: MultiBufferPoint) -> Bool {
-        if lhs.row != rhs.row {
-            return lhs.row < rhs.row
+        if lhs.row32 != rhs.row32 {
+            return lhs.row32 < rhs.row32
         }
-        return lhs.column < rhs.column
+        return lhs.column32 < rhs.column32
     }
 
     public var description: String {
-        "MB(\(row):\(column))"
+        "MB(\(row32):\(column32))"
     }
 }
 

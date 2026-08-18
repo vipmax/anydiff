@@ -24,7 +24,7 @@ public final class WordDiffEngine: Sendable {
             return (oldR, newR)
         }
 
-        let lcs = computeLCS(oldTokens.map(\.hash), newTokens.map(\.hash))
+        let lcs = computeLCS(oldTokens, newTokens)
 
         var oldDiffs: [Range<Int>] = []
         var newDiffs: [Range<Int>] = []
@@ -88,84 +88,148 @@ public final class WordDiffEngine: Sendable {
         return (oldDiffs, newDiffs)
     }
 
-    /// Splits text into word/punctuation/whitespace tokens with character offsets and 32-bit FNV-1a hashes
+    /// Splits text into word/punctuation/whitespace tokens with character offsets and 32-bit FNV-1a hashes (Zero Heap Allocations)
     public func tokenize(_ text: String) -> [Token] {
+        guard !text.isEmpty else { return [] }
         var tokens: [Token] = []
-        let chars = Array(text)
-        let count = chars.count
-        var i = 0
+        tokens.reserveCapacity(min(64, text.count / 3 + 1))
 
-        while i < count {
-            let start = i
-            let ch = chars[i]
+        let utf8 = text.utf8
+        let handled = utf8.withContiguousStorageIfAvailable { buffer -> Bool in
+            guard let base = buffer.baseAddress else { return false }
+            let count = buffer.count
+            var i = 0
+            var charOffset = 0
 
-            var h: UInt32 = 2166136261
-            if ch.isWhitespace {
-                while i < count && chars[i].isWhitespace {
-                    if let scalar = chars[i].unicodeScalars.first?.value {
-                        h = (h ^ scalar) &* 16777619
-                    }
-                    i += 1
-                }
-            } else if ch.isLetter || ch.isNumber || ch == "_" {
-                while i < count && (chars[i].isLetter || chars[i].isNumber || chars[i] == "_") {
-                    if let scalar = chars[i].unicodeScalars.first?.value {
-                        h = (h ^ scalar) &* 16777619
-                    }
-                    i += 1
-                }
-            } else {
-                if let scalar = ch.unicodeScalars.first?.value {
-                    h = (h ^ scalar) &* 16777619
-                }
-                i += 1
+            @inline(__always)
+            func isWordByte(_ b: UInt8) -> Bool {
+                (b >= 0x30 && b <= 0x39) || // 0-9
+                (b >= 0x41 && b <= 0x5A) || // A-Z
+                (b >= 0x61 && b <= 0x7A) || // a-z
+                b == 0x5F                   // _
             }
 
-            tokens.append(Token(hash: h, range: start..<i))
+            @inline(__always)
+            func isWhitespaceByte(_ b: UInt8) -> Bool {
+                b == 0x20 || b == 0x09 || b == 0x0A || b == 0x0D
+            }
+
+            while i < count {
+                let startChar = charOffset
+                let b = base[i]
+
+                var h: UInt32 = 2166136261
+                if isWhitespaceByte(b) {
+                    while i < count && isWhitespaceByte(base[i]) {
+                        h = (h ^ UInt32(base[i])) &* 16777619
+                        i += 1
+                        charOffset += 1
+                    }
+                } else if isWordByte(b) {
+                    while i < count && isWordByte(base[i]) {
+                        h = (h ^ UInt32(base[i])) &* 16777619
+                        i += 1
+                        charOffset += 1
+                    }
+                } else if b < 0x80 {
+                    h = (h ^ UInt32(b)) &* 16777619
+                    i += 1
+                    charOffset += 1
+                } else {
+                    let chStart = i
+                    i += 1
+                    while i < count && (base[i] & 0xC0) == 0x80 { i += 1 }
+                    let scalarLen = i - chStart
+                    for k in 0..<scalarLen {
+                        h = (h ^ UInt32(base[chStart + k])) &* 16777619
+                    }
+                    charOffset += 1
+                }
+
+                tokens.append(Token(hash: h, range: startChar..<charOffset))
+            }
+            return true
+        } ?? false
+
+        if handled {
+            return tokens
         }
 
+        // Fallback for non-contiguous string representation
+        let scalars = text.unicodeScalars
+        var idx = scalars.startIndex
+        var charOffset = 0
+        while idx < scalars.endIndex {
+            let start = charOffset
+            let ch = scalars[idx]
+            var h: UInt32 = 2166136261
+            if ch.value == 0x20 || ch.value == 0x09 || (ch.value > 127 && ch.properties.isWhitespace) {
+                while idx < scalars.endIndex && (scalars[idx].value == 0x20 || scalars[idx].value == 0x09 || (scalars[idx].value > 127 && scalars[idx].properties.isWhitespace)) {
+                    h = (h ^ scalars[idx].value) &* 16777619
+                    idx = scalars.index(after: idx)
+                    charOffset += 1
+                }
+            } else if (ch.value >= 0x30 && ch.value <= 0x39) || (ch.value >= 0x41 && ch.value <= 0x5A) || (ch.value >= 0x61 && ch.value <= 0x7A) || ch.value == 0x5F || (ch.value > 127 && ch.properties.isAlphabetic) {
+                while idx < scalars.endIndex && ((scalars[idx].value >= 0x30 && scalars[idx].value <= 0x39) || (scalars[idx].value >= 0x41 && scalars[idx].value <= 0x5A) || (scalars[idx].value >= 0x61 && scalars[idx].value <= 0x7A) || scalars[idx].value == 0x5F || (scalars[idx].value > 127 && scalars[idx].properties.isAlphabetic)) {
+                    h = (h ^ scalars[idx].value) &* 16777619
+                    idx = scalars.index(after: idx)
+                    charOffset += 1
+                }
+            } else {
+                h = (h ^ ch.value) &* 16777619
+                idx = scalars.index(after: idx)
+                charOffset += 1
+            }
+            tokens.append(Token(hash: h, range: start..<charOffset))
+        }
         return tokens
     }
 
-    /// Computes Longest Common Subsequence of 32-bit token hashes (capped at 200 tokens) using a flat 1D buffer
-    private func computeLCS(_ a: [UInt32], _ b: [UInt32]) -> [UInt32] {
+    /// Computes Longest Common Subsequence of 32-bit token hashes (capped at 200 tokens)
+    /// using stack allocation with zero heap overhead and L1-cache locality.
+    private func computeLCS(_ a: [Token], _ b: [Token]) -> [UInt32] {
         let n = min(a.count, 200)
         let m = min(b.count, 200)
         guard n > 0 && m > 0 else { return [] }
 
         let stride = m + 1
-        var dp = [Int](repeating: 0, count: (n + 1) * stride)
+        let totalSize = (n + 1) * stride
 
-        for i in 0..<n {
-            let rowOffset = (i + 1) * stride
-            let prevRowOffset = i * stride
-            for j in 0..<m {
-                if a[i] == b[j] {
-                    dp[rowOffset + j + 1] = dp[prevRowOffset + j] + 1
-                } else {
-                    dp[rowOffset + j + 1] = max(dp[prevRowOffset + j + 1], dp[rowOffset + j])
+        return withUnsafeTemporaryAllocation(of: UInt8.self, capacity: totalSize) { dpBuffer in
+            dpBuffer.initialize(repeating: 0)
+
+            for i in 0..<n {
+                let rowOffset = (i + 1) * stride
+                let prevRowOffset = i * stride
+                let aHash = a[i].hash
+                for j in 0..<m {
+                    if aHash == b[j].hash {
+                        dpBuffer[rowOffset + j + 1] = dpBuffer[prevRowOffset + j] &+ 1
+                    } else {
+                        dpBuffer[rowOffset + j + 1] = max(dpBuffer[prevRowOffset + j + 1], dpBuffer[rowOffset + j])
+                    }
                 }
             }
-        }
 
-        var lcs: [UInt32] = []
-        lcs.reserveCapacity(min(n, m))
-        var i = n
-        var j = m
-        while i > 0 && j > 0 {
-            let rowOffset = i * stride
-            let prevRowOffset = (i - 1) * stride
-            if a[i - 1] == b[j - 1] {
-                lcs.append(a[i - 1])
-                i -= 1
-                j -= 1
-            } else if dp[prevRowOffset + j] >= dp[rowOffset + j - 1] {
-                i -= 1
-            } else {
-                j -= 1
+            var lcs: [UInt32] = []
+            lcs.reserveCapacity(min(n, m))
+            var i = n
+            var j = m
+            while i > 0 && j > 0 {
+                let rowOffset = i * stride
+                let prevRowOffset = (i - 1) * stride
+                if a[i - 1].hash == b[j - 1].hash {
+                    lcs.append(a[i - 1].hash)
+                    i -= 1
+                    j -= 1
+                } else if dpBuffer[prevRowOffset + j] >= dpBuffer[rowOffset + j - 1] {
+                    i -= 1
+                } else {
+                    j -= 1
+                }
             }
-        }
 
-        return lcs.reversed()
+            return lcs.reversed()
+        }
     }
 }

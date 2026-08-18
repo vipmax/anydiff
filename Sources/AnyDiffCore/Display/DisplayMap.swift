@@ -15,19 +15,89 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
 
     public private(set) var maxLineChars: Int = 80
 
+    public struct ExcerptFlags: OptionSet, Sendable, Equatable {
+        public let rawValue: UInt8
+        public init(rawValue: UInt8) { self.rawValue = rawValue }
+
+        public static let isFileStart    = ExcerptFlags(rawValue: 1 << 0)
+        public static let isCollapsed    = ExcerptFlags(rawValue: 1 << 1)
+        public static let hasHeader      = ExcerptFlags(rawValue: 1 << 2)
+        public static let hasTopGap      = ExcerptFlags(rawValue: 1 << 3)
+        public static let hasBottomGap   = ExcerptFlags(rawValue: 1 << 4)
+        public static let hasNextExcerpt = ExcerptFlags(rawValue: 1 << 5)
+    }
+
+    /// Compact 36-byte virtual slice range indexing an excerpt inside DisplayMap
     public struct ExcerptSliceRange: Sendable, Equatable {
-        public var displayRange: Range<Int>
-        public var codeRange: Range<Int>
-        public var excerptIndex: Int
-        public var isFileStart: Bool
-        public var isCollapsed: Bool
-        public var topHidden: Int
-        public var bottomHidden: Int
-        public var nextExcerptIndex: Int?
-        public var hasHeader: Bool
-        public var hasTopGap: Bool
-        public var hasBottomGap: Bool
-        public var codeLineCount: Int
+        public var displayStart: UInt32
+        public var displayCount: UInt32
+        public var codeStart: UInt32
+        public var codeCount: UInt32
+        public var excerptIndex32: UInt32
+        public var topHidden32: UInt32
+        public var bottomHidden32: UInt32
+        public var nextExcerptIndex32: UInt32
+        public var flags: ExcerptFlags
+
+        @inlinable
+        public var displayRange: Range<Int> {
+            Int(displayStart)..<Int(displayStart + displayCount)
+        }
+
+        @inlinable
+        public var codeRange: Range<Int> {
+            Int(codeStart)..<Int(codeStart + codeCount)
+        }
+
+        @inlinable
+        public var excerptIndex: Int {
+            Int(excerptIndex32)
+        }
+
+        @inlinable
+        public var topHidden: Int {
+            Int(topHidden32)
+        }
+
+        @inlinable
+        public var bottomHidden: Int {
+            Int(bottomHidden32)
+        }
+
+        @inlinable
+        public var nextExcerptIndex: Int? {
+            flags.contains(.hasNextExcerpt) ? Int(nextExcerptIndex32) : nil
+        }
+
+        @inlinable
+        public var isFileStart: Bool {
+            flags.contains(.isFileStart)
+        }
+
+        @inlinable
+        public var isCollapsed: Bool {
+            flags.contains(.isCollapsed)
+        }
+
+        @inlinable
+        public var hasHeader: Bool {
+            flags.contains(.hasHeader)
+        }
+
+        @inlinable
+        public var hasTopGap: Bool {
+            flags.contains(.hasTopGap)
+        }
+
+        @inlinable
+        public var hasBottomGap: Bool {
+            flags.contains(.hasBottomGap)
+        }
+
+        @inlinable
+        public var codeLineCount: Int {
+            Int(codeCount)
+        }
 
         public init(
             displayRange: Range<Int>,
@@ -43,18 +113,27 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
             hasBottomGap: Bool,
             codeLineCount: Int
         ) {
-            self.displayRange = displayRange
-            self.codeRange = codeRange
-            self.excerptIndex = excerptIndex
-            self.isFileStart = isFileStart
-            self.isCollapsed = isCollapsed
-            self.topHidden = topHidden
-            self.bottomHidden = bottomHidden
-            self.nextExcerptIndex = nextExcerptIndex
-            self.hasHeader = hasHeader
-            self.hasTopGap = hasTopGap
-            self.hasBottomGap = hasBottomGap
-            self.codeLineCount = codeLineCount
+            self.displayStart = UInt32(clamping: max(0, displayRange.lowerBound))
+            self.displayCount = UInt32(clamping: max(0, displayRange.count))
+            self.codeStart = UInt32(clamping: max(0, codeRange.lowerBound))
+            self.codeCount = UInt32(clamping: max(0, codeLineCount))
+            self.excerptIndex32 = UInt32(clamping: max(0, excerptIndex))
+            self.topHidden32 = UInt32(clamping: max(0, topHidden))
+            self.bottomHidden32 = UInt32(clamping: max(0, bottomHidden))
+
+            var f: ExcerptFlags = []
+            if isFileStart { f.insert(.isFileStart) }
+            if isCollapsed { f.insert(.isCollapsed) }
+            if hasHeader { f.insert(.hasHeader) }
+            if hasTopGap { f.insert(.hasTopGap) }
+            if hasBottomGap { f.insert(.hasBottomGap) }
+            if let next = nextExcerptIndex {
+                f.insert(.hasNextExcerpt)
+                self.nextExcerptIndex32 = UInt32(clamping: max(0, next))
+            } else {
+                self.nextExcerptIndex32 = 0xFFFF_FFFF
+            }
+            self.flags = f
         }
     }
 
