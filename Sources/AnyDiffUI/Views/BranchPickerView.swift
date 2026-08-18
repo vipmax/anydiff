@@ -252,7 +252,7 @@ public struct VirtualizedBranchTableView: NSViewRepresentable {
         scrollView.drawsBackground = false
         scrollView.borderType = .noBorder
 
-        let tableView = NSTableView()
+        let tableView = BranchTableView()
         tableView.headerView = nil
         tableView.backgroundColor = .clear
         tableView.style = .plain
@@ -282,7 +282,7 @@ public struct VirtualizedBranchTableView: NSViewRepresentable {
 
     public final class Coordinator: NSObject, NSTableViewDelegate, NSTableViewDataSource {
         var parent: VirtualizedBranchTableView
-        weak var tableView: NSTableView?
+        weak var tableView: BranchTableView?
         var rows: [BranchPickerRow] = []
 
         init(_ parent: VirtualizedBranchTableView) {
@@ -295,6 +295,7 @@ public struct VirtualizedBranchTableView: NSViewRepresentable {
             let newRows = parent.computeRows()
             if self.rows != newRows {
                 self.rows = newRows
+                tableView?.hoveredRow = nil
                 tableView?.reloadData()
             }
         }
@@ -339,6 +340,7 @@ public struct VirtualizedBranchTableView: NSViewRepresentable {
                 rowView = BranchTableRowView()
                 rowView?.identifier = identifier
             }
+            rowView?.rowIndex = row
             return rowView
         }
 
@@ -371,10 +373,22 @@ public struct VirtualizedBranchTableView: NSViewRepresentable {
     }
 }
 
-// MARK: - Custom Table Row View with Hover & Pointer Cursor
+// MARK: - Centralized Hover-Tracking Table View
 
-final class BranchTableRowView: NSTableRowView {
-    private var isMouseHovered: Bool = false
+final class BranchTableView: NSTableView {
+    var hoveredRow: Int? = nil {
+        didSet {
+            if oldValue != hoveredRow {
+                if let old = oldValue, old >= 0 && old < numberOfRows {
+                    rowView(atRow: old, makeIfNecessary: false)?.needsDisplay = true
+                }
+                if let new = hoveredRow, new >= 0 && new < numberOfRows {
+                    rowView(atRow: new, makeIfNecessary: false)?.needsDisplay = true
+                }
+            }
+        }
+    }
+
     private var trackingArea: NSTrackingArea?
 
     override func updateTrackingAreas() {
@@ -384,7 +398,7 @@ final class BranchTableRowView: NSTableRowView {
         }
         let area = NSTrackingArea(
             rect: bounds,
-            options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+            options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
             owner: self,
             userInfo: nil
         )
@@ -392,23 +406,34 @@ final class BranchTableRowView: NSTableRowView {
         trackingArea = area
     }
 
+    override func mouseMoved(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        let r = row(at: point)
+        if r >= 0 && delegate?.tableView?(self, shouldSelectRow: r) == true {
+            hoveredRow = r
+        } else {
+            hoveredRow = nil
+        }
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        hoveredRow = nil
+    }
+
     override func resetCursorRects() {
         super.resetCursorRects()
         addCursorRect(bounds, cursor: .pointingHand)
     }
+}
 
-    override func mouseEntered(with event: NSEvent) {
-        isMouseHovered = true
-        needsDisplay = true
-    }
+// MARK: - Custom Table Row View with Centralized Hover Drawing
 
-    override func mouseExited(with event: NSEvent) {
-        isMouseHovered = false
-        needsDisplay = true
-    }
+final class BranchTableRowView: NSTableRowView {
+    var rowIndex: Int = -1
 
     override func drawBackground(in dirtyRect: NSRect) {
-        if isMouseHovered {
+        if let tv = superview as? BranchTableView ?? (superview?.superview as? BranchTableView),
+           tv.hoveredRow == rowIndex {
             let hoverRect = bounds.insetBy(dx: 4, dy: 1)
             let path = NSBezierPath(roundedRect: hoverRect, xRadius: 5, yRadius: 5)
             NSColor.textColor.withAlphaComponent(0.08).setFill()
