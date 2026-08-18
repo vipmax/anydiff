@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import AnyDiffCore
 
 public struct BranchPickerView: View {
@@ -23,16 +24,6 @@ public struct BranchPickerView: View {
         self.remoteBranches = remoteBranches
         self._comparisonTarget = comparisonTarget
         self.onSelectTarget = onSelectTarget
-    }
-
-    private var filteredLocalBranches: [String] {
-        if searchText.isEmpty { return localBranches }
-        return localBranches.filter { $0.localizedCaseInsensitiveContains(searchText) }
-    }
-
-    private var filteredRemoteBranches: [String] {
-        if searchText.isEmpty { return remoteBranches }
-        return remoteBranches.filter { $0.localizedCaseInsensitiveContains(searchText) }
     }
 
     private var buttonLabelText: String {
@@ -78,33 +69,21 @@ public struct BranchPickerView: View {
         VStack(alignment: .leading, spacing: 6) {
             searchField
             Divider()
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 2) {
-                    if searchText.isEmpty {
-                        comparisonModesSection
-                        Divider()
-                            .padding(.vertical, 4)
-                    }
-
-                    if !filteredLocalBranches.isEmpty {
-                        localBranchesSection
-                    }
-
-                    if !filteredRemoteBranches.isEmpty {
-                        if !filteredLocalBranches.isEmpty || searchText.isEmpty {
-                            Divider()
-                                .padding(.vertical, 4)
-                        }
-                        remoteBranchesSection
-                    }
+            VirtualizedBranchTableView(
+                currentBranch: currentBranch,
+                localBranches: localBranches,
+                remoteBranches: remoteBranches,
+                comparisonTarget: comparisonTarget,
+                searchText: searchText,
+                onSelectTarget: { target in
+                    comparisonTarget = target
+                    onSelectTarget(target)
+                    isPresented = false
                 }
-                .padding(.horizontal, 4)
-                .padding(.bottom, 6)
-            }
-            .frame(maxHeight: 280)
+            )
+            .frame(width: 270, height: 280)
         }
-        .frame(width: 270)
-        .padding(4)
+        .padding(6)
     }
 
     @ViewBuilder
@@ -128,141 +107,406 @@ public struct BranchPickerView: View {
         .padding(6)
         .background(Color(NSColor.controlBackgroundColor))
         .cornerRadius(6)
-        .padding(.horizontal, 8)
-        .padding(.top, 8)
+        .padding(.horizontal, 4)
+        .padding(.top, 4)
     }
+}
 
-    @ViewBuilder
-    private var comparisonModesSection: some View {
-        Text("COMPARISON TARGET")
-            .font(.system(size: 9, weight: .bold))
-            .foregroundColor(.secondary)
-            .padding(.horizontal, 8)
-            .padding(.top, 2)
+// MARK: - Row Data Model
 
-        branchRowButton(
-            title: "Working Tree (Uncommitted)",
-            subtitle: "staged + unstaged vs HEAD",
-            icon: "clock.arrow.circlepath",
-            isSelected: comparisonTarget == .workingTree
-        ) {
-            comparisonTarget = .workingTree
-            onSelectTarget(.workingTree)
-            isPresented = false
-        }
-
-        let commonBases = ["main", "master", "develop"].filter { localBranches.contains($0) && $0 != currentBranch }
-        ForEach(commonBases, id: \.self) { base in
-            branchRowButton(
-                title: "Compare with \(base)",
-                subtitle: "\(base)...\(currentBranch)",
-                icon: "arrow.triangle.branch",
-                isSelected: comparisonTarget == .baseBranch(base)
-            ) {
-                let target = ComparisonTarget.baseBranch(base)
-                comparisonTarget = target
-                onSelectTarget(target)
-                isPresented = false
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var localBranchesSection: some View {
-        Text("BRANCHES (\(filteredLocalBranches.count))")
-            .font(.system(size: 9, weight: .bold))
-            .foregroundColor(.secondary)
-            .padding(.horizontal, 8)
-            .padding(.top, 2)
-
-        ForEach(filteredLocalBranches, id: \.self) { branch in
-            let isCurrent = (branch == currentBranch)
-            branchRowButton(
-                title: branch,
-                subtitle: isCurrent ? "Active checkout" : "Compare against \(branch)",
-                icon: "arrow.triangle.branch",
-                isSelected: isCurrent && comparisonTarget == .workingTree || comparisonTarget == .baseBranch(branch)
-            ) {
-                if isCurrent {
-                    comparisonTarget = .workingTree
-                    onSelectTarget(.workingTree)
-                } else {
-                    let target = ComparisonTarget.baseBranch(branch)
-                    comparisonTarget = target
-                    onSelectTarget(target)
-                }
-                isPresented = false
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var remoteBranchesSection: some View {
-        Text("REMOTE BRANCHES (\(filteredRemoteBranches.count))")
-            .font(.system(size: 9, weight: .bold))
-            .foregroundColor(.secondary)
-            .padding(.horizontal, 8)
-            .padding(.top, 2)
-
-        ForEach(filteredRemoteBranches, id: \.self) { branch in
-            branchRowButton(
-                title: branch,
-                subtitle: "Compare against \(branch)",
-                icon: "cloud",
-                isSelected: comparisonTarget == .baseBranch(branch)
-            ) {
-                let target = ComparisonTarget.baseBranch(branch)
-                comparisonTarget = target
-                onSelectTarget(target)
-                isPresented = false
-            }
-        }
-    }
-
-    private func branchRowButton(
+enum BranchPickerRow: Equatable {
+    case header(title: String)
+    case item(
         title: String,
         subtitle: String,
-        icon: String,
+        iconName: String,
         isSelected: Bool,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            HStack(spacing: 8) {
-                Image(systemName: icon)
-                    .font(.system(size: 11))
-                    .foregroundColor(isSelected ? .accentColor : .secondary)
-                    .frame(width: 14)
+        target: ComparisonTarget
+    )
+}
 
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(title)
-                        .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
-                        .foregroundColor(.primary)
-                        .lineLimit(1)
+// MARK: - Virtualized NSScrollView + NSTableView for Instant Smooth Scrolling
 
-                    if !subtitle.isEmpty {
-                        Text(subtitle)
-                            .font(.system(size: 9.5))
-                            .foregroundColor(.secondary)
-                            .lineLimit(1)
-                    }
-                }
+public struct VirtualizedBranchTableView: NSViewRepresentable {
+    public var currentBranch: String
+    public var localBranches: [String]
+    public var remoteBranches: [String]
+    public var comparisonTarget: ComparisonTarget
+    public var searchText: String
+    public var onSelectTarget: (ComparisonTarget) -> Void
 
-                Spacer()
+    public init(
+        currentBranch: String,
+        localBranches: [String],
+        remoteBranches: [String],
+        comparisonTarget: ComparisonTarget,
+        searchText: String,
+        onSelectTarget: @escaping (ComparisonTarget) -> Void
+    ) {
+        self.currentBranch = currentBranch
+        self.localBranches = localBranches
+        self.remoteBranches = remoteBranches
+        self.comparisonTarget = comparisonTarget
+        self.searchText = searchText
+        self.onSelectTarget = onSelectTarget
+    }
 
-                if isSelected {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundColor(.accentColor)
-                }
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .background(
-                RoundedRectangle(cornerRadius: 5)
-                    .fill(isSelected ? Color.accentColor.opacity(0.12) : Color.clear)
-            )
-            .contentShape(Rectangle())
+    func computeRows() -> [BranchPickerRow] {
+        var rows: [BranchPickerRow] = []
+
+        let filteredLocal: [String]
+        let filteredRemote: [String]
+
+        if searchText.isEmpty {
+            filteredLocal = localBranches
+            filteredRemote = remoteBranches
+        } else {
+            filteredLocal = localBranches.filter { $0.localizedCaseInsensitiveContains(searchText) }
+            filteredRemote = remoteBranches.filter { $0.localizedCaseInsensitiveContains(searchText) }
         }
-        .buttonStyle(.plain)
+
+        // 1. Comparison Modes Section
+        if searchText.isEmpty {
+            rows.append(.header(title: "COMPARISON TARGET"))
+            rows.append(.item(
+                title: "Working Tree (Uncommitted)",
+                subtitle: "staged + unstaged vs HEAD",
+                iconName: "clock.arrow.circlepath",
+                isSelected: comparisonTarget == .workingTree,
+                target: .workingTree
+            ))
+
+            let commonBases = ["main", "master", "develop"].filter { localBranches.contains($0) && $0 != currentBranch }
+            for base in commonBases {
+                rows.append(.item(
+                    title: "Compare with \(base)",
+                    subtitle: "\(base)...\(currentBranch)",
+                    iconName: "arrow.triangle.branch",
+                    isSelected: comparisonTarget == .baseBranch(base),
+                    target: .baseBranch(base)
+                ))
+            }
+        }
+
+        // 2. Local Branches Section
+        if !filteredLocal.isEmpty {
+            rows.append(.header(title: "BRANCHES (\(filteredLocal.count))"))
+            for branch in filteredLocal {
+                let isCurrent = (branch == currentBranch)
+                let isSelected = (isCurrent && comparisonTarget == .workingTree) || comparisonTarget == .baseBranch(branch)
+                let target = isCurrent ? .workingTree : ComparisonTarget.baseBranch(branch)
+                rows.append(.item(
+                    title: branch,
+                    subtitle: isCurrent ? "Active checkout" : "Compare against \(branch)",
+                    iconName: "arrow.triangle.branch",
+                    isSelected: isSelected,
+                    target: target
+                ))
+            }
+        }
+
+        // 3. Remote Branches Section
+        if !filteredRemote.isEmpty {
+            rows.append(.header(title: "REMOTE BRANCHES (\(filteredRemote.count))"))
+            for branch in filteredRemote {
+                let isSelected = comparisonTarget == .baseBranch(branch)
+                rows.append(.item(
+                    title: branch,
+                    subtitle: "Compare against \(branch)",
+                    iconName: "cloud",
+                    isSelected: isSelected,
+                    target: .baseBranch(branch)
+                ))
+            }
+        }
+
+        return rows
+    }
+
+    public func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    public func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSScrollView()
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = true
+        scrollView.drawsBackground = false
+        scrollView.borderType = .noBorder
+
+        let tableView = NSTableView()
+        tableView.headerView = nil
+        tableView.backgroundColor = .clear
+        tableView.style = .plain
+        tableView.selectionHighlightStyle = .regular
+        tableView.allowsMultipleSelection = false
+        tableView.intercellSpacing = NSSize(width: 0, height: 2)
+
+        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("BranchColumn"))
+        column.resizingMask = .autoresizingMask
+        tableView.addTableColumn(column)
+
+        tableView.delegate = context.coordinator
+        tableView.dataSource = context.coordinator
+
+        context.coordinator.tableView = tableView
+        scrollView.documentView = tableView
+
+        context.coordinator.update(parent: self)
+        return scrollView
+    }
+
+    public func updateNSView(_ nsView: NSScrollView, context: Context) {
+        context.coordinator.update(parent: self)
+    }
+
+    public final class Coordinator: NSObject, NSTableViewDelegate, NSTableViewDataSource {
+        var parent: VirtualizedBranchTableView
+        weak var tableView: NSTableView?
+        var rows: [BranchPickerRow] = []
+
+        init(_ parent: VirtualizedBranchTableView) {
+            self.parent = parent
+            self.rows = parent.computeRows()
+        }
+
+        func update(parent: VirtualizedBranchTableView) {
+            self.parent = parent
+            let newRows = parent.computeRows()
+            if self.rows != newRows {
+                self.rows = newRows
+                tableView?.reloadData()
+            }
+        }
+
+        public func numberOfRows(in tableView: NSTableView) -> Int {
+            rows.count
+        }
+
+        public func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+            guard row >= 0 && row < rows.count else { return 32 }
+            switch rows[row] {
+            case .header:
+                return 22
+            case .item:
+                return 34
+            }
+        }
+
+        public func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
+            guard row >= 0 && row < rows.count else { return false }
+            switch rows[row] {
+            case .header:
+                return false
+            case .item:
+                return true
+            }
+        }
+
+        public func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+            let identifier = NSUserInterfaceItemIdentifier("BranchTableRowView")
+            var rowView = tableView.makeView(withIdentifier: identifier, owner: self) as? BranchTableRowView
+            if rowView == nil {
+                rowView = BranchTableRowView()
+                rowView?.identifier = identifier
+            }
+            return rowView
+        }
+
+        public func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+            guard row >= 0 && row < rows.count else { return nil }
+            let rowData = rows[row]
+
+            switch rowData {
+            case .header(let title):
+                let identifier = NSUserInterfaceItemIdentifier("BranchHeaderCellView")
+                var cell = tableView.makeView(withIdentifier: identifier, owner: self) as? BranchHeaderCellView
+                if cell == nil {
+                    cell = BranchHeaderCellView()
+                    cell?.identifier = identifier
+                }
+                cell?.configure(title: title)
+                return cell
+
+            case .item(let title, let subtitle, let iconName, let isSelected, _):
+                let identifier = NSUserInterfaceItemIdentifier("BranchItemCellView")
+                var cell = tableView.makeView(withIdentifier: identifier, owner: self) as? BranchItemCellView
+                if cell == nil {
+                    cell = BranchItemCellView()
+                    cell?.identifier = identifier
+                }
+                cell?.configure(title: title, subtitle: subtitle, iconName: iconName, isSelected: isSelected)
+                return cell
+            }
+        }
+
+        public func tableViewSelectionDidChange(_ notification: Notification) {
+            guard let tableView = tableView else { return }
+            let selectedRow = tableView.selectedRow
+            guard selectedRow >= 0 && selectedRow < rows.count else { return }
+            if case .item(_, _, _, _, let target) = rows[selectedRow] {
+                parent.onSelectTarget(target)
+            }
+            tableView.deselectAll(nil)
+        }
+    }
+}
+
+// MARK: - Custom Table Row View with Hover & Selection
+
+final class BranchTableRowView: NSTableRowView {
+    private var isMouseHovered: Bool = false
+    private var trackingArea: NSTrackingArea?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let existing = trackingArea {
+            removeTrackingArea(existing)
+        }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        isMouseHovered = true
+        needsDisplay = true
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        isMouseHovered = false
+        needsDisplay = true
+    }
+
+    override func drawSelection(in dirtyRect: NSRect) {
+        let selectionRect = bounds.insetBy(dx: 4, dy: 1)
+        let path = NSBezierPath(roundedRect: selectionRect, xRadius: 5, yRadius: 5)
+        NSColor.controlAccentColor.withAlphaComponent(0.18).setFill()
+        path.fill()
+    }
+
+    override func drawBackground(in dirtyRect: NSRect) {
+        if isMouseHovered && !isSelected {
+            let hoverRect = bounds.insetBy(dx: 4, dy: 1)
+            let path = NSBezierPath(roundedRect: hoverRect, xRadius: 5, yRadius: 5)
+            NSColor.textColor.withAlphaComponent(0.06).setFill()
+            path.fill()
+        }
+    }
+}
+
+// MARK: - Header Cell View
+
+final class BranchHeaderCellView: NSTableCellView {
+    private let titleLabel = NSTextField(labelWithString: "")
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setupViews()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setupViews()
+    }
+
+    private func setupViews() {
+        titleLabel.font = .systemFont(ofSize: 9, weight: .bold)
+        titleLabel.textColor = .secondaryLabelColor
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(titleLabel)
+
+        NSLayoutConstraint.activate([
+            titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -8)
+        ])
+    }
+
+    func configure(title: String) {
+        titleLabel.stringValue = title
+    }
+}
+
+// MARK: - Branch Item Cell View
+
+final class BranchItemCellView: NSTableCellView {
+    private let iconView = NSImageView()
+    private let titleLabel = NSTextField(labelWithString: "")
+    private let subtitleLabel = NSTextField(labelWithString: "")
+    private let checkmarkView = NSImageView()
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setupViews()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setupViews()
+    }
+
+    private func setupViews() {
+        wantsLayer = true
+
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        iconView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 11, weight: .medium)
+        addSubview(iconView)
+
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.font = .systemFont(ofSize: 12, weight: .regular)
+        titleLabel.lineBreakMode = .byTruncatingTail
+        addSubview(titleLabel)
+
+        subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
+        subtitleLabel.font = .systemFont(ofSize: 9.5, weight: .regular)
+        subtitleLabel.textColor = .secondaryLabelColor
+        subtitleLabel.lineBreakMode = .byTruncatingTail
+        addSubview(subtitleLabel)
+
+        checkmarkView.translatesAutoresizingMaskIntoConstraints = false
+        checkmarkView.image = NSImage(systemSymbolName: "checkmark", accessibilityDescription: nil)
+        checkmarkView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 10, weight: .bold)
+        checkmarkView.contentTintColor = .controlAccentColor
+        addSubview(checkmarkView)
+
+        NSLayoutConstraint.activate([
+            iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            iconView.widthAnchor.constraint(equalToConstant: 14),
+            iconView.heightAnchor.constraint(equalToConstant: 14),
+
+            titleLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 8),
+            titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 2),
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: checkmarkView.leadingAnchor, constant: -4),
+
+            subtitleLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
+            subtitleLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 0),
+            subtitleLabel.trailingAnchor.constraint(lessThanOrEqualTo: checkmarkView.leadingAnchor, constant: -4),
+
+            checkmarkView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            checkmarkView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            checkmarkView.widthAnchor.constraint(equalToConstant: 12),
+            checkmarkView.heightAnchor.constraint(equalToConstant: 12)
+        ])
+    }
+
+    func configure(title: String, subtitle: String, iconName: String, isSelected: Bool) {
+        iconView.image = NSImage(systemSymbolName: iconName, accessibilityDescription: nil)
+        iconView.contentTintColor = isSelected ? .controlAccentColor : .secondaryLabelColor
+
+        titleLabel.stringValue = title
+        titleLabel.font = .systemFont(ofSize: 12, weight: isSelected ? .semibold : .regular)
+
+        subtitleLabel.stringValue = subtitle
+        subtitleLabel.isHidden = subtitle.isEmpty
+
+        checkmarkView.isHidden = !isSelected
     }
 }
