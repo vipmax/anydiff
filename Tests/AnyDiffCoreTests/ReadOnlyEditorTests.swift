@@ -195,4 +195,98 @@ final class ReadOnlyEditorTests: XCTestCase {
         XCTAssertTrue(mb.excerpts.first(where: { $0.filePath == "justfile" })?.isCollapsed == false)
         XCTAssertTrue((editor.excerptLayouts.first(where: { $0.filePath == "justfile" })?.height ?? 0) > headerHeight)
     }
+
+    func testHeaderCollapseAtEndOfDocumentDoesNotBreakScrollOrDisappear() {
+        let text1 = (0..<100).map { "FileA line \($0)" }.joined(separator: "\n")
+        let text2 = (0..<100).map { "LastFile line \($0)" }.joined(separator: "\n")
+
+        let buf1 = Buffer(filePath: "FileA.swift", text: text1)
+        let buf2 = Buffer(filePath: "LastFile.swift", text: text2)
+
+        let mb = MultiBuffer()
+        mb.addBuffer(buf1)
+        mb.addBuffer(buf2)
+
+        // LastFile has 3 separate hunks
+        let exc1 = Excerpt(bufferId: buf1.id, filePath: "FileA.swift", bufferRange: 0..<30, isFileStart: true)
+        let exc2A = Excerpt(bufferId: buf2.id, filePath: "LastFile.swift", bufferRange: 0..<10, isFileStart: true)
+        let exc2B = Excerpt(bufferId: buf2.id, filePath: "LastFile.swift", bufferRange: 20..<30, isFileStart: false)
+        let exc2C = Excerpt(bufferId: buf2.id, filePath: "LastFile.swift", bufferRange: 50..<60, isFileStart: false)
+
+        mb.setExcerpts([exc1, exc2A, exc2B, exc2C])
+        let rm = ReviewManager()
+        let dm = DisplayMap(multiBuffer: mb, reviewManager: rm)
+
+        let editor = CustomMultiBufferEditorView(displayMap: dm, theme: .unifiedDark)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600), styleMask: .borderless, backing: .buffered, defer: false)
+        window.contentView = editor
+        editor.frame = NSRect(x: 0, y: 0, width: 800, height: 600)
+        editor.invalidateLayout()
+
+        // Scroll to the bottom of the document
+        editor.scrollToFilePath("LastFile.swift")
+        XCTAssertTrue(editor.scrollOffsetY > 0)
+
+        // Collapse LastFile.swift
+        mb.toggleCollapse(filePath: "LastFile.swift")
+        dm.rebuild()
+        editor.invalidateLayout()
+
+        let totalLines = dm.displayLineCount
+        XCTAssertTrue(totalLines > 0)
+
+        // Find the last visible line index at the bottom
+        let visibleMaxY = editor.scrollOffsetY + editor.bounds.height
+        let bottomLineIdx = editor.lineIndex(atY: visibleMaxY)
+
+        // lineIndex at bottom must NOT be 0 when totalLines > 1
+        XCTAssertGreaterThanOrEqual(bottomLineIdx, totalLines - 2)
+        XCTAssertLessThan(bottomLineIdx, totalLines)
+
+        let topLineIdx = editor.lineIndex(atY: editor.scrollOffsetY)
+        XCTAssertLessThanOrEqual(topLineIdx, bottomLineIdx)
+
+        // Rendering pass must succeed without throwing or crashing
+        editor.display()
+    }
+
+    func testAllFilesCollapsedLineIndexSafety() {
+        let buf1 = Buffer(filePath: "A.swift", text: "line 1\nline 2")
+        let buf2 = Buffer(filePath: "B.swift", text: "line 1\nline 2")
+        let buf3 = Buffer(filePath: "C.swift", text: "line 1\nline 2")
+
+        let mb = MultiBuffer()
+        mb.addBuffer(buf1)
+        mb.addBuffer(buf2)
+        mb.addBuffer(buf3)
+
+        let exc1 = Excerpt(bufferId: buf1.id, filePath: "A.swift", bufferRange: 0..<2, isFileStart: true)
+        let exc2A = Excerpt(bufferId: buf2.id, filePath: "B.swift", bufferRange: 0..<1, isFileStart: true)
+        let exc2B = Excerpt(bufferId: buf2.id, filePath: "B.swift", bufferRange: 1..<2, isFileStart: false)
+        let exc3A = Excerpt(bufferId: buf3.id, filePath: "C.swift", bufferRange: 0..<1, isFileStart: true)
+        let exc3B = Excerpt(bufferId: buf3.id, filePath: "C.swift", bufferRange: 1..<2, isFileStart: false)
+
+        mb.setExcerpts([exc1, exc2A, exc2B, exc3A, exc3B])
+        mb.collapseAll()
+
+        let rm = ReviewManager()
+        let dm = DisplayMap(multiBuffer: mb, reviewManager: rm)
+        let editor = CustomMultiBufferEditorView(displayMap: dm, theme: .unifiedDark)
+        editor.frame = NSRect(x: 0, y: 0, width: 800, height: 600)
+        editor.invalidateLayout()
+
+        // 3 files collapsed = 3 header lines (indices 0, 1, 2)
+        XCTAssertEqual(dm.displayLineCount, 3)
+
+        let idxTop = editor.lineIndex(atY: 0)
+        let idxMid = editor.lineIndex(atY: editor.excerptHeaderHeight + 5)
+        let idxBottom = editor.lineIndex(atY: editor.totalDocumentHeight)
+        let idxPastEnd = editor.lineIndex(atY: 1000)
+
+        XCTAssertEqual(idxTop, 0)
+        XCTAssertEqual(idxMid, 1)
+        XCTAssertEqual(idxBottom, 2)
+        XCTAssertEqual(idxPastEnd, 2)
+    }
 }
+

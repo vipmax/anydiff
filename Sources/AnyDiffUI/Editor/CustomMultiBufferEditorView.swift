@@ -20,10 +20,8 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             displayMap?.objectWillChange
                 .receive(on: DispatchQueue.main)
                 .sink { [weak self] _ in
-                    guard let self = self, let dm = self.displayMap else { return }
-                    if self.excerptLayouts.count != dm.excerptLocations.count {
-                        self.invalidateLayout()
-                    }
+                    guard let self = self else { return }
+                    self.invalidateLayout()
                 }
                 .store(in: &displayMapCancellables)
             invalidateLayout()
@@ -416,10 +414,14 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     public func lineIndex(atY y: CGFloat) -> Int {
         let totalLines = displayMap?.displayLineCount ?? 0
         guard totalLines > 0, !excerptLayouts.isEmpty else { return 0 }
+        if y <= 0 { return 0 }
+
         let exIdx = excerptIndex(atY: y)
-        guard exIdx < excerptLayouts.count else { return 0 }
+        guard exIdx < excerptLayouts.count else { return totalLines - 1 }
         let ex = excerptLayouts[exIdx]
-        guard !ex.displayRange.isEmpty else { return 0 }
+        guard !ex.displayRange.isEmpty else {
+            return min(totalLines - 1, ex.displayRange.lowerBound)
+        }
 
         let relY = max(0, y - ex.startY)
         let offset = ex.lineOffset(
@@ -428,7 +430,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             foldGapHeight: foldGapHeight,
             lineHeight: lineHeight
         )
-        return min(ex.displayRange.upperBound - 1, ex.displayRange.lowerBound + offset)
+        return min(totalLines - 1, ex.displayRange.lowerBound + offset)
     }
 
     public func yOffset(forDisplayLineIndex lineIdx: Int) -> CGFloat {
@@ -754,8 +756,10 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         let visibleMaxY = scrollOffsetY + bounds.height
         let lineWidth = max(bounds.width + scrollOffsetX, totalDocumentWidth)
 
-        let startIdx = lineIndex(atY: visibleMinY)
-        let endIdx = min(totalLines - 1, lineIndex(atY: visibleMaxY) + 1)
+        let rawStartIdx = lineIndex(atY: visibleMinY)
+        let rawEndIdx = lineIndex(atY: visibleMaxY)
+        let startIdx = max(0, min(totalLines - 1, rawStartIdx))
+        let endIdx = max(startIdx, min(totalLines - 1, rawEndIdx + 1))
 
         guard startIdx <= endIdx && startIdx >= 0 && endIdx < totalLines else {
             context.restoreGState()
