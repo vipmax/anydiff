@@ -1234,7 +1234,38 @@ public struct MainWindowView: View {
             let untracked = fetchUntrackedFiles(at: path, pathFilter: pathFilter)
             allFiles.append(contentsOf: untracked)
         }
+        allFiles = filterIgnoredFiles(allFiles, at: path)
         return (files: allFiles, data: rawData)
+    }
+
+    private func filterIgnoredFiles(_ files: [FileDiff], at directory: String) -> [FileDiff] {
+        guard !files.isEmpty else { return [] }
+        let paths = files.map(\.displayPath)
+        let ignoredPaths = fetchIgnoredPaths(paths: paths, at: directory)
+        guard !ignoredPaths.isEmpty else { return files }
+        return files.filter {
+            !ignoredPaths.contains($0.displayPath) &&
+            !ignoredPaths.contains($0.newPath) &&
+            !ignoredPaths.contains($0.oldPath)
+        }
+    }
+
+    private func fetchIgnoredPaths(paths: [String], at directory: String) -> Set<String> {
+        guard !paths.isEmpty else { return [] }
+        var result = Set<String>()
+        let batchSize = 250
+        for i in stride(from: 0, to: paths.count, by: batchSize) {
+            let batch = Array(paths[i..<min(i + batchSize, paths.count)])
+            var args = ["-C", directory, "check-ignore", "--no-index", "--"]
+            args.append(contentsOf: batch)
+            if let output = runGit(arguments: args), !output.isEmpty {
+                let ignored = output.components(separatedBy: "\n")
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                result.formUnion(ignored)
+            }
+        }
+        return result
     }
 
     private func fetchUntrackedFiles(at path: String, pathFilter: Set<String>? = nil) -> [FileDiff] {
