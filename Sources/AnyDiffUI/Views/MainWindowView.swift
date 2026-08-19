@@ -64,6 +64,7 @@ public struct MainWindowView: View {
     @State private var remoteErrorMessage: String? = nil
     @State private var remoteLoadTask: Task<Void, Never>? = nil
     @State private var gitStateReloadWorkItem: DispatchWorkItem? = nil
+    @State private var hasPendingGitStateReload: Bool = false
     @State private var loadGeneration: UInt64 = 0
     @State private var watchRefreshGeneration: UInt64 = 0
     @State private var pendingWatchPaths: Set<String> = []
@@ -864,7 +865,10 @@ public struct MainWindowView: View {
             comparisonTarget = .workingTree
         }
 
-        guard !isReloading else { return }
+        guard !isReloading else {
+            hasPendingGitStateReload = true
+            return
+        }
         loadGeneration &+= 1
         let generation = loadGeneration
         isReloading = true
@@ -895,10 +899,17 @@ public struct MainWindowView: View {
                 self.localBranches = branches.local
                 self.remoteBranches = branches.remote
 
+                defer {
+                    self.isReloading = false
+                    if self.hasPendingGitStateReload {
+                        self.hasPendingGitStateReload = false
+                        self.scheduleGitStateReload()
+                    }
+                }
+
                 guard isGit else {
                     self.repoStatus = .notGitRepository
                     self.loadDiff(files: [])
-                    self.isReloading = false
                     return
                 }
                 RecentSourcesManager.shared.addLocalPath(currentDir)
@@ -909,7 +920,6 @@ public struct MainWindowView: View {
                     self.repoStatus = .clean
                     self.loadDiff(files: [])
                 }
-                self.isReloading = false
             }
         }
     }
@@ -933,8 +943,16 @@ public struct MainWindowView: View {
 
     private func scheduleGitStateReload() {
         gitStateReloadWorkItem?.cancel()
+        if isReloading {
+            hasPendingGitStateReload = true
+            return
+        }
         let item = DispatchWorkItem { [self] in
-            guard self.isWatchModeEnabled, !self.isReloading else { return }
+            guard self.isWatchModeEnabled else { return }
+            if self.isReloading {
+                self.hasPendingGitStateReload = true
+                return
+            }
             self.loadCurrentDirectoryDiff()
         }
         gitStateReloadWorkItem = item
@@ -944,11 +962,14 @@ public struct MainWindowView: View {
     private func handleFolderWatcherEvents(_ events: [FileSystemChangeEvent]) {
         guard isWatchModeEnabled else { return }
         if case .remote = comparisonTarget { return }
-        guard !isReloading else { return }
 
         let meaningful = events.filter { !FolderWatcher.shouldIgnore(path: $0.path) }
         guard !meaningful.isEmpty else { return }
 
+        if isReloading {
+            hasPendingGitStateReload = true
+            return
+        }
         // Check if any event was caused by git commit, checkout, branch switch, add/reset
         let hasGitStateChange = meaningful.contains { event in
             event.path.contains("/.git/HEAD")

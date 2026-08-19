@@ -29,7 +29,7 @@ rebuild:
     just build-debug
     just build
 
-# Run fast unit tests in Debug configuration 
+# Run fast unit tests in Debug configuration
 test:
     swift test -c debug --filter AnyDiffCoreTests
 

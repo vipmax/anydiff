@@ -220,9 +220,6 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
         // Schedule 200ms debounced auto-save to disk
         scheduleDebouncedSave(delayMs: 200)
 
-        version &+= 1
-        onEdit?()
-
         let newEndMBRow = multiBufferRow(excerptIndex: startLoc.excerptIndex, bufferRow: newBufRange.upperBound.row) ?? range.lowerBound.row
         let newEndPoint = MultiBufferPoint(row: newEndMBRow, column: newBufRange.upperBound.column)
         let startPt = min(range.lowerBound, newEndPoint)
@@ -389,7 +386,7 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
     /// Debounces saving all dirty buffers to disk with a 200ms delay to avoid CPU/LSP thrashing
     public func scheduleDebouncedSave(delayMs: Int = 200) {
         for buf in buffers.values where buf.isDirty {
-            recordSelfEdit(for: buf.filePath)
+            recordSelfSave(for: buf.filePath)
         }
         saveDebounceWorkItem?.cancel()
         let item = DispatchWorkItem { [weak self] in
