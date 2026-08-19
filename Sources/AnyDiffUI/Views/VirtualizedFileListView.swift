@@ -178,9 +178,47 @@ final class CustomTableRowView: NSTableRowView {
     }
 }
 
+// MARK: - Pixel-Perfect Centered Status Badge View
+final class StatusBadgeView: NSView {
+    var text: String = "" {
+        didSet { if oldValue != text { needsDisplay = true } }
+    }
+    var tintColor: NSColor = .systemBlue {
+        didSet { if oldValue != tintColor { needsDisplay = true } }
+    }
+
+    override var isFlipped: Bool { true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+
+        let bgRect = bounds
+        let path = NSBezierPath(roundedRect: bgRect, xRadius: 3.5, yRadius: 3.5)
+        tintColor.withAlphaComponent(0.16).setFill()
+        path.fill()
+
+        guard !text.isEmpty else { return }
+
+        let font = NSFont.systemFont(ofSize: 9.5, weight: .black)
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: tintColor
+        ]
+
+        let attributedText = NSAttributedString(string: text, attributes: attributes)
+        let textSize = attributedText.size()
+
+        // Exact optical cap-height centering
+        let x = (bgRect.width - textSize.width) / 2.0
+        let y = (bgRect.height + font.capHeight) / 2.0 - font.ascender
+        attributedText.draw(at: NSPoint(x: x, y: y))
+    }
+}
+
 // MARK: - High-Performance Recycled File Cell View
 final class FileTableCellView: NSTableCellView {
-    private let statusBadge = NSTextField(labelWithString: "")
+    private let statusBadge = StatusBadgeView()
+    private let textStack = NSStackView()
     private let nameLabel = NSTextField(labelWithString: "")
     private let dirLabel = NSTextField(labelWithString: "")
     private let additionsLabel = NSTextField(labelWithString: "")
@@ -200,27 +238,30 @@ final class FileTableCellView: NSTableCellView {
         wantsLayer = true
 
         // 1. Status Badge (A / M / D / R)
-        statusBadge.font = .systemFont(ofSize: 9, weight: .black)
-        statusBadge.alignment = .center
-        statusBadge.wantsLayer = true
-        statusBadge.layer?.cornerRadius = 3
         statusBadge.translatesAutoresizingMaskIntoConstraints = false
         addSubview(statusBadge)
 
-        // 2. File Name Label
+        // 2. File Name & Directory Labels in Stack
         nameLabel.font = .systemFont(ofSize: 12, weight: .medium)
         nameLabel.lineBreakMode = .byTruncatingTail
+        nameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         nameLabel.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(nameLabel)
 
-        // 3. Directory Subtitle Label
         dirLabel.font = .systemFont(ofSize: 10, weight: .regular)
         dirLabel.textColor = .secondaryLabelColor
         dirLabel.lineBreakMode = .byTruncatingMiddle
+        dirLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         dirLabel.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(dirLabel)
 
-        // 4. Diff Stats Labels (+ / -)
+        textStack.orientation = .vertical
+        textStack.alignment = .leading
+        textStack.spacing = 1
+        textStack.translatesAutoresizingMaskIntoConstraints = false
+        textStack.addArrangedSubview(nameLabel)
+        textStack.addArrangedSubview(dirLabel)
+        addSubview(textStack)
+
+        // 3. Diff Stats Labels (+ / -)
         additionsLabel.font = .monospacedSystemFont(ofSize: 10, weight: .semibold)
         additionsLabel.textColor = NSColor.systemGreen
         additionsLabel.alignment = .right
@@ -240,13 +281,9 @@ final class FileTableCellView: NSTableCellView {
             statusBadge.widthAnchor.constraint(equalToConstant: 16),
             statusBadge.heightAnchor.constraint(equalToConstant: 16),
 
-            nameLabel.leadingAnchor.constraint(equalTo: statusBadge.trailingAnchor, constant: 8),
-            nameLabel.topAnchor.constraint(equalTo: topAnchor, constant: 3),
-            nameLabel.trailingAnchor.constraint(lessThanOrEqualTo: additionsLabel.leadingAnchor, constant: -4),
-
-            dirLabel.leadingAnchor.constraint(equalTo: nameLabel.leadingAnchor),
-            dirLabel.topAnchor.constraint(equalTo: nameLabel.bottomAnchor, constant: 0),
-            dirLabel.trailingAnchor.constraint(lessThanOrEqualTo: additionsLabel.leadingAnchor, constant: -4),
+            textStack.leadingAnchor.constraint(equalTo: statusBadge.trailingAnchor, constant: 8),
+            textStack.centerYAnchor.constraint(equalTo: centerYAnchor),
+            textStack.trailingAnchor.constraint(lessThanOrEqualTo: additionsLabel.leadingAnchor, constant: -4),
 
             deletionsLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             deletionsLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
@@ -277,10 +314,8 @@ final class FileTableCellView: NSTableCellView {
             symbol = "M"
             color = .systemBlue
         }
-        statusBadge.stringValue = symbol
-        statusBadge.textColor = color
-        statusBadge.backgroundColor = color.withAlphaComponent(0.15)
-        statusBadge.drawsBackground = true
+        statusBadge.text = symbol
+        statusBadge.tintColor = color
 
         // File Path & Name
         let fileName = (file.displayPath as NSString).lastPathComponent
