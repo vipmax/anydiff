@@ -63,6 +63,7 @@ public struct MainWindowView: View {
     @State private var remoteTarget: GitHubDiffReference? = nil
     @State private var remoteErrorMessage: String? = nil
     @State private var remoteLoadTask: Task<Void, Never>? = nil
+    @State private var gitStateReloadWorkItem: DispatchWorkItem? = nil
     @State private var loadGeneration: UInt64 = 0
     @State private var watchRefreshGeneration: UInt64 = 0
     @State private var pendingWatchPaths: Set<String> = []
@@ -930,6 +931,16 @@ public struct MainWindowView: View {
         self.folderWatcher = watcher
     }
 
+    private func scheduleGitStateReload() {
+        gitStateReloadWorkItem?.cancel()
+        let item = DispatchWorkItem { [self] in
+            guard self.isWatchModeEnabled, !self.isReloading else { return }
+            self.loadCurrentDirectoryDiff()
+        }
+        gitStateReloadWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(150), execute: item)
+    }
+
     private func handleFolderWatcherEvents(_ events: [FileSystemChangeEvent]) {
         guard isWatchModeEnabled else { return }
         if case .remote = comparisonTarget { return }
@@ -937,6 +948,20 @@ public struct MainWindowView: View {
 
         let meaningful = events.filter { !FolderWatcher.shouldIgnore(path: $0.path) }
         guard !meaningful.isEmpty else { return }
+
+        // Check if any event was caused by git commit, checkout, branch switch, add/reset
+        let hasGitStateChange = meaningful.contains { event in
+            event.path.contains("/.git/HEAD")
+                || event.path.contains("/.git/refs/")
+                || event.path.hasSuffix("/.git/index")
+                || event.path.hasSuffix("/.git/packed-refs")
+                || event.path.hasSuffix("/.git/commondir")
+        }
+
+        if hasGitStateChange {
+            scheduleGitStateReload()
+            return
+        }
 
         let currentDir = currentPath ?? initialPath ?? FileManager.default.currentDirectoryPath
         let resolvedCurrentDir = URL(fileURLWithPath: currentDir).resolvingSymlinksInPath().path

@@ -197,10 +197,14 @@ public final class FolderWatcher: @unchecked Sendable {
         }
 
         // MARK: - 2. Git Internals
-        // Ignore internal git operations (index, objects, logs, pack, locks),
-        // but allow branch ref switches (.git/HEAD, .git/refs/heads/*)
+        // Ignore internal git objects/logs/pack/locks, but allow state changes:
+        // .git/HEAD, .git/refs/*, .git/index, .git/packed-refs, .git/commondir
         if path.contains("/.git/") || path.hasSuffix("/.git") {
-            if !path.hasSuffix("/.git/HEAD") && !path.contains("/.git/refs/heads/") {
+            if !path.hasSuffix("/.git/HEAD")
+                && !path.contains("/.git/refs/")
+                && !path.hasSuffix("/.git/index")
+                && !path.hasSuffix("/.git/packed-refs")
+                && !path.hasSuffix("/.git/commondir") {
                 return true
             }
         }
