@@ -1439,4 +1439,93 @@ final class MultiBufferTests: XCTestCase {
         // MainWindow's refresh gate uses exactly this version/dirty pair to
         // discard a stale asynchronous filesystem result.
     }
+
+    func testLazySlicePromotionPreservesAnchorAndCursor() {
+        let mb = MultiBuffer()
+        let hunk1Lines = ["Hunk1 Line 10", "Hunk1 Line 11"]
+        let hunk2Lines = [
+            "Hunk2 Line 54",
+            "Hunk2 Line 55",
+            "Hunk2 Line 56",
+            "Hunk2 Line 57",
+            "Hunk2 Line 58",
+            "Hunk2 Line 59",
+            "Hunk2 Line 60"
+        ]
+
+        let buf1 = Buffer(filePath: "Sources/main.swift", lines: hunk1Lines, startLineNumber: 10, isLazySlice: true)
+        let buf2 = Buffer(filePath: "Sources/main.swift", lines: hunk2Lines, startLineNumber: 54, isLazySlice: true)
+        mb.addBuffer(buf1)
+        mb.addBuffer(buf2)
+
+        let exc1 = Excerpt(bufferId: buf1.id, filePath: "Sources/main.swift", bufferRange: 0..<2, isFileStart: true)
+        let exc2 = Excerpt(bufferId: buf2.id, filePath: "Sources/main.swift", bufferRange: 0..<7, isFileStart: false)
+        mb.setExcerpts([exc1, exc2])
+
+        let rm = ReviewManager()
+        let dm = DisplayMap(multiBuffer: mb, reviewManager: rm)
+        dm.rebuild()
+
+        // Locate line 60 before promotion
+        let rowBefore = dm.codeRow(forFilePath: "Sources/main.swift", lineNumber: 60)
+        XCTAssertNotNil(rowBefore)
+        let cInfoBefore = dm.codeInfo(for: rowBefore!)
+        XCTAssertEqual(cInfoBefore?.newLineNumber, 60)
+
+        // Expand excerpt 1 (down)
+        mb.expandExcerpt(at: 1, up: 0, down: 5)
+        dm.rebuild()
+
+        // Locate line 60 after promotion/expansion
+        let rowAfter = dm.codeRow(forFilePath: "Sources/main.swift", lineNumber: 60)
+        XCTAssertNotNil(rowAfter)
+        let displayIdxAfter = dm.displayLineIndex(forFilePath: "Sources/main.swift", lineNumber: 60, isHeader: false)
+        XCTAssertNotNil(displayIdxAfter)
+        let cInfoAfter = dm.codeInfo(for: rowAfter!)
+        XCTAssertEqual(cInfoAfter?.newLineNumber, 60)
+        XCTAssertEqual(cInfoAfter?.text, "Hunk2 Line 60")
+    }
+
+    func testFirstCodeRowForFilePath() {
+        let mb = MultiBuffer()
+        let file1Lines = ["File1 Line 1", "File1 Line 2"]
+        let file2Lines = ["File2 Line 1", "File2 Line 2"]
+
+        let buf1 = Buffer(filePath: "Sources/A.swift", lines: file1Lines)
+        let buf2 = Buffer(filePath: "Sources/B.swift", lines: file2Lines)
+        mb.addBuffer(buf1)
+        mb.addBuffer(buf2)
+
+        let exc1 = Excerpt(bufferId: buf1.id, filePath: "Sources/A.swift", bufferRange: 0..<2, isFileStart: true)
+        let exc2 = Excerpt(bufferId: buf2.id, filePath: "Sources/B.swift", bufferRange: 0..<2, isFileStart: true)
+        mb.setExcerpts([exc1, exc2])
+
+        let dm = DisplayMap(multiBuffer: mb, reviewManager: ReviewManager())
+        dm.rebuild()
+
+        let firstA = dm.firstCodeRow(forFilePath: "Sources/A.swift")
+        let firstB = dm.firstCodeRow(forFilePath: "Sources/B.swift")
+        let firstNonExistent = dm.firstCodeRow(forFilePath: "Sources/C.swift")
+
+        XCTAssertEqual(firstA, 0)
+        XCTAssertEqual(firstB, 2)
+        XCTAssertNil(firstNonExistent)
+    }
+
+    func testMaxLineCharsCalculatedFromLongLines() {
+        let mb = MultiBuffer()
+        let longLine = String(repeating: "A", count: 250)
+        let shortLine = "Short"
+
+        let buf = Buffer(filePath: "Sources/Long.swift", lines: [longLine, shortLine])
+        mb.addBuffer(buf)
+
+        let exc = Excerpt(bufferId: buf.id, filePath: "Sources/Long.swift", bufferRange: 0..<2, isFileStart: true)
+        mb.setExcerpts([exc])
+
+        let dm = DisplayMap(multiBuffer: mb, reviewManager: ReviewManager())
+        dm.rebuild()
+
+        XCTAssertEqual(dm.maxLineChars, 250)
+    }
 }

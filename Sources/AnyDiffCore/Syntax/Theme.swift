@@ -243,7 +243,7 @@ public struct Theme: Identifiable, Sendable {
         gutterBackground: NSColor(red: 0.94, green: 0.95, blue: 0.97, alpha: 1.0),
         currentLineBackground: NSColor(red: 0.93, green: 0.95, blue: 0.98, alpha: 1.0),
         selectionBackground: NSColor(red: 0.24, green: 0.48, blue: 0.88, alpha: 0.24),
-        excerptHeaderBackground: NSColor(red: 0.95, green: 0.96, blue: 0.98, alpha: 1.0),
+        excerptHeaderBackground: NSColor(red: 0.98, green: 0.98, blue: 0.99, alpha: 1.0),
         excerptHeaderBorder: NSColor(red: 0.82, green: 0.84, blue: 0.88, alpha: 1.0),
         foreground: NSColor(red: 0.12, green: 0.14, blue: 0.18, alpha: 1.0),
         gutterForeground: NSColor(red: 0.40, green: 0.44, blue: 0.52, alpha: 1.0),

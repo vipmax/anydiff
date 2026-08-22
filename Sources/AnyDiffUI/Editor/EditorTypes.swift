@@ -30,7 +30,7 @@ enum ScrollbarDragAxis: Sendable, Equatable {
 /// Anchor for preserving screen position across vertical expansions/folds
 enum ScrollAnchor: Sendable, Equatable {
     case header(filePath: String)
-    case code(bufferId: BufferId, bufferRow: BufferRow)
+    case line(filePath: String, lineNumber: Int)
 }
 
 /// Anchor for preserving the exact viewport position across diff reloads
@@ -88,4 +88,8 @@ public struct EditorViewState: Sendable, Equatable {
         self.scrollOffsetX = scrollOffsetX
         self.selectedFilePath = selectedFilePath
     }
+}
+
+extension Notification.Name {
+    static let focusFileInEditor = Notification.Name("AnyDiff_focusFileInEditor")
 }

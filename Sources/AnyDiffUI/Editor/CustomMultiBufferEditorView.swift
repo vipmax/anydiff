@@ -57,7 +57,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     public private(set) var fontDescent: CGFloat = 4
     public private(set) var gutterWidth: CGFloat = 58
     public private(set) var excerptHeaderHeight: CGFloat = 34
-    public private(set) var foldGapHeight: CGFloat = 26
+    public private(set) var foldGapHeight: CGFloat = 20
     public private(set) var commentHeight: CGFloat = 64
 
     // Virtual Scrolling
@@ -121,6 +121,24 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     public override var isFlipped: Bool { true }
     public override var acceptsFirstResponder: Bool { true }
 
+    public override func becomeFirstResponder() -> Bool {
+        let result = super.becomeFirstResponder()
+        if result {
+            resetCursorBlink()
+            needsDisplay = true
+        }
+        return result
+    }
+
+    public override func resignFirstResponder() -> Bool {
+        let result = super.resignFirstResponder()
+        if result {
+            isCursorVisible = false
+            needsDisplay = true
+        }
+        return result
+    }
+
     public init(displayMap: DisplayMap? = nil, theme: Theme = .zedDark) {
         self.displayMap = displayMap
         self.theme = theme
@@ -137,9 +155,11 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         canDrawConcurrently = true
         updateFontMetrics()
         startCursorBlink()
+        NotificationCenter.default.addObserver(self, selector: #selector(handleFocusFileNotification(_:)), name: .focusFileInEditor, object: nil)
     }
 
     deinit {
+        NotificationCenter.default.removeObserver(self)
         cursorTimer?.invalidate()
         scrollbarFadeTimer?.invalidate()
         fadeAnimationTimer?.invalidate()
@@ -296,19 +316,24 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         focusAfterLoadIfPossible()
     }
 
-    private func focusAfterLoadIfPossible() {
+    public func focus() {
         if let window {
             window.makeFirstResponder(self)
+            resetCursorBlink()
             needsDisplay = true
-        } else {
-            // SwiftUI can update the representable before it is attached to a
-            // window. Try again once the view has entered the window hierarchy.
-            DispatchQueue.main.async { [weak self] in
-                guard let self, let window = self.window else { return }
+        }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let window = self.window else { return }
+            if window.firstResponder !== self {
                 window.makeFirstResponder(self)
+                self.resetCursorBlink()
                 self.needsDisplay = true
             }
         }
+    }
+
+    private func focusAfterLoadIfPossible() {
+        focus()
     }
 
     private func startScrollbarFadeOut() {
@@ -402,12 +427,24 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         needsDisplay = true
     }
 
+    private var cachedCharWidth: CGFloat = 8.0
+
     private func updateFontMetrics() {
         let ctFont = CTFontCreateWithName(font.fontName as CFString, font.pointSize, nil)
         fontAscent = CTFontGetAscent(ctFont)
         fontDescent = CTFontGetDescent(ctFont)
         let leading = CTFontGetLeading(ctFont)
         lineHeight = max(18, ceil(fontAscent + fontDescent + leading + 4))
+
+        var glyph: CGGlyph = 0
+        var advance: CGSize = .zero
+        let chars: [UniChar] = [0x004D] // 'M'
+        if CTFontGetGlyphsForCharacters(ctFont, chars, &glyph, 1) {
+            CTFontGetAdvancesForGlyphs(ctFont, .horizontal, &glyph, &advance, 1)
+            cachedCharWidth = advance.width
+        } else {
+            cachedCharWidth = font.pointSize * 0.6
+        }
     }
 
     public override func updateTrackingAreas() {
@@ -676,9 +713,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         }
         totalHeight += 8 // Clean minimal 8px margin at bottom
 
-        let charWidth = font.pointSize * 0.75
-        let maxChars = displayMap.maxLineChars
-        let neededWidth = gutterWidth + CGFloat(maxChars) * charWidth + 100
+        let neededWidth = gutterWidth + CGFloat(displayMap.maxLineChars) * cachedCharWidth + 20
         self.contentTotalHeight = totalHeight
         self.contentNeededWidth = neededWidth
 
@@ -692,6 +727,12 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         guard let dm = displayMap, excerptIdx >= 0 && excerptIdx < excerptLayouts.count else {
             invalidateLayout()
             return
+        }
+
+        let neededWidth = gutterWidth + CGFloat(dm.maxLineChars) * cachedCharWidth + 20
+        if neededWidth > contentNeededWidth {
+            self.contentNeededWidth = neededWidth
+            self.totalDocumentWidth = max(bounds.width, neededWidth)
         }
 
         let loc = dm.excerptLocations[excerptIdx]
@@ -730,7 +771,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                 excerptStartYs[j] += heightDelta
             }
 
-            if let fileSecIdx = cachedFileSections.firstIndex(where: { $0.headerMinY <= startY && $0.contentMaxY >= startY }) {
+            if let fileSecIdx = cachedFileSections.firstIndex(where: { $0.info.filePath == excerpt.filePath }) {
                 cachedFileSections[fileSecIdx].contentMaxY += heightDelta
                 for j in (fileSecIdx + 1)..<cachedFileSections.count {
                     cachedFileSections[j].headerMinY += heightDelta
@@ -821,6 +862,12 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             showScrollbarsWithAutohide(for: .vertical)
             needsDisplay = true
         }
+    }
+
+    @objc private func handleFocusFileNotification(_ notification: Notification) {
+        guard let path = notification.object as? String else { return }
+        scrollToFilePath(path)
+        focus()
     }
 
     // MARK: - Cursor Blinking
@@ -996,9 +1043,9 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         switch anchor {
         case .header(let path):
             newAbsY = filePathToY[path] ?? filePathToY[(path as NSString).lastPathComponent]
-        case .code(let bufId, let bRow):
-            if let visualPt = dm.visualPoint(for: bufId, bufferPoint: BufferPoint(row: bRow, column: 0)) {
-                newAbsY = yOffset(for: visualPt.row)
+        case .line(let path, let lineNum):
+            if let targetLineIdx = dm.displayLineIndex(forFilePath: path, lineNumber: lineNum, isHeader: false) {
+                newAbsY = yOffset(forDisplayLineIndex: targetLineIdx)
             } else {
                 newAbsY = nil
             }
@@ -1017,21 +1064,51 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             action()
             return
         }
-        let cursorLoc = dm.bufferLocation(for: cursorPoint)
-        let anchorLoc = selectionAnchor.flatMap { dm.bufferLocation(for: $0) }
+
+        struct CursorState {
+            let filePath: String
+            let lineNumber: Int
+            let column: Int
+        }
+
+        let cursorState: CursorState?
+        if let cInfo = dm.codeInfo(for: cursorPoint.row),
+           cInfo.excerptIndex >= 0 && cInfo.excerptIndex < dm.multiBuffer.excerpts.count {
+            let exc = dm.multiBuffer.excerpts[cInfo.excerptIndex]
+            let lineNum = cInfo.newLineNumber ?? cInfo.oldLineNumber ?? ((dm.multiBuffer.buffer(for: exc.bufferId)?.startLineNumber ?? 1) + cInfo.bufferRow)
+            cursorState = CursorState(filePath: exc.filePath, lineNumber: lineNum, column: cursorPoint.column)
+        } else {
+            cursorState = nil
+        }
+
+        let anchorState: CursorState?
         let hadSelection = (selectionAnchor != nil && selectionAnchor != cursorPoint)
+        if hadSelection,
+           let aPoint = selectionAnchor,
+           let aInfo = dm.codeInfo(for: aPoint.row),
+           aInfo.excerptIndex >= 0 && aInfo.excerptIndex < dm.multiBuffer.excerpts.count {
+            let exc = dm.multiBuffer.excerpts[aInfo.excerptIndex]
+            let lineNum = aInfo.newLineNumber ?? aInfo.oldLineNumber ?? ((dm.multiBuffer.buffer(for: exc.bufferId)?.startLineNumber ?? 1) + aInfo.bufferRow)
+            anchorState = CursorState(filePath: exc.filePath, lineNumber: lineNum, column: aPoint.column)
+        } else {
+            anchorState = nil
+        }
 
         action()
 
         dm.rebuild()
         invalidateLayout()
 
-        if let loc = cursorLoc, let newVPoint = dm.visualPoint(for: loc.buffer.id, bufferPoint: loc.point) {
-            cursorPoint = newVPoint
-            if hadSelection, let aLoc = anchorLoc, let newAPoint = dm.visualPoint(for: aLoc.buffer.id, bufferPoint: aLoc.point) {
-                selectionAnchor = newAPoint
+        if let cs = cursorState, let newRow = dm.codeRow(forFilePath: cs.filePath, lineNumber: cs.lineNumber) {
+            let maxCol = dm.lineLength(at: newRow)
+            let newCursorPoint = MultiBufferPoint(row: newRow, column: min(maxCol, cs.column))
+            cursorPoint = newCursorPoint
+
+            if let asState = anchorState, let newAnchorRow = dm.codeRow(forFilePath: asState.filePath, lineNumber: asState.lineNumber) {
+                let aMaxCol = dm.lineLength(at: newAnchorRow)
+                selectionAnchor = MultiBufferPoint(row: newAnchorRow, column: min(aMaxCol, asState.column))
             } else {
-                selectionAnchor = newVPoint
+                selectionAnchor = newCursorPoint
             }
         }
     }
@@ -1078,42 +1155,32 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     // MARK: - Excerpt Header Drawing
 
     private func drawExcerptHeader(info: ExcerptHeaderInfo, in rect: CGRect, isSticky: Bool = false, context: CGContext) {
+        context.saveGState()
+
         let fullWidth = bounds.width
         let headerRect = CGRect(x: 0, y: rect.minY, width: fullWidth, height: rect.height)
 
-        if isSticky {
-            // Keep the sticky header separation subtle in both appearances.
-            context.saveGState()
-            let shadowColor = theme.isDark
-                ? NSColor.black.withAlphaComponent(0.22)
-                : NSColor.black.withAlphaComponent(0.08)
-            context.setFillColor(shadowColor.cgColor)
-            context.fill(CGRect(x: 0, y: rect.maxY, width: fullWidth, height: 1))
-            context.restoreGState()
-        }
-
-        // Header background spanning sticky width
+        // 1. Header background spanning full width (always 100% opaque to prevent code bleed-through)
         context.setFillColor(theme.excerptHeaderBackground.cgColor)
         context.fill(headerRect)
 
-        // Top & Bottom border
-
-        context.setStrokeColor(theme.excerptHeaderBorder.cgColor)
-        context.setLineWidth(1.0)
-        context.strokeLineSegments(between: [
-            CGPoint(x: 0, y: rect.minY), CGPoint(x: fullWidth, y: rect.minY),
-            CGPoint(x: 0, y: rect.maxY), CGPoint(x: fullWidth, y: rect.maxY)
-        ])
-
-        // File Status Stripe on the left of header
-        let stripeColor: NSColor
-        switch info.fileStatus {
-        case .added: stripeColor = theme.diffAddedGutter
-        case .deleted: stripeColor = theme.diffDeletedGutter
-        default: stripeColor = theme.diffModifiedGutter
+        // 2. Strong, fast fade out for title, icon, and badges as soon as header starts being pushed
+        let contentAlpha: CGFloat
+        if isSticky && rect.minY < 0 {
+            // Fades out completely within the first ~45% of being pushed
+            let rawProgress = max(0, min(1, (rect.minY + rect.height * 0.45) / (rect.height * 0.45)))
+            contentAlpha = pow(rawProgress, 2.0)
+        } else {
+            contentAlpha = 1.0
         }
-        context.setFillColor(stripeColor.cgColor)
-        context.fill(CGRect(x: 0, y: rect.minY, width: 4, height: rect.height))
+
+        if contentAlpha <= 0.001 {
+            context.restoreGState()
+            return
+        }
+
+        context.saveGState()
+        context.setAlpha(contentAlpha)
 
         // Smooth rounded vector chevron indicator matching native macOS
         let cx: CGFloat = 16
@@ -1141,24 +1208,53 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         }
         context.restoreGState()
 
+        // File Icon
+        let iconSize: CGFloat = 14
+        let iconX: CGFloat = 28
+        let iconY = rect.minY + (rect.height - iconSize) / 2.0
+        let icon = FileIconProvider.shared.image(for: info.filePath, pointSize: 12, weight: .medium)
+
+        NSGraphicsContext.saveGraphicsState()
+        let gContext = NSGraphicsContext(cgContext: context, flipped: isFlipped)
+        NSGraphicsContext.current = gContext
+        icon.draw(
+            in: CGRect(x: iconX, y: iconY, width: iconSize, height: iconSize),
+            from: .zero,
+            operation: .sourceOver,
+            fraction: contentAlpha
+        )
+        NSGraphicsContext.restoreGraphicsState()
+
         // Title and Breadcrumbs Text
+        let titleColor: NSColor
+        switch info.fileStatus {
+        case .added:
+            titleColor = NSColor.systemGreen
+        case .deleted:
+            titleColor = NSColor.systemRed
+        case .renamed:
+            titleColor = NSColor.systemPurple
+        default:
+            titleColor = theme.foreground
+        }
+
         let pathAttr: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 12, weight: .semibold),
-            .foregroundColor: theme.foreground
+            .foregroundColor: titleColor
         ]
         let pathStr = NSAttributedString(string: info.filePath, attributes: pathAttr)
         let ctLine = CTLineCreateWithAttributedString(pathStr)
         let titleWidth = CGFloat(CTLineGetTypographicBounds(ctLine, nil, nil, nil))
-        let titleStartX: CGFloat = 28
+        let titleStartX: CGFloat = iconX + iconSize + 6
         let titleEndX = titleStartX + titleWidth
 
-        // Diff Badges (+N -M) floated to the right edge of visible viewport
+        // Diff Badges (+N -M) matching sidebar style
         var delLine: CTLine?
         var delWidth: CGFloat = 0
         if info.deletions > 0 {
             let delAttr: [NSAttributedString.Key: Any] = [
-                .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .bold),
-                .foregroundColor: theme.diffDeletedGutter
+                .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .bold),
+                .foregroundColor: NSColor.systemRed
             ]
             let delStr = NSAttributedString(string: "-\(info.deletions)", attributes: delAttr)
             let line = CTLineCreateWithAttributedString(delStr)
@@ -1170,8 +1266,8 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         var addWidth: CGFloat = 0
         if info.additions > 0 {
             let addAttr: [NSAttributedString.Key: Any] = [
-                .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .bold),
-                .foregroundColor: theme.diffAddedGutter
+                .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .bold),
+                .foregroundColor: NSColor.systemGreen
             ]
             let addStr = NSAttributedString(string: "+\(info.additions)", attributes: addAttr)
             let line = CTLineCreateWithAttributedString(addStr)
@@ -1223,6 +1319,9 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                 context.restoreGState()
             }
         }
+
+        context.restoreGState() // Restore contentAlpha state
+        context.restoreGState() // Restore outer header state
     }
 
     // MARK: - Code Line Drawing
@@ -1435,20 +1534,24 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         context.setFillColor(theme.background.cgColor)
         context.fill(rect)
 
-        let label = info.isCountKnown
-            ? "⋯   \(info.hiddenCount) hidden lines   [Expand all]   ⋯"
-            : "⋯   hidden lines   [Expand]   ⋯"
-        let str = NSAttributedString(string: label, attributes: [
-            .font: NSFont.systemFont(ofSize: 11, weight: .medium),
-            .foregroundColor: theme.foldPlaceholderForeground
-        ])
-        let line = CTLineCreateWithAttributedString(str)
+        let midY = floor(rect.midY) + 0.5
 
+        // Gutter area background
+        let gutterRect = CGRect(x: 0, y: rect.minY, width: gutterWidth, height: rect.height)
+        context.setFillColor(theme.background.cgColor)
+        context.fill(gutterRect)
+
+        // Thin horizontal line across the entire editor width (from left edge to right edge)
         context.saveGState()
-        context.textMatrix = .identity
-        context.translateBy(x: gutterWidth + 24, y: rect.minY + 16)
-        context.scaleBy(x: 1.0, y: -1.0)
-        CTLineDraw(line, context)
+        let lineColor: NSColor = theme.isDark
+            ? theme.foldPlaceholderForeground.withAlphaComponent(0.45)
+            : theme.gutterForeground.withAlphaComponent(0.35)
+        context.setStrokeColor(lineColor.cgColor)
+        context.setLineWidth(1.0)
+        context.strokeLineSegments(between: [
+            CGPoint(x: 0, y: midY),
+            CGPoint(x: rect.maxX, y: midY)
+        ])
         context.restoreGState()
     }
 
@@ -1547,7 +1650,8 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                     if lineIdx + 1 < totalLines, let nextLine = displayMap.displayLine(at: lineIdx + 1), case .code(let c) = nextLine {
                         if c.excerptIndex >= 0 && c.excerptIndex < displayMap.multiBuffer.excerpts.count {
                             let exc = displayMap.multiBuffer.excerpts[c.excerptIndex]
-                            anchor = .code(bufferId: exc.bufferId, bufferRow: c.bufferRow)
+                            let lineNum = c.newLineNumber ?? c.oldLineNumber ?? ((displayMap.multiBuffer.buffer(for: exc.bufferId)?.startLineNumber ?? 1) + c.bufferRow)
+                            anchor = .line(filePath: exc.filePath, lineNumber: lineNum)
                         }
                         anchorScreenY = yOffset(forDisplayLineIndex: lineIdx + 1) - scrollOffsetY
                     }
@@ -1560,7 +1664,8 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                         case .code(let c):
                             if c.excerptIndex >= 0 && c.excerptIndex < displayMap.multiBuffer.excerpts.count {
                                 let exc = displayMap.multiBuffer.excerpts[c.excerptIndex]
-                                anchor = .code(bufferId: exc.bufferId, bufferRow: c.bufferRow)
+                                let lineNum = c.newLineNumber ?? c.oldLineNumber ?? ((displayMap.multiBuffer.buffer(for: exc.bufferId)?.startLineNumber ?? 1) + c.bufferRow)
+                                anchor = .line(filePath: exc.filePath, lineNumber: lineNum)
                             }
                             anchorScreenY = yOffset(forDisplayLineIndex: lineIdx - 1) - scrollOffsetY
                         default:
@@ -1593,7 +1698,8 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                     var anchor: ScrollAnchor? = nil
                     if codeInfo.excerptIndex >= 0 && codeInfo.excerptIndex < displayMap.multiBuffer.excerpts.count {
                         let exc = displayMap.multiBuffer.excerpts[codeInfo.excerptIndex]
-                        anchor = .code(bufferId: exc.bufferId, bufferRow: codeInfo.bufferRow)
+                        let lineNum = codeInfo.newLineNumber ?? codeInfo.oldLineNumber ?? ((displayMap.multiBuffer.buffer(for: exc.bufferId)?.startLineNumber ?? 1) + codeInfo.bufferRow)
+                        anchor = .line(filePath: exc.filePath, lineNumber: lineNum)
                     }
                     preserveCursorAndSelection {
                         if isFullExpand {
@@ -1841,8 +1947,11 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             let currentScreenY = (yOffset(for: cursorRow) ?? 0) - scrollOffsetY
 
             var anchor: ScrollAnchor? = nil
-            if let loc = displayMap.bufferLocation(for: cursorPoint) {
-                anchor = .code(bufferId: loc.buffer.id, bufferRow: loc.point.row)
+            if let cInfo = displayMap.codeInfo(for: cursorRow),
+               cInfo.excerptIndex >= 0 && cInfo.excerptIndex < displayMap.multiBuffer.excerpts.count {
+                let exc = displayMap.multiBuffer.excerpts[cInfo.excerptIndex]
+                let lineNum = cInfo.newLineNumber ?? cInfo.oldLineNumber ?? ((displayMap.multiBuffer.buffer(for: exc.bufferId)?.startLineNumber ?? 1) + cInfo.bufferRow)
+                anchor = .line(filePath: exc.filePath, lineNumber: lineNum)
             }
 
             preserveCursorAndSelection {

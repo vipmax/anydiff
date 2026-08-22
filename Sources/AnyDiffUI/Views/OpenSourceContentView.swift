@@ -65,18 +65,19 @@ public struct OpenSourceContentView: View {
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 6) {
             localProjectSection
             Divider()
+                .padding(.horizontal, 4)
             remoteDiffSection
             if hasRecentsOrPresets {
                 Divider()
+                    .padding(.horizontal, 4)
                 recentAndExamplesSection
             }
         }
-        .padding(14)
-        .frame(width: isInline ? 460 : 420)
-        .background(Color(theme.background))
+        .padding(isInline ? 12 : 6)
+        .frame(width: isInline ? 440 : 360)
         .overlay(dropOverlay)
         .onDrop(of: [UTType.fileURL, UTType.url, UTType.text], isTargeted: $isDropTargeted) { providers in
             handleDrop(providers: providers)
@@ -85,61 +86,56 @@ public struct OpenSourceContentView: View {
 
     @ViewBuilder
     private var localProjectSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Label("Local Project", systemImage: "folder.fill")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(Color(theme.foreground))
+                Text("LOCAL PROJECT")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundColor(.secondary)
                 Spacer()
                 Text("Drag & drop folder anywhere")
                     .font(.system(size: 9.5))
-                    .foregroundColor(Color(theme.gutterForeground).opacity(0.8))
+                    .foregroundColor(.secondary.opacity(0.8))
             }
+            .padding(.horizontal, 4)
+            .padding(.top, isInline ? 0 : 2)
 
-            HStack(spacing: 8) {
-                HStack(spacing: 6) {
-                    TextField("~/path/to/project or /Users/...", text: $localPathInput)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundColor(Color(theme.foreground))
-                        .onSubmit { submitLocalPath() }
+            HStack(spacing: 6) {
+                Image(systemName: "folder")
+                    .foregroundColor(.secondary)
+                    .font(.system(size: 11))
 
-                    if !localPathInput.isEmpty {
-                        Button(action: {
-                            localPathInput = ""
-                            localErrorMessage = nil
-                        }) {
-                            Image(systemName: "xmark.circle.fill")
-                                .font(.system(size: 11))
-                                .foregroundColor(Color(theme.gutterForeground))
-                        }
-                        .buttonStyle(.plain)
+                TextField("~/path/to/project or /Users/...", text: $localPathInput)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12))
+                    .onSubmit { submitLocalPath() }
+
+                if !localPathInput.isEmpty {
+                    Button(action: {
+                        localPathInput = ""
+                        localErrorMessage = nil
+                    }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.secondary)
+                            .font(.system(size: 11))
                     }
+                    .buttonStyle(.plain)
                 }
-                .padding(.horizontal, 9)
-                .padding(.vertical, 6)
-                .background(Color(theme.gutterBackground))
-                .cornerRadius(6)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6)
-                        .stroke(localErrorMessage == nil ? Color(theme.excerptHeaderBorder) : Color.red.opacity(0.7), lineWidth: 1)
-                )
 
                 if !localPathInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     Button(action: submitLocalPath) {
                         Text("Open")
-                            .font(.system(size: 11.5, weight: .medium))
+                            .font(.system(size: 11, weight: .medium))
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
                 }
 
                 Button(action: onOpenLocalFolder) {
-                    HStack(spacing: 4) {
+                    HStack(spacing: 3) {
                         Image(systemName: "folder")
-                            .font(.system(size: 11))
+                            .font(.system(size: 10))
                         Text("Browse...")
-                            .font(.system(size: 11.5))
+                            .font(.system(size: 11))
                     }
                 }
                 .keyboardShortcut("o", modifiers: .command)
@@ -147,77 +143,87 @@ public struct OpenSourceContentView: View {
                 .controlSize(.small)
                 .help("Browse folder (Cmd+O)")
             }
+            .padding(6)
+            .background(Color.primary.opacity(0.06))
+            .cornerRadius(6)
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(localErrorMessage == nil ? Color.secondary.opacity(0.12) : Color.red.opacity(0.7), lineWidth: 0.8)
+            )
+            .padding(.horizontal, 4)
 
             if let error = localErrorMessage {
                 Text(error)
                     .font(.system(size: 10))
                     .foregroundColor(.red)
-                    .padding(.leading, 2)
+                    .padding(.horizontal, 6)
             }
         }
     }
 
     @ViewBuilder
     private var remoteDiffSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Label("GitHub PR / Commit / URL", systemImage: "globe")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(Color(theme.foreground))
+                Text("GITHUB PR / COMMIT / URL")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundColor(.secondary)
                 Spacer()
             }
+            .padding(.horizontal, 4)
 
-            HStack(spacing: 8) {
-                HStack(spacing: 6) {
-                    TextField("https://github.com/... or owner/repo#123", text: $remoteURLInput)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundColor(Color(theme.foreground))
-                        .onSubmit { submitRemoteURL() }
+            HStack(spacing: 6) {
+                Image(systemName: "globe")
+                    .foregroundColor(.secondary)
+                    .font(.system(size: 11))
 
-                    if !remoteURLInput.isEmpty {
-                        Button(action: {
-                            remoteURLInput = ""
-                            remoteErrorMessage = nil
-                        }) {
-                            Image(systemName: "xmark.circle.fill")
-                                .font(.system(size: 11))
-                                .foregroundColor(Color(theme.gutterForeground))
-                        }
-                        .buttonStyle(.plain)
-                    }
+                TextField("https://github.com/... or owner/repo#123", text: $remoteURLInput)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12))
+                    .onSubmit { submitRemoteURL() }
 
-                    Button(action: pasteRemoteFromClipboard) {
-                        Image(systemName: "doc.on.clipboard")
+                if !remoteURLInput.isEmpty {
+                    Button(action: {
+                        remoteURLInput = ""
+                        remoteErrorMessage = nil
+                    }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.secondary)
                             .font(.system(size: 11))
-                            .foregroundColor(Color(theme.gutterForeground))
                     }
                     .buttonStyle(.plain)
-                    .help("Paste from clipboard")
                 }
-                .padding(.horizontal, 9)
-                .padding(.vertical, 6)
-                .background(Color(theme.gutterBackground))
-                .cornerRadius(6)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6)
-                        .stroke(remoteErrorMessage == nil ? Color(theme.excerptHeaderBorder) : Color.red.opacity(0.7), lineWidth: 1)
-                )
+
+                Button(action: pasteRemoteFromClipboard) {
+                    Image(systemName: "doc.on.clipboard")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Paste from clipboard")
 
                 Button(action: submitRemoteURL) {
                     Text("Open")
-                        .font(.system(size: 11.5, weight: .medium))
+                        .font(.system(size: 11, weight: .medium))
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
                 .disabled(remoteURLInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
+            .padding(6)
+            .background(Color.primary.opacity(0.06))
+            .cornerRadius(6)
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(remoteErrorMessage == nil ? Color.secondary.opacity(0.12) : Color.red.opacity(0.7), lineWidth: 0.8)
+            )
+            .padding(.horizontal, 4)
 
             if let error = remoteErrorMessage {
                 Text(error)
                     .font(.system(size: 10))
                     .foregroundColor(.red)
-                    .padding(.leading, 2)
+                    .padding(.horizontal, 6)
             }
         }
     }
@@ -225,18 +231,18 @@ public struct OpenSourceContentView: View {
     @ViewBuilder
     private var recentAndExamplesSection: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text("RECENT & EXAMPLES")
-                .font(.system(size: 9, weight: .bold))
-                .foregroundColor(Color(theme.gutterForeground))
-                .padding(.bottom, 1)
-
             if !recentManager.recentLocalPaths.isEmpty {
-                ScrollView(.vertical, showsIndicators: recentManager.recentLocalPaths.count > 4) {
+                Text("RECENT PROJECTS (\(recentManager.recentLocalPaths.count))")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 4)
+                    .padding(.top, 2)
+
+                ScrollView(.vertical, showsIndicators: recentManager.recentLocalPaths.count > 5) {
                     VStack(spacing: 2) {
                         ForEach(recentManager.recentLocalPaths, id: \.self) { path in
                             RecentLocalRowView(
                                 path: path,
-                                theme: theme,
                                 isCurrent: (path == currentLocalPath),
                                 onSelect: { onSelectLocalPath(path) },
                                 onRemove: {
@@ -247,16 +253,27 @@ public struct OpenSourceContentView: View {
                             )
                         }
                     }
+                    .padding(.horizontal, 2)
                 }
-                .frame(maxHeight: min(CGFloat(recentManager.recentLocalPaths.count) * 30.0, 160.0))
+                .frame(maxHeight: min(CGFloat(recentManager.recentLocalPaths.count) * 38.0, 220.0))
             }
 
             if !visiblePresets.isEmpty {
+                if !recentManager.recentLocalPaths.isEmpty {
+                    Divider()
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 2)
+                }
+
+                Text("EXAMPLES")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 4)
+
                 HStack(spacing: 6) {
                     ForEach(visiblePresets) { preset in
                         PresetChipView(
                             preset: preset,
-                            theme: theme,
                             onSelect: { onOpenRemoteURL(preset.url) },
                             onDismiss: {
                                 withAnimation(.easeInOut(duration: 0.15)) {
@@ -281,7 +298,8 @@ public struct OpenSourceContentView: View {
                         .buttonStyle(PlainHoverButtonStyle())
                     }
                 }
-                .padding(.top, 2)
+                .padding(.horizontal, 4)
+                .padding(.top, 1)
             }
         }
     }
@@ -291,14 +309,14 @@ public struct OpenSourceContentView: View {
         if isDropTargeted {
             ZStack {
                 RoundedRectangle(cornerRadius: 8)
-                    .fill(Color(theme.background).opacity(0.92))
+                    .fill(Color.black.opacity(0.5))
                 VStack(spacing: 8) {
                     Image(systemName: "folder.badge.plus")
                         .font(.system(size: 28))
                         .foregroundColor(.accentColor)
                     Text("Drop folder or URL here")
                         .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(Color(theme.foreground))
+                        .foregroundColor(.white)
                 }
             }
             .overlay(
@@ -410,7 +428,6 @@ public struct OpenSourceContentView: View {
 
 private struct RecentLocalRowView: View {
     let path: String
-    let theme: Theme
     let isCurrent: Bool
     let onSelect: () -> Void
     let onRemove: () -> Void
@@ -425,21 +442,30 @@ private struct RecentLocalRowView: View {
             Button(action: onSelect) {
                 HStack(spacing: 8) {
                     Image(systemName: isCurrent ? "folder.fill" : "folder")
-                        .font(.system(size: 11))
-                        .foregroundColor(isCurrent ? .accentColor : Color(theme.gutterForeground))
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(isCurrent ? .accentColor : .secondary)
                         .frame(width: 14)
 
-                    Text(folderName)
-                        .font(.system(size: 11.5, weight: isCurrent ? .bold : .medium))
-                        .foregroundColor(Color(theme.foreground))
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(folderName)
+                            .font(.system(size: 12, weight: isCurrent ? .semibold : .regular))
+                            .foregroundColor(.primary)
+                            .lineLimit(1)
+
+                        Text(path)
+                            .font(.system(size: 9.5, weight: .regular))
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
 
                     Spacer()
 
-                    Text(path)
-                        .font(.system(size: 9.5, design: .monospaced))
-                        .foregroundColor(Color(theme.gutterForeground).opacity(0.7))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                    if isCurrent {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(.accentColor)
+                    }
                 }
                 .contentShape(Rectangle())
             }
@@ -448,7 +474,7 @@ private struct RecentLocalRowView: View {
             Button(action: onRemove) {
                 Image(systemName: "xmark")
                     .font(.system(size: 8.5, weight: .bold))
-                    .foregroundColor(Color(theme.gutterForeground).opacity(isCrossHovered ? 1.0 : 0.55))
+                    .foregroundColor(.secondary.opacity(isCrossHovered ? 1.0 : 0.55))
                     .frame(width: 16, height: 16)
                     .contentShape(Rectangle())
             }
@@ -461,8 +487,8 @@ private struct RecentLocalRowView: View {
             }
             .help("Remove from recents")
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4.5)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
         .background(
             RoundedRectangle(cornerRadius: 5)
                 .fill(isHovered ? Color.secondary.opacity(0.12) : Color.clear)
@@ -477,7 +503,6 @@ private struct RecentLocalRowView: View {
 
 private struct PresetChipView: View {
     let preset: OpenSourceContentView.PresetExample
-    let theme: Theme
     let onSelect: () -> Void
     let onDismiss: () -> Void
 
@@ -495,7 +520,8 @@ private struct PresetChipView: View {
                     }
                     Text(preset.title)
                         .font(.system(size: 10.5, weight: .medium))
-                        .foregroundColor(Color(theme.foreground))
+                        .foregroundColor(.primary)
+                        .lineLimit(1)
                 }
                 .contentShape(Rectangle())
             }
@@ -504,7 +530,7 @@ private struct PresetChipView: View {
             Button(action: onDismiss) {
                 Image(systemName: "xmark")
                     .font(.system(size: 7.5, weight: .bold))
-                    .foregroundColor(Color(theme.gutterForeground).opacity(isCrossHovered ? 1.0 : 0.55))
+                    .foregroundColor(.secondary.opacity(isCrossHovered ? 1.0 : 0.55))
                     .frame(width: 12, height: 12)
                     .contentShape(Rectangle())
             }
@@ -517,17 +543,18 @@ private struct PresetChipView: View {
             }
             .help("Remove example")
         }
+        .fixedSize(horizontal: true, vertical: false)
         .padding(.leading, 7)
         .padding(.trailing, 5)
         .padding(.vertical, 3.5)
         .background(
             RoundedRectangle(cornerRadius: 5)
-                .fill(isHovered ? Color.secondary.opacity(0.18) : Color(theme.gutterBackground))
+                .fill(isHovered ? Color.secondary.opacity(0.18) : Color.primary.opacity(0.06))
                 .animation(.easeInOut(duration: 0.1), value: isHovered)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 5)
-                .stroke(isHovered ? Color.accentColor.opacity(0.5) : Color(theme.excerptHeaderBorder), lineWidth: 0.8)
+                .stroke(isHovered ? Color.accentColor.opacity(0.5) : Color.secondary.opacity(0.12), lineWidth: 0.8)
                 .animation(.easeInOut(duration: 0.1), value: isHovered)
         )
         .onHover { hovering in

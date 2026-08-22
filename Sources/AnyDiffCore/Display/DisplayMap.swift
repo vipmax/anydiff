@@ -220,7 +220,7 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
 
         var runningDisplayIdx = 0
         var runningMBRow = 0
-        let calculatedMaxChars = 80
+        var calculatedMaxChars = 80
         let totalExcerpts = multiBuffer.excerpts.count
 
         excerptLocations.reserveCapacity(totalExcerpts)
@@ -281,9 +281,17 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
             if excerpt.isCollapsed {
                 codeCount = 0
             } else if let hunk = excerpt.hunk, usesOriginalHunk(excerpt: excerpt, buffer: buffer) {
-                codeCount = !hunk.lineSpans.isEmpty ? hunk.lineSpans.count : hunk.lines.count
+                if !hunk.lineSpans.isEmpty {
+                    codeCount = hunk.lineSpans.count
+                    for span in hunk.lineSpans { calculatedMaxChars = max(calculatedMaxChars, Int(span.length)) }
+                } else {
+                    codeCount = hunk.lines.count
+                    for line in hunk.lines { calculatedMaxChars = max(calculatedMaxChars, line.text.count) }
+                }
             } else {
-                codeCount = getCachedDiffLines(for: excerptIdx).count
+                let diffLines = getCachedDiffLines(for: excerptIdx)
+                codeCount = diffLines.count
+                for item in diffLines { calculatedMaxChars = max(calculatedMaxChars, item.line.text.count) }
             }
 
             let totalDisplayCount = (hasHeader ? 1 : 0) + (hasTopGap ? 1 : 0) + codeCount + (hasBottomGap ? 1 : 0)
@@ -340,9 +348,17 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
         if excerpt.isCollapsed {
             newCodeCount = 0
         } else if let hunk = excerpt.hunk, usesOriginalHunk(excerpt: excerpt, buffer: buffer) {
-            newCodeCount = !hunk.lineSpans.isEmpty ? hunk.lineSpans.count : hunk.lines.count
+            if !hunk.lineSpans.isEmpty {
+                newCodeCount = hunk.lineSpans.count
+                for span in hunk.lineSpans { maxLineChars = max(maxLineChars, Int(span.length)) }
+            } else {
+                newCodeCount = hunk.lines.count
+                for line in hunk.lines { maxLineChars = max(maxLineChars, line.text.count) }
+            }
         } else {
-            newCodeCount = getCachedDiffLines(for: excerptIdx).count
+            let diffLines = getCachedDiffLines(for: excerptIdx)
+            newCodeCount = diffLines.count
+            for item in diffLines { maxLineChars = max(maxLineChars, item.line.text.count) }
         }
 
         // 3. Recompute total display line count for this excerpt ONLY
@@ -848,6 +864,20 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
             return MultiBufferPoint(row: mbRow, column: clampedCol)
         }
 
+        return nil
+    }
+
+    /// Finds the first code row for the given file path
+    public func firstCodeRow(forFilePath filePath: String) -> MultiBufferRow? {
+        guard !multiBuffer.excerpts.isEmpty else { return nil }
+        for loc in excerptLocations {
+            guard loc.excerptIndex >= 0 && loc.excerptIndex < multiBuffer.excerpts.count else { continue }
+            let excerpt = multiBuffer.excerpts[loc.excerptIndex]
+            guard excerpt.filePath == filePath else { continue }
+            if loc.codeLineCount > 0 {
+                return loc.codeRange.lowerBound
+            }
+        }
         return nil
     }
 

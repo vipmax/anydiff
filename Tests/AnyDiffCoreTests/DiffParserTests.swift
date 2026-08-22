@@ -221,4 +221,29 @@ index 0000000..3333333
         XCTAssertEqual(streamedFiles[1].status, .added)
         XCTAssertEqual(streamedFiles[1].hunks.count, 1)
     }
+
+    func testRenamedFileParsing() {
+        let diff = """
+diff --git a/OldName.swift b/NewName.swift
+similarity index 95%
+rename from Sources/OldName.swift
+rename to Sources/NewName.swift
+index 1111111..2222222 100644
+--- a/Sources/OldName.swift
++++ b/Sources/NewName.swift
+@@ -1,3 +1,3 @@
+ struct OldName {
+-    let x: Int
++    let x: Double
+ }
+"""
+        let files = GitDiffParser.shared.parse(diffText: diff)
+        XCTAssertEqual(files.count, 1)
+        let file = files[0]
+        XCTAssertEqual(file.status, .renamed)
+        XCTAssertEqual(file.oldPath, "Sources/OldName.swift")
+        XCTAssertEqual(file.newPath, "Sources/NewName.swift")
+        XCTAssertEqual(file.displayPath, "Sources/NewName.swift")
+        XCTAssertEqual(file.hunks.count, 1)
+    }
 }

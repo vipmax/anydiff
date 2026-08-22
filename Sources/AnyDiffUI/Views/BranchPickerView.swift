@@ -107,8 +107,12 @@ public struct BranchPickerView: View {
             }
         }
         .padding(6)
-        .background(Color(NSColor.controlBackgroundColor))
+        .background(Color.primary.opacity(0.06))
         .cornerRadius(6)
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(Color.secondary.opacity(0.12), lineWidth: 0.8)
+        )
         .padding(.horizontal, 4)
         .padding(.top, 4)
     }

@@ -7,20 +7,17 @@ public struct VirtualizedFileListView: NSViewRepresentable {
     public var theme: Theme
     public var reviewManager: ReviewManager
     @Binding public var selectedFilePath: String?
-    public var onSelectFile: (String) -> Void
 
     public init(
         files: [FileDiff],
         theme: Theme,
         reviewManager: ReviewManager,
-        selectedFilePath: Binding<String?>,
-        onSelectFile: @escaping (String) -> Void
+        selectedFilePath: Binding<String?>
     ) {
         self.files = files
         self.theme = theme
         self.reviewManager = reviewManager
         self._selectedFilePath = selectedFilePath
-        self.onSelectFile = onSelectFile
     }
 
     public func makeCoordinator() -> Coordinator {
@@ -50,6 +47,8 @@ public struct VirtualizedFileListView: NSViewRepresentable {
 
         tableView.delegate = context.coordinator
         tableView.dataSource = context.coordinator
+        tableView.target = context.coordinator
+        tableView.action = #selector(Coordinator.tableClicked(_:))
 
         context.coordinator.tableView = tableView
         scrollView.documentView = tableView
@@ -132,6 +131,14 @@ public struct VirtualizedFileListView: NSViewRepresentable {
             return cell
         }
 
+        @objc func tableClicked(_ sender: NSTableView) {
+            let row = sender.clickedRow
+            guard row >= 0 && row < parent.files.count else { return }
+            let path = parent.files[row].displayPath
+            parent.selectedFilePath = path
+            NotificationCenter.default.post(name: .focusFileInEditor, object: path)
+        }
+
         public func tableViewSelectionDidChange(_ notification: Notification) {
             guard let tableView = tableView else { return }
             let selectedRow = tableView.selectedRow
@@ -139,7 +146,7 @@ public struct VirtualizedFileListView: NSViewRepresentable {
                 let path = parent.files[selectedRow].displayPath
                 if parent.selectedFilePath != path {
                     parent.selectedFilePath = path
-                    parent.onSelectFile(path)
+                    NotificationCenter.default.post(name: .focusFileInEditor, object: path)
                 }
             }
         }
@@ -166,8 +173,8 @@ final class CustomTableRowView: NSTableRowView {
 
     override func drawSelection(in dirtyRect: NSRect) {
         if isSelected {
-            let selectionRect = bounds.insetBy(dx: 4, dy: 1)
-            let path = NSBezierPath(roundedRect: selectionRect, xRadius: 5, yRadius: 5)
+            let selectionRect = bounds.insetBy(dx: 12, dy: 3)
+            let path = NSBezierPath(roundedRect: selectionRect, xRadius: 6, yRadius: 6)
             NSColor.controlAccentColor.withAlphaComponent(0.18).setFill()
             path.fill()
         }
@@ -178,46 +185,9 @@ final class CustomTableRowView: NSTableRowView {
     }
 }
 
-// MARK: - Pixel-Perfect Centered Status Badge View
-final class StatusBadgeView: NSView {
-    var text: String = "" {
-        didSet { if oldValue != text { needsDisplay = true } }
-    }
-    var tintColor: NSColor = .systemBlue {
-        didSet { if oldValue != tintColor { needsDisplay = true } }
-    }
-
-    override var isFlipped: Bool { true }
-
-    override func draw(_ dirtyRect: NSRect) {
-        super.draw(dirtyRect)
-
-        let bgRect = bounds
-        let path = NSBezierPath(roundedRect: bgRect, xRadius: 3.5, yRadius: 3.5)
-        tintColor.withAlphaComponent(0.16).setFill()
-        path.fill()
-
-        guard !text.isEmpty else { return }
-
-        let font = NSFont.systemFont(ofSize: 9.5, weight: .black)
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: font,
-            .foregroundColor: tintColor
-        ]
-
-        let attributedText = NSAttributedString(string: text, attributes: attributes)
-        let textSize = attributedText.size()
-
-        // Exact optical cap-height centering
-        let x = (bgRect.width - textSize.width) / 2.0
-        let y = (bgRect.height + font.capHeight) / 2.0 - font.ascender
-        attributedText.draw(at: NSPoint(x: x, y: y))
-    }
-}
-
 // MARK: - High-Performance Recycled File Cell View
 final class FileTableCellView: NSTableCellView {
-    private let statusBadge = StatusBadgeView()
+    private let iconImageView = NSImageView()
     private let textStack = NSStackView()
     private let nameLabel = NSTextField(labelWithString: "")
     private let dirLabel = NSTextField(labelWithString: "")
@@ -237,9 +207,10 @@ final class FileTableCellView: NSTableCellView {
     private func setupViews() {
         wantsLayer = true
 
-        // 1. Status Badge (A / M / D / R)
-        statusBadge.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(statusBadge)
+        // 1. File Type / Language Icon (replaces old modifier badge)
+        iconImageView.imageScaling = .scaleProportionallyUpOrDown
+        iconImageView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(iconImageView)
 
         // 2. File Name & Directory Labels in Stack
         nameLabel.font = .systemFont(ofSize: 12, weight: .medium)
@@ -276,16 +247,16 @@ final class FileTableCellView: NSTableCellView {
 
         // Layout Constraints
         NSLayoutConstraint.activate([
-            statusBadge.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
-            statusBadge.centerYAnchor.constraint(equalTo: centerYAnchor),
-            statusBadge.widthAnchor.constraint(equalToConstant: 16),
-            statusBadge.heightAnchor.constraint(equalToConstant: 16),
+            iconImageView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
+            iconImageView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            iconImageView.widthAnchor.constraint(equalToConstant: 16),
+            iconImageView.heightAnchor.constraint(equalToConstant: 16),
 
-            textStack.leadingAnchor.constraint(equalTo: statusBadge.trailingAnchor, constant: 8),
+            textStack.leadingAnchor.constraint(equalTo: iconImageView.trailingAnchor, constant: 8),
             textStack.centerYAnchor.constraint(equalTo: centerYAnchor),
             textStack.trailingAnchor.constraint(lessThanOrEqualTo: additionsLabel.leadingAnchor, constant: -4),
 
-            deletionsLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            deletionsLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
             deletionsLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
 
             additionsLabel.trailingAnchor.constraint(equalTo: deletionsLabel.leadingAnchor, constant: -4),
@@ -297,38 +268,58 @@ final class FileTableCellView: NSTableCellView {
         file: FileDiff,
         theme: Theme
     ) {
-        // Status Badge
-        let symbol: String
-        let color: NSColor
-        switch file.status {
-        case .added:
-            symbol = "A"
-            color = .systemGreen
-        case .deleted:
-            symbol = "D"
-            color = .systemRed
-        case .renamed:
-            symbol = "R"
-            color = .systemPurple
-        default:
-            symbol = "M"
-            color = .systemBlue
-        }
-        statusBadge.text = symbol
-        statusBadge.tintColor = color
+        // File Icon
+        iconImageView.image = FileIconProvider.shared.image(for: file.displayPath, pointSize: 14, weight: .medium)
 
-        // File Path & Name
-        let fileName = (file.displayPath as NSString).lastPathComponent
-        nameLabel.stringValue = fileName
-        nameLabel.textColor = .labelColor
+        // File Path & Name with Status-Based Color (Added = Green, Deleted = Red, Renamed = Purple)
+        if file.status == .renamed {
+            let oldName = (file.oldPath as NSString).lastPathComponent
+            let newName = (file.newPath as NSString).lastPathComponent
+            if oldName != newName {
+                nameLabel.stringValue = "\(oldName) → \(newName)"
+            } else {
+                nameLabel.stringValue = newName
+            }
+            nameLabel.textColor = NSColor.systemPurple
 
-        let dir = (file.displayPath as NSString).deletingLastPathComponent
-        if !dir.isEmpty && dir != "." {
-            dirLabel.stringValue = dir
-            dirLabel.isHidden = false
+            let oldDir = (file.oldPath as NSString).deletingLastPathComponent
+            let newDir = (file.newPath as NSString).deletingLastPathComponent
+            if oldDir != newDir && (!oldDir.isEmpty || !newDir.isEmpty) {
+                let displayOldDir = oldDir.isEmpty ? "." : oldDir
+                let displayNewDir = newDir.isEmpty ? "." : newDir
+                dirLabel.stringValue = "\(displayOldDir) → \(displayNewDir)"
+                dirLabel.textColor = theme.gutterForeground
+                dirLabel.isHidden = false
+            } else if !newDir.isEmpty && newDir != "." {
+                dirLabel.stringValue = newDir
+                dirLabel.textColor = theme.gutterForeground
+                dirLabel.isHidden = false
+            } else {
+                dirLabel.stringValue = ""
+                dirLabel.isHidden = true
+            }
         } else {
-            dirLabel.stringValue = ""
-            dirLabel.isHidden = true
+            let fileName = (file.displayPath as NSString).lastPathComponent
+            nameLabel.stringValue = fileName
+
+            switch file.status {
+            case .added:
+                nameLabel.textColor = NSColor.systemGreen
+            case .deleted:
+                nameLabel.textColor = NSColor.systemRed
+            default:
+                nameLabel.textColor = theme.foreground
+            }
+
+            let dir = (file.displayPath as NSString).deletingLastPathComponent
+            if !dir.isEmpty && dir != "." {
+                dirLabel.stringValue = dir
+                dirLabel.textColor = theme.gutterForeground
+                dirLabel.isHidden = false
+            } else {
+                dirLabel.stringValue = ""
+                dirLabel.isHidden = true
+            }
         }
 
         // Stats

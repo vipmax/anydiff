@@ -9,7 +9,6 @@ public struct SidebarFileListView: View {
     public var isStreaming: Bool
     public var streamingCount: Int
     public var comparisonTarget: ComparisonTarget
-    public var currentBranch: String
     public var isWatchModeEnabled: Bool
     @ObservedObject public var reviewManager: ReviewManager
     @Binding public var selectedFilePath: String?
@@ -17,6 +16,8 @@ public struct SidebarFileListView: View {
     public var onToggleWatchMode: (() -> Void)?
 
     @State private var searchText: String = ""
+    @State private var isSearchVisible: Bool = false
+    @FocusState private var isSearchFocused: Bool
 
     public init(
         fileDiffs: [FileDiff],
@@ -26,7 +27,6 @@ public struct SidebarFileListView: View {
         isStreaming: Bool = false,
         streamingCount: Int = 0,
         comparisonTarget: ComparisonTarget = .workingTree,
-        currentBranch: String = "",
         isWatchModeEnabled: Bool = true,
         reviewManager: ReviewManager,
         selectedFilePath: Binding<String?>,
@@ -40,7 +40,6 @@ public struct SidebarFileListView: View {
         self.isStreaming = isStreaming
         self.streamingCount = streamingCount
         self.comparisonTarget = comparisonTarget
-        self.currentBranch = currentBranch
         self.isWatchModeEnabled = isWatchModeEnabled
         self.reviewManager = reviewManager
         self._selectedFilePath = selectedFilePath
@@ -57,10 +56,11 @@ public struct SidebarFileListView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            searchField
-            Divider()
-                .overlay(Color(theme.excerptHeaderBorder).opacity(0.65))
             headerBar
+            if isSearchVisible {
+                searchField
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
             fileListArea
         }
         .background(Color(theme.background).ignoresSafeArea())
@@ -72,15 +72,17 @@ public struct SidebarFileListView: View {
     private var searchField: some View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass")
-                .foregroundColor(.secondary)
+                .foregroundColor(Color(theme.gutterForeground))
                 .font(.system(size: 11))
             TextField("Filter changed files...", text: $searchText)
                 .textFieldStyle(.plain)
                 .font(.system(size: 12))
+                .foregroundColor(Color(theme.foreground))
+                .focused($isSearchFocused)
             if !searchText.isEmpty {
                 Button(action: { searchText = "" }) {
                     Image(systemName: "xmark.circle.fill")
-                        .foregroundColor(.secondary)
+                        .foregroundColor(Color(theme.gutterForeground))
                         .font(.system(size: 11))
                 }
                 .buttonStyle(.plain)
@@ -90,15 +92,15 @@ public struct SidebarFileListView: View {
         .background(Color(theme.gutterBackground))
         .cornerRadius(6)
         .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+        .padding(.vertical, 6)
     }
 
     @ViewBuilder
     private var headerBar: some View {
         HStack(spacing: 6) {
-            Text(isStreaming ? "STREAMING (\(streamingCount > 0 ? streamingCount : filteredFiles.count)...)" : "CHANGED FILES (\(filteredFiles.count))")
+            Text(isStreaming ? "Loading \(streamingCount > 0 ? streamingCount : filteredFiles.count)..." : "CHANGES \(filteredFiles.count)")
                 .font(.system(size: 10, weight: .bold))
-                .foregroundColor(isStreaming ? .accentColor : .secondary)
+                .foregroundColor(isStreaming ? .accentColor : Color(theme.gutterForeground))
 
             Button(action: onReload) {
                 ZStack {
@@ -108,7 +110,7 @@ public struct SidebarFileListView: View {
                     } else {
                         Image(systemName: "arrow.clockwise")
                             .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(.secondary)
+                            .foregroundColor(Color(theme.gutterForeground))
                     }
                 }
                 .frame(width: 14, height: 14)
@@ -123,12 +125,31 @@ public struct SidebarFileListView: View {
                 Button(action: onToggle) {
                     Image(systemName: isWatchModeEnabled ? "eye.fill" : "eye.slash")
                         .font(.system(size: 10.5))
-                        .foregroundColor(isWatchModeEnabled ? .green : .secondary.opacity(0.6))
+                        .foregroundColor(isWatchModeEnabled ? Color(theme.gutterForeground) : Color(theme.gutterForeground).opacity(0.4))
                         .frame(width: 14, height: 14)
                 }
                 .buttonStyle(ToolbarHoverButtonStyle())
                 .help(isWatchModeEnabled ? "Watch Mode Active: auto-reloading on disk changes (Click to pause, Cmd+Opt+W)" : "Watch Mode Paused: click to enable auto-reload")
             }
+
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    isSearchVisible.toggle()
+                    if isSearchVisible {
+                        isSearchFocused = true
+                    } else {
+                        searchText = ""
+                        isSearchFocused = false
+                    }
+                }
+            }) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 10.5))
+                    .foregroundColor(isSearchVisible ? Color(theme.foreground) : Color(theme.gutterForeground))
+                    .frame(width: 14, height: 14)
+            }
+            .buttonStyle(ToolbarHoverButtonStyle())
+            .help(isSearchVisible ? "Hide Search" : "Filter changed files")
 
             Spacer()
 
@@ -158,19 +179,7 @@ public struct SidebarFileListView: View {
                 .padding(.vertical, 1)
                 .background(Color.accentColor.opacity(0.12))
                 .cornerRadius(4)
-        case .remote(let ref):
-            HStack(spacing: 3) {
-                Image(systemName: "globe")
-                    .font(.system(size: 8.5))
-                Text(ref.owner != nil ? "GitHub" : "Remote")
-                    .font(.system(size: 9.5, weight: .medium))
-            }
-            .foregroundColor(.accentColor)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 1.5)
-            .background(Color.accentColor.opacity(0.12))
-            .cornerRadius(4)
-        case .workingTree:
+        case .workingTree, .remote:
             let totalAdds = fileDiffs.reduce(0) { $0 + $1.additions }
             let totalDels = fileDiffs.reduce(0) { $0 + $1.deletions }
             HStack(spacing: 5) {
@@ -204,10 +213,7 @@ public struct SidebarFileListView: View {
                 files: filteredFiles,
                 theme: theme,
                 reviewManager: reviewManager,
-                selectedFilePath: $selectedFilePath,
-                onSelectFile: { path in
-                    selectedFilePath = path
-                }
+                selectedFilePath: $selectedFilePath
             )
             .background(Color(theme.background))
         }

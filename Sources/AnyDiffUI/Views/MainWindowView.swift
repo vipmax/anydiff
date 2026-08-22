@@ -57,7 +57,6 @@ public struct MainWindowView: View {
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var commentTarget: (filePath: String, lineNumber: Int)? = nil
     @State private var currentFolderName: String = ""
-    @State private var showThemePicker: Bool = false
     @State private var showOpenSourcePopover: Bool = false
     @State private var isWindowDropTargeted: Bool = false
     @State private var remoteTarget: GitHubDiffReference? = nil
@@ -87,10 +86,6 @@ public struct MainWindowView: View {
         return selectedTheme
     }
 
-    private var activeThemeName: String {
-        followsSystemAppearance ? "System (\(systemAppearance.isDark ? "Dark" : "Light"))" : selectedTheme.name
-    }
-
     private var commentModalBinding: Binding<IdentifiableCommentTarget?> {
         Binding(
             get: { commentTarget.map { IdentifiableCommentTarget(filePath: $0.filePath, lineNumber: $0.lineNumber) } },
@@ -104,6 +99,8 @@ public struct MainWindowView: View {
         } detail: {
             detailView
         }
+        .preferredColorScheme(activeTheme.isDark ? .dark : .light)
+        .environment(\.colorScheme, activeTheme.isDark ? .dark : .light)
         .toolbarBackground(Color(activeTheme.background), for: .windowToolbar)
         .toolbarBackground(.visible, for: .windowToolbar)
         .toolbarColorScheme(activeTheme.isDark ? .dark : .light, for: .windowToolbar)
@@ -120,7 +117,7 @@ public struct MainWindowView: View {
         .onChange(of: followsSystemAppearance) { _ in updateWindowAppearance() }
         .onChange(of: isWatchModeEnabled) { enabled in
             if enabled {
-                let currentDir = currentPath ?? initialPath ?? FileManager.default.currentDirectoryPath
+                let currentDir = effectiveWorkingDirectory
                 restartWatcher(for: currentDir)
                 startPendingWatchRefresh(directory: URL(fileURLWithPath: currentDir).resolvingSymlinksInPath().path)
             } else {
@@ -149,6 +146,16 @@ public struct MainWindowView: View {
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffToggleWatchMode"))) { _ in
             isWatchModeEnabled.toggle()
         }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffSelectTheme"))) { notif in
+            if let themeId = notif.userInfo?["themeId"] as? String {
+                if themeId == "system" {
+                    followsSystemAppearance = true
+                } else if let t = Theme.allThemes.first(where: { $0.id == themeId }) {
+                    selectedTheme = t
+                    followsSystemAppearance = false
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -161,7 +168,6 @@ public struct MainWindowView: View {
             isStreaming: isStreaming,
             streamingCount: streamingCount,
             comparisonTarget: comparisonTarget,
-            currentBranch: currentBranch,
             isWatchModeEnabled: isWatchModeEnabled,
             reviewManager: reviewManager,
             selectedFilePath: $selectedFilePath,
@@ -169,31 +175,6 @@ public struct MainWindowView: View {
             onToggleWatchMode: { isWatchModeEnabled.toggle() }
         )
         .navigationSplitViewColumnWidth(min: 200, ideal: 280, max: 800)
-        .toolbar {
-            ToolbarItem(placement: .automatic) {
-                if columnVisibility != .detailOnly {
-                    themePickerButton
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var themePickerButton: some View {
-        Button(action: { showThemePicker.toggle() }) {
-            Image(systemName: "paintpalette")
-                .font(.system(size: 13.0, weight: .regular))
-                .foregroundColor(Color(NSColor.secondaryLabelColor))
-        }
-        .buttonStyle(ToolbarHoverButtonStyle())
-        .help("Select Color Theme (\(activeThemeName))")
-        .popover(isPresented: $showThemePicker, arrowEdge: .bottom) {
-            ThemePickerPopoverView(
-                selectedTheme: $selectedTheme,
-                followsSystemAppearance: $followsSystemAppearance,
-                isPresented: $showThemePicker
-            )
-        }
     }
 
     @ViewBuilder
@@ -331,6 +312,9 @@ public struct MainWindowView: View {
                 }
             }
         }
+        .padding(.leading, 8)
+        .padding(.trailing, 8)
+        .padding(.vertical, 3)
     }
 
     @ViewBuilder
@@ -338,14 +322,15 @@ public struct MainWindowView: View {
         Button(action: { showOpenSourcePopover.toggle() }) {
             HStack(spacing: 5) {
                 Image(systemName: "globe")
-                    .font(.system(size: 12))
+                    .font(.system(size: 11, weight: .medium))
                     .foregroundColor(.accentColor)
                 Text(ref.displayTitle)
-                    .font(.system(size: 13, weight: .bold))
+                    .font(.system(size: 12, weight: .medium))
                     .foregroundColor(.primary)
+                    .lineLimit(1)
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 8.5, weight: .bold))
-                    .foregroundColor(.secondary.opacity(0.8))
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundColor(.secondary)
             }
         }
         .buttonStyle(ToolbarHoverButtonStyle())
@@ -360,14 +345,15 @@ public struct MainWindowView: View {
         Button(action: { showOpenSourcePopover.toggle() }) {
             HStack(spacing: 5) {
                 Image(systemName: "folder.fill")
-                    .font(.system(size: 12))
+                    .font(.system(size: 11, weight: .medium))
                     .foregroundColor(.secondary)
                 Text(currentFolderName.isEmpty ? "AnyDiff" : currentFolderName)
-                    .font(.system(size: 13, weight: .bold))
+                    .font(.system(size: 12, weight: .medium))
                     .foregroundColor(.primary)
+                    .lineLimit(1)
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 8.5, weight: .bold))
-                    .foregroundColor(.secondary.opacity(0.8))
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundColor(.secondary)
             }
         }
         .buttonStyle(ToolbarHoverButtonStyle())
@@ -503,6 +489,14 @@ public struct MainWindowView: View {
     }
 
     private func handleOnAppear() {
+        if let storedThemeId = UserDefaults.standard.string(forKey: "selectedThemeId") {
+            if storedThemeId == "system" {
+                followsSystemAppearance = true
+            } else if let t = Theme.allThemes.first(where: { $0.id == storedThemeId }) {
+                selectedTheme = t
+                followsSystemAppearance = false
+            }
+        }
         if let initial = initialPath, (initial.hasPrefix("http://") || initial.hasPrefix("https://") || initial.contains("github.com") || initial.contains("diffshub.com") || initial.contains("#")) {
             loadRemoteDiff(from: initial)
         } else {
@@ -600,6 +594,7 @@ public struct MainWindowView: View {
         DispatchQueue.main.async {
             if let window = NSApp.windows.first {
                 window.backgroundColor = activeTheme.background
+                window.appearance = NSAppearance(named: activeTheme.isDark ? .darkAqua : .aqua)
                 window.titlebarSeparatorStyle = .none
             }
         }
@@ -851,6 +846,27 @@ public struct MainWindowView: View {
 
     // MARK: - Current Directory Diff Loading
 
+    public var effectiveWorkingDirectory: String {
+        if let currentPath = currentPath, !currentPath.isEmpty {
+            return (currentPath as NSString).expandingTildeInPath
+        }
+        if let initialPath = initialPath, !initialPath.isEmpty {
+            return (initialPath as NSString).expandingTildeInPath
+        }
+        let cwd = FileManager.default.currentDirectoryPath
+        if cwd == "/" || cwd.isEmpty {
+            return FileManager.default.homeDirectoryForCurrentUser.path
+        }
+        return cwd
+    }
+
+    public var effectiveBaseDirectory: String {
+        if let base = multiBuffer.baseDirectory, !base.isEmpty {
+            return (base as NSString).expandingTildeInPath
+        }
+        return effectiveWorkingDirectory
+    }
+
     public func loadCurrentDirectoryDiff() {
         // A local project must leave remote mode first. Otherwise fetchGitDiff
         // receives `.remote` and intentionally returns no local diff.
@@ -872,7 +888,7 @@ public struct MainWindowView: View {
         loadGeneration &+= 1
         let generation = loadGeneration
         isReloading = true
-        let currentDir = currentPath ?? initialPath ?? FileManager.default.currentDirectoryPath
+        let currentDir = effectiveWorkingDirectory
         multiBuffer.baseDirectory = currentDir
         let folderName = (currentDir as NSString).lastPathComponent
         self.currentFolderName = folderName
@@ -984,7 +1000,7 @@ public struct MainWindowView: View {
             return
         }
 
-        let currentDir = currentPath ?? initialPath ?? FileManager.default.currentDirectoryPath
+        let currentDir = effectiveWorkingDirectory
         let resolvedCurrentDir = URL(fileURLWithPath: currentDir).resolvingSymlinksInPath().path
 
         // Keep concrete relative paths. A watcher batch can contain unrelated
@@ -1061,7 +1077,7 @@ public struct MainWindowView: View {
                 defer {
                     self.watchRefreshInFlight = false
                     if self.isWatchModeEnabled && self.comparisonTarget == target {
-                        let currentDir = self.currentPath ?? self.initialPath ?? FileManager.default.currentDirectoryPath
+                        let currentDir = self.effectiveWorkingDirectory
                         self.startPendingWatchRefresh(directory: URL(fileURLWithPath: currentDir).resolvingSymlinksInPath().path)
                     }
                 }
@@ -1320,7 +1336,7 @@ public struct MainWindowView: View {
             appendFileDiffsToMultiBuffer([diff], rawData: rawData, into: rebuilt)
         }
 
-        let baseDir = multiBuffer.baseDirectory ?? FileManager.default.currentDirectoryPath
+        let baseDir = effectiveBaseDirectory
         let fullPath = URL(fileURLWithPath: baseDir).appendingPathComponent(path).path
         for buffer in rebuilt.buffers.values {
             buffer.fullDiskPath = fullPath
@@ -1383,7 +1399,7 @@ public struct MainWindowView: View {
         LineLayoutCache.shared.clear()
         SyntaxHighlighter.shared.clearCache()
 
-        let baseDir = (multiBuffer.baseDirectory?.isEmpty == false) ? (multiBuffer.baseDirectory ?? FileManager.default.currentDirectoryPath) : FileManager.default.currentDirectoryPath
+        let baseDir = effectiveBaseDirectory
 
         for file in parsedFiles {
             let relativePath = file.displayPath
@@ -1573,67 +1589,6 @@ struct IdentifiableCommentTarget: Identifiable {
     let lineNumber: Int
 }
 
-struct ThemePickerPopoverView: View {
-    @Binding var selectedTheme: Theme
-    @Binding var followsSystemAppearance: Bool
-    @Binding var isPresented: Bool
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("COLOR THEME")
-                .font(.system(size: 9, weight: .bold))
-                .foregroundColor(.secondary)
-                .padding(.horizontal, 8)
-                .padding(.top, 6)
-            Divider()
-            Button(action: {
-                followsSystemAppearance = true
-                isPresented = false
-            }) {
-                HStack {
-                    Text("System")
-                        .font(.system(size: 12))
-                    Spacer()
-                    if followsSystemAppearance {
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundColor(.accentColor)
-                    }
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            Divider()
-            ForEach(Theme.allThemes, id: \.id) { theme in
-                Button(action: {
-                    selectedTheme = theme
-                    followsSystemAppearance = false
-                    isPresented = false
-                }) {
-                    HStack {
-                        Text(theme.name)
-                            .font(.system(size: 12))
-                        Spacer()
-                        if followsSystemAppearance == false && selectedTheme.id == theme.id {
-                            Image(systemName: "checkmark")
-                                .font(.system(size: 10, weight: .bold))
-                                .foregroundColor(.accentColor)
-                        }
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(6)
-        .frame(width: 170)
-    }
-}
-
 public struct ToolbarHoverButtonStyle: ButtonStyle {
     @State private var isHovered = false
 
@@ -1647,7 +1602,8 @@ public struct ToolbarHoverButtonStyle: ButtonStyle {
                 RoundedRectangle(cornerRadius: 6)
                     .fill(isHovered ? Color.secondary.opacity(configuration.isPressed ? 0.24 : 0.14) : Color.clear)
             )
-            .contentShape(Rectangle())
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .contentShape(RoundedRectangle(cornerRadius: 6))
             .onHover { hovering in
                 withAnimation(.easeInOut(duration: 0.12)) {
                     isHovered = hovering
