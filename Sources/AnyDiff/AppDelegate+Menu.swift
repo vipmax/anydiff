@@ -63,6 +63,10 @@ extension AppDelegate {
         viewMenu.addItem(NSMenuItem(title: "Zoom Out", action: #selector(zoomOutAction(_:)), keyEquivalent: "-"))
         viewMenu.addItem(NSMenuItem(title: "Actual Size (Reset Zoom)", action: #selector(resetZoomAction(_:)), keyEquivalent: "0"))
         viewMenu.addItem(NSMenuItem.separator())
+        let agentItem = NSMenuItem(title: "Toggle Codex Agent Panel", action: #selector(toggleAgentPanelAction(_:)), keyEquivalent: "a")
+        agentItem.keyEquivalentModifierMask = [.command, .option]
+        viewMenu.addItem(agentItem)
+        viewMenu.addItem(NSMenuItem.separator())
 
         // Theme Submenu
         let themeMenuItem = NSMenuItem(title: "Theme", action: nil, keyEquivalent: "")
@@ -147,5 +151,9 @@ extension AppDelegate {
 
     @objc func resetZoomAction(_ sender: Any?) {
         NotificationCenter.default.post(name: Notification.Name("anyDiffResetZoom"), object: nil)
+    }
+
+    @objc func toggleAgentPanelAction(_ sender: Any?) {
+        NotificationCenter.default.post(name: Notification.Name("anyDiffToggleAgent"), object: nil)
     }
 }

@@ -50,6 +50,13 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     }
 
     public var isEditable: Bool = true
+    /// Blocks mutations while keeping cursor movement, selection, copying,
+    /// and scrolling available to read-only consumers such as tool output.
+    public var ignoreEdits: Bool = false
+
+    private var editingEnabled: Bool {
+        isEditable && !ignoreEdits
+    }
 
     // Layout Metrics
     public private(set) var lineHeight: CGFloat = 22
@@ -176,11 +183,13 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         needsDisplay = true
     }
 
-    public func resetCursorToFirstVisibleLine() {
+    public func resetCursorToFirstVisibleLine(shouldFocus: Bool = true) {
         guard let displayMap, let firstRow = displayMap.firstVisibleCodeRow else {
             selectionAnchor = nil
             cursorPoint = .zero
-            focusAfterLoadIfPossible()
+            if shouldFocus {
+                focusAfterLoadIfPossible()
+            }
             return
         }
 
@@ -188,7 +197,9 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         cursorPoint = MultiBufferPoint(row: firstRow, column: 0)
         scrollOffsetY = 0
         scrollOffsetX = 0
-        focusAfterLoadIfPossible()
+        if shouldFocus {
+            focusAfterLoadIfPossible()
+        }
     }
 
     /// Captures the active cursor position, source line numbers, and top visible line scroll anchor
@@ -197,17 +208,13 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             return EditorViewState(cursorAnchor: nil, scrollAnchor: nil, scrollOffsetX: scrollOffsetX, selectedFilePath: nil)
         }
 
-        // 1. Capture Cursor Anchor
-        var cursorAnchor: EditorCursorAnchor? = nil
-        if let info = dm.codeInfo(for: cursorPoint.row),
-           info.excerptIndex >= 0 && info.excerptIndex < dm.multiBuffer.excerpts.count {
-            let excerpt = dm.multiBuffer.excerpts[info.excerptIndex]
-            let lineNum = info.newLineNumber ?? info.oldLineNumber ?? 1
-            cursorAnchor = EditorCursorAnchor(
-                filePath: excerpt.filePath,
-                lineNumber: lineNum,
-                column: cursorPoint.column
-            )
+        // 1. Capture Cursor and Selection Anchors
+        let cursorAnchor = editorCursorAnchor(for: cursorPoint, in: dm)
+        let selectionState: EditorCursorAnchor?
+        if let selectionAnchor, selectionAnchor != cursorPoint {
+            selectionState = editorCursorAnchor(for: selectionAnchor, in: dm)
+        } else {
+            selectionState = nil
         }
 
         // 2. Capture Scroll Anchor (top visible line on screen)
@@ -263,19 +270,36 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         let currentFile = cursorAnchor?.filePath ?? scrollAnchor?.filePath
         return EditorViewState(
             cursorAnchor: cursorAnchor,
+            selectionAnchor: selectionState,
             scrollAnchor: scrollAnchor,
             scrollOffsetX: scrollOffsetX,
             selectedFilePath: currentFile
         )
     }
 
+    private func editorCursorAnchor(for point: MultiBufferPoint, in dm: DisplayMap) -> EditorCursorAnchor? {
+        guard let info = dm.codeInfo(for: point.row),
+              info.excerptIndex >= 0,
+              info.excerptIndex < dm.multiBuffer.excerpts.count else {
+            return nil
+        }
+
+        let excerpt = dm.multiBuffer.excerpts[info.excerptIndex]
+        let lineNum = info.newLineNumber ?? info.oldLineNumber ?? 1
+        return EditorCursorAnchor(
+            filePath: excerpt.filePath,
+            lineNumber: lineNum,
+            column: point.column
+        )
+    }
+
     /// Restores the editor's cursor and viewport anchor across diff reloads
-    public func restoreViewState(_ state: EditorViewState) {
+    public func restoreViewState(_ state: EditorViewState, shouldFocus: Bool = true) {
         invalidateLayout()
         syncLayoutIfNeeded()
 
         guard let dm = displayMap, dm.displayLineCount > 0 else {
-            resetCursorToFirstVisibleLine()
+            resetCursorToFirstVisibleLine(shouldFocus: shouldFocus)
             return
         }
 
@@ -287,6 +311,15 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             self.selectionAnchor = nil
             self.cursorPoint = MultiBufferPoint(row: mbRow, column: clampedCol)
             restoredCursor = true
+
+            if let sAnchor = state.selectionAnchor,
+               let selectionRow = dm.codeRow(forFilePath: sAnchor.filePath, lineNumber: sAnchor.lineNumber) {
+                let selectionMaxCol = dm.lineLength(at: selectionRow)
+                self.selectionAnchor = MultiBufferPoint(
+                    row: selectionRow,
+                    column: max(0, min(selectionMaxCol, sAnchor.column))
+                )
+            }
         }
 
         // 2. Restore Scroll Position using Scroll Anchor (keeps viewport pinned)
@@ -308,12 +341,18 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                 // The selected file may have disappeared (for example after
                 // a rename/delete). Never leave the viewport at an obsolete
                 // offset or silently keep a cursor in a missing anchor.
-                resetCursorToFirstVisibleLine()
+                resetCursorToFirstVisibleLine(shouldFocus: shouldFocus)
             }
         }
 
+        // Restore horizontal position even when the vertical anchor is no longer
+        // available and we had to fall back to the selected file or first line.
+        self.scrollOffsetX = max(0, state.scrollOffsetX)
+
         needsDisplay = true
-        focusAfterLoadIfPossible()
+        if shouldFocus {
+            focusAfterLoadIfPossible()
+        }
     }
 
     public func focus() {
@@ -1976,7 +2015,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     public override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if event.modifierFlags.contains(.command) {
             if event.charactersIgnoringModifiers == "s" {
-                if isEditable {
+                if editingEnabled {
                     _ = displayMap?.multiBuffer.flushImmediateSave()
                 }
                 return true
@@ -1990,16 +2029,18 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
     public func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
         switch item.action {
-        case #selector(copy(_:)), #selector(cut(_:)):
+        case #selector(copy(_:)):
             return hasSelection
+        case #selector(cut(_:)):
+            return editingEnabled && hasSelection
         case #selector(paste(_:)):
-            return isEditable
+            return editingEnabled
         case #selector(selectAll(_:)):
             return (displayMap?.codeLineCount ?? 0) > 0
         case #selector(undo(_:)):
-            return displayMap?.multiBuffer.undoManager.canUndo ?? false
+            return editingEnabled && (displayMap?.multiBuffer.undoManager.canUndo ?? false)
         case #selector(redo(_:)):
-            return displayMap?.multiBuffer.undoManager.canRedo ?? false
+            return editingEnabled && (displayMap?.multiBuffer.undoManager.canRedo ?? false)
         default:
             return true
         }
@@ -2104,7 +2145,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     }
 
     @objc public override func deleteWordBackward(_ sender: Any?) {
-        guard isEditable, displayMap != nil else { return }
+        guard editingEnabled, displayMap != nil else { return }
         if hasSelection {
             deleteBackward(sender)
             return
@@ -2120,7 +2161,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     }
 
     @objc public override func deleteWordForward(_ sender: Any?) {
-        guard isEditable, displayMap != nil else { return }
+        guard editingEnabled, displayMap != nil else { return }
         if hasSelection {
             deleteForward(sender)
             return
@@ -2136,7 +2177,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     }
 
     @objc public override func deleteToBeginningOfLine(_ sender: Any?) {
-        guard isEditable else { return }
+        guard editingEnabled else { return }
         let oldCursor = cursorPoint
         let range = MultiBufferPoint(row: oldCursor.row, column: 0)..<oldCursor
         selectionAnchor = range.lowerBound
@@ -2266,7 +2307,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     }
 
     public func insertText(_ string: Any, replacementRange: NSRange) {
-        guard isEditable, let displayMap = displayMap else { return }
+        guard editingEnabled, let displayMap = displayMap else { return }
         let text: String
         if let s = string as? String {
             text = s
@@ -2392,7 +2433,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     }
 
     public override func deleteBackward(_ sender: Any?) {
-        guard isEditable, let displayMap = displayMap else { return }
+        guard editingEnabled, let displayMap = displayMap else { return }
         let mb = displayMap.multiBuffer
 
         if let sel = normalizedSelectionRange() {
@@ -2509,7 +2550,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     }
 
     public override func deleteForward(_ sender: Any?) {
-        guard isEditable, let displayMap = displayMap else { return }
+        guard editingEnabled, let displayMap = displayMap else { return }
         let mb = displayMap.multiBuffer
 
         if let sel = normalizedSelectionRange() {
@@ -2653,7 +2694,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     // MARK: - Undo & Redo
 
     @IBAction public func undo(_ sender: Any?) {
-        guard isEditable, let displayMap = displayMap else { return }
+        guard editingEnabled, let displayMap = displayMap else { return }
         let mb = displayMap.multiBuffer
         if let transaction = mb.undoManager.popUndo() {
             for edit in transaction.edits.reversed() {
@@ -2677,7 +2718,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     }
 
     @IBAction public func redo(_ sender: Any?) {
-        guard isEditable, let displayMap = displayMap else { return }
+        guard editingEnabled, let displayMap = displayMap else { return }
         let mb = displayMap.multiBuffer
         if let transaction = mb.undoManager.popRedo() {
             for edit in transaction.edits {

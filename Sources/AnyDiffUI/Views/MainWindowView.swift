@@ -27,7 +27,42 @@ public struct MainWindowView: View {
     @StateObject private var multiBuffer = MultiBuffer()
     @StateObject private var reviewManager = ReviewManager()
     @StateObject private var displayMap: DisplayMap
+
+    @StateObject private var reviewMultiBuffer = MultiBuffer()
+    @StateObject private var reviewDisplayMap: DisplayMap
+    @State private var reviewFileDiffs: [FileDiff] = []
+    @State private var reviewViewStateResetToken: UInt64 = 0
+    @State private var preparedReviewSummary: AgentEditedFilesSummary? = nil
+
     @StateObject private var systemAppearance = SystemAppearanceObserver()
+    @StateObject private var agentCoordinator = AgentSessionCoordinator()
+    @State private var isAgentSessionsPresented: Bool = false
+    @State private var isAgentSessionsHovered: Bool = false
+    @State private var isReviewCloseHovered: Bool = false
+
+    private var activeAgentManager: AgentSessionManager? {
+        agentCoordinator.activeManager
+    }
+
+    private var isMockAgent: Bool {
+        agentCoordinator.isMockAgent
+    }
+
+    private var isReviewActive: Bool {
+        agentCoordinator.activeReviewSummary != nil
+    }
+
+    private var activeMultiBuffer: MultiBuffer {
+        isReviewActive ? reviewMultiBuffer : multiBuffer
+    }
+
+    private var activeDisplayMap: DisplayMap {
+        isReviewActive ? reviewDisplayMap : displayMap
+    }
+
+    private var activeFileDiffs: [FileDiff] {
+        isReviewActive ? reviewFileDiffs : fileDiffs
+    }
 
     public enum RepoStatus {
         case notGitRepository
@@ -54,7 +89,7 @@ public struct MainWindowView: View {
     @State private var contextLines: Int = 3
     @State private var fontSize: CGFloat = 13
 
-    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @State private var columnVisibility: NavigationSplitViewVisibility = .doubleColumn
     @State private var commentTarget: (filePath: String, lineNumber: Int)? = nil
     @State private var currentFolderName: String = ""
     @State private var showOpenSourcePopover: Bool = false
@@ -74,9 +109,15 @@ public struct MainWindowView: View {
         let mb = MultiBuffer()
         let rm = ReviewManager()
         let dm = DisplayMap(multiBuffer: mb, reviewManager: rm)
+
+        let rmb = MultiBuffer()
+        let rdm = DisplayMap(multiBuffer: rmb, reviewManager: rm)
+
         self._multiBuffer = StateObject(wrappedValue: mb)
         self._reviewManager = StateObject(wrappedValue: rm)
         self._displayMap = StateObject(wrappedValue: dm)
+        self._reviewMultiBuffer = StateObject(wrappedValue: rmb)
+        self._reviewDisplayMap = StateObject(wrappedValue: rdm)
     }
 
     private var activeTheme: Theme {
@@ -96,8 +137,10 @@ public struct MainWindowView: View {
     public var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             sidebarView
+        } content: {
+            editorColumnView
         } detail: {
-            detailView
+            agentColumnView
         }
         .preferredColorScheme(activeTheme.isDark ? .dark : .light)
         .environment(\.colorScheme, activeTheme.isDark ? .dark : .light)
@@ -113,6 +156,21 @@ public struct MainWindowView: View {
             commentModalView(for: target)
         }
         .onAppear(perform: handleOnAppear)
+        .onChange(of: agentCoordinator.activeReviewSummary) { newSummary in
+            if let summary = newSummary {
+                // beginReview preloads the review before switching modes. The
+                // fallback handles any coordinator-driven activation that did
+                // not go through that path.
+                if preparedReviewSummary == summary {
+                    preparedReviewSummary = nil
+                } else {
+                    loadReviewDiff(for: summary)
+                }
+            } else {
+                preparedReviewSummary = nil
+                loadCurrentDirectoryDiff()
+            }
+        }
         .onChange(of: selectedTheme.id) { _ in updateWindowAppearance() }
         .onChange(of: followsSystemAppearance) { _ in updateWindowAppearance() }
         .onChange(of: isWatchModeEnabled) { enabled in
@@ -146,6 +204,11 @@ public struct MainWindowView: View {
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffToggleWatchMode"))) { _ in
             isWatchModeEnabled.toggle()
         }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffToggleAgent"))) { _ in
+            withAnimation(.easeInOut(duration: 0.2)) {
+                agentCoordinator.togglePanel()
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffSelectTheme"))) { notif in
             if let themeId = notif.userInfo?["themeId"] as? String {
                 if themeId == "system" {
@@ -161,9 +224,9 @@ public struct MainWindowView: View {
     @ViewBuilder
     private var sidebarView: some View {
         SidebarFileListView(
-            fileDiffs: fileDiffs,
+            fileDiffs: activeFileDiffs,
             theme: activeTheme,
-            emptyMessage: repoStatus == .notGitRepository ? "Not a Git repository" : "No changed files",
+            emptyMessage: isReviewActive ? "No files in review" : (repoStatus == .notGitRepository ? "Not a Git repository" : "No changed files"),
             isReloading: isReloading,
             isStreaming: isStreaming,
             streamingCount: streamingCount,
@@ -178,9 +241,13 @@ public struct MainWindowView: View {
     }
 
     @ViewBuilder
-    private var detailView: some View {
+    private var editorColumnView: some View {
         Group {
-            if fileDiffs.isEmpty {
+            // Keep the editor host mounted while the first review diff is
+            // loading. `reviewFileDiffs` starts empty, and replacing the host
+            // with the empty state would destroy its UI coordinator and the
+            // main editor snapshot before the first review can be closed.
+            if activeFileDiffs.isEmpty && !isReviewActive {
                 emptyStateDetailView
             } else {
                 editorDetailView
@@ -190,8 +257,192 @@ public struct MainWindowView: View {
             ToolbarItem(placement: .navigation) {
                 toolbarNavigationItems
             }
+            ToolbarItem(placement: .automatic) {
+                Spacer()
+            }
+            ToolbarItem(placement: .automatic) {
+                if agentCoordinator.isPanelOpen {
+                    agentToolbarHeader
+                } else {
+                    agentToolbarButton
+                }
+            }
         }
         .background(hiddenKeyboardShortcuts)
+        .navigationSplitViewColumnWidth(min: 360, ideal: 760, max: 1600)
+    }
+
+    @ViewBuilder
+    private var agentColumnView: some View {
+        Group {
+            if agentCoordinator.isPanelOpen {
+                if !agentCoordinator.showStartScreen, let activeSession = agentCoordinator.activeSession {
+                    AgentPanelView(
+                        agentManager: activeSession.manager,
+                        theme: activeTheme,
+                        workingDirectory: effectiveWorkingDirectory,
+                        currentSelectedFile: selectedFilePath,
+                        fileDiffsSummary: currentDiffSummary,
+                        agentAccentColor: activeSession.preset.color,
+                        onReview: { summary in
+                            beginReview(summary: summary)
+                        }
+                    )
+                    .id(activeSession.id)
+                } else {
+                    AgentStartScreenView(
+                        coordinator: agentCoordinator,
+                        theme: activeTheme,
+                        workingDirectory: effectiveWorkingDirectory
+                    )
+                }
+            } else {
+                Color.clear
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .navigationSplitViewColumnWidth(
+            min: agentCoordinator.isPanelOpen ? 280 : 0,
+            ideal: agentCoordinator.isPanelOpen ? 500 : 0,
+            max: agentCoordinator.isPanelOpen ? 800 : 0
+        )
+    }
+
+    @ViewBuilder
+    private var agentToolbarHeader: some View {
+        HStack(alignment: .center, spacing: 6) {
+            if let activeSession = agentCoordinator.activeSession {
+                Button(action: { isAgentSessionsPresented.toggle() }) {
+                    Text(activeSession.preset.name)
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundColor(isAgentSessionsHovered || isAgentSessionsPresented
+                            ? Color(nsColor: .labelColor)
+                            : Color(nsColor: .labelColor).opacity(0.92))
+                        .lineLimit(1)
+                        .padding(.horizontal, 11)
+                        .padding(.vertical, 4)
+                        .frame(minWidth: 58, minHeight: 24)
+                        .background(Color.clear, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .fill(agentAccentColor.opacity(
+                                    isAgentSessionsHovered || isAgentSessionsPresented ? 0.08 : 0
+                                ))
+                        )
+                }
+                .buttonStyle(.plain)
+                .help("Sessions")
+                .popover(isPresented: $isAgentSessionsPresented, arrowEdge: .bottom) {
+                    AgentSettingsPopoverView(
+                        coordinator: agentCoordinator,
+                        theme: activeTheme,
+                        workingDirectory: effectiveWorkingDirectory,
+                        onClose: { isAgentSessionsPresented = false }
+                    )
+                }
+                .padding(.trailing, 2)
+                .scaleEffect(isAgentSessionsHovered ? 1.02 : 1)
+                .shadow(
+                    color: isAgentSessionsHovered || isAgentSessionsPresented
+                        ? agentAccentColor.opacity(0.16)
+                        : Color.clear,
+                    radius: isAgentSessionsHovered || isAgentSessionsPresented ? 9 : 5,
+                    y: isAgentSessionsHovered || isAgentSessionsPresented ? 2 : 1
+                )
+                .animation(.easeOut(duration: 0.16), value: isAgentSessionsHovered)
+                .animation(.easeOut(duration: 0.16), value: isAgentSessionsPresented)
+                .onHover { isAgentSessionsHovered = $0 }
+            }
+
+            if hasActiveAgentSession {
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        _ = agentCoordinator.createNewSession(workingDirectory: effectiveWorkingDirectory)
+                    }
+                }) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 14.5, weight: .medium))
+                        .frame(width: 18, height: 18)
+                        .foregroundColor(Color(nsColor: .secondaryLabelColor))
+                }
+                .buttonStyle(AgentToolbarActionButtonStyle(accentColor: agentAccentColor))
+                .help("New Agent Session (Cmd+N)")
+            }
+
+            if hasActiveAgentSession {
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        if isShowingAgentStartScreen {
+                            if let active = agentCoordinator.activeSession {
+                                agentCoordinator.selectSession(id: active.id)
+                            }
+                        } else {
+                            agentCoordinator.openStartScreen()
+                        }
+                    }
+                }) {
+                    Image(systemName: isShowingAgentStartScreen ? "chevron.right" : "chevron.left")
+                        .font(.system(size: 13, weight: .medium))
+                        .frame(width: 18, height: 18)
+                        .foregroundColor(isShowingAgentStartScreen ? agentAccentColor : Color(nsColor: .secondaryLabelColor))
+                }
+                .buttonStyle(AgentToolbarActionButtonStyle(
+                    accentColor: agentAccentColor,
+                    isActive: isShowingAgentStartScreen
+                ))
+                .help(isShowingAgentStartScreen ? "Back to Chat" : "Choose Agent / All Agents")
+            }
+
+            agentPanelToggleButton(isOpen: true)
+        }
+    }
+
+    private var hasActiveAgentSession: Bool {
+        agentCoordinator.activeSession != nil
+    }
+
+    private var agentAccentColor: Color {
+        agentCoordinator.activeSession?.preset.color ?? .accentColor
+    }
+
+    private var isShowingAgentStartScreen: Bool {
+        agentCoordinator.showStartScreen || !hasActiveAgentSession
+    }
+
+    @ViewBuilder
+    private var agentToolbarButton: some View {
+        HStack(spacing: 6) {
+            agentPanelToggleButton(isOpen: false)
+        }
+    }
+
+    @ViewBuilder
+    private func agentPanelToggleButton(isOpen: Bool) -> some View {
+        Button(action: {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                agentCoordinator.isPanelOpen = !isOpen
+            }
+        }) {
+            Image(systemName: "sidebar.right")
+                .font(.system(size: 16, weight: .medium))
+                .frame(width: 18, height: 18)
+                .foregroundColor(Color(nsColor: .secondaryLabelColor))
+        }
+        .buttonStyle(ToolbarHoverButtonStyle())
+        .help(isOpen ? "Hide Agent Panel (Cmd+Opt+A)" : "Show Agent Panel (Cmd+Opt+A)")
+    }
+
+    private var currentDiffSummary: String {
+        guard !fileDiffs.isEmpty else { return "No uncommitted changes." }
+        var summary = "Repository: \(currentFolderName)\n"
+        summary += "Changed Files (\(fileDiffs.count)):\n"
+        for file in fileDiffs.prefix(25) {
+            summary += "- \(file.displayPath) (+\(file.additions), -\(file.deletions))\n"
+        }
+        if fileDiffs.count > 25 {
+            summary += "...and \(fileDiffs.count - 25) more files\n"
+        }
+        return summary
     }
 
     @ViewBuilder
@@ -258,11 +509,12 @@ public struct MainWindowView: View {
     @ViewBuilder
     private var editorDetailView: some View {
         EditorHostView(
-            displayMap: displayMap,
+            displayMap: activeDisplayMap,
             theme: activeTheme,
             fontSize: fontSize,
-            isEditable: (comparisonTarget == .workingTree),
+            isEditable: (!isReviewActive && comparisonTarget == .workingTree),
             selectedFilePath: selectedFilePath,
+            viewStateResetToken: isReviewActive ? reviewViewStateResetToken : nil,
             onCursorChange: { location, _ in
                 if let path = location?.filePath, self.selectedFilePath != path {
                     self.selectedFilePath = path
@@ -307,14 +559,57 @@ public struct MainWindowView: View {
                     )
                 }
 
-                if comparisonTarget != .workingTree {
+                if isReviewActive {
+                    reviewReadOnlyBadge
+                } else if comparisonTarget != .workingTree {
                     readOnlyBadge
                 }
             }
         }
+        .animation(nil, value: isReviewActive)
         .padding(.leading, 8)
         .padding(.trailing, 8)
         .padding(.vertical, 3)
+    }
+
+    @ViewBuilder
+    private var reviewReadOnlyBadge: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "lock.fill")
+                .font(.system(size: 9.5))
+                .foregroundColor(.secondary)
+
+            Text("Read-Only Diff")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(.secondary)
+
+            Image(systemName: "xmark")
+                .font(.system(size: 8.5, weight: .bold))
+                .foregroundColor(isReviewCloseHovered ? .primary : .secondary.opacity(0.8))
+                .frame(width: 16, height: 16)
+                .background(
+                    RoundedRectangle(cornerRadius: 3, style: .continuous)
+                        .fill(isReviewCloseHovered ? Color.secondary.opacity(0.16) : Color.clear)
+                )
+                .contentShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+                .help("Exit Review (Esc)")
+                .accessibilityLabel("Exit Review")
+                .accessibilityAddTraits(.isButton)
+                .onTapGesture {
+                    endReview()
+                }
+            .onHover { isReviewCloseHovered = $0 }
+        }
+        .padding(.leading, 7)
+        .padding(.trailing, 6)
+        .padding(.vertical, 3.5)
+        .background(Color.secondary.opacity(0.12))
+        .cornerRadius(5)
+        .overlay(
+            RoundedRectangle(cornerRadius: 5)
+                .stroke(Color.secondary.opacity(0.15), lineWidth: 0.5)
+        )
+        .fixedSize()
     }
 
     @ViewBuilder
@@ -376,6 +671,7 @@ public struct MainWindowView: View {
         .padding(.vertical, 3.5)
         .background(Color.secondary.opacity(0.12))
         .cornerRadius(5)
+        .fixedSize()
         .help("Read-only mode.")
     }
 
@@ -427,8 +723,96 @@ public struct MainWindowView: View {
                 .keyboardShortcut("+", modifiers: .command)
             Button(action: { fontSize = min(28, fontSize + 1) }) {}
                 .keyboardShortcut("=", modifiers: .command)
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    agentCoordinator.togglePanel()
+                }
+            }) {}
+                .keyboardShortcut("a", modifiers: [.command, .option])
+            Button(action: {
+                if agentCoordinator.activeReviewSummary != nil {
+                    endReview()
+                }
+            }) {}
+                .keyboardShortcut(.cancelAction)
         }
         .opacity(0)
+    }
+
+    private func loadReviewDiff(for summary: AgentEditedFilesSummary) {
+        let currentDir = effectiveWorkingDirectory
+        let isGit = isGitRepository(at: currentDir)
+
+        // 1. Direct raw diff data attached to the summary
+        if let rawData = summary.rawDiffData, !rawData.isEmpty {
+            let parsed = GitDiffParser.shared.parseZeroCopy(data: rawData)
+            if !parsed.isEmpty {
+                loadDiff(files: parsed, rawData: rawData, isReview: true)
+                return
+            }
+        }
+
+        // 2. Fetch turn snapshot diff using the base commit hash
+        if isGit, let baseHash = summary.baseCommitHash, !baseHash.isEmpty {
+            if let diffData = AgentGitChangesDetector.fetchTurnDiffData(
+                workingDirectory: currentDir,
+                baseCommit: baseHash,
+                pathFilter: Set(summary.filePaths)
+            ), !diffData.isEmpty {
+                let parsed = GitDiffParser.shared.parseZeroCopy(data: diffData)
+                if !parsed.isEmpty {
+                    loadDiff(files: parsed, rawData: diffData, isReview: true)
+                    return
+                }
+            }
+        }
+
+        // 3. Fallback to working tree path filter
+        let pathFilter = Set(summary.filePaths)
+        let (files, rawData) = isGit
+            ? fetchGitDiffFiles(at: currentDir, target: .workingTree, pathFilter: pathFilter)
+            : (files: [], data: nil)
+
+        if !files.isEmpty {
+            loadDiff(files: files, rawData: rawData, isReview: true)
+        } else {
+            var synthText = ""
+            for file in summary.files {
+                synthText += """
+                diff --git a/\(file.path) b/\(file.path)
+                --- a/\(file.path)
+                +++ b/\(file.path)
+                @@ -1,\(max(1, file.deletions)) +1,\(max(1, file.additions)) @@
+                -    // Original implementation
+                +    // Modified by Agent
+                +    // Changes: +\(file.additions) -\(file.deletions)
+
+                """
+            }
+            let data = Data(synthText.utf8)
+            let parsed = GitDiffParser.shared.parseZeroCopy(data: data)
+            loadDiff(files: parsed, rawData: data, isReview: true)
+        }
+    }
+
+    private func beginReview(summary: AgentEditedFilesSummary) {
+        reviewViewStateResetToken &+= 1
+        clearReviewDiff()
+        loadReviewDiff(for: summary)
+        preparedReviewSummary = summary
+        agentCoordinator.startReview(summary: summary)
+    }
+
+    private func endReview() {
+        agentCoordinator.exitReview()
+        preparedReviewSummary = nil
+        clearReviewDiff()
+    }
+
+    private func clearReviewDiff() {
+        reviewFileDiffs = []
+        reviewMultiBuffer.clear()
+        reviewDisplayMap.clear()
     }
 
     private func handleOpenShortcut() {
@@ -583,6 +967,10 @@ public struct MainWindowView: View {
     }
 
     public func reloadCurrentDiff() {
+        if let reviewSummary = agentCoordinator.activeReviewSummary {
+            loadReviewDiff(for: reviewSummary)
+            return
+        }
         if case .remote(let ref) = comparisonTarget {
             loadRemoteDiff(reference: ref)
         } else {
@@ -1390,12 +1778,19 @@ public struct MainWindowView: View {
         loadDiff(files: parsedFiles, rawData: data)
     }
 
-    public func loadDiff(files parsedFiles: [FileDiff], rawData: Data? = nil) {
-        let collapsedFilePaths = Set(multiBuffer.excerpts.filter { $0.isCollapsed }.map { $0.filePath })
-        self.fileDiffs = parsedFiles
+    public func loadDiff(files parsedFiles: [FileDiff], rawData: Data? = nil, isReview: Bool = false) {
+        let targetMB = isReview ? reviewMultiBuffer : multiBuffer
+        let targetDM = isReview ? reviewDisplayMap : displayMap
 
-        multiBuffer.clear()
-        displayMap.clear()
+        let collapsedFilePaths = Set(targetMB.excerpts.filter { $0.isCollapsed }.map { $0.filePath })
+        if isReview {
+            self.reviewFileDiffs = parsedFiles
+        } else {
+            self.fileDiffs = parsedFiles
+        }
+
+        targetMB.clear()
+        targetDM.clear()
         LineLayoutCache.shared.clear()
         SyntaxHighlighter.shared.clearCache()
 
@@ -1432,7 +1827,7 @@ public struct MainWindowView: View {
                     diskFileLineCount: nil
                 )
                 buffer.isFullFile = true
-                multiBuffer.addBuffer(buffer)
+                targetMB.addBuffer(buffer)
 
                 let excerpt = Excerpt(
                     bufferId: buffer.id,
@@ -1443,7 +1838,7 @@ public struct MainWindowView: View {
                     isCollapsed: wasCollapsed,
                     isFileStart: true
                 )
-                multiBuffer.addExcerpt(excerpt)
+                targetMB.addExcerpt(excerpt)
             } else if file.status == .deleted {
                 let hunk = file.hunks.first
                 let buffer: Buffer
@@ -1480,7 +1875,7 @@ public struct MainWindowView: View {
                     )
                 }
                 buffer.isFullFile = true
-                multiBuffer.addBuffer(buffer)
+                targetMB.addBuffer(buffer)
 
                 let excerpt = Excerpt(
                     bufferId: buffer.id,
@@ -1491,7 +1886,7 @@ public struct MainWindowView: View {
                     isCollapsed: wasCollapsed,
                     isFileStart: true
                 )
-                multiBuffer.addExcerpt(excerpt)
+                targetMB.addExcerpt(excerpt)
             } else {
                 for (hIdx, hunk) in file.hunks.enumerated() {
                     let startLine = hunk.newRange.lowerBound
@@ -1527,7 +1922,7 @@ public struct MainWindowView: View {
                         )
                     }
                     buffer.isFullFile = (file.status == .added && file.hunks.count == 1)
-                    multiBuffer.addBuffer(buffer)
+                    targetMB.addBuffer(buffer)
 
                     let excerpt = Excerpt(
                         bufferId: buffer.id,
@@ -1538,13 +1933,13 @@ public struct MainWindowView: View {
                         isCollapsed: wasCollapsed,
                         isFileStart: (hIdx == 0)
                     )
-                    multiBuffer.addExcerpt(excerpt)
+                    targetMB.addExcerpt(excerpt)
                 }
             }
         }
 
-        displayMap.rebuild()
-        displayMap.markContentLoaded()
+        targetDM.rebuild()
+        targetDM.markContentLoaded()
 
         let currentSelected = selectedFilePath
         if let sel = currentSelected, parsedFiles.contains(where: { $0.displayPath == sel }) {
@@ -1571,15 +1966,15 @@ public struct MainWindowView: View {
     }
 
     private func expandAllExcerpts() {
-        for i in 0..<multiBuffer.excerpts.count {
-            multiBuffer.expandExcerptAll(at: i)
+        for i in 0..<activeMultiBuffer.excerpts.count {
+            activeMultiBuffer.expandExcerptAll(at: i)
         }
-        displayMap.rebuild()
+        activeDisplayMap.rebuild()
     }
 
     private func collapseAllExcerpts() {
-        multiBuffer.collapseAll()
-        displayMap.rebuild()
+        activeMultiBuffer.collapseAll()
+        activeDisplayMap.rebuild()
     }
 }
 
@@ -1596,18 +1991,50 @@ public struct ToolbarHoverButtonStyle: ButtonStyle {
 
     public func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .padding(.horizontal, 6)
-            .padding(.vertical, 4)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 3)
+            .frame(minWidth: 26, minHeight: 24)
             .background(
-                RoundedRectangle(cornerRadius: 6)
+                RoundedRectangle(cornerRadius: 5)
                     .fill(isHovered ? Color.secondary.opacity(configuration.isPressed ? 0.24 : 0.14) : Color.clear)
             )
-            .clipShape(RoundedRectangle(cornerRadius: 6))
-            .contentShape(RoundedRectangle(cornerRadius: 6))
+            .clipShape(RoundedRectangle(cornerRadius: 5))
+            .contentShape(RoundedRectangle(cornerRadius: 5))
             .onHover { hovering in
-                withAnimation(.easeInOut(duration: 0.12)) {
-                    isHovered = hovering
-                }
+                isHovered = hovering
             }
+    }
+}
+
+public struct AgentToolbarActionButtonStyle: ButtonStyle {
+    private let accentColor: Color
+    private let isActive: Bool
+    @State private var isHovered = false
+
+    public init(accentColor: Color = .accentColor, isActive: Bool = false) {
+        self.accentColor = accentColor
+        self.isActive = isActive
+    }
+
+    public func makeBody(configuration: Configuration) -> some View {
+        let isHighlighted = isActive || isHovered || configuration.isPressed
+
+        configuration.label
+            .padding(.horizontal, 4)
+            .padding(.vertical, 3)
+            .frame(minWidth: 26, minHeight: 24)
+            .background(Color.clear, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(accentColor.opacity(isHighlighted ? 0.08 : 0))
+            )
+            .scaleEffect(isHovered ? 1.02 : 1)
+            .shadow(
+                color: isHighlighted ? accentColor.opacity(0.16) : Color.clear,
+                radius: isHighlighted ? 9 : 5,
+                y: isHighlighted ? 2 : 1
+            )
+            .onHover { isHovered = $0 }
+            .animation(.easeOut(duration: 0.16), value: isHovered)
     }
 }

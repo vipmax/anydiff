@@ -1,6 +1,6 @@
 # AnyDiff
 
-High-performance native macOS MultiBuffer Diff editor for lightning-fast code reviews and in-place editing in Swift, built upon the Zed architecture (`multi_buffer`).
+High-performance native macOS MultiBuffer Diff editor for lightning-fast code reviews and in-place editing in Swift.
 
 ![AnyDiff Overview](https://i.imgur.com/SgdOxs2.png)
 
@@ -28,11 +28,16 @@ High-performance native macOS MultiBuffer Diff editor for lightning-fast code re
 - **Intra-Line Word Diff**: High-precision token- and character-level highlighting powered by Myers LCS with common prefix/suffix pruning.
 - **Inline Code Review**: Add threaded review comments and notes on any line.
 - **Multi-Source Git & Web Integration**:
+
   - Automatically loads uncommitted diffs from any local repository.
   - Native support for GitHub Pull Requests, commit URLs, and compare links (`gh pr`, `https://github.com/.../pull/123`, `https://diffs.hub/...`).
   - Paste raw `.diff` / `.patch` files directly from the clipboard (`Cmd + Shift + V`).
+- **Embedded Codex Agent**:
+  - Native side panel for explaining the current diff, reviewing changes, generating commit messages, inspecting files, editing code, and running commands.
+  - Live mode communicates with an ACP-compatible agent over JSON-RPC 2.0, with streamed text/thoughts, tool-call progress, errors, and context usage.
+  - Includes a Mock mode for UI development and demos; switch between Mock and Live from the panel.
 - **Minimalist macOS Titlebar & Dark Themes**:
-  - Curated themes: `Zed Dark`, `Unified Dark`, `Tokyo Night`, `GitHub Dark`, and `Monokai Pro`.
+  - Curated themes: `Unified Dark`, `Tokyo Night`, `GitHub Dark`, and `Monokai Pro`.
   - Tokenized syntax highlighting for Swift, Rust, TypeScript, JavaScript, Python, C++, Go, and JSON.
 
 ---
@@ -64,6 +69,32 @@ High-performance native macOS MultiBuffer Diff editor for lightning-fast code re
 | **Cmd + C** | Copy selected text |
 | **Cmd + V** | Paste text |
 | **Option + Click** | Expand all hidden context lines |
+| **Cmd + Option + A** | Toggle the Codex Agent panel |
+
+---
+
+## 🤖 Embedded Codex Agent
+
+AnyDiff includes an optional agent panel alongside the diff editor. It is designed to work in the context of the currently opened repository and provides quick actions for explaining the current diff, reviewing changes, and drafting a commit message. Prompts can also be entered manually; the input supports multiline text with **Shift + Enter** or **Option + Enter**.
+
+The agent has two modes:
+
+- **Mock**: local scripted responses for demos, UI development, and offline testing. It can be selected from the agent panel without requiring an external process.
+- **ACP Live**: launches the configured ACP command in the opened repository and maintains a session for the conversation. The default preset for a new installation is Codex, using:
+
+```bash
+npx -y @agentclientprotocol/codex-acp
+```
+
+Live mode requires a working Node.js installation with `npx` available on `PATH`. The configured ACP agent runs in the opened working directory and may request permission to read or write files and execute terminal commands there. Review permission prompts before approving tool calls.
+
+The live integration is built in `AnyDiffCore` and consists of:
+
+- `ACPTransport`: launches the agent as a child process and exchanges newline-delimited JSON over stdin/stdout while collecting stderr logs.
+- `ACPClient`: implements JSON-RPC request/response and notification dispatch, including initialization, session creation, prompts, cancellation, streamed updates, filesystem access, and terminal requests.
+- `ACPAgentSessionManager`: connects the protocol client to the observable chat state, handles reconnection and model/reasoning-effort options, and normalizes tool events for the UI.
+
+The panel is implemented in `AnyDiffUI/Agent`. It renders Markdown and code blocks, keeps a native selectable chat scroll view, shows expandable tool-call cards, supports cancellation and session reset, and displays model, reasoning-effort, and context-usage controls. The agent can respond to client-side filesystem and terminal requests inside the opened working directory, subject to the permission choices made in the panel.
 
 ---
 
@@ -77,9 +108,12 @@ AnyDiff
 │   │   ├── MultiBuffer/      # MultiBuffer, Buffer, Excerpt, UndoManager, EditTransaction
 │   │   ├── Display/          # DisplayMap, DisplayLine, Coordinate Mapping
 │   │   ├── Syntax/           # SyntaxHighlighter, Theme Definitions
-│   │   └── Review/           # ReviewManager, ReviewComment
+│   │   ├── Review/           # ReviewManager, ReviewComment
+│   │   ├── ACP/              # JSON-RPC 2.0 / Agent Client Protocol transport and models
+│   │   └── Agent/            # Agent session state, ACP manager, and mock implementation
 │   ├── AnyDiffUI/            # Native presentation layer (SwiftUI + custom AppKit CoreText engine)
 │   │   ├── Editor/           # CustomMultiBufferEditorView, ExcerptLayout, LineCache, Virtual Scroll
+│   │   ├── Agent/            # Chat panel, Markdown rendering, input, and tool-call cards
 │   │   └── Views/            # MainWindowView, SidebarFileListView, Modals
 │   └── AnyDiff/              # Application entry point (main.swift, AppDelegate)
 └── Tests/

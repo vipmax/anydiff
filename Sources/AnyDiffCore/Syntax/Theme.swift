@@ -10,6 +10,11 @@ public struct Theme: Identifiable, Sendable {
     // Editor Backgrounds
     public let background: NSColor
     public let gutterBackground: NSColor
+    /// Surface color for primary controls such as the agent input.
+    /// Light themes use a clean white surface without changing gutter colors.
+    public var inputBackground: NSColor {
+        isDark ? excerptHeaderBackground : .white
+    }
     public let currentLineBackground: NSColor
     public let selectionBackground: NSColor
     public let excerptHeaderBackground: NSColor

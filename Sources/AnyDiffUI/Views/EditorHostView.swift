@@ -8,6 +8,7 @@ public struct EditorHostView: NSViewRepresentable {
     public var fontSize: CGFloat
     public var isEditable: Bool
     public var selectedFilePath: String?
+    public var viewStateResetToken: UInt64?
     public var onCursorChange: (ExcerptLocation?, MultiBufferPoint) -> Void
     public var onAddCommentRequest: (String, Int) -> Void
 
@@ -17,6 +18,7 @@ public struct EditorHostView: NSViewRepresentable {
         fontSize: CGFloat = 13,
         isEditable: Bool = true,
         selectedFilePath: String? = nil,
+        viewStateResetToken: UInt64? = nil,
         onCursorChange: @escaping (ExcerptLocation?, MultiBufferPoint) -> Void,
         onAddCommentRequest: @escaping (String, Int) -> Void
     ) {
@@ -25,6 +27,7 @@ public struct EditorHostView: NSViewRepresentable {
         self.fontSize = fontSize
         self.isEditable = isEditable
         self.selectedFilePath = selectedFilePath
+        self.viewStateResetToken = viewStateResetToken
         self.onCursorChange = onCursorChange
         self.onAddCommentRequest = onAddCommentRequest
     }
@@ -39,16 +42,19 @@ public struct EditorHostView: NSViewRepresentable {
         editorView.isEditable = isEditable
         editorView.delegate = context.coordinator
         context.coordinator.editorView = editorView
-        context.coordinator.lastLoadRevision = displayMap.loadRevision
+        let displayMapID = ObjectIdentifier(displayMap)
+        context.coordinator.activeDisplayMapID = displayMapID
+        context.coordinator.lastLoadRevisions[displayMapID] = displayMap.loadRevision
         DispatchQueue.main.async {
             // The DisplayMap may already contain loaded content when SwiftUI
             // creates this view, so there may be no revision transition to
             // trigger the initial cursor/focus setup.
             editorView.resetCursorToFirstVisibleLine()
             if let path = selectedFilePath {
-                context.coordinator.lastScrolledFilePath = path
+                context.coordinator.lastScrolledFilePaths[displayMapID] = path
                 editorView.scrollToFilePath(path)
             }
+            context.coordinator.saveCurrentViewState()
         }
         return editorView
     }
@@ -56,18 +62,43 @@ public struct EditorHostView: NSViewRepresentable {
     public func updateNSView(_ editorView: CustomMultiBufferEditorView, context: Context) {
         context.coordinator.parent = self
 
-        if editorView.displayMap !== displayMap {
+        let displayMapID = ObjectIdentifier(displayMap)
+        if let resetToken = viewStateResetToken,
+           context.coordinator.lastViewStateResetTokens[displayMapID] != resetToken {
+            context.coordinator.viewStates.removeValue(forKey: displayMapID)
+            context.coordinator.lastScrolledFilePaths.removeValue(forKey: displayMapID)
+            context.coordinator.lastViewStateResetTokens[displayMapID] = resetToken
+        }
+        let mapChanged = editorView.displayMap !== displayMap
+        if mapChanged {
+            // The state belongs to the map that was visible, not to the editor
+            // view itself. Capture it before replacing the map reference.
+            context.coordinator.saveCurrentViewState()
+            // Assigning displayMap synchronously rebuilds layout. That rebuild
+            // can clamp the old cursor and emit delegate callbacks before the
+            // new map's snapshot has been restored, so those transient events
+            // must not overwrite either map's saved UI state.
+            context.coordinator.isSwitchingDisplayMap = true
+            context.coordinator.activeDisplayMapID = displayMapID
             editorView.displayMap = displayMap
+            context.coordinator.isSwitchingDisplayMap = false
         } else {
             editorView.syncLayoutIfNeeded()
         }
 
-        if context.coordinator.lastLoadRevision != displayMap.loadRevision {
-            context.coordinator.lastLoadRevision = displayMap.loadRevision
-            if let state = context.coordinator.savedViewState {
-                editorView.restoreViewState(state)
-            } else {
-                editorView.resetCursorToFirstVisibleLine()
+        let revisionChanged = context.coordinator.lastLoadRevisions[displayMapID] != displayMap.loadRevision
+        if mapChanged || revisionChanged {
+            context.coordinator.lastLoadRevisions[displayMapID] = displayMap.loadRevision
+            let shouldKeepEditorFocus = editorView.window?.firstResponder === editorView
+            // A map can be swapped in before its asynchronous load completes.
+            // Do not overwrite an existing snapshot with an empty-map reset.
+            if displayMap.displayLineCount > 0 {
+                if let state = context.coordinator.viewStates[displayMapID] {
+                    editorView.restoreViewState(state, shouldFocus: shouldKeepEditorFocus)
+                } else {
+                    editorView.resetCursorToFirstVisibleLine(shouldFocus: shouldKeepEditorFocus)
+                }
+                context.coordinator.saveCurrentViewState()
             }
         }
         if editorView.theme.id != theme.id {
@@ -80,12 +111,14 @@ public struct EditorHostView: NSViewRepresentable {
             editorView.isEditable = isEditable
         }
 
-        if let path = selectedFilePath, path != context.coordinator.lastScrolledFilePath {
-            context.coordinator.lastScrolledFilePath = path
+        if !mapChanged, !revisionChanged,
+           let path = selectedFilePath,
+           path != context.coordinator.lastScrolledFilePaths[displayMapID] {
+            context.coordinator.lastScrolledFilePaths[displayMapID] = path
             if editorView.window?.firstResponder !== editorView {
                 DispatchQueue.main.async {
                     editorView.scrollToFilePath(path)
-                    context.coordinator.savedViewState = editorView.captureViewState()
+                    context.coordinator.saveCurrentViewState()
                 }
             }
         }
@@ -94,20 +127,24 @@ public struct EditorHostView: NSViewRepresentable {
     public final class Coordinator: NSObject, CustomMultiBufferEditorDelegate {
         var parent: EditorHostView
         weak var editorView: CustomMultiBufferEditorView?
-        var lastScrolledFilePath: String? = nil
-        var lastLoadRevision: UInt64 = 0
-        var savedViewState: EditorViewState? = nil
+        var activeDisplayMapID: ObjectIdentifier?
+        var isSwitchingDisplayMap = false
+        var viewStates: [ObjectIdentifier: EditorViewState] = [:]
+        var lastScrolledFilePaths: [ObjectIdentifier: String] = [:]
+        var lastLoadRevisions: [ObjectIdentifier: UInt64] = [:]
+        var lastViewStateResetTokens: [ObjectIdentifier: UInt64] = [:]
 
         init(_ parent: EditorHostView) {
             self.parent = parent
         }
 
         public func editorDidChangeCursor(location: ExcerptLocation?, point: MultiBufferPoint) {
-            if let ev = editorView {
-                savedViewState = ev.captureViewState()
-            }
+            guard !isSwitchingDisplayMap else { return }
+            saveCurrentViewState()
             if let path = location?.filePath {
-                lastScrolledFilePath = path
+                if let mapID = activeDisplayMapID {
+                    lastScrolledFilePaths[mapID] = path
+                }
             }
             parent.onCursorChange(location, point)
         }
@@ -117,11 +154,25 @@ public struct EditorHostView: NSViewRepresentable {
         }
 
         public func editorDidScroll() {
-            if let ev = editorView {
-                savedViewState = ev.captureViewState()
-                if let file = savedViewState?.selectedFilePath {
-                    lastScrolledFilePath = file
-                }
+            guard !isSwitchingDisplayMap else { return }
+            saveCurrentViewState()
+            if let file = currentViewState?.selectedFilePath,
+               let mapID = activeDisplayMapID {
+                lastScrolledFilePaths[mapID] = file
+            }
+        }
+
+        var currentViewState: EditorViewState? {
+            guard let editorView else { return nil }
+            return editorView.captureViewState()
+        }
+
+        func saveCurrentViewState() {
+            guard let mapID = activeDisplayMapID,
+                  let state = currentViewState else { return }
+            viewStates[mapID] = state
+            if let file = state.selectedFilePath {
+                lastScrolledFilePaths[mapID] = file
             }
         }
     }

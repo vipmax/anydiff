@@ -63,6 +63,33 @@ public final class SyntaxHighlighter: @unchecked Sendable {
         "this", "null", "undefined", "true", "false", "typeof", "instanceof", "as", "is"
     ]
 
+    private let pythonKeywords: Set<String> = [
+        "def", "class", "import", "from", "as", "return", "if", "elif", "else", "for", "while",
+        "break", "continue", "try", "except", "finally", "raise", "with", "yield", "async", "await",
+        "lambda", "pass", "global", "nonlocal", "assert", "del", "in", "is", "not", "and", "or",
+        "True", "False", "None", "self"
+    ]
+
+    private let goKeywords: Set<String> = [
+        "func", "package", "import", "type", "struct", "interface", "var", "const", "return",
+        "if", "else", "switch", "case", "default", "for", "range", "break", "continue", "fallthrough",
+        "go", "defer", "select", "chan", "map", "nil", "true", "false", "make", "new", "len", "cap", "append"
+    ]
+
+    private let cKeywords: Set<String> = [
+        "int", "char", "float", "double", "void", "bool", "long", "short", "signed", "unsigned",
+        "struct", "union", "enum", "typedef", "sizeof", "static", "const", "extern", "register", "volatile",
+        "if", "else", "switch", "case", "default", "for", "while", "do", "break", "continue", "return",
+        "goto", "auto", "inline", "restrict", "true", "false", "NULL", "nullptr", "class", "namespace",
+        "public", "private", "protected", "template", "typename", "virtual", "override", "final", "new", "delete"
+    ]
+
+    private let shellKeywords: Set<String> = [
+        "if", "then", "else", "elif", "fi", "case", "esac", "for", "while", "until", "do", "done",
+        "in", "function", "select", "time", "return", "exit", "export", "local", "readonly", "set",
+        "unset", "shift", "source", "alias", "unalias", "cd", "echo", "pwd", "true", "false"
+    ]
+
     public init() {}
 
     public func clearCache() {
@@ -225,6 +252,14 @@ public final class SyntaxHighlighter: @unchecked Sendable {
             isKeyword = rustKeywords.contains(word)
         case "typescript", "javascript":
             isKeyword = tsKeywords.contains(word)
+        case "python":
+            isKeyword = pythonKeywords.contains(word)
+        case "go":
+            isKeyword = goKeywords.contains(word)
+        case "c", "cpp":
+            isKeyword = cKeywords.contains(word)
+        case "shell":
+            isKeyword = shellKeywords.contains(word)
         default:
             isKeyword = swiftKeywords.contains(word)
         }

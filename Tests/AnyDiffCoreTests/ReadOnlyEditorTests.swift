@@ -81,6 +81,69 @@ final class ReadOnlyEditorTests: XCTestCase {
         XCTAssertTrue(editor.hasSelection, "Select-all must work in read-only mode")
     }
 
+    func testViewStateRestoresCursorAndSelectionByLogicalAnchors() {
+        let multiBuffer = MultiBuffer()
+        let buffer = Buffer(filePath: "Test.swift", text: "line 1\nline 2\nline 3")
+        multiBuffer.addBuffer(buffer)
+        multiBuffer.setExcerpts([Excerpt(
+            bufferId: buffer.id,
+            filePath: "Test.swift",
+            bufferRange: 0..<3
+        )])
+
+        let reviewManager = ReviewManager()
+        let displayMap = DisplayMap(multiBuffer: multiBuffer, reviewManager: reviewManager)
+        let editor = CustomMultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        editor.cursorPoint = MultiBufferPoint(row: 2, column: 3)
+        editor.selectionAnchor = MultiBufferPoint(row: 0, column: 1)
+
+        let state = editor.captureViewState()
+
+        // Rebuild the underlying model, which invalidates raw MultiBuffer rows.
+        multiBuffer.clear()
+        let rebuiltBuffer = Buffer(filePath: "Test.swift", text: "line 1\nline 2\nline 3")
+        multiBuffer.addBuffer(rebuiltBuffer)
+        multiBuffer.setExcerpts([Excerpt(
+            bufferId: rebuiltBuffer.id,
+            filePath: "Test.swift",
+            bufferRange: 0..<3
+        )])
+        displayMap.rebuild()
+
+        let restoredEditor = CustomMultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        restoredEditor.restoreViewState(state, shouldFocus: false)
+
+        XCTAssertEqual(restoredEditor.cursorPoint, MultiBufferPoint(row: 2, column: 3))
+        XCTAssertEqual(restoredEditor.selectionAnchor, MultiBufferPoint(row: 0, column: 1))
+        XCTAssertTrue(restoredEditor.hasSelection)
+    }
+
+    func testIgnoreEditsPreservesSelectionWhileBlockingMutations() {
+        let multiBuffer = MultiBuffer()
+        let initialText = "line 1\nline 2\nline 3"
+        let buffer = Buffer(filePath: "tool-output.txt", text: initialText)
+        multiBuffer.addBuffer(buffer)
+        multiBuffer.setExcerpts([Excerpt(
+            bufferId: buffer.id,
+            filePath: "tool-output.txt",
+            bufferRange: 0..<3
+        )])
+
+        let displayMap = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
+        let editor = CustomMultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        editor.isEditable = true
+        editor.ignoreEdits = true
+        editor.cursorPoint = MultiBufferPoint(row: 1, column: 2)
+
+        editor.insertText("X", replacementRange: NSRange(location: NSNotFound, length: 0))
+        editor.deleteBackward(nil)
+        editor.selectionAnchor = editor.cursorPoint
+        editor.moveRightAndModifySelection(nil)
+
+        XCTAssertEqual(buffer.text(), initialText)
+        XCTAssertTrue(editor.hasSelection)
+    }
+
     func testEditableModeAllowsEditing() {
         let multiBuffer = MultiBuffer()
         let initialText = "func hello() {\n}"

@@ -3,6 +3,11 @@ import XCTest
 
 final class MemoryPackingBenchmarkTests: XCTestCase {
 
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        try requireBenchmarksEnabled()
+    }
+
     func testStructMemoryLayouts() {
         let mbpSize = MemoryLayout<MultiBufferPoint>.size
         let mbpStride = MemoryLayout<MultiBufferPoint>.stride

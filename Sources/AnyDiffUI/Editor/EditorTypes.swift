@@ -73,17 +73,20 @@ public struct EditorCursorAnchor: Sendable, Equatable {
 /// Encapsulates the complete anchor-based cursor and viewport state of CustomMultiBufferEditorView
 public struct EditorViewState: Sendable, Equatable {
     public let cursorAnchor: EditorCursorAnchor?
+    public let selectionAnchor: EditorCursorAnchor?
     public let scrollAnchor: EditorScrollAnchor?
     public let scrollOffsetX: CGFloat
     public let selectedFilePath: String?
 
     public init(
         cursorAnchor: EditorCursorAnchor?,
+        selectionAnchor: EditorCursorAnchor? = nil,
         scrollAnchor: EditorScrollAnchor?,
         scrollOffsetX: CGFloat = 0,
         selectedFilePath: String? = nil
     ) {
         self.cursorAnchor = cursorAnchor
+        self.selectionAnchor = selectionAnchor
         self.scrollAnchor = scrollAnchor
         self.scrollOffsetX = scrollOffsetX
         self.selectedFilePath = selectedFilePath

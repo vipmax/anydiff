@@ -19,6 +19,25 @@ build:
 build-debug:
     swift build -c debug
 
+# Attach to the running debug app and export a short text-readable profile.
+trace:
+    app_pid="$(pgrep -n -f '^\.build/arm64-apple-macosx/debug/AnyDiff( |$)' || true)"; \
+    if [ -z "$app_pid" ]; then \
+        printf 'No debug AnyDiff process found. Run: just dev .\n' >&2; \
+        exit 1; \
+    fi; \
+    trace_file="/tmp/anydiff-scroll-$(date +%Y%m%d-%H%M%S).trace"; \
+    xcrun xctrace record --no-prompt \
+        --template 'Time Profiler' \
+        --time-limit 20s \
+        --output "$trace_file" \
+        --attach "$app_pid" && \
+    xcrun xctrace export \
+        --input "$trace_file" \
+        --xpath '/trace-toc/run[@number="1"]/data/table[@schema="time-profile"]' \
+        --output "${trace_file%.trace}.xml" && \
+    printf 'Trace: %s\nText:  %s\n' "$trace_file" "${trace_file%.trace}.xml"
+
 # Remove Swift Package Manager build artifacts.
 clean:
     swift package clean
@@ -31,19 +50,19 @@ rebuild:
 
 # Run fast unit tests in Debug configuration
 test:
-    swift test -c debug --filter AnyDiffCoreTests
+    swift test -c debug --filter AnyDiffCoreTests --skip Performance
 
 # Run fast unit tests in Release configuration.
 test-release:
     swift test -c release --filter AnyDiffCoreTests
 
-# Run all tests (including benchmarks) in Debug configuration.
+# Run all regular tests in Debug configuration. Benchmarks are opt-in via `just bench`.
 test-all:
     swift test -c debug
 
 # Run heavy performance benchmarks in optimized Release configuration.
 bench:
-    swift test -c release --filter AnyDiffBenchmarks
+    ANYDIFF_RUN_BENCHMARKS=1 swift test -c release --filter AnyDiffBenchmarks
 
 # Build Release and run the Release unit tests.
 check:
@@ -64,5 +83,3 @@ deploy:
     scp dist/AnyDiff-macOS.zip dist/AnyDiff.dmg mvpa:~/Downloads/
     ssh mvpa "cd ~/Downloads && rm -rf AnyDiff.app && unzip -q AnyDiff-macOS.zip && xattr -cr AnyDiff.app"
     @echo "🚀 Deployed AnyDiff.app to second Mac ~/Downloads!"
-
-

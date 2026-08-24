@@ -3,6 +3,11 @@ import XCTest
 
 final class GitDiffStreamingBenchmarkTests: XCTestCase {
 
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        try requireBenchmarksEnabled()
+    }
+
     /// Helper for memory tests that deliberately avoids retaining a second 41 MB String copy.
     private func getBunDiffData() -> (path: String, data: Data)? {
         let defaultDiffPath = "/tmp/bun_pr_30412.diff"
