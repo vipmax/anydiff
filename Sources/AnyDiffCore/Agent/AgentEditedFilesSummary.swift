@@ -26,12 +26,64 @@ public struct AgentEditedFileItem: Identifiable, Codable, Sendable, Equatable {
 public struct AgentEditedFilesSummary: Codable, Sendable, Equatable {
     public let files: [AgentEditedFileItem]
     public let baseCommitHash: String?
+    public var postTurnCommitHash: String?
+    public var savedCreatedFiles: [String: String]?
     public let rawDiffData: Data?
+    public var isReverted: Bool
+    public let createdFiles: [String]
+    public let modifiedFiles: [String]
+    public let deletedFiles: [String]
 
-    public init(files: [AgentEditedFileItem], baseCommitHash: String? = nil, rawDiffData: Data? = nil) {
+    public init(
+        files: [AgentEditedFileItem],
+        baseCommitHash: String? = nil,
+        postTurnCommitHash: String? = nil,
+        savedCreatedFiles: [String: String]? = nil,
+        rawDiffData: Data? = nil,
+        isReverted: Bool = false,
+        createdFiles: [String] = [],
+        modifiedFiles: [String] = [],
+        deletedFiles: [String] = []
+    ) {
         self.files = files
         self.baseCommitHash = baseCommitHash
+        self.postTurnCommitHash = postTurnCommitHash
+        self.savedCreatedFiles = savedCreatedFiles
         self.rawDiffData = rawDiffData
+        self.isReverted = isReverted
+        self.createdFiles = createdFiles
+        self.modifiedFiles = modifiedFiles
+        self.deletedFiles = deletedFiles
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case files, baseCommitHash, postTurnCommitHash, savedCreatedFiles, rawDiffData, isReverted, createdFiles, modifiedFiles, deletedFiles
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        files = try container.decode([AgentEditedFileItem].self, forKey: .files)
+        baseCommitHash = try container.decodeIfPresent(String.self, forKey: .baseCommitHash)
+        postTurnCommitHash = try container.decodeIfPresent(String.self, forKey: .postTurnCommitHash)
+        savedCreatedFiles = try container.decodeIfPresent([String: String].self, forKey: .savedCreatedFiles)
+        rawDiffData = try container.decodeIfPresent(Data.self, forKey: .rawDiffData)
+        isReverted = try container.decodeIfPresent(Bool.self, forKey: .isReverted) ?? false
+        createdFiles = try container.decodeIfPresent([String].self, forKey: .createdFiles) ?? []
+        modifiedFiles = try container.decodeIfPresent([String].self, forKey: .modifiedFiles) ?? []
+        deletedFiles = try container.decodeIfPresent([String].self, forKey: .deletedFiles) ?? []
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(files, forKey: .files)
+        try container.encodeIfPresent(baseCommitHash, forKey: .baseCommitHash)
+        try container.encodeIfPresent(postTurnCommitHash, forKey: .postTurnCommitHash)
+        try container.encodeIfPresent(savedCreatedFiles, forKey: .savedCreatedFiles)
+        try container.encodeIfPresent(rawDiffData, forKey: .rawDiffData)
+        try container.encode(isReverted, forKey: .isReverted)
+        try container.encode(createdFiles, forKey: .createdFiles)
+        try container.encode(modifiedFiles, forKey: .modifiedFiles)
+        try container.encode(deletedFiles, forKey: .deletedFiles)
     }
 
     public var totalAdditions: Int {
@@ -48,6 +100,9 @@ public struct AgentEditedFilesSummary: Codable, Sendable, Equatable {
 
     public var displayTitle: String {
         let count = files.count
+        if isReverted {
+            return count == 1 ? "1 file (Reverted)" : "\(count) files (Reverted)"
+        }
         return count == 1 ? "Edited 1 file" : "Edited \(count) files"
     }
 }
@@ -115,35 +170,38 @@ public enum AgentGitChangesDetector {
         }
 
         var items: [AgentEditedFileItem] = []
+        var createdList: [String] = []
+        var modifiedList: [String] = []
+        var deletedList: [String] = []
 
-        // 1. Get numstat for tracked files against base snapshot
-        if let base = snapshot.stashCommitHash {
-            if let numstat = runGit(arguments: ["-C", workingDirectory, "diff", "--numstat", base]) {
-                for line in numstat.components(separatedBy: "\n") {
-                    let parts = line.components(separatedBy: "\t")
-                    if parts.count >= 3 {
-                        let adds = Int(parts[0]) ?? 0
-                        let dels = Int(parts[1]) ?? 0
-                        let path = parts[2].trimmingCharacters(in: .whitespacesAndNewlines)
-                        if !path.isEmpty {
-                            items.append(AgentEditedFileItem(path: path, additions: adds, deletions: dels))
-                        }
+        let baseRef = snapshot.stashCommitHash ?? "HEAD"
+
+        // 1. Get numstat and status for tracked files against base snapshot
+        if let numstat = runGit(arguments: ["-C", workingDirectory, "diff", "--numstat", baseRef]) {
+            for line in numstat.components(separatedBy: "\n") {
+                let parts = line.components(separatedBy: "\t")
+                if parts.count >= 3 {
+                    let adds = Int(parts[0]) ?? 0
+                    let dels = Int(parts[1]) ?? 0
+                    let path = parts[2].trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !path.isEmpty {
+                        items.append(AgentEditedFileItem(path: path, additions: adds, deletions: dels))
                     }
                 }
             }
-        } else {
-            // Working tree had no tracked modifications prior to turn -> diff against HEAD
-            if let numstat = runGit(arguments: ["-C", workingDirectory, "diff", "--numstat", "HEAD"]) {
-                for line in numstat.components(separatedBy: "\n") {
-                    let parts = line.components(separatedBy: "\t")
-                    if parts.count >= 3 {
-                        let adds = Int(parts[0]) ?? 0
-                        let dels = Int(parts[1]) ?? 0
-                        let path = parts[2].trimmingCharacters(in: .whitespacesAndNewlines)
-                        if !path.isEmpty {
-                            items.append(AgentEditedFileItem(path: path, additions: adds, deletions: dels))
-                        }
-                    }
+        }
+
+        if let nameStatus = runGit(arguments: ["-C", workingDirectory, "diff", "--name-status", baseRef]) {
+            for line in nameStatus.components(separatedBy: "\n") {
+                let parts = line.components(separatedBy: "\t")
+                guard !parts.isEmpty else { continue }
+                let statusLetter = parts[0].prefix(1)
+                if statusLetter == "A" && parts.count >= 2 {
+                    createdList.append(parts[1].trimmingCharacters(in: .whitespacesAndNewlines))
+                } else if statusLetter == "D" && parts.count >= 2 {
+                    deletedList.append(parts[1].trimmingCharacters(in: .whitespacesAndNewlines))
+                } else if parts.count >= 2 {
+                    modifiedList.append(parts[1].trimmingCharacters(in: .whitespacesAndNewlines))
                 }
             }
         }
@@ -162,7 +220,14 @@ public enum AgentGitChangesDetector {
                 let isModified = snapshot.untrackedFiles.contains(trimmed) &&
                     (currentMtime?.timeIntervalSince1970 ?? 0) > (snapshot.untrackedModTimes[trimmed] ?? 0) + 0.5
 
-                if isNewFile || isModified {
+                if isNewFile {
+                    createdList.append(trimmed)
+                    if let contents = try? String(contentsOfFile: fullPath, encoding: .utf8) {
+                        let lineCount = contents.components(separatedBy: "\n").count
+                        items.append(AgentEditedFileItem(path: trimmed, additions: lineCount, deletions: 0))
+                    }
+                } else if isModified {
+                    modifiedList.append(trimmed)
                     if let contents = try? String(contentsOfFile: fullPath, encoding: .utf8) {
                         let lineCount = contents.components(separatedBy: "\n").count
                         items.append(AgentEditedFileItem(path: trimmed, additions: lineCount, deletions: 0))
@@ -175,12 +240,19 @@ public enum AgentGitChangesDetector {
 
         // 3. Capture raw unified diff data for fast MultiBuffer rendering
         var rawData: Data? = nil
-        let baseRef = snapshot.stashCommitHash ?? "HEAD"
         if let diffData = runGitData(arguments: ["-C", workingDirectory, "diff", "-U3", baseRef]) {
             rawData = diffData
         }
 
-        let summary = AgentEditedFilesSummary(files: items, baseCommitHash: snapshot.stashCommitHash, rawDiffData: rawData)
+        let summary = AgentEditedFilesSummary(
+            files: items,
+            baseCommitHash: snapshot.stashCommitHash,
+            rawDiffData: rawData,
+            isReverted: false,
+            createdFiles: createdList,
+            modifiedFiles: modifiedList,
+            deletedFiles: deletedList
+        )
         return (summary, rawData)
     }
 

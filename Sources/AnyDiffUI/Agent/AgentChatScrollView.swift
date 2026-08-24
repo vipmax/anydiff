@@ -9,25 +9,33 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
     public var scrollToBottomTrigger: Int
     public var onNearBottomChanged: (Bool) -> Void
     public var onReview: ((AgentEditedFilesSummary) -> Void)?
+    public var onRevert: ((AgentEditedFilesSummary) -> Void)?
+    public var onRestore: ((AgentEditedFilesSummary) -> Void)?
 
     public init(
         messages: [AgentMessage],
         theme: Theme,
         scrollToBottomTrigger: Int,
         onNearBottomChanged: @escaping (Bool) -> Void = { _ in },
-        onReview: ((AgentEditedFilesSummary) -> Void)? = nil
+        onReview: ((AgentEditedFilesSummary) -> Void)? = nil,
+        onRevert: ((AgentEditedFilesSummary) -> Void)? = nil,
+        onRestore: ((AgentEditedFilesSummary) -> Void)? = nil
     ) {
         self.messages = messages
         self.theme = theme
         self.scrollToBottomTrigger = scrollToBottomTrigger
         self.onNearBottomChanged = onNearBottomChanged
         self.onReview = onReview
+        self.onRevert = onRevert
+        self.onRestore = onRestore
     }
 
     public func makeNSView(context: Context) -> AgentNativeStandardChatScrollView {
         let scrollView = AgentNativeStandardChatScrollView()
         scrollView.onNearBottomChanged = onNearBottomChanged
         scrollView.onReview = onReview
+        scrollView.onRevert = onRevert
+        scrollView.onRestore = onRestore
         scrollView.update(
             messages: messages,
             theme: theme,
@@ -40,6 +48,8 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
     public func updateNSView(_ scrollView: AgentNativeStandardChatScrollView, context: Context) {
         scrollView.onNearBottomChanged = onNearBottomChanged
         scrollView.onReview = onReview
+        scrollView.onRevert = onRevert
+        scrollView.onRestore = onRestore
         scrollView.update(
             messages: messages,
             theme: theme,
@@ -251,6 +261,16 @@ public final class AgentNativeStandardChatScrollView: NSScrollView {
             documentViewCustom.onReview = onReview
         }
     }
+    public var onRevert: ((AgentEditedFilesSummary) -> Void)? {
+        didSet {
+            documentViewCustom.onRevert = onRevert
+        }
+    }
+    public var onRestore: ((AgentEditedFilesSummary) -> Void)? {
+        didSet {
+            documentViewCustom.onRestore = onRestore
+        }
+    }
 
     public override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -437,6 +457,8 @@ public final class AgentNativeStandardChatDocumentView: NSView {
     private var bottomInset: CGFloat = 0
     fileprivate private(set) var lastLayoutWidth: CGFloat = 0
     public var onReview: ((AgentEditedFilesSummary) -> Void)?
+    public var onRevert: ((AgentEditedFilesSummary) -> Void)?
+    public var onRestore: ((AgentEditedFilesSummary) -> Void)?
 
     public override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -515,6 +537,8 @@ public final class AgentNativeStandardChatDocumentView: NSView {
             if let existing = cells[message.id] {
                 cell = existing
                 cell.onReview = onReview
+                cell.onRevert = onRevert
+                cell.onRestore = onRestore
                 if themeChanged || messagesByID[message.id] != message {
                     cell.configure(message: message, theme: theme)
                 }
@@ -525,6 +549,8 @@ public final class AgentNativeStandardChatDocumentView: NSView {
                     nativeTextSelectionEnabled: true
                 )
                 cell.onReview = onReview
+                cell.onRevert = onRevert
+                cell.onRestore = onRestore
                 cell.onToggleThought = { [weak self] in
                     guard let self else { return }
                     scrollView.stopFollowingBottom()
@@ -3048,6 +3074,8 @@ public final class AgentNativeMessageCell: NSView {
     public var onToggleThought: (() -> Void)?
     public var onToggleTool: (() -> Void)?
     public var onReview: ((AgentEditedFilesSummary) -> Void)?
+    public var onRevert: ((AgentEditedFilesSummary) -> Void)?
+    public var onRestore: ((AgentEditedFilesSummary) -> Void)?
     public private(set) var message: AgentMessage
     private var theme: Theme
     private let nativeTextSelectionEnabled: Bool
@@ -3257,9 +3285,13 @@ public final class AgentNativeMessageCell: NSView {
 
             // 4. Edited files card
             if let summary = message.editedFilesSummary {
-                let cardView = AgentEditedFilesCard(summary: summary, theme: theme) { [weak self] rev in
+                let cardView = AgentEditedFilesCard(summary: summary, theme: theme, onReview: { [weak self] rev in
                     self?.onReview?(rev)
-                }
+                }, onRevert: { [weak self] rev in
+                    self?.onRevert?(rev)
+                }, onRestore: { [weak self] rev in
+                    self?.onRestore?(rev)
+                })
                 if let hosting = editedFilesCardView as? NSHostingView<AgentEditedFilesCard> {
                     hosting.rootView = cardView
                 } else {

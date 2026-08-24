@@ -5,17 +5,23 @@ public struct AgentMessageRowView: View {
     public let message: AgentMessage
     public let theme: Theme
     public var onReview: ((AgentEditedFilesSummary) -> Void)? = nil
+    public var onRevert: ((AgentEditedFilesSummary) -> Void)? = nil
+    public var onRestore: ((AgentEditedFilesSummary) -> Void)? = nil
 
     @State private var isThinkingExpanded: Bool = false
 
     public init(
         message: AgentMessage,
         theme: Theme,
-        onReview: ((AgentEditedFilesSummary) -> Void)? = nil
+        onReview: ((AgentEditedFilesSummary) -> Void)? = nil,
+        onRevert: ((AgentEditedFilesSummary) -> Void)? = nil,
+        onRestore: ((AgentEditedFilesSummary) -> Void)? = nil
     ) {
         self.message = message
         self.theme = theme
         self.onReview = onReview
+        self.onRevert = onRevert
+        self.onRestore = onRestore
     }
 
     public var body: some View {
@@ -100,7 +106,9 @@ public struct AgentMessageRowView: View {
                 AgentEditedFilesCard(
                     summary: editedSummary,
                     theme: theme,
-                    onReview: onReview
+                    onReview: onReview,
+                    onRevert: onRevert,
+                    onRestore: onRestore
                 )
                 .padding(.top, 2)
             }

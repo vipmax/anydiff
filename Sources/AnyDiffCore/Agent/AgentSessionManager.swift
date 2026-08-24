@@ -170,4 +170,72 @@ open class AgentSessionManager: ObservableObject, @unchecked Sendable {
         status = .disconnected
         statusMessage = nil
     }
+
+    @discardableResult
+    open func revertTurn(messageId: UUID, workingDirectory: String) -> Bool {
+        guard let index = messages.firstIndex(where: { $0.id == messageId }),
+              var summary = messages[index].editedFilesSummary,
+              !summary.isReverted else {
+            return false
+        }
+        let success = AgentTurnRollbackService.revertTurn(workingDirectory: workingDirectory, summary: &summary)
+        if success {
+            summary.isReverted = true
+            messages[index].editedFilesSummary = summary
+            NotificationCenter.default.post(name: Notification.Name("anyDiffReloadDiff"), object: nil)
+            objectWillChange.send()
+        }
+        return success
+    }
+
+    @discardableResult
+    open func revertTurn(summary: AgentEditedFilesSummary, workingDirectory: String) -> Bool {
+        if let index = messages.firstIndex(where: { $0.editedFilesSummary?.filePaths == summary.filePaths && $0.editedFilesSummary?.baseCommitHash == summary.baseCommitHash }) {
+            return revertTurn(messageId: messages[index].id, workingDirectory: workingDirectory)
+        }
+        var mutSummary = summary
+        let success = AgentTurnRollbackService.revertTurn(workingDirectory: workingDirectory, summary: &mutSummary)
+        if success {
+            mutSummary.isReverted = true
+            for i in messages.indices where messages[i].editedFilesSummary?.filePaths == summary.filePaths {
+                messages[i].editedFilesSummary = mutSummary
+            }
+            NotificationCenter.default.post(name: Notification.Name("anyDiffReloadDiff"), object: nil)
+            objectWillChange.send()
+        }
+        return success
+    }
+
+    @discardableResult
+    open func restoreTurn(messageId: UUID, workingDirectory: String) -> Bool {
+        guard let index = messages.firstIndex(where: { $0.id == messageId }),
+              var summary = messages[index].editedFilesSummary,
+              summary.isReverted else {
+            return false
+        }
+        let success = AgentTurnRollbackService.restoreTurn(workingDirectory: workingDirectory, summary: summary)
+        if success {
+            summary.isReverted = false
+            messages[index].editedFilesSummary = summary
+            NotificationCenter.default.post(name: Notification.Name("anyDiffReloadDiff"), object: nil)
+            objectWillChange.send()
+        }
+        return success
+    }
+
+    @discardableResult
+    open func restoreTurn(summary: AgentEditedFilesSummary, workingDirectory: String) -> Bool {
+        if let index = messages.firstIndex(where: { $0.editedFilesSummary?.filePaths == summary.filePaths && $0.editedFilesSummary?.baseCommitHash == summary.baseCommitHash }) {
+            return restoreTurn(messageId: messages[index].id, workingDirectory: workingDirectory)
+        }
+        let success = AgentTurnRollbackService.restoreTurn(workingDirectory: workingDirectory, summary: summary)
+        if success {
+            for i in messages.indices where messages[i].editedFilesSummary?.filePaths == summary.filePaths {
+                messages[i].editedFilesSummary?.isReverted = false
+            }
+            NotificationCenter.default.post(name: Notification.Name("anyDiffReloadDiff"), object: nil)
+            objectWillChange.send()
+        }
+        return success
+    }
 }

@@ -145,7 +145,13 @@ public struct AgentPanelView: View {
                         }
                     }
                 },
-                onReview: onReview
+                onReview: onReview,
+                onRevert: { summary in
+                    agentManager.revertTurn(summary: summary, workingDirectory: workingDirectory)
+                },
+                onRestore: { summary in
+                    agentManager.restoreTurn(summary: summary, workingDirectory: workingDirectory)
+                }
             )
         }
     }
