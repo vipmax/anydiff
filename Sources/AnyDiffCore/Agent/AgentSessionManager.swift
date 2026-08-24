@@ -64,6 +64,7 @@ open class AgentSessionManager: ObservableObject, @unchecked Sendable {
     @Published public var contextUsagePercentage: Int? = nil
     @Published public var pendingPermission: AgentPermissionRequest? = nil
     @Published public var liveEditedSummary: AgentEditedFilesSummary? = nil
+    @Published public var isNotificationsEnabled: Bool = false
     open var isMock: Bool { false }
     open var isReadyForPrompt: Bool { initializationState == .ready }
     open var canAcceptPrompt: Bool { initializationState != .starting && status != .busy && pendingPermission == nil }

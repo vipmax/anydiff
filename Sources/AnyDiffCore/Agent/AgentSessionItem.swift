@@ -17,6 +17,11 @@ public final class AgentSessionItem: Identifiable, ObservableObject, @unchecked 
         }
     }
 
+    public var isNotificationsEnabled: Bool {
+        get { manager.isNotificationsEnabled }
+        set { manager.isNotificationsEnabled = newValue }
+    }
+
     private var cancellables = Set<AnyCancellable>()
     private var lastSeenMessageCount: Int = 0
 
@@ -35,6 +40,54 @@ public final class AgentSessionItem: Identifiable, ObservableObject, @unchecked 
         self.preset = preset
         self.title = title ?? (isMock ? "Mock Session" : "New Session")
         self.lastSeenMessageCount = manager.messages.count
+
+        manager.$isNotificationsEnabled
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+            .store(in: &cancellables)
+
+        var previousStatus = manager.status
+        manager.$status
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] newStatus in
+                guard let self = self else { return }
+                if previousStatus == .busy && newStatus == .idle {
+                    NotificationCenter.default.post(
+                        name: Notification.Name("anyDiffAgentSessionTurnCompleted"),
+                        object: self,
+                        userInfo: ["isError": false]
+                    )
+                } else if case .error = newStatus, previousStatus == .busy {
+                    NotificationCenter.default.post(
+                        name: Notification.Name("anyDiffAgentSessionTurnCompleted"),
+                        object: self,
+                        userInfo: ["isError": true]
+                    )
+                }
+                previousStatus = newStatus
+            }
+            .store(in: &cancellables)
+
+        var previousPermissionId: JSONRPCID? = nil
+        manager.$pendingPermission
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] permission in
+                guard let self = self else { return }
+                if let perm = permission, previousPermissionId != perm.requestId {
+                    if !self.isCurrentlyActive {
+                        self.hasUnreadUpdates = true
+                    }
+                    NotificationCenter.default.post(
+                        name: Notification.Name("anyDiffAgentPermissionRequested"),
+                        object: self,
+                        userInfo: ["title": perm.title]
+                    )
+                }
+                previousPermissionId = permission?.requestId
+            }
+            .store(in: &cancellables)
 
         // Auto-update session title and unread state when messages arrive
         manager.$messages
@@ -77,6 +130,9 @@ public final class AgentSessionItem: Identifiable, ObservableObject, @unchecked 
     }
 
     public var statusDescription: String {
+        if manager.pendingPermission != nil {
+            return "Permission required"
+        }
         switch manager.status {
         case .busy:
             return "Thinking…"

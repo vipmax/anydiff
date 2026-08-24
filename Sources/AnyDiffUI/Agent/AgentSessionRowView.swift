@@ -59,6 +59,21 @@ public struct AgentSessionRowView: View {
             }
             .buttonStyle(.plain)
 
+            Button(action: {
+                session.isNotificationsEnabled.toggle()
+            }) {
+                Image(systemName: session.isNotificationsEnabled ? "bell.fill" : "bell")
+                    .font(.system(size: 9.5))
+                    .foregroundColor(session.isNotificationsEnabled ? Color.accentColor : Color.secondary.opacity(0.45))
+                    .frame(width: 16, height: 16)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .opacity(session.isNotificationsEnabled || isHovered ? 1.0 : 0.0)
+            .allowsHitTesting(session.isNotificationsEnabled || isHovered)
+            .animation(.easeInOut(duration: 0.1), value: isHovered)
+            .help(session.isNotificationsEnabled ? "Sound notifications enabled for this chat" : "Enable sound notifications for this chat")
+
             if canClose {
                 Button(action: onClose) {
                     Image(systemName: "xmark")
@@ -92,44 +107,51 @@ public struct AgentSessionRowView: View {
 
     @ViewBuilder
     private var statusIconView: some View {
-        switch session.manager.status {
-        case .busy:
-            ZStack {
-                Circle()
-                    .fill(Color.accentColor.opacity(0.2))
-                    .frame(width: 14, height: 14)
-                Circle()
-                    .stroke(Color.accentColor, lineWidth: 1.5)
-                    .frame(width: 10, height: 10)
-                Image(systemName: "sparkle")
-                    .font(.system(size: 7, weight: .bold))
-                    .foregroundColor(.accentColor)
-            }
-            .frame(width: 14)
-        case .connecting:
-            Circle()
-                .fill(Color.yellow)
-                .frame(width: 8, height: 8)
-                .frame(width: 14)
-        case .error:
-            Image(systemName: "exclamationmark.circle.fill")
+        if session.manager.pendingPermission != nil {
+            Image(systemName: "hand.raised.fill")
                 .font(.system(size: 11))
-                .foregroundColor(.red)
+                .foregroundColor(.orange)
                 .frame(width: 14)
-        case .idle:
-            Circle()
-                .fill(sessionColor)
-                .frame(width: 8, height: 8)
-                .overlay(
+        } else {
+            switch session.manager.status {
+            case .busy:
+                ZStack {
                     Circle()
-                        .stroke(Color.primary.opacity(0.18), lineWidth: 0.8)
-                )
+                        .fill(Color.accentColor.opacity(0.2))
+                        .frame(width: 14, height: 14)
+                    Circle()
+                        .stroke(Color.accentColor, lineWidth: 1.5)
+                        .frame(width: 10, height: 10)
+                    Image(systemName: "sparkle")
+                        .font(.system(size: 7, weight: .bold))
+                        .foregroundColor(.accentColor)
+                }
                 .frame(width: 14)
-        case .disconnected:
-            Circle()
-                .fill(Color.secondary.opacity(0.5))
-                .frame(width: 8, height: 8)
-                .frame(width: 14)
+            case .connecting:
+                Circle()
+                    .fill(Color.yellow)
+                    .frame(width: 8, height: 8)
+                    .frame(width: 14)
+            case .error:
+                Image(systemName: "exclamationmark.circle.fill")
+                    .font(.system(size: 11))
+                    .foregroundColor(.red)
+                    .frame(width: 14)
+            case .idle:
+                Circle()
+                    .fill(sessionColor)
+                    .frame(width: 8, height: 8)
+                    .overlay(
+                        Circle()
+                            .stroke(Color.primary.opacity(0.18), lineWidth: 0.8)
+                    )
+                    .frame(width: 14)
+            case .disconnected:
+                Circle()
+                    .fill(Color.secondary.opacity(0.5))
+                    .frame(width: 8, height: 8)
+                    .frame(width: 14)
+            }
         }
     }
 
@@ -139,6 +161,9 @@ public struct AgentSessionRowView: View {
 
     private var sessionSubtitle: String {
         let prefix = session.manager.agentTitle
+        if session.manager.pendingPermission != nil {
+            return "\(prefix) · Permission required"
+        }
         if session.hasUnreadUpdates {
             return "\(prefix) · New reply ready"
         }

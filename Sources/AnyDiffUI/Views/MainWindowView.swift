@@ -198,6 +198,24 @@ public struct MainWindowView: View {
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffOpenInBrowser"))) { _ in
             openInBrowser()
         }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffAgentSessionTurnCompleted"))) { notification in
+            guard let session = notification.object as? AgentSessionItem else { return }
+            let isError = (notification.userInfo?["isError"] as? Bool) ?? false
+            if session.isNotificationsEnabled {
+                if isError {
+                    SoundFeedback.play(.error)
+                } else {
+                    SoundFeedback.play(.completion)
+                }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffAgentPermissionRequested"))) { notification in
+            guard let session = notification.object as? AgentSessionItem else { return }
+            if session.isNotificationsEnabled {
+                SoundFeedback.play(.attention)
+                HapticFeedback.perform(.levelChange)
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffReloadDiff"))) { _ in
             reloadCurrentDiff()
         }
@@ -352,6 +370,26 @@ public struct MainWindowView: View {
                 .animation(.easeOut(duration: 0.16), value: isAgentSessionsHovered)
                 .animation(.easeOut(duration: 0.16), value: isAgentSessionsPresented)
                 .onHover { isAgentSessionsHovered = $0 }
+            }
+
+            if let activeSession = agentCoordinator.activeSession {
+                Button(action: {
+                    activeSession.isNotificationsEnabled.toggle()
+                }) {
+                    Image(systemName: activeSession.isNotificationsEnabled ? "bell.fill" : "bell.slash")
+                        .font(.system(size: 12.5, weight: .medium))
+                        .frame(width: 18, height: 18)
+                        .foregroundColor(activeSession.isNotificationsEnabled
+                            ? agentAccentColor
+                            : Color(nsColor: .secondaryLabelColor).opacity(0.85))
+                }
+                .buttonStyle(AgentToolbarActionButtonStyle(
+                    accentColor: agentAccentColor,
+                    isActive: activeSession.isNotificationsEnabled
+                ))
+                .help(activeSession.isNotificationsEnabled
+                    ? "Sound notifications enabled for this chat (Click to mute)"
+                    : "Sound notifications disabled for this chat (Click to enable)")
             }
 
             if hasActiveAgentSession {

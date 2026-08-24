@@ -16,6 +16,7 @@ public struct AgentPanelView: View {
     @State private var scrollToBottomRequest: Int = 0
     @State private var inputContentHeight: CGFloat = 22
     @State private var hoveredQuickAction: String?
+    @State private var lastKnownStatus: AgentConnectionStatus = .disconnected
 
     public init(
         agentManager: AgentSessionManager,
@@ -107,6 +108,12 @@ public struct AgentPanelView: View {
         }
         .onChange(of: isInputCollapsed) { _ in
             preserveChatBottomIfNeeded()
+        }
+        .onChange(of: agentManager.status) { newStatus in
+            if lastKnownStatus == .busy && newStatus == .idle {
+                HapticFeedback.perform(.generic)
+            }
+            lastKnownStatus = newStatus
         }
     }
 
