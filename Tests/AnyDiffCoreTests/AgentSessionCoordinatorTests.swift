@@ -2,6 +2,7 @@ import XCTest
 @testable import AnyDiffCore
 
 final class AgentSessionCoordinatorTests: XCTestCase {
+#if DEBUG
     func testCoordinatorInitialStateWithoutAutoCreate() {
         let coordinator = AgentSessionCoordinator(isMockAgent: true, autoCreateSession: false)
         XCTAssertEqual(coordinator.sessions.count, 0)
@@ -17,6 +18,7 @@ final class AgentSessionCoordinatorTests: XCTestCase {
         XCTAssertTrue(coordinator.isPanelOpen)
         XCTAssertEqual(coordinator.activeSession?.title, "Mock Session")
     }
+#endif
 
     func testCreateNewSessionPreservesPreviousSessionState() {
         let coordinator = AgentSessionCoordinator(isMockAgent: false, autoCreateSession: true)
@@ -57,6 +59,7 @@ final class AgentSessionCoordinatorTests: XCTestCase {
         wait(for: [exp], timeout: 1.0)
     }
 
+    #if DEBUG
     func testLiveAndMockGroupingAndCleanEmpty() {
         let coordinator = AgentSessionCoordinator(isMockAgent: false, autoCreateSession: true)
         let live1 = coordinator.activeSession!
@@ -78,6 +81,7 @@ final class AgentSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.liveSessions.count, 1)
         XCTAssertEqual(coordinator.mockSessions.count, 1)
     }
+    #endif
 
     func testSelectPresetSwitchesActiveAgent() {
         let coordinator = AgentSessionCoordinator(isMockAgent: false, autoCreateSession: true)
@@ -89,12 +93,14 @@ final class AgentSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.selectedPresetId, "claude")
         XCTAssertEqual(coordinator.activeManager?.agentTitle, AgentPreset.claude.name)
 
+        #if DEBUG
         coordinator.selectPreset(.mock, workingDirectory: "/tmp")
         XCTAssertTrue(coordinator.isMockAgent)
+        #endif
     }
 
     func testSelectAndCloseSession() {
-        let coordinator = AgentSessionCoordinator(isMockAgent: true, autoCreateSession: true)
+        let coordinator = AgentSessionCoordinator(isMockAgent: false, autoCreateSession: true)
         let session1 = coordinator.activeSession!
         let session2 = coordinator.createNewSession(workingDirectory: "/tmp")
         let session3 = coordinator.createNewSession(workingDirectory: "/tmp")
@@ -122,6 +128,7 @@ final class AgentSessionCoordinatorTests: XCTestCase {
         XCTAssertNil(coordinator.activeSessionId)
     }
 
+    #if DEBUG
     func testToggleMockModeAndPanel() {
         let coordinator = AgentSessionCoordinator(isMockAgent: true, autoCreateSession: true)
         XCTAssertTrue(coordinator.isMockAgent)
@@ -133,6 +140,7 @@ final class AgentSessionCoordinatorTests: XCTestCase {
         coordinator.togglePanel()
         XCTAssertFalse(coordinator.isPanelOpen)
     }
+    #endif
 
     func testBackgroundUnreadUpdatesTracking() {
         let coordinator = AgentSessionCoordinator(isMockAgent: false, autoCreateSession: true)
@@ -163,7 +171,7 @@ final class AgentSessionCoordinatorTests: XCTestCase {
     }
 
     func testStartAndExitReviewMode() {
-        let coordinator = AgentSessionCoordinator(isMockAgent: true, autoCreateSession: true)
+        let coordinator = AgentSessionCoordinator(isMockAgent: false, autoCreateSession: true)
         XCTAssertNil(coordinator.activeReviewSummary)
 
         let summary = AgentEditedFilesSummary(files: [

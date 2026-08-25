@@ -1,5 +1,6 @@
 import Foundation
 
+#if DEBUG
 public final class MockAgentSessionManager: AgentSessionManager, @unchecked Sendable {
     public override var isMock: Bool { true }
     private var mockTask: Task<Void, Never>? = nil
@@ -630,3 +631,5 @@ public final class MockAgentSessionManager: AgentSessionManager, @unchecked Send
         loadSampleConversation()
     }
 }
+#endif
+

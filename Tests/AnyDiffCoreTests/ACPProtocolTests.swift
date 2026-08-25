@@ -281,6 +281,7 @@ final class ACPProtocolTests: XCTestCase {
         XCTAssertEqual(decodedLoadParams.cwd, "/path/to/project")
     }
 
+    #if DEBUG
     func testSavedSessionsCoordinatorIntegration() async throws {
         let coordinator = AgentSessionCoordinator(isMockAgent: true, autoCreateSession: false)
         let savedSessions = try await coordinator.fetchSavedSessions(for: .mock, workingDirectory: "/test/dir")
@@ -293,6 +294,7 @@ final class ACPProtocolTests: XCTestCase {
         XCTAssertEqual(resumed.title, "Welcome & Onboarding Tour")
         XCTAssertEqual(coordinator.showStartScreen, false)
     }
+    #endif
 
     func testCodexEditToolCallStreamingUpdate() throws {
         let json = """

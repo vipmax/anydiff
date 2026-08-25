@@ -77,6 +77,7 @@ public struct AgentPreset: Identifiable, Equatable, Sendable, Codable {
         providerName: "Anthropic",
         summary: "Claude Code agent over ACP"
     )
+    #if DEBUG
     public static let mock = AgentPreset(
         id: "mock",
         name: "Mock Agent",
@@ -87,8 +88,10 @@ public struct AgentPreset: Identifiable, Equatable, Sendable, Codable {
         summary: "Offline interactive demo & test mode",
         isMock: true
     )
-
     public static let defaultPresets: [AgentPreset] = [.codex, .agy, .claude, .mock]
+    #else
+    public static let defaultPresets: [AgentPreset] = [.codex, .agy, .claude]
+    #endif
     public static var allPresets: [AgentPreset] { defaultPresets }
 
     public init(from decoder: Decoder) throws {
@@ -183,10 +186,15 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
         self.selectedPresetId = savedPresetId
         self.customPresets = Self.loadCustomPresets()
 
+        #if DEBUG
         let mock = isMockAgent ?? (UserDefaults.standard.object(forKey: "anydiff_agent_is_mock") as? Bool ?? (savedPresetId == "mock"))
+        #else
+        let mock = false
+        #endif
         self.isMockAgent = mock
 
         if autoCreateSession {
+            #if DEBUG
             let initialPreset = mock ? AgentPreset.mock : (allPresets.first(where: { $0.id == savedPresetId && !$0.isMock }) ?? .codex)
             let initialManager: AgentSessionManager
             if mock {
@@ -197,6 +205,13 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
                 acp.agentTitle = initialPreset.name
                 initialManager = acp
             }
+            #else
+            let initialPreset = allPresets.first(where: { $0.id == savedPresetId && !$0.isMock }) ?? .codex
+            let acp = ACPAgentSessionManager()
+            acp.agentCommand = initialPreset.effectiveCommand
+            acp.agentTitle = initialPreset.name
+            let initialManager: AgentSessionManager = acp
+            #endif
             let firstSession = AgentSessionItem(
                 title: mock ? "Mock Session" : "Session 1",
                 manager: initialManager,
@@ -241,11 +256,17 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
 
     @discardableResult
     public func createNewSession(workingDirectory: String, preset: AgentPreset? = nil) -> AgentSessionItem {
-        let chosenPreset = preset ?? (allPresets.first(where: { $0.id == selectedPresetId }) ?? (isMockAgent ? .mock : .codex))
+        #if DEBUG
+        let fallbackPreset = isMockAgent ? AgentPreset.mock : AgentPreset.codex
+        #else
+        let fallbackPreset = AgentPreset.codex
+        #endif
+        let chosenPreset = preset ?? (allPresets.first(where: { $0.id == selectedPresetId }) ?? fallbackPreset)
         let isMock = chosenPreset.isMock
 
         let manager: AgentSessionManager
         let title: String
+        #if DEBUG
         if isMock {
             let mockManager = MockAgentSessionManager(loadFixtures: false)
             manager = mockManager
@@ -257,6 +278,13 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
             manager = acp
             title = "\(acp.agentTitle) Session \(liveSessions.count + 1)"
         }
+        #else
+        let acp = ACPAgentSessionManager()
+        acp.agentCommand = chosenPreset.effectiveCommand
+        acp.agentTitle = chosenPreset.name
+        manager = acp
+        title = "\(acp.agentTitle) Session \(liveSessions.count + 1)"
+        #endif
 
         let newSession = AgentSessionItem(
             title: title,
@@ -344,14 +372,17 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
         objectWillChange.send()
     }
 
+    #if DEBUG
     public func toggleMockMode(workingDirectory: String) {
         let nextMock = !isMockAgent
         let nextPreset: AgentPreset = nextMock ? .mock : .codex
         selectPreset(nextPreset, workingDirectory: workingDirectory)
     }
+    #endif
 
     public func fetchSavedSessions(for preset: AgentPreset, workingDirectory: String) async throws -> [ACPSavedSessionItem] {
         let resolvedWorkingDirectory = normalizedWorkingDirectory(workingDirectory)
+        #if DEBUG
         if preset.isMock {
             return [
                 ACPSavedSessionItem(
@@ -374,6 +405,7 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
                 )
             ]
         }
+        #endif
 
         let client = ACPClient()
         try client.start(command: preset.effectiveCommand, workingDirectory: resolvedWorkingDirectory)
@@ -422,6 +454,7 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
         let manager: AgentSessionManager
         let title = savedSession.displayTitle
 
+        #if DEBUG
         if isMock {
             let mockManager = MockAgentSessionManager(loadFixtures: true)
             mockManager.agentTitle = preset.name
@@ -436,6 +469,16 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
                 loadSessionId: savedSession.sessionId
             )
         }
+        #else
+        let acp = ACPAgentSessionManager()
+        acp.agentCommand = preset.effectiveCommand
+        acp.agentTitle = preset.name
+        manager = acp
+        acp.prepareAgent(
+            workingDirectory: normalizedWorkingDirectory(workingDirectory),
+            loadSessionId: savedSession.sessionId
+        )
+        #endif
 
         let newSession = AgentSessionItem(
             title: title,

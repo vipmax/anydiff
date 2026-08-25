@@ -84,6 +84,7 @@ final class AgentSessionManagerTests: XCTestCase {
         XCTAssertTrue(manager.messages.isEmpty)
     }
 
+    #if DEBUG
     func testMockAgentSessionManager() {
         let mockManager = MockAgentSessionManager()
         XCTAssertEqual(mockManager.status, .idle)
@@ -153,6 +154,7 @@ final class AgentSessionManagerTests: XCTestCase {
         XCTAssertTrue(scrollView.documentView is AgentNativeStandardChatDocumentView)
         XCTAssertGreaterThan(scrollView.documentView?.bounds.height ?? 0, 0)
     }
+    #endif
 
     func testStreamingMessageUsesOneIncrementalTextViewUntilCompletion() {
         let id = UUID()
