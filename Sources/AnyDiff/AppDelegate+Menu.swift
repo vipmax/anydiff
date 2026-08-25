@@ -1,5 +1,6 @@
 import AppKit
 import AnyDiffCore
+import AnyDiffUI
 
 extension AppDelegate {
     func setupMainMenu() {
@@ -63,9 +64,29 @@ extension AppDelegate {
         viewMenu.addItem(NSMenuItem(title: "Zoom Out", action: #selector(zoomOutAction(_:)), keyEquivalent: "-"))
         viewMenu.addItem(NSMenuItem(title: "Actual Size (Reset Zoom)", action: #selector(resetZoomAction(_:)), keyEquivalent: "0"))
         viewMenu.addItem(NSMenuItem.separator())
-        let agentItem = NSMenuItem(title: "Toggle Codex Agent Panel", action: #selector(toggleAgentPanelAction(_:)), keyEquivalent: "a")
+        let agentMenuItem = NSMenuItem(title: "Agent", action: nil, keyEquivalent: "")
+        let agentMenu = NSMenu(title: "Agent")
+        agentMenu.delegate = self
+        let agentItem = NSMenuItem(title: "Toggle Agent Panel", action: #selector(toggleAgentPanelAction(_:)), keyEquivalent: "a")
         agentItem.keyEquivalentModifierMask = [.command, .option]
-        viewMenu.addItem(agentItem)
+        agentMenu.addItem(agentItem)
+        agentMenu.addItem(NSMenuItem.separator())
+        let colorsMenuItem = NSMenuItem(title: "Toolcall Colors", action: nil, keyEquivalent: "")
+        let colorsMenu = NSMenu(title: "Toolcall Colors")
+        colorsMenu.delegate = self
+        for mode in ToolcallColorMode.allCases {
+            let item = NSMenuItem(
+                title: mode.title,
+                action: #selector(selectToolcallColorModeAction(_:)),
+                keyEquivalent: ""
+            )
+            item.representedObject = mode.rawValue
+            colorsMenu.addItem(item)
+        }
+        colorsMenuItem.submenu = colorsMenu
+        agentMenu.addItem(colorsMenuItem)
+        agentMenuItem.submenu = agentMenu
+        viewMenu.addItem(agentMenuItem)
         viewMenu.addItem(NSMenuItem.separator())
 
         // Theme Submenu
@@ -99,6 +120,11 @@ extension AppDelegate {
                 if let id = item.representedObject as? String {
                     item.state = (id == currentThemeId) ? .on : .off
                 }
+            }
+        } else if menu.title == "Toolcall Colors" {
+            let selectedMode = AgentDisplayPreferences.toolcallColorMode.rawValue
+            for item in menu.items {
+                item.state = (item.representedObject as? String) == selectedMode ? .on : .off
             }
         }
     }
@@ -155,5 +181,12 @@ extension AppDelegate {
 
     @objc func toggleAgentPanelAction(_ sender: Any?) {
         NotificationCenter.default.post(name: Notification.Name("anyDiffToggleAgent"), object: nil)
+    }
+
+    @objc func selectToolcallColorModeAction(_ sender: NSMenuItem) {
+        guard let rawValue = sender.representedObject as? String,
+              let mode = ToolcallColorMode(rawValue: rawValue) else { return }
+        UserDefaults.standard.set(mode.rawValue, forKey: AgentDisplayPreferences.toolcallColorModeKey)
+        NotificationCenter.default.post(name: AgentDisplayPreferences.didChangeNotification, object: nil)
     }
 }

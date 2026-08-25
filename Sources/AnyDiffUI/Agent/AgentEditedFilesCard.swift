@@ -4,6 +4,7 @@ import AnyDiffCore
 public struct AgentEditedFilesCard: View {
     public let summary: AgentEditedFilesSummary
     public let theme: Theme
+    public let disableAgentColors: Bool
     public var onReview: ((AgentEditedFilesSummary) -> Void)? = nil
     public var onRevert: ((AgentEditedFilesSummary) -> Void)? = nil
     public var onRestore: ((AgentEditedFilesSummary) -> Void)? = nil
@@ -15,12 +16,14 @@ public struct AgentEditedFilesCard: View {
     public init(
         summary: AgentEditedFilesSummary,
         theme: Theme,
+        disableAgentColors: Bool = false,
         onReview: ((AgentEditedFilesSummary) -> Void)? = nil,
         onRevert: ((AgentEditedFilesSummary) -> Void)? = nil,
         onRestore: ((AgentEditedFilesSummary) -> Void)? = nil
     ) {
         self.summary = summary
         self.theme = theme
+        self.disableAgentColors = disableAgentColors
         self.onReview = onReview
         self.onRevert = onRevert
         self.onRestore = onRestore
@@ -37,7 +40,7 @@ public struct AgentEditedFilesCard: View {
                         .frame(width: 32, height: 32)
                         .overlay(
                             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .stroke(Color.white.opacity(0.12), lineWidth: 0.8)
+                                    .stroke(Color.white.opacity(0.12), lineWidth: 0)
                         )
 
                     Image(systemName: summary.isReverted ? "arrow.uturn.backward" : "square.badge.plus")
@@ -59,11 +62,11 @@ public struct AgentEditedFilesCard: View {
                         HStack(spacing: 5) {
                             if summary.totalAdditions > 0 {
                                 Text("+\(summary.totalAdditions)")
-                                    .foregroundColor(Color.green.opacity(0.95))
+                                    .foregroundColor(fileStatColor(.green))
                             }
                             if summary.totalDeletions > 0 {
                                 Text("-\(summary.totalDeletions)")
-                                    .foregroundColor(Color.red.opacity(0.95))
+                                    .foregroundColor(fileStatColor(.red))
                             }
                         }
                         .font(.system(size: 11, weight: .bold, design: .monospaced))
@@ -92,7 +95,7 @@ public struct AgentEditedFilesCard: View {
                         )
                         .overlay(
                             RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .stroke(isRestoreHovered ? Color.blue.opacity(0.35) : Color.white.opacity(0.12), lineWidth: 0.8)
+                                .stroke(isRestoreHovered ? Color.blue.opacity(0.35) : Color.white.opacity(0.12), lineWidth: 0)
                         )
                     }
                     .buttonStyle(.plain)
@@ -120,7 +123,7 @@ public struct AgentEditedFilesCard: View {
                         )
                         .overlay(
                             RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .stroke(isRevertHovered ? Color.red.opacity(0.35) : Color.white.opacity(0.12), lineWidth: 0.8)
+                                .stroke(isRevertHovered ? Color.red.opacity(0.35) : Color.white.opacity(0.12), lineWidth: 0)
                         )
                     }
                     .buttonStyle(.plain)
@@ -144,7 +147,7 @@ public struct AgentEditedFilesCard: View {
                             )
                             .overlay(
                                 RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                    .stroke(Color.white.opacity(0.14), lineWidth: 0.8)
+                                    .stroke(Color.white.opacity(0.14), lineWidth: 0)
                             )
                     }
                     .buttonStyle(.plain)
@@ -173,7 +176,7 @@ public struct AgentEditedFilesCard: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Color.white.opacity(0.10), lineWidth: 0.8)
+                .stroke(Color.white.opacity(0.10), lineWidth: 0)
         )
     }
 
@@ -200,14 +203,18 @@ public struct AgentEditedFilesCard: View {
             HStack(spacing: 4) {
                 if file.additions > 0 {
                     Text("+\(file.additions)")
-                        .foregroundColor(Color.green.opacity(0.95))
+                        .foregroundColor(fileStatColor(.green))
                 }
                 if file.deletions > 0 {
                     Text("-\(file.deletions)")
-                        .foregroundColor(Color.red.opacity(0.95))
+                        .foregroundColor(fileStatColor(.red))
                 }
             }
             .font(.system(size: 11, weight: .bold, design: .monospaced))
         }
+    }
+
+    private func fileStatColor(_ color: Color) -> Color {
+        color.opacity(0.95)
     }
 }

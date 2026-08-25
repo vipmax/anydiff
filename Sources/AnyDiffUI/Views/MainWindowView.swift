@@ -33,6 +33,7 @@ public struct MainWindowView: View {
     @State private var reviewFileDiffs: [FileDiff] = []
     @State private var reviewViewStateResetToken: UInt64 = 0
     @State private var preparedReviewSummary: AgentEditedFilesSummary? = nil
+    @State private var toolcallColorMode = AgentDisplayPreferences.toolcallColorMode
 
     @StateObject private var systemAppearance = SystemAppearanceObserver()
     @StateObject private var agentCoordinator = AgentSessionCoordinator()
@@ -245,6 +246,9 @@ public struct MainWindowView: View {
                 }
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: AgentDisplayPreferences.didChangeNotification)) { _ in
+            toolcallColorMode = AgentDisplayPreferences.toolcallColorMode
+        }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffAgentPermissionRequested"))) { notification in
             guard let session = notification.object as? AgentSessionItem else { return }
             if session.isNotificationsEnabled {
@@ -338,6 +342,7 @@ public struct MainWindowView: View {
                         currentSelectedFile: selectedFilePath,
                         fileDiffsSummary: currentDiffSummary,
                         agentAccentColor: activeSession.preset.color,
+                        toolcallColorMode: toolcallColorMode,
                         onReview: { summary in
                             beginReview(summary: summary)
                         },

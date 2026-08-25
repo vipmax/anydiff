@@ -6,6 +6,7 @@ import AnyDiffCore
 public struct AgentChatScrollRepresentable: NSViewRepresentable {
     public var messages: [AgentMessage]
     public var theme: Theme
+    public var toolcallColorMode: ToolcallColorMode
     public var scrollToBottomTrigger: Int
     public var onNearBottomChanged: (Bool) -> Void
     public var onReview: ((AgentEditedFilesSummary) -> Void)?
@@ -16,6 +17,7 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
     public init(
         messages: [AgentMessage],
         theme: Theme,
+        toolcallColorMode: ToolcallColorMode = .full,
         scrollToBottomTrigger: Int,
         onNearBottomChanged: @escaping (Bool) -> Void = { _ in },
         onReview: ((AgentEditedFilesSummary) -> Void)? = nil,
@@ -25,6 +27,7 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
     ) {
         self.messages = messages
         self.theme = theme
+        self.toolcallColorMode = toolcallColorMode
         self.scrollToBottomTrigger = scrollToBottomTrigger
         self.onNearBottomChanged = onNearBottomChanged
         self.onReview = onReview
@@ -43,6 +46,7 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
         scrollView.update(
             messages: messages,
             theme: theme,
+            toolcallColorMode: toolcallColorMode,
             animated: false,
             scrollToBottomTrigger: scrollToBottomTrigger
         )
@@ -58,6 +62,7 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
         scrollView.update(
             messages: messages,
             theme: theme,
+            toolcallColorMode: toolcallColorMode,
             animated: true,
             scrollToBottomTrigger: scrollToBottomTrigger
         )
@@ -187,7 +192,12 @@ public final class AgentNativeChatScrollView: NSScrollView {
         let shouldScrollToBottom = pendingScrollToBottomTrigger != lastScrollToBottomTrigger
         lastScrollToBottomTrigger = pendingScrollToBottomTrigger
         documentViewCustom.setBottomInset(pendingBottomInset, in: self)
-        documentViewCustom.updateMessages(messages, theme: theme, in: self, animated: pendingAnimated)
+        documentViewCustom.updateMessages(
+            messages,
+            theme: theme,
+            in: self,
+            animated: pendingAnimated
+        )
 
         if shouldScrollToBottom {
             DispatchQueue.main.async { [weak self] in
@@ -276,6 +286,7 @@ public final class AgentNativeStandardChatScrollView: NSScrollView {
     private var lastNearBottom: Bool?
     private var pendingMessages: [AgentMessage]?
     private var pendingTheme: Theme?
+    private var pendingToolcallColorMode: ToolcallColorMode = .full
     private var pendingAnimated = false
     private var pendingScrollToBottomTrigger = 0
     private var pendingBottomInset: CGFloat = 0
@@ -369,12 +380,14 @@ public final class AgentNativeStandardChatScrollView: NSScrollView {
     public func update(
         messages: [AgentMessage],
         theme: Theme,
+        toolcallColorMode: ToolcallColorMode = .full,
         animated: Bool,
         scrollToBottomTrigger: Int = 0,
         bottomInset: CGFloat = 0
     ) {
         pendingMessages = messages
         pendingTheme = theme
+        pendingToolcallColorMode = toolcallColorMode
         pendingAnimated = animated
         pendingScrollToBottomTrigger = scrollToBottomTrigger
         pendingBottomInset = bottomInset
@@ -410,6 +423,7 @@ public final class AgentNativeStandardChatScrollView: NSScrollView {
         documentViewCustom.updateMessages(
             messages,
             theme: theme,
+            toolcallColorMode: pendingToolcallColorMode,
             in: self,
             animated: pendingAnimated
         )
@@ -511,6 +525,7 @@ public final class AgentNativeStandardChatDocumentView: NSView {
     private var widthConstraints: [UUID: NSLayoutConstraint] = [:]
     private var messagesByID: [UUID: AgentMessage] = [:]
     private var theme: Theme = .zedDark
+    private var toolcallColorMode: ToolcallColorMode = .full
     private var bottomInset: CGFloat = 0
     fileprivate private(set) var lastLayoutWidth: CGFloat = 0
     public var onReview: ((AgentEditedFilesSummary) -> Void)?
@@ -558,16 +573,18 @@ public final class AgentNativeStandardChatDocumentView: NSView {
     fileprivate func updateMessages(
         _ newMessages: [AgentMessage],
         theme: Theme,
+        toolcallColorMode: ToolcallColorMode,
         in scrollView: AgentNativeStandardChatScrollView,
         animated: Bool
     ) {
         let newIds = newMessages.map(\.id)
         let oldIds = orderedCells.map(\.id)
         let themeChanged = theme.id != self.theme.id
+        let displayModeChanged = toolcallColorMode != self.toolcallColorMode
         let messagesChanged = newIds != oldIds || newMessages.contains { message in
             messagesByID[message.id] != message
         }
-        guard messagesChanged || themeChanged else {
+        guard messagesChanged || themeChanged || displayModeChanged else {
             let width = max(100, scrollView.contentView.bounds.width)
             if abs(width - lastLayoutWidth) > 0.5 {
                 layoutContent(for: width)
@@ -577,6 +594,7 @@ public final class AgentNativeStandardChatDocumentView: NSView {
 
         let wasAtBottom = scrollView.isNearBottom
         self.theme = theme
+        self.toolcallColorMode = toolcallColorMode
 
         let newIDSet = Set(newIds)
         for (id, cell) in cells where !newIDSet.contains(id) {
@@ -600,13 +618,18 @@ public final class AgentNativeStandardChatDocumentView: NSView {
                 cell.onPreviewImages = { [weak self] imgs, idx in
                     self?.onPreviewImages?(imgs, idx)
                 }
-                if themeChanged || messagesByID[message.id] != message {
-                    cell.configure(message: message, theme: theme)
+                if themeChanged || displayModeChanged || messagesByID[message.id] != message {
+                    cell.configure(
+                        message: message,
+                        theme: theme,
+                        toolcallColorMode: toolcallColorMode
+                    )
                 }
             } else {
                 cell = AgentNativeMessageCell(
                     message: message,
                     theme: theme,
+                    toolcallColorMode: toolcallColorMode,
                     nativeTextSelectionEnabled: true
                 )
                 cell.onReview = onReview
@@ -2234,11 +2257,13 @@ public final class AgentNativeDiffStatsButton: NSButton {
 public final class AgentNativeToolCardView: AgentNativeFlippedView {
     public private(set) var item: ToolCallItem
     private var theme: Theme
+    private var toolcallColorMode: ToolcallColorMode
     public var isExpanded: Bool = false
     public var onToggle: (() -> Void)?
     public var onReview: ((AgentEditedFilesSummary) -> Void)?
     private let headerContainer = AgentNativeFlippedView()
     private let headerButton = NSButton()
+    private let openInEditorButton = NSButton()
     private let diffStatsButton = AgentNativeDiffStatsButton()
     private let actionPillView = AgentNativeFlippedView()
     private let actionIconView = NSImageView()
@@ -2262,9 +2287,17 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
     private var cachedTitleText: String?
     private var cachedTitleWidth: CGFloat = 0
 
-    public init(item: ToolCallItem, theme: Theme, index: Int, parentCell: AgentNativeMessageCell, initiallyExpanded: Bool = false) {
+    public init(
+        item: ToolCallItem,
+        theme: Theme,
+        index: Int,
+        parentCell: AgentNativeMessageCell,
+        toolcallColorMode: ToolcallColorMode = .full,
+        initiallyExpanded: Bool = false
+    ) {
         self.item = item
         self.theme = theme
+        self.toolcallColorMode = toolcallColorMode
         self.isExpanded = initiallyExpanded
         super.init(frame: .zero)
         setup(index: index, parentCell: parentCell)
@@ -2314,12 +2347,10 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
         virtualizedDetailView = nil
 
         // Action badge update
-        actionPillView.layer?.backgroundColor = bgCol.cgColor
-        let config = NSImage.SymbolConfiguration(pointSize: 9.5, weight: .semibold)
+        applyActionAppearance(background: bgCol, foreground: fgCol)
+        let config = NSImage.SymbolConfiguration(pointSize: 10.5, weight: .semibold)
         actionIconView.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)?.withSymbolConfiguration(config)
-        actionIconView.contentTintColor = fgCol
         actionTextLabel.stringValue = newItem.shortToolName
-        actionTextLabel.textColor = fgCol
 
         titleLabel.stringValue = newItem.displayTitle
         titleLabel.textColor = NSColor(cgColor: newTheme.foreground.cgColor) ?? .textColor
@@ -2338,7 +2369,7 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
             if let adds = newItem.additionsCount, adds > 0 {
                 statsAttr.append(NSAttributedString(string: "+\(adds)", attributes: [
                     .font: font,
-                    .foregroundColor: NSColor.systemGreen
+                    .foregroundColor: shouldColorEditStats ? NSColor.systemGreen : neutralToolColor
                 ]))
             }
             if let dels = newItem.deletionsCount, dels > 0 {
@@ -2347,7 +2378,7 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
                 }
                 statsAttr.append(NSAttributedString(string: "-\(dels)", attributes: [
                     .font: font,
-                    .foregroundColor: NSColor.systemRed
+                    .foregroundColor: shouldColorEditStats ? NSColor.systemRed : neutralToolColor
                 ]))
             }
 
@@ -2395,19 +2426,15 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
             if chevronImageView.superview == nil {
                 headerContainer.addSubview(chevronImageView)
             }
+            if openInEditorButton.superview == nil {
+                headerContainer.addSubview(openInEditorButton)
+            }
         } else {
             chevronImageView.removeFromSuperview()
+            openInEditorButton.removeFromSuperview()
         }
 
-        if newItem.status == .running {
-            layer?.backgroundColor = fgCol.withAlphaComponent(0.08).cgColor
-            layer?.borderColor = fgCol.withAlphaComponent(0.26).cgColor
-        } else {
-            layer?.removeAnimation(forKey: "pulseBg")
-            layer?.removeAnimation(forKey: "pulseBorder")
-            layer?.backgroundColor = fgCol.withAlphaComponent(0.12).cgColor
-            layer?.borderColor = fgCol.withAlphaComponent(0.32).cgColor
-        }
+        applyCardAppearance(foreground: fgCol, isRunning: newItem.status == .running)
     }
 
     private func setup(index: Int, parentCell: AgentNativeMessageCell) {
@@ -2416,53 +2443,26 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
 
         wantsLayer = true
         layer?.cornerRadius = 12
+        layer?.masksToBounds = true
         layer?.borderWidth = 1
 
-        if item.status == .running {
-            layer?.backgroundColor = fgCol.withAlphaComponent(0.08).cgColor
-            layer?.borderColor = fgCol.withAlphaComponent(0.26).cgColor
-
-            let pulseBg = CABasicAnimation(keyPath: "backgroundColor")
-            pulseBg.fromValue = fgCol.withAlphaComponent(0.07).cgColor
-            pulseBg.toValue = fgCol.withAlphaComponent(0.22).cgColor
-            pulseBg.duration = 0.95
-            pulseBg.autoreverses = true
-            pulseBg.repeatCount = .infinity
-            pulseBg.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            layer?.add(pulseBg, forKey: "pulseBg")
-
-            let pulseBorder = CABasicAnimation(keyPath: "borderColor")
-            pulseBorder.fromValue = fgCol.withAlphaComponent(0.24).cgColor
-            pulseBorder.toValue = fgCol.withAlphaComponent(0.60).cgColor
-            pulseBorder.duration = 0.95
-            pulseBorder.autoreverses = true
-            pulseBorder.repeatCount = .infinity
-            pulseBorder.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            layer?.add(pulseBorder, forKey: "pulseBorder")
-        } else {
-            layer?.removeAnimation(forKey: "pulseBg")
-            layer?.removeAnimation(forKey: "pulseBorder")
-            layer?.backgroundColor = fgCol.withAlphaComponent(0.12).cgColor
-            layer?.borderColor = fgCol.withAlphaComponent(0.32).cgColor
-        }
+        applyCardAppearance(foreground: fgCol, isRunning: item.status == .running)
 
         // Header Container
         headerContainer.wantsLayer = true
         addSubview(headerContainer)
 
         actionPillView.wantsLayer = true
-        actionPillView.layer?.backgroundColor = bgCol.cgColor
+        applyActionAppearance(background: bgCol, foreground: fgCol)
         actionPillView.layer?.cornerRadius = 6
 
-        let config = NSImage.SymbolConfiguration(pointSize: 9.5, weight: .semibold)
+        let config = NSImage.SymbolConfiguration(pointSize: 10.5, weight: .semibold)
         actionIconView.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)?.withSymbolConfiguration(config)
-        actionIconView.contentTintColor = fgCol
         actionIconView.imageScaling = .scaleProportionallyDown
         actionPillView.addSubview(actionIconView)
 
         actionTextLabel.stringValue = item.shortToolName
         actionTextLabel.font = NSFont.systemFont(ofSize: 10.5, weight: .bold)
-        actionTextLabel.textColor = fgCol
         actionTextLabel.usesSingleLineMode = true
         actionTextLabel.lineBreakMode = .byClipping
         actionTextLabel.isBezeled = false
@@ -2490,7 +2490,7 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
             if let adds = item.additionsCount, adds > 0 {
                 statsAttr.append(NSAttributedString(string: "+\(adds)", attributes: [
                     .font: font,
-                    .foregroundColor: NSColor.systemGreen
+                    .foregroundColor: shouldColorEditStats ? NSColor.systemGreen : neutralToolColor
                 ]))
             }
             if let dels = item.deletionsCount, dels > 0 {
@@ -2499,7 +2499,7 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
                 }
                 statsAttr.append(NSAttributedString(string: "-\(dels)", attributes: [
                     .font: font,
-                    .foregroundColor: NSColor.systemRed
+                    .foregroundColor: shouldColorEditStats ? NSColor.systemRed : neutralToolColor
                 ]))
             }
 
@@ -2520,7 +2520,7 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
         case .failed:
             errorLabel.stringValue = "✕"
             errorLabel.font = NSFont.systemFont(ofSize: 11, weight: .bold)
-            errorLabel.textColor = .systemRed
+            errorLabel.textColor = isFullColorMode ? .systemRed : neutralToolColor
             errorLabel.isBezeled = false
             errorLabel.drawsBackground = false
             errorLabel.isEditable = false
@@ -2546,6 +2546,23 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
         headerButton.action = #selector(headerClicked)
         headerContainer.addSubview(headerButton)
 
+        // Open the complete tool buffer in the main Review editor.
+        if hasExpandableContent {
+            openInEditorButton.isBordered = false
+            openInEditorButton.title = ""
+            openInEditorButton.imagePosition = .imageOnly
+            openInEditorButton.image = NSImage(
+                systemSymbolName: "arrow.up.forward.square",
+                accessibilityDescription: "Open in editor"
+            )?.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 11, weight: .medium))
+            openInEditorButton.contentTintColor = NSColor(cgColor: theme.gutterForeground.cgColor) ?? .secondaryLabelColor
+            openInEditorButton.imageScaling = .scaleProportionallyDown
+            openInEditorButton.target = self
+            openInEditorButton.action = #selector(openInEditorClicked)
+            openInEditorButton.toolTip = "Open in editor"
+            headerContainer.addSubview(openInEditorButton)
+        }
+
         // Clickable diff stats button
         diffStatsButton.isBordered = false
         diffStatsButton.title = ""
@@ -2570,10 +2587,12 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
         // Detail Container & ScrollView
         if hasExpandableContent {
             detailContainer.wantsLayer = true
-            detailContainer.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.14).cgColor
+            // Keep the expanded output on the toolcall surface. A second
+            // filled rounded container made the card look double-framed.
+            detailContainer.layer?.backgroundColor = NSColor.clear.cgColor
             detailContainer.layer?.cornerRadius = 8
-            detailContainer.layer?.borderWidth = 1
-            detailContainer.layer?.borderColor = fgCol.withAlphaComponent(0.18).cgColor
+            detailContainer.layer?.borderWidth = 0
+            detailContainer.layer?.borderColor = NSColor.clear.cgColor
             detailContainer.layer?.masksToBounds = true
             detailContainer.isHidden = !isExpanded
             detailContainer.alphaValue = isExpanded ? 1 : 0
@@ -2624,6 +2643,43 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
         onReview?(summary)
     }
 
+    @objc private func openInEditorClicked() {
+        let content = virtualizedDetailContent()
+        guard !content.lines.isEmpty else { return }
+
+        let path = item.path ?? "agent/\(item.shortToolName.lowercased())-\(item.id.prefix(8)).txt"
+        let additions = content.hunk?.addedLineCount ?? content.lines.count
+        let deletions = content.hunk?.deletedLineCount ?? 0
+        var diff = "diff --git a/\(path) b/\(path)\n"
+        diff += "--- a/\(path)\n"
+        diff += "+++ b/\(path)\n"
+
+        if let hunk = content.hunk {
+            diff += "\(hunk.header)\n"
+            for line in hunk.lines {
+                let prefix: String
+                switch line.kind {
+                case .added: prefix = "+"
+                case .deleted: prefix = "-"
+                case .unchanged: prefix = " "
+                case .header: prefix = "@"
+                }
+                diff += "\(prefix)\(line.text)\n"
+            }
+        } else {
+            diff += "@@ -0,0 +1,\(max(1, content.lines.count)) @@\n"
+            for line in content.lines {
+                diff += "+\(line)\n"
+            }
+        }
+
+        let summary = AgentEditedFilesSummary(
+            files: [AgentEditedFileItem(path: path, additions: additions, deletions: deletions)],
+            rawDiffData: Data(diff.utf8)
+        )
+        onReview?(summary)
+    }
+
     private func installVirtualizedDetailView() {
         guard virtualizedDetailView == nil else { return }
 
@@ -2651,8 +2707,12 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
             multiBuffer: multiBuffer,
             reviewManager: ReviewManager()
         )
-        let editor = CustomMultiBufferEditorView(displayMap: displayMap, theme: theme)
-        editor.font = NSFont.monospacedSystemFont(ofSize: 10.5, weight: .regular)
+        let editor = CustomMultiBufferEditorView(displayMap: displayMap, theme: displayTheme)
+        editor.wantsLayer = true
+        editor.layer?.cornerRadius = 8
+        editor.layer?.masksToBounds = true
+        editor.contentCornerRadius = 8
+        editor.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
         editor.isEditable = false
         editor.ignoreEdits = true
         editor.invalidateLayout()
@@ -2748,6 +2808,19 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
     }
 
     private func actionColorsAndSymbol(for name: String) -> (bg: NSColor, fg: NSColor, symbol: String) {
+        if toolcallColorMode == .none {
+            let symbol: String
+            switch name {
+            case "Edit": symbol = "pencil"
+            case "Create": symbol = "doc.badge.plus"
+            case "Run": symbol = "terminal"
+            case "Search": symbol = "magnifyingglass"
+            case "Read": symbol = "doc.text"
+            default: symbol = "gearshape"
+            }
+            return (.clear, neutralToolColor, symbol)
+        }
+
         switch name {
         case "Edit":
             return (NSColor.systemOrange.withAlphaComponent(0.24), .systemOrange, "pencil")
@@ -2764,6 +2837,82 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
         }
     }
 
+    private var neutralToolColor: NSColor {
+        NSColor(cgColor: theme.gutterForeground.cgColor) ?? .secondaryLabelColor
+    }
+
+    private var isFullColorMode: Bool {
+        toolcallColorMode == .full
+    }
+
+    private var shouldColorEditStats: Bool {
+        isFullColorMode || item.shortToolName == "Edit"
+    }
+
+    private var showsBadgeBackground: Bool {
+        toolcallColorMode == .badge || toolcallColorMode == .full
+    }
+
+    private var showsActionIconColor: Bool {
+        toolcallColorMode != .none
+    }
+
+    private var showsActionLabelColor: Bool {
+        toolcallColorMode == .label || showsBadgeBackground
+    }
+
+    private func applyActionAppearance(background: NSColor, foreground: NSColor) {
+        actionPillView.layer?.backgroundColor = showsBadgeBackground
+            ? background.cgColor
+            : NSColor.clear.cgColor
+        actionIconView.contentTintColor = showsActionIconColor ? foreground : neutralToolColor
+        actionTextLabel.textColor = showsActionLabelColor ? foreground : neutralToolColor
+    }
+
+    private var displayTheme: Theme {
+        isFullColorMode ? theme : theme.monochromeForAgent
+    }
+
+    private func applyCardAppearance(foreground: NSColor, isRunning: Bool) {
+        layer?.removeAnimation(forKey: "pulseBg")
+        layer?.removeAnimation(forKey: "pulseBorder")
+
+        if !isFullColorMode {
+            layer?.borderWidth = 0
+            layer?.backgroundColor = NSColor.clear.cgColor
+            layer?.borderColor = NSColor.clear.cgColor
+            return
+        }
+
+        // Temporarily keep toolcall cards borderless in every color mode.
+        layer?.borderWidth = 0
+        if isRunning {
+            layer?.backgroundColor = foreground.withAlphaComponent(0.08).cgColor
+            layer?.borderColor = foreground.withAlphaComponent(0.26).cgColor
+
+            let pulseBg = CABasicAnimation(keyPath: "backgroundColor")
+            pulseBg.fromValue = foreground.withAlphaComponent(0.07).cgColor
+            pulseBg.toValue = foreground.withAlphaComponent(0.22).cgColor
+            pulseBg.duration = 0.95
+            pulseBg.autoreverses = true
+            pulseBg.repeatCount = .infinity
+            pulseBg.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            layer?.add(pulseBg, forKey: "pulseBg")
+
+            let pulseBorder = CABasicAnimation(keyPath: "borderColor")
+            pulseBorder.fromValue = foreground.withAlphaComponent(0.24).cgColor
+            pulseBorder.toValue = foreground.withAlphaComponent(0.60).cgColor
+            pulseBorder.duration = 0.95
+            pulseBorder.autoreverses = true
+            pulseBorder.repeatCount = .infinity
+            pulseBorder.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            layer?.add(pulseBorder, forKey: "pulseBorder")
+        } else {
+            layer?.backgroundColor = foreground.withAlphaComponent(0.12).cgColor
+            layer?.borderColor = foreground.withAlphaComponent(0.32).cgColor
+        }
+    }
+
     private func detailAttributedString() -> NSAttributedString {
         if let cachedDetailAttributedString {
             return cachedDetailAttributedString
@@ -2771,11 +2920,13 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
 
         let result = NSMutableAttributedString()
         let language = Buffer.detectLanguage(for: item.path ?? item.displayTitle)
+        let renderTheme = displayTheme
         let style = NSMutableParagraphStyle()
         style.lineSpacing = 2.5
 
         if item.oldContent != nil || item.newContent != nil {
             let font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+            // Diff semantics stay visible in every toolcall color mode.
             let redColor = NSColor.systemRed.withAlphaComponent(0.92)
             let redBg = NSColor.systemRed.withAlphaComponent(0.12)
             let greenColor = NSColor.systemGreen.withAlphaComponent(0.92)
@@ -2791,7 +2942,7 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
                         .backgroundColor: redBg,
                         .paragraphStyle: style
                     ])
-                    let highlighted = lIdx < 150 ? SyntaxHighlighter.shared.highlight(line: line, language: language, font: font, theme: theme) : NSAttributedString(string: line, attributes: [.font: font, .foregroundColor: redColor])
+                    let highlighted = lIdx < 150 ? SyntaxHighlighter.shared.highlight(line: line, language: language, font: font, theme: renderTheme) : NSAttributedString(string: line, attributes: [.font: font, .foregroundColor: redColor])
                     let lineAttr = NSMutableAttributedString(attributedString: highlighted)
                     let range = NSRange(location: 0, length: lineAttr.length)
                     lineAttr.addAttribute(NSAttributedString.Key.backgroundColor, value: redBg, range: range)
@@ -2822,7 +2973,7 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
                         .backgroundColor: greenBg,
                         .paragraphStyle: style
                     ])
-                    let highlighted = lIdx < 150 ? SyntaxHighlighter.shared.highlight(line: line, language: language, font: font, theme: theme) : NSAttributedString(string: line, attributes: [.font: font, .foregroundColor: greenColor])
+                    let highlighted = lIdx < 150 ? SyntaxHighlighter.shared.highlight(line: line, language: language, font: font, theme: renderTheme) : NSAttributedString(string: line, attributes: [.font: font, .foregroundColor: greenColor])
                     let lineAttr = NSMutableAttributedString(attributedString: highlighted)
                     let range = NSRange(location: 0, length: lineAttr.length)
                     lineAttr.addAttribute(NSAttributedString.Key.backgroundColor, value: greenBg, range: range)
@@ -2852,10 +3003,10 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
             if let cmd, !cmd.isEmpty {
                 let prefix = NSAttributedString(string: "$ ", attributes: [
                     .font: cmdFont,
-                    .foregroundColor: theme.keyword,
+                    .foregroundColor: renderTheme.keyword,
                     .paragraphStyle: style
                 ])
-                let cmdHighlighted = SyntaxHighlighter.shared.highlight(line: cmd, language: "shell", font: cmdFont, theme: theme)
+                let cmdHighlighted = SyntaxHighlighter.shared.highlight(line: cmd, language: "shell", font: cmdFont, theme: renderTheme)
                 result.append(prefix)
                 result.append(cmdHighlighted)
                 if let out = item.output, !out.isEmpty {
@@ -2948,7 +3099,7 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
 
         // Action badge size with icon + text (height 20, y: 1.0 -> center = 11.0)
         let textSize = actionTextLabel.intrinsicContentSize
-        let iconWidth: CGFloat = 11
+        let iconWidth: CGFloat = 12
         let pillPaddingH: CGFloat = 6
         let pillSpacing: CGFloat = 4
         // Keep the action badge intact when the command title or right-side
@@ -2957,7 +3108,7 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
         let pillWidth = max(58, pillPaddingH + iconWidth + pillSpacing + actionTextWidth + pillPaddingH)
         let pillHeight: CGFloat = 20
         actionPillView.frame = NSRect(x: 0, y: 1.0, width: pillWidth, height: pillHeight)
-        actionIconView.frame = NSRect(x: pillPaddingH, y: 4.5, width: iconWidth, height: 11)
+        actionIconView.frame = NSRect(x: pillPaddingH, y: 4.0, width: iconWidth, height: 12)
         actionTextLabel.frame = NSRect(x: pillPaddingH + iconWidth + pillSpacing, y: 4.0, width: actionTextWidth + 2, height: 14)
 
         let leftX = pillWidth + 8
@@ -2968,6 +3119,17 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
             rightX -= 10
             chevronImageView.frame = NSRect(x: rightX, y: 6.0, width: 10, height: 10)
             rightX -= 6
+
+            if isExpanded {
+                rightX -= 18
+                openInEditorButton.frame = NSRect(x: rightX, y: 3.0, width: 16, height: 16)
+                openInEditorButton.isHidden = false
+                rightX -= 6
+            } else {
+                openInEditorButton.isHidden = true
+            }
+        } else {
+            openInEditorButton.isHidden = true
         }
 
         if item.status == .running {
@@ -3142,6 +3304,7 @@ public final class AgentNativeMessageCell: NSView {
     public var onRestore: ((AgentEditedFilesSummary) -> Void)?
     public private(set) var message: AgentMessage
     private var theme: Theme
+    private var toolcallColorMode: ToolcallColorMode
     private let nativeTextSelectionEnabled: Bool
     private var isThoughtExpanded: Bool = false
     private var expandedToolIds: Set<String> = []
@@ -3196,14 +3359,16 @@ public final class AgentNativeMessageCell: NSView {
     public init(
         message: AgentMessage,
         theme: Theme,
+        toolcallColorMode: ToolcallColorMode = .full,
         nativeTextSelectionEnabled: Bool = false
     ) {
         self.message = message
         self.theme = theme
+        self.toolcallColorMode = toolcallColorMode
         self.nativeTextSelectionEnabled = nativeTextSelectionEnabled
         super.init(frame: .zero)
         setup()
-        configure(message: message, theme: theme)
+        configure(message: message, theme: theme, toolcallColorMode: toolcallColorMode)
     }
 
     public required init?(coder: NSCoder) {
@@ -3244,7 +3409,11 @@ public final class AgentNativeMessageCell: NSView {
         addSubview(thoughtTextView)
     }
 
-    public func configure(message: AgentMessage, theme: Theme) {
+    public func configure(
+        message: AgentMessage,
+        theme: Theme,
+        toolcallColorMode: ToolcallColorMode = .full
+    ) {
         let previousMessage = self.message
         let shouldAnimateStreamingText =
             previousMessage.id == message.id &&
@@ -3254,12 +3423,14 @@ public final class AgentNativeMessageCell: NSView {
             message.content.hasPrefix(previousMessage.content)
 
         let themeChanged = theme.id != self.theme.id
+        let displayModeChanged = toolcallColorMode != self.toolcallColorMode
         let toolCallsChanged = message.toolCalls != previousMessage.toolCalls
         let partsChanged = message.orderedParts != previousMessage.orderedParts
         let contentChanged = previousMessage.content.count != message.content.count || previousMessage.content != message.content
 
         self.message = message
         self.theme = theme
+        self.toolcallColorMode = toolcallColorMode
         invalidateLayoutCache()
 
         if message.role == .user {
@@ -3344,11 +3515,11 @@ public final class AgentNativeMessageCell: NSView {
             // 2. Tool calls. Keep unchanged cards alive while a running tool
             // streams status/output updates. Rebuilding the whole list here
             // made every tool event recreate all headers and nested views.
-            if toolCallsChanged || themeChanged || toolCallViews.isEmpty {
+            if toolCallsChanged || themeChanged || displayModeChanged || toolCallViews.isEmpty {
                 updateToolCallViews(
                     previousItems: previousMessage.toolCalls,
                     newItems: message.toolCalls,
-                    themeChanged: themeChanged
+                    styleChanged: themeChanged || displayModeChanged
                 )
             }
 
@@ -3374,13 +3545,20 @@ public final class AgentNativeMessageCell: NSView {
 
             // 4. Edited files card
             if let summary = message.editedFilesSummary {
-                let cardView = AgentEditedFilesCard(summary: summary, theme: theme, onReview: { [weak self] rev in
-                    self?.onReview?(rev)
-                }, onRevert: { [weak self] rev in
-                    self?.onRevert?(rev)
-                }, onRestore: { [weak self] rev in
-                    self?.onRestore?(rev)
-                })
+                let cardView = AgentEditedFilesCard(
+                    summary: summary,
+                    theme: theme,
+                    disableAgentColors: toolcallColorMode != .full,
+                    onReview: { [weak self] rev in
+                        self?.onReview?(rev)
+                    },
+                    onRevert: { [weak self] rev in
+                        self?.onRevert?(rev)
+                    },
+                    onRestore: { [weak self] rev in
+                        self?.onRestore?(rev)
+                    }
+                )
                 if let hosting = editedFilesCardView as? NSHostingView<AgentEditedFilesCard> {
                     hosting.rootView = cardView
                 } else {
@@ -3424,11 +3602,11 @@ public final class AgentNativeMessageCell: NSView {
     private func updateToolCallViews(
         previousItems: [ToolCallItem],
         newItems: [ToolCallItem],
-        themeChanged: Bool
+        styleChanged: Bool
     ) {
         let previousIDs = previousItems.map(\.id)
         let newIDs = newItems.map(\.id)
-        let canReplaceInPlace = !themeChanged &&
+        let canReplaceInPlace = !styleChanged &&
             previousIDs == newIDs &&
             toolCallViews.count == newItems.count
 
@@ -3716,6 +3894,7 @@ public final class AgentNativeMessageCell: NSView {
             theme: theme,
             index: index,
             parentCell: self,
+            toolcallColorMode: toolcallColorMode,
             initiallyExpanded: isExp
         )
         card.onReview = { [weak self] summary in
@@ -4609,4 +4788,46 @@ fileprivate func measureAttributedTextHeight(_ attr: NSAttributedString, maxWidt
 fileprivate func measureTextWidth(_ text: String, font: NSFont) -> CGFloat {
     let attr = NSAttributedString(string: text, attributes: [.font: font])
     return ceil(attr.size().width)
+}
+
+private extension Theme {
+    var monochromeForAgent: Theme {
+        func gray(_ color: NSColor) -> NSColor {
+            color.usingColorSpace(.deviceGray) ?? color
+        }
+
+        return Theme(
+            id: "\(id)-agent-monochrome",
+            name: "\(name) Agent Monochrome",
+            isDark: isDark,
+            background: gray(background),
+            gutterBackground: gray(gutterBackground),
+            currentLineBackground: gray(currentLineBackground),
+            selectionBackground: gray(selectionBackground),
+            excerptHeaderBackground: gray(excerptHeaderBackground),
+            excerptHeaderBorder: gray(excerptHeaderBorder),
+            foreground: gray(foreground),
+            gutterForeground: gray(gutterForeground),
+            gutterActiveForeground: gray(gutterActiveForeground),
+            foldPlaceholderForeground: gray(foldPlaceholderForeground),
+            keyword: gray(keyword),
+            type: gray(type),
+            function: gray(function),
+            string: gray(string),
+            number: gray(number),
+            comment: gray(comment),
+            property: gray(property),
+            operator: gray(`operator`),
+            punctuation: gray(punctuation),
+            // Diff colors are semantic, so preserve them even when syntax
+            // highlighting is switched to the monochrome agent palette.
+            diffAddedGutter: diffAddedGutter,
+            diffAddedBackground: diffAddedBackground,
+            diffAddedWordHighlight: diffAddedWordHighlight,
+            diffDeletedGutter: diffDeletedGutter,
+            diffDeletedBackground: diffDeletedBackground,
+            diffDeletedWordHighlight: diffDeletedWordHighlight,
+            diffModifiedGutter: diffModifiedGutter
+        )
+    }
 }

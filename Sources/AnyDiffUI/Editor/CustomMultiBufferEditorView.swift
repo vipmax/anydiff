@@ -54,6 +54,12 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     /// and scrolling available to read-only consumers such as tool output.
     public var ignoreEdits: Bool = false
 
+    /// Optional clipping radius for embedded read-only editor surfaces such
+    /// as agent tool output. The default keeps the main editor unchanged.
+    public var contentCornerRadius: CGFloat = 0 {
+        didSet { needsDisplay = true }
+    }
+
     private var editingEnabled: Bool {
         isEditable && !ignoreEdits
     }
@@ -964,7 +970,18 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         }
 
         context.saveGState()
-        context.clip(to: bounds)
+        if contentCornerRadius > 0 {
+            let path = CGPath(
+                roundedRect: bounds,
+                cornerWidth: contentCornerRadius,
+                cornerHeight: contentCornerRadius,
+                transform: nil
+            )
+            context.addPath(path)
+            context.clip()
+        } else {
+            context.clip(to: bounds)
+        }
 
         // 1. Draw Canvas Background
         context.setFillColor(theme.background.cgColor)

@@ -14,7 +14,7 @@ public final class LineLayoutCache: @unchecked Sendable {
     public init() {}
 
     public func getOrCreateCTLine(attributedString: NSAttributedString) -> CTLine {
-        let key = attributedString.string
+        let key = cacheKey(for: attributedString)
         lock.lock()
         defer { lock.unlock() }
 
@@ -30,6 +30,30 @@ public final class LineLayoutCache: @unchecked Sendable {
         cacheKeys.append(key)
         lineCache[key] = line
         return line
+    }
+
+    private func cacheKey(for attributedString: NSAttributedString) -> String {
+        var key = attributedString.string
+        let fullRange = NSRange(location: 0, length: attributedString.length)
+        attributedString.enumerateAttributes(in: fullRange) { attributes, range, _ in
+            key += "|\(range.location):\(range.length)"
+
+            if let font = attributes[.font] as? NSFont {
+                key += ":font=\(font.fontName):\(font.pointSize):\(font.fontDescriptor.symbolicTraits.rawValue)"
+            }
+            if let color = attributes[.foregroundColor] as? NSColor {
+                key += ":fg=\(colorKey(color))"
+            }
+            if let color = attributes[.backgroundColor] as? NSColor {
+                key += ":bg=\(colorKey(color))"
+            }
+        }
+        return key
+    }
+
+    private func colorKey(_ color: NSColor) -> String {
+        let rgb = color.usingColorSpace(.deviceRGB) ?? color
+        return "\(rgb.redComponent),\(rgb.greenComponent),\(rgb.blueComponent),\(rgb.alphaComponent)"
     }
 
     public func clear() {

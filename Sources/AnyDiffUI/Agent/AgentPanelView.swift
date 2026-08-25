@@ -9,6 +9,7 @@ public struct AgentPanelView: View {
     public var currentSelectedFile: String?
     public var fileDiffsSummary: String?
     public var agentAccentColor: Color
+    public var toolcallColorMode: ToolcallColorMode
     public var onReview: ((AgentEditedFilesSummary) -> Void)?
     public var onPreviewImages: (([AgentImageAttachment], Int, Bool) -> Void)?
 
@@ -30,6 +31,7 @@ public struct AgentPanelView: View {
         currentSelectedFile: String? = nil,
         fileDiffsSummary: String? = nil,
         agentAccentColor: Color = .accentColor,
+        toolcallColorMode: ToolcallColorMode = AgentDisplayPreferences.toolcallColorMode,
         onReview: ((AgentEditedFilesSummary) -> Void)? = nil,
         onPreviewImages: (([AgentImageAttachment], Int, Bool) -> Void)? = nil
     ) {
@@ -39,6 +41,7 @@ public struct AgentPanelView: View {
         self.currentSelectedFile = currentSelectedFile
         self.fileDiffsSummary = fileDiffsSummary
         self.agentAccentColor = agentAccentColor
+        self.toolcallColorMode = toolcallColorMode
         self.onReview = onReview
         self.onPreviewImages = onPreviewImages
     }
@@ -204,6 +207,7 @@ public struct AgentPanelView: View {
             AgentChatScrollRepresentable(
                 messages: agentManager.messages,
                 theme: theme,
+                toolcallColorMode: toolcallColorMode,
                 scrollToBottomTrigger: scrollToBottomRequest,
                 onNearBottomChanged: { nearBottom in
                     DispatchQueue.main.async {
