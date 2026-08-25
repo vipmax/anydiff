@@ -282,6 +282,9 @@ public struct AgentPanelView: View {
                     quickActionButton("Generate commit message", icon: "text.badge.checkmark") {
                         handleSendPrompt("Generate a concise, conventional git commit message for these changes.")
                     }
+                    quickActionButton("Commit and push", icon: "arrow.up.circle") {
+                        handleSendPrompt("Commit the current changes with an appropriate conventional commit message and push the commit to the configured remote.")
+                    }
                 }
                 .frame(maxWidth: 430)
                 .padding(.top, 5)

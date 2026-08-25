@@ -49,10 +49,10 @@ public struct AgentImagePreviewModalView: View {
             if let item = currentImage {
                 VStack(spacing: 0) {
                     // Top Navigation & Controls Bar
-                    topBar(for: item)
+                       topBar(for: item)
                         .padding(.horizontal, 24)
                         .padding(.top, 16)
-                        .padding(.bottom, 12)
+                        .padding(.bottom, 10)
                         .zIndex(10)
 
                     // Main Image Area with Native AppKit Zoom & Pan + Side Chevrons
@@ -103,11 +103,6 @@ public struct AgentImagePreviewModalView: View {
                     .padding(.horizontal, 24)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                    // Bottom Bar: Zoom Controls & Thumbnail Carousel
-                    bottomBar
-                        .padding(.bottom, 20)
-                        .padding(.top, 10)
-                        .zIndex(10)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -155,21 +150,41 @@ public struct AgentImagePreviewModalView: View {
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundColor(.white.opacity(0.7))
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(
-                Capsule()
-                    .fill(Color.white.opacity(0.14))
-            )
-            .overlay(
-                Capsule()
-                    .stroke(Color.white.opacity(0.2), lineWidth: 1)
-            )
+            .lineLimit(1)
+            .padding(.horizontal, 6)
 
-            Spacer()
+            Divider()
+                .frame(height: 24)
+                .background(Color.white.opacity(0.25))
 
-            // Delete button (if allowed in draft mode)
+            if images.count > 1 {
+                thumbnailCarousel
+
+                Divider()
+                    .frame(height: 24)
+                    .background(Color.white.opacity(0.25))
+            }
+
+            zoomControls
+
+            Divider()
+                .frame(height: 24)
+                .background(Color.white.opacity(0.25))
+
+            Button(action: copyCurrentImage) {
+                Image(systemName: "doc.on.clipboard")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.9))
+                    .frame(width: 34, height: 34)
+            }
+            .buttonStyle(.plain)
+            .help("Copy image (Cmd C)")
+
             if let onDelete = onDelete {
+                Divider()
+                    .frame(height: 24)
+                    .background(Color.white.opacity(0.25))
+
                 Button(action: {
                     let deletingIdx = currentIndex
                     if images.count <= 1 {
@@ -196,7 +211,6 @@ public struct AgentImagePreviewModalView: View {
                 .help("Delete image attachment")
             }
 
-            // Close button
             Button(action: close) {
                 Image(systemName: "xmark")
                     .font(.system(size: 14, weight: .bold))
@@ -214,6 +228,18 @@ public struct AgentImagePreviewModalView: View {
             .buttonStyle(.plain)
             .help("Close preview (Esc)")
         }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(
+            Capsule()
+                .fill(Color.black.opacity(0.65))
+        )
+        .overlay(
+            Capsule()
+                .stroke(Color.white.opacity(0.2), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.4), radius: 10, y: 4)
+        .frame(maxWidth: .infinity, alignment: .center)
     }
 
     @ViewBuilder
@@ -240,130 +266,112 @@ public struct AgentImagePreviewModalView: View {
         }
     }
 
-    @ViewBuilder
-    private var bottomBar: some View {
-        VStack(spacing: 12) {
-            // Floating Zoom Toolbar
-            HStack(spacing: 10) {
-                // Zoom Out
-                Button(action: zoomOut) {
-                    Image(systemName: "minus.magnifyingglass")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(.white.opacity(zoomScale > 0.6 ? 0.9 : 0.3))
-                        .frame(width: 30, height: 30)
-                }
-                .buttonStyle(.plain)
-                .disabled(zoomScale <= 0.6)
-                .help("Zoom out (Cmd -)")
-
-                // Zoom Level Indicator / Reset button
-                Button(action: { resetZoom() }) {
-                    Text("\(Int(round(zoomScale * 100)))%")
-                        .font(.system(size: 12, weight: .bold, design: .monospaced))
-                        .foregroundColor(.white)
-                        .frame(minWidth: 46)
-                }
-                .buttonStyle(.plain)
-                .help("Reset to 100% (Cmd 0)")
-
-                // Zoom In
-                Button(action: zoomIn) {
-                    Image(systemName: "plus.magnifyingglass")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(.white.opacity(zoomScale < 4.9 ? 0.9 : 0.3))
-                        .frame(width: 30, height: 30)
-                }
-                .buttonStyle(.plain)
-                .disabled(zoomScale >= 4.9)
-                .help("Zoom in (Cmd +)")
-
-                Divider()
-                    .frame(height: 16)
-                    .background(Color.white.opacity(0.3))
-
-                // Toggle 100% / 250% Zoom
-                Button(action: toggleZoom) {
-                    Image(systemName: zoomScale > 1.05 ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(.white.opacity(0.9))
-                        .frame(width: 30, height: 30)
-                }
-                .buttonStyle(.plain)
-                .help(zoomScale > 1.05 ? "Fit to screen" : "Enlarge 2.5x")
+    private var zoomControls: some View {
+        HStack(spacing: 10) {
+            // Zoom Out
+            Button(action: zoomOut) {
+                Image(systemName: "minus.magnifyingglass")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.white.opacity(zoomScale > 0.6 ? 0.9 : 0.3))
+                    .frame(width: 30, height: 30)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(
-                Capsule()
-                    .fill(Color.black.opacity(0.65))
-            )
-            .overlay(
-                Capsule()
-                    .stroke(Color.white.opacity(0.2), lineWidth: 1)
-            )
-            .shadow(color: .black.opacity(0.4), radius: 10, y: 4)
+            .buttonStyle(.plain)
+            .disabled(zoomScale <= 0.6)
+            .help("Zoom out (Cmd -)")
 
-            // Bottom thumbnail carousel (if multiple images)
-            if images.count > 1 {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 10) {
-                        ForEach(images.indices, id: \.self) { idx in
-                            let item = images[idx]
-                            let isSelected = idx == currentIndex
+            // Zoom Level Indicator / Reset button
+            Button(action: { resetZoom() }) {
+                Text("\(Int(round(zoomScale * 100)))%")
+                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    .foregroundColor(.white)
+                    .frame(minWidth: 46)
+            }
+            .buttonStyle(.plain)
+            .help("Reset to 100% (Cmd 0)")
 
-                            Button(action: {
-                                withAnimation(.easeInOut(duration: 0.15)) {
-                                    selectedIndex = idx
-                                    resetZoom()
-                                }
-                            }) {
-                                if let nsImg = NSImage(data: item.data) {
-                                    Image(nsImage: nsImg)
-                                        .resizable()
-                                        .aspectRatio(contentMode: .fill)
-                                        .frame(width: 56, height: 56)
-                                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                                .stroke(
-                                                    isSelected ? Color.accentColor : Color.white.opacity(0.3),
-                                                    lineWidth: isSelected ? 2.5 : 1
-                                                )
+            // Zoom In
+            Button(action: zoomIn) {
+                Image(systemName: "plus.magnifyingglass")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.white.opacity(zoomScale < 4.9 ? 0.9 : 0.3))
+                    .frame(width: 30, height: 30)
+            }
+            .buttonStyle(.plain)
+            .disabled(zoomScale >= 4.9)
+            .help("Zoom in (Cmd +)")
+
+            Divider()
+                .frame(height: 16)
+                .background(Color.white.opacity(0.3))
+
+            // Toggle 100% / 250% Zoom
+            Button(action: toggleZoom) {
+                Image(systemName: zoomScale > 1.05 ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.9))
+                    .frame(width: 30, height: 30)
+            }
+            .buttonStyle(.plain)
+            .help(zoomScale > 1.05 ? "Fit to screen" : "Enlarge 2.5x")
+        }
+    }
+
+    private var thumbnailCarousel: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(images.indices, id: \.self) { idx in
+                    let item = images[idx]
+                    let isSelected = idx == currentIndex
+
+                    Button(action: {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            selectedIndex = idx
+                            resetZoom()
+                        }
+                    }) {
+                        if let nsImg = NSImage(data: item.data) {
+                            Image(nsImage: nsImg)
+                                .resizable()
+                                .aspectRatio(contentMode: .fill)
+                                .frame(width: 42, height: 42)
+                                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                        .stroke(
+                                            isSelected ? Color.accentColor : Color.white.opacity(0.3),
+                                            lineWidth: isSelected ? 2 : 1
                                         )
-                                        .scaleEffect(isSelected ? 1.08 : 1.0)
-                                        .opacity(isSelected ? 1.0 : 0.65)
-                                }
-                            }
-                            .buttonStyle(.plain)
+                                )
+                                .opacity(isSelected ? 1.0 : 0.65)
                         }
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 6)
+                    .buttonStyle(.plain)
                 }
-                .frame(height: 68)
-                .background(
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .fill(Color.black.opacity(0.6))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                .stroke(Color.white.opacity(0.15), lineWidth: 1)
-                        )
-                )
-                .padding(.horizontal, 24)
             }
+            .padding(.horizontal, 2)
         }
+        .frame(maxWidth: 250, minHeight: 42, maxHeight: 42)
     }
 
     private func zoomIn() {
         withAnimation(.easeOut(duration: 0.15)) {
-            zoomScale = min(5.0, zoomScale * 1.35)
+            zoomScale = min(5.0, zoomScale + 0.2)
         }
     }
 
     private func zoomOut() {
         withAnimation(.easeOut(duration: 0.15)) {
-            zoomScale = max(0.5, zoomScale / 1.35)
+            zoomScale = max(0.5, zoomScale - 0.2)
         }
+    }
+
+    private func copyCurrentImage() {
+        guard let item = currentImage,
+              let image = NSImage(data: item.data) else { return }
+
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.writeObjects([image])
     }
 
     private func toggleZoom() {
