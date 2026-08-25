@@ -409,10 +409,10 @@ public final class MockAgentSessionManager: AgentSessionManager, @unchecked Send
     }
 
     private func streamResponse(_ response: String, messageId: UUID) async -> Bool {
-        let chunks = responseChunks(response, maxCharacters: 240)
+        let chunks = responseChunks(response, maxCharacters: 14)
         for chunk in chunks {
             do {
-                try await Task.sleep(nanoseconds: 45_000_000)
+                try await Task.sleep(nanoseconds: 30_000_000)
             } catch {
                 return false
             }
