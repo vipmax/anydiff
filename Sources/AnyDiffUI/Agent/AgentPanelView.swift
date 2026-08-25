@@ -201,39 +201,44 @@ public struct AgentPanelView: View {
 
     @ViewBuilder
     private var messagesArea: some View {
-        if agentManager.messages.isEmpty {
-            emptyStateView
-        } else {
-            AgentChatScrollRepresentable(
-                messages: agentManager.messages,
-                theme: theme,
-                accentColor: agentAccentColor,
-                toolcallColorMode: toolcallColorMode,
-                scrollToBottomTrigger: scrollToBottomRequest,
-                onNearBottomChanged: { nearBottom in
-                    DispatchQueue.main.async {
-                        if isChatNearBottom != nearBottom {
-                            isChatNearBottom = nearBottom
+        ZStack {
+            if agentManager.messages.isEmpty {
+                emptyStateView
+                    .transition(.opacity)
+            } else {
+                AgentChatScrollRepresentable(
+                    messages: agentManager.messages,
+                    theme: theme,
+                    accentColor: agentAccentColor,
+                    toolcallColorMode: toolcallColorMode,
+                    scrollToBottomTrigger: scrollToBottomRequest,
+                    onNearBottomChanged: { nearBottom in
+                        DispatchQueue.main.async {
+                            if isChatNearBottom != nearBottom {
+                                isChatNearBottom = nearBottom
+                            }
+                        }
+                    },
+                    onReview: onReview,
+                    onRevert: { summary in
+                        agentManager.revertTurn(summary: summary, workingDirectory: workingDirectory)
+                    },
+                    onRestore: { summary in
+                        agentManager.restoreTurn(summary: summary, workingDirectory: workingDirectory)
+                    },
+                    onPreviewImages: { imgs, idx in
+                        if let onPreviewImages = onPreviewImages {
+                            onPreviewImages(imgs, idx, false)
+                        } else {
+                            previewImages = imgs
+                            previewImageIndex = idx
                         }
                     }
-                },
-                onReview: onReview,
-                onRevert: { summary in
-                    agentManager.revertTurn(summary: summary, workingDirectory: workingDirectory)
-                },
-                onRestore: { summary in
-                    agentManager.restoreTurn(summary: summary, workingDirectory: workingDirectory)
-                },
-                onPreviewImages: { imgs, idx in
-                    if let onPreviewImages = onPreviewImages {
-                        onPreviewImages(imgs, idx, false)
-                    } else {
-                        previewImages = imgs
-                        previewImageIndex = idx
-                    }
-                }
-            )
+                )
+                .transition(.opacity)
+            }
         }
+        .animation(.easeInOut(duration: 0.14), value: agentManager.messages.isEmpty)
     }
 
     @ViewBuilder

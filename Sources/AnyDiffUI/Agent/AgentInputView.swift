@@ -8,6 +8,7 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
     public var theme: Theme
     public var minHeight: CGFloat = 22
     public var maxHeight: CGFloat = 160
+    public var focusRequest: Int = 0
     @Binding public var calculatedHeight: CGFloat
     public var onSend: () -> Void
     public var onFocusChanged: ((Bool) -> Void)?
@@ -19,6 +20,7 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
         theme: Theme,
         minHeight: CGFloat = 22,
         maxHeight: CGFloat = 160,
+        focusRequest: Int = 0,
         calculatedHeight: Binding<CGFloat>,
         onSend: @escaping () -> Void,
         onFocusChanged: ((Bool) -> Void)? = nil,
@@ -29,6 +31,7 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
         self.theme = theme
         self.minHeight = minHeight
         self.maxHeight = maxHeight
+        self.focusRequest = focusRequest
         self._calculatedHeight = calculatedHeight
         self.onSend = onSend
         self.onFocusChanged = onFocusChanged
@@ -52,7 +55,7 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
         textView.isEditable = true
         textView.isSelectable = true
         textView.allowsUndo = true
-        textView.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        textView.font = NSFont.systemFont(ofSize: 13, weight: .regular)
         textView.textColor = NSColor(cgColor: theme.foreground.cgColor) ?? .textColor
         textView.insertionPointColor = NSColor(cgColor: theme.foreground.cgColor) ?? .textColor
         textView.backgroundColor = .clear
@@ -99,6 +102,8 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
             tv.onFocusChanged = onFocusChanged
             tv.onImagesPasted = onImagesPasted
         }
+
+        context.coordinator.focusTextViewIfRequested()
     }
 
     public func makeCoordinator() -> Coordinator {
@@ -113,6 +118,7 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
         private var minHeight: CGFloat = 22
         private var maxHeight: CGFloat = 160
         private var lastReportedHeight: CGFloat?
+        private var lastFocusRequest: Int?
 
         init(_ parent: AgentAutoGrowingTextView) {
             self.parent = parent
@@ -123,6 +129,20 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
             self.heightBinding = heightBinding
             self.minHeight = parent.minHeight
             self.maxHeight = parent.maxHeight
+        }
+
+        func focusTextViewIfRequested() {
+            guard let previousFocusRequest = lastFocusRequest else {
+                self.lastFocusRequest = parent.focusRequest
+                return
+            }
+            guard parent.focusRequest != previousFocusRequest else { return }
+            lastFocusRequest = parent.focusRequest
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let textView = self.textView, let window = textView.window else { return }
+                window.makeFirstResponder(textView)
+            }
         }
 
         func reportHeight(_ rawHeight: CGFloat) {
@@ -236,7 +256,7 @@ public final class AgentInputCustomTextView: NSTextView {
         super.draw(dirtyRect)
         if string.isEmpty, let placeholder = placeholderString {
             let attrs: [NSAttributedString.Key: Any] = [
-                .font: font ?? NSFont.monospacedSystemFont(ofSize: 13, weight: .regular),
+                .font: font ?? NSFont.systemFont(ofSize: 13, weight: .regular),
                 .foregroundColor: NSColor.placeholderTextColor
             ]
             let rect = NSRect(x: 0, y: 0, width: bounds.width, height: 18)
@@ -263,6 +283,7 @@ public struct AgentInputView: View {
     @State private var isContextUsageHovered: Bool = false
     @State private var isSendButtonHovered: Bool = false
     @State private var isInputFocused: Bool = false
+    @State private var inputFocusRequest: Int = 0
 
     public init(
         text: Binding<String>,
@@ -316,6 +337,11 @@ public struct AgentInputView: View {
         agentManager.status == .busy || agentManager.status == .connecting || agentManager.initializationState == .starting
     }
 
+    private var shouldShowLiveEditedSummary: Bool {
+        agentManager.liveEditedSummary != nil &&
+            (isBusy || agentManager.messages.last?.isStreaming == true)
+    }
+
     public var body: some View {
         ZStack {
             if isCollapsed {
@@ -364,15 +390,18 @@ public struct AgentInputView: View {
     private var expandedView: some View {
         VStack(spacing: 8) {
             // Live changed files top banner
-            if let liveSummary = agentManager.liveEditedSummary, isBusy || agentManager.messages.last?.isStreaming == true {
-                AgentLiveChangesBannerView(
-                    summary: liveSummary,
-                    theme: theme,
-                    accentColor: accentColor,
-                    onReview: onReview
-                )
-                .transition(.move(edge: .bottom).combined(with: .opacity))
+            ZStack {
+                if shouldShowLiveEditedSummary, let liveSummary = agentManager.liveEditedSummary {
+                    AgentLiveChangesBannerView(
+                        summary: liveSummary,
+                        theme: theme,
+                        accentColor: accentColor,
+                        onReview: onReview
+                    )
+                    .transition(.opacity)
+                }
             }
+            .animation(.easeInOut(duration: 0.14), value: shouldShowLiveEditedSummary)
 
             VStack(spacing: 8) {
                 // Attached images miniature strip
@@ -407,6 +436,7 @@ public struct AgentInputView: View {
                         theme: theme,
                         minHeight: 22,
                         maxHeight: 160,
+                        focusRequest: inputFocusRequest,
                         calculatedHeight: $calculatedHeight,
                         onSend: handleSend,
                         onFocusChanged: { focused in
@@ -481,6 +511,10 @@ public struct AgentInputView: View {
                         y: isInputFocused ? 2 : 0
                     )
             )
+            .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .onTapGesture {
+                inputFocusRequest &+= 1
+            }
             .animation(.easeOut(duration: 0.16), value: isInputFocused)
         }
         .padding(.horizontal, 10)

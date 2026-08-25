@@ -116,7 +116,7 @@ final class AgentImageStoreTests: XCTestCase {
         // Wait slightly so creation/modification dates differ
         Thread.sleep(forTimeInterval: 0.02)
         let data2 = Data(repeating: 0x42, count: 40)
-        let a2 = smallStore.save(data: data2, filename: "middle.png")
+        _ = smallStore.save(data: data2, filename: "middle.png")
 
         Thread.sleep(forTimeInterval: 0.02)
         let data3 = Data(repeating: 0x43, count: 40)

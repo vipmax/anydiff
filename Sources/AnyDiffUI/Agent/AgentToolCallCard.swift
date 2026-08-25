@@ -228,9 +228,9 @@ public struct AgentToolCallCard: View {
     private var actionBadgeForeground: Color {
         switch item.shortToolName {
         case "Edit": return Color.orange
-        case "Create": return Color.blue
+        case "Create": return Color.orange
         case "Run": return Color.purple
-        case "Search": return Color.yellow
+        case "Search": return Color.blue
         case "Read": return Color.teal
         default: return Color.gray
         }

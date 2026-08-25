@@ -732,6 +732,9 @@ public final class AgentNativeStandardChatDocumentView: NSView {
                     toolcallColorMode: toolcallColorMode,
                     nativeTextSelectionEnabled: true
                 )
+                if message.role == .user {
+                    cell.prepareUserMessageAppearance()
+                }
                 cell.onReview = onReview
                 cell.onRevert = onRevert
                 cell.onRestore = onRestore
@@ -776,6 +779,9 @@ public final class AgentNativeStandardChatDocumentView: NSView {
         }
 
         layoutContent(for: max(100, scrollView.contentView.bounds.width))
+        for item in orderedCells {
+            item.cell.animatePendingAppearances(animated: animated)
+        }
         if scrollView.followsBottom || oldIds.isEmpty {
             scrollView.scrollToBottom(animated: animated && newMessages.last?.isStreaming != true)
         }
@@ -2299,7 +2305,7 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
     public var onReview: ((AgentEditedFilesSummary) -> Void)?
     private let headerContainer = AgentNativeFlippedView()
     private let headerButton = NSButton()
-    private let openInEditorButton = NSButton()
+    private let openInEditorButton = AgentHoverButton(frame: .zero)
     private let diffStatsButton = AgentNativeDiffStatsButton()
     private let actionPillView = AgentNativeFlippedView()
     private let actionIconView = NSImageView()
@@ -2357,8 +2363,19 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
         return false
     }
 
+    private var hasDiffStats: Bool {
+        (item.additionsCount ?? 0) > 0 || (item.deletionsCount ?? 0) > 0
+    }
+
+    private var shouldShowOpenInEditorButton: Bool {
+        hasExpandableContent && !hasDiffStats
+    }
+
     public func canUpdateInPlace(with newItem: ToolCallItem) -> Bool {
-        return item.id == newItem.id
+        if item.id == newItem.id { return true }
+        return item.toolName == newItem.toolName &&
+            item.path == newItem.path &&
+            item.command == newItem.command
     }
 
     public func update(item newItem: ToolCallItem, theme newTheme: Theme) {
@@ -2462,8 +2479,10 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
             if chevronImageView.superview == nil {
                 headerContainer.addSubview(chevronImageView)
             }
-            if openInEditorButton.superview == nil {
+            if shouldShowOpenInEditorButton, openInEditorButton.superview == nil {
                 headerContainer.addSubview(openInEditorButton)
+            } else if !shouldShowOpenInEditorButton {
+                openInEditorButton.removeFromSuperview()
             }
         } else {
             chevronImageView.removeFromSuperview()
@@ -2583,15 +2602,16 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
         headerContainer.addSubview(headerButton)
 
         // Open the complete tool buffer in the main Review editor.
-        if hasExpandableContent {
+        if shouldShowOpenInEditorButton {
             openInEditorButton.isBordered = false
             openInEditorButton.title = ""
             openInEditorButton.imagePosition = .imageOnly
             openInEditorButton.image = NSImage(
-                systemSymbolName: "arrow.up.forward.square",
+                systemSymbolName: "arrow.left",
                 accessibilityDescription: "Open in editor"
-            )?.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 11, weight: .medium))
-            openInEditorButton.contentTintColor = NSColor(cgColor: theme.gutterForeground.cgColor) ?? .secondaryLabelColor
+            )?.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 10, weight: .regular))
+            openInEditorButton.contentTintColor = (NSColor(cgColor: theme.gutterForeground.cgColor) ?? .secondaryLabelColor)
+                .withAlphaComponent(0.7)
             openInEditorButton.imageScaling = .scaleProportionallyDown
             openInEditorButton.target = self
             openInEditorButton.action = #selector(openInEditorClicked)
@@ -3156,7 +3176,7 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
             chevronImageView.frame = NSRect(x: rightX, y: 6.0, width: 10, height: 10)
             rightX -= 6
 
-            if isExpanded {
+            if isExpanded && shouldShowOpenInEditorButton {
                 rightX -= 18
                 openInEditorButton.frame = NSRect(x: rightX, y: 3.0, width: 16, height: 16)
                 openInEditorButton.isHidden = false
@@ -3425,6 +3445,19 @@ public final class AgentNativeMessageCell: NSView {
         }
     }
 
+    private var hasCompactTopThought: Bool {
+        guard !hasInlineThoughtParts,
+              let thought = message.thought else { return false }
+        return isCompactThought(thought)
+    }
+
+    private func isCompactThought(_ thought: String) -> Bool {
+        let trimmed = thought.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !trimmed.isEmpty &&
+            trimmed.count <= 120 &&
+            trimmed.split(whereSeparator: { $0.isNewline }).count <= 2
+    }
+
     // Subviews
     private let userBubbleView = AgentNativeFlippedView()
     private let userTextView = AgentSelectableTextView()
@@ -3434,6 +3467,9 @@ public final class AgentNativeMessageCell: NSView {
     private let thoughtHeaderButton = NSButton()
     private let thoughtTextView = AgentSelectableTextView()
     private var toolCallViews: [NSView] = []
+    private var pendingToolCallAppearances: [NSView] = []
+    private var pendingEditedFilesCardAppearance: NSView?
+    private var pendingUserMessageAppearance = false
     private var markdownViews: [NSView] = []
     private var streamingRenderedContent: String = ""
     private var cachedLayoutWidth: CGFloat = -1
@@ -3445,6 +3481,23 @@ public final class AgentNativeMessageCell: NSView {
         let width: Int
     }
     private var cachedTextHeights: [TextMeasurementKey: CGFloat] = [:]
+
+    private struct StreamingFadeChunk {
+        let range: NSRange
+        let startTime: TimeInterval
+    }
+    private var streamingFadeChunks: [StreamingFadeChunk] = []
+    private var streamingFadeTimer: Timer?
+    private var thoughtFadeChunks: [StreamingFadeChunk] = []
+    private var thoughtFadeTimer: Timer?
+    private var previousStreamedLength: Int = 0
+
+    deinit {
+        streamingFadeTimer?.invalidate()
+        streamingFadeTimer = nil
+        thoughtFadeTimer?.invalidate()
+        thoughtFadeTimer = nil
+    }
 
     fileprivate var needsLayoutApplication: Bool {
         layoutNeedsApplication
@@ -3559,6 +3612,7 @@ public final class AgentNativeMessageCell: NSView {
         let themeChanged = theme.id != self.theme.id
         let accentChanged = accentColor != self.accentColor
         let displayModeChanged = toolcallColorMode != self.toolcallColorMode
+        let thoughtChanged = previousMessage.thought != message.thought
         let toolCallsChanged = message.toolCalls != previousMessage.toolCalls
         let partsChanged = message.orderedParts != previousMessage.orderedParts
         let contentChanged = previousMessage.content.count != message.content.count || previousMessage.content != message.content
@@ -3633,15 +3687,30 @@ public final class AgentNativeMessageCell: NSView {
             } else {
                 clearInlineThoughtViews()
                 if hasTopThought {
-                    thoughtHeaderButton.isHidden = false
+                    let isCompact = isCompactThought(message.thought ?? "")
+                    thoughtHeaderButton.isHidden = isCompact
                     updateThoughtHeaderAppearance()
                     thoughtHeaderButton.contentTintColor = NSColor(cgColor: theme.gutterForeground.cgColor)?.withAlphaComponent(0.85) ?? NSColor.secondaryLabelColor
-                    thoughtTextView.isHidden = !isThoughtExpanded
-                    thoughtTextView.alphaValue = isThoughtExpanded ? 1 : 0
+                    thoughtTextView.isHidden = isCompact ? false : !isThoughtExpanded
+                    thoughtTextView.alphaValue = isCompact || isThoughtExpanded ? 1 : 0
+                    let previousThoughtLength = thoughtTextView.textStorage?.length ?? 0
+                    let previousThought = previousMessage.thought ?? ""
+                    let isThoughtAppend = (message.thought ?? "").count > previousThought.count &&
+                        (message.thought ?? "").hasPrefix(previousThought)
 
                     thoughtTextView.textStorage?.setAttributedString(
-                        formatThoughtMarkdownString(message.thought ?? "", fontSize: 11.5, alpha: 0.8, lineSpacing: 2)
+                        formatThoughtMarkdownString(
+                            message.thought ?? "",
+                            fontSize: 11.5,
+                            alpha: 0.8,
+                            lineSpacing: isCompact ? 1.5 : 2
+                        )
                     )
+                    if thoughtChanged && (isCompact || isThoughtExpanded) {
+                        animateNewThoughtText(
+                            startLocation: isThoughtAppend ? previousThoughtLength : 0
+                        )
+                    }
                 } else {
                     thoughtHeaderButton.isHidden = true
                     thoughtTextView.isHidden = true
@@ -3704,10 +3773,12 @@ public final class AgentNativeMessageCell: NSView {
                     let hosting = NSHostingView(rootView: cardView)
                     addSubview(hosting)
                     editedFilesCardView = hosting
+                    pendingEditedFilesCardAppearance = hosting
                 }
             } else {
                 editedFilesCardView?.removeFromSuperview()
                 editedFilesCardView = nil
+                pendingEditedFilesCardAppearance = nil
             }
 
             rebuildAssistantViewOrder()
@@ -3743,9 +3814,9 @@ public final class AgentNativeMessageCell: NSView {
         styleChanged: Bool
     ) {
         let previousIDs = previousItems.map(\.id)
-        let newIDs = newItems.map(\.id)
         let canReplaceInPlace = !styleChanged &&
-            previousIDs == newIDs &&
+            previousItems.count == newItems.count &&
+            zip(previousItems, newItems).allSatisfy { representsSameToolCall($0.0, $0.1) } &&
             toolCallViews.count == newItems.count
 
         guard canReplaceInPlace else {
@@ -3760,6 +3831,11 @@ public final class AgentNativeMessageCell: NSView {
                 addSubview(view)
                 toolCallViews.append(view)
                 toolCallIDs.append(item.id)
+                let continuesPreviousCall = index < previousItems.count &&
+                    representsSameToolCall(previousItems[index], item)
+                if !continuesPreviousCall && !previousIDs.contains(item.id) {
+                    pendingToolCallAppearances.append(view)
+                }
             }
             return
         }
@@ -3768,6 +3844,7 @@ public final class AgentNativeMessageCell: NSView {
             if let card = toolCallViews[index] as? AgentNativeToolCardView,
                card.canUpdateInPlace(with: newItems[index]) {
                 card.update(item: newItems[index], theme: theme)
+                toolCallIDs[index] = newItems[index].id
                 continue
             }
 
@@ -3775,6 +3852,52 @@ public final class AgentNativeMessageCell: NSView {
             toolCallViews[index].removeFromSuperview()
             addSubview(replacement)
             toolCallViews[index] = replacement
+            toolCallIDs[index] = newItems[index].id
+        }
+    }
+
+    private func representsSameToolCall(_ previous: ToolCallItem, _ current: ToolCallItem) -> Bool {
+        if previous.id == current.id { return true }
+        return previous.toolName == current.toolName &&
+            previous.path == current.path &&
+            previous.command == current.command
+    }
+
+    fileprivate func prepareUserMessageAppearance() {
+        pendingUserMessageAppearance = true
+        userBubbleView.alphaValue = 0
+    }
+
+    fileprivate func animatePendingAppearances(animated: Bool) {
+        var views = pendingToolCallAppearances
+        pendingToolCallAppearances.removeAll()
+        if let pendingEditedFilesCardAppearance {
+            views.append(pendingEditedFilesCardAppearance)
+            self.pendingEditedFilesCardAppearance = nil
+        }
+        if pendingUserMessageAppearance {
+            views.append(userBubbleView)
+            pendingUserMessageAppearance = false
+        }
+        guard !views.isEmpty else { return }
+
+        guard animated else {
+            for view in views {
+                view.alphaValue = 1
+            }
+            return
+        }
+
+        for view in views {
+            view.alphaValue = 0
+        }
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.14
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            for view in views {
+                view.animator().alphaValue = 1
+            }
         }
     }
 
@@ -3792,10 +3915,81 @@ public final class AgentNativeMessageCell: NSView {
         }
     }
 
+    private func animateNewThoughtText(startLocation: Int) {
+        guard !thoughtTextView.isHidden,
+              let textStorage = thoughtTextView.textStorage,
+              textStorage.length > startLocation else { return }
+
+        if startLocation == 0 {
+            thoughtFadeChunks.removeAll()
+            thoughtFadeTimer?.invalidate()
+            thoughtFadeTimer = nil
+        }
+
+        thoughtFadeChunks.removeAll { $0.range.location >= textStorage.length }
+        thoughtFadeChunks.append(
+            StreamingFadeChunk(
+                range: NSRange(location: startLocation, length: textStorage.length - startLocation),
+                startTime: CACurrentMediaTime()
+            )
+        )
+
+        if thoughtFadeTimer == nil {
+            thoughtFadeTimer = Timer.scheduledTimer(withTimeInterval: 0.03, repeats: true) { [weak self] _ in
+                self?.updateThoughtFadeAnimation()
+            }
+        }
+        updateThoughtFadeAnimation()
+    }
+
+    private func updateThoughtFadeAnimation() {
+        guard let textStorage = thoughtTextView.textStorage, textStorage.length > 0 else {
+            thoughtFadeTimer?.invalidate()
+            thoughtFadeTimer = nil
+            thoughtFadeChunks.removeAll()
+            return
+        }
+
+        let now = CACurrentMediaTime()
+        let duration: TimeInterval = 0.16
+        thoughtFadeChunks.removeAll { now - $0.startTime >= duration }
+
+        let baseColor = (NSColor(cgColor: theme.gutterForeground.cgColor) ?? .secondaryLabelColor)
+            .withAlphaComponent(0.8)
+        textStorage.beginEditing()
+        if thoughtFadeChunks.isEmpty {
+            textStorage.addAttribute(
+                .foregroundColor,
+                value: baseColor,
+                range: NSRange(location: 0, length: textStorage.length)
+            )
+        } else {
+            for chunk in thoughtFadeChunks {
+                guard chunk.range.location + chunk.range.length <= textStorage.length else { continue }
+                let progress = min(1.0, max(0.0, (now - chunk.startTime) / duration))
+                let alpha = 0.15 + (0.85 * progress)
+                textStorage.addAttribute(
+                    .foregroundColor,
+                    value: baseColor.withAlphaComponent(alpha),
+                    range: chunk.range
+                )
+            }
+        }
+        textStorage.endEditing()
+
+        if thoughtFadeChunks.isEmpty {
+            thoughtFadeTimer?.invalidate()
+            thoughtFadeTimer = nil
+        }
+    }
+
     private func clearAssistantViews() {
         for v in toolCallViews { v.removeFromSuperview() }
         toolCallViews.removeAll()
         toolCallIDs.removeAll()
+        pendingToolCallAppearances.removeAll()
+        pendingEditedFilesCardAppearance = nil
+        pendingUserMessageAppearance = false
         clearInlineThoughtViews()
         for v in markdownViews { v.removeFromSuperview() }
         markdownViews.removeAll()
@@ -3804,6 +3998,13 @@ public final class AgentNativeMessageCell: NSView {
         editedFilesCardView?.removeFromSuperview()
         editedFilesCardView = nil
         streamingRenderedContent = ""
+        streamingFadeTimer?.invalidate()
+        streamingFadeTimer = nil
+        streamingFadeChunks.removeAll()
+        thoughtFadeTimer?.invalidate()
+        thoughtFadeTimer = nil
+        thoughtFadeChunks.removeAll()
+        previousStreamedLength = 0
     }
 
     private func clearInlineThoughtViews() {
@@ -4014,23 +4215,83 @@ public final class AgentNativeMessageCell: NSView {
             ]))
         }
 
+        // Time-based left-to-right fade-in: each newly added token chunk fades in over 160ms
+        // and automatically reaches 100% solid opacity even if streaming pauses or tool calls start!
+        let newLength = mutable.length
+        if newLength > previousStreamedLength {
+            let addedRange = NSRange(location: previousStreamedLength, length: newLength - previousStreamedLength)
+            streamingFadeChunks.append(StreamingFadeChunk(range: addedRange, startTime: CACurrentMediaTime()))
+            if streamingFadeTimer == nil {
+                streamingFadeTimer = Timer.scheduledTimer(withTimeInterval: 0.03, repeats: true) { [weak self] _ in
+                    self?.updateStreamingFadeAnimation()
+                }
+            }
+        }
+        previousStreamedLength = newLength
+
+        let now = CACurrentMediaTime()
+        let duration: TimeInterval = 0.16
+        let baseColor = NSColor(cgColor: theme.foreground.cgColor) ?? .textColor
+        for chunk in streamingFadeChunks {
+            guard chunk.range.location + chunk.range.length <= mutable.length else { continue }
+            let progress = min(1.0, max(0.0, (now - chunk.startTime) / duration))
+            let alpha = 0.15 + (0.85 * progress)
+            mutable.addAttribute(.foregroundColor, value: baseColor.withAlphaComponent(alpha), range: chunk.range)
+        }
         textView.textStorage?.setAttributedString(mutable)
         streamingRenderedContent = content
+    }
+
+    private func updateStreamingFadeAnimation() {
+        guard let textView = markdownViews.first as? AgentSelectableTextView,
+              let textStorage = textView.textStorage,
+              textStorage.length > 0 else {
+            streamingFadeTimer?.invalidate()
+            streamingFadeTimer = nil
+            streamingFadeChunks.removeAll()
+            return
+        }
+
+        let now = CACurrentMediaTime()
+        let duration: TimeInterval = 0.16
+        streamingFadeChunks.removeAll { now - $0.startTime >= duration }
+
+        let baseColor = NSColor(cgColor: theme.foreground.cgColor) ?? .textColor
+        textStorage.beginEditing()
+        if streamingFadeChunks.isEmpty {
+            streamingFadeTimer?.invalidate()
+            streamingFadeTimer = nil
+            textStorage.addAttribute(.foregroundColor, value: baseColor, range: NSRange(location: 0, length: textStorage.length))
+        } else {
+            for chunk in streamingFadeChunks {
+                guard chunk.range.location + chunk.range.length <= textStorage.length else { continue }
+                let progress = min(1.0, max(0.0, (now - chunk.startTime) / duration))
+                let alpha = 0.15 + (0.85 * progress)
+                textStorage.addAttribute(.foregroundColor, value: baseColor.withAlphaComponent(alpha), range: chunk.range)
+            }
+        }
+        textStorage.endEditing()
     }
 
     private func buildAssistantViews() {
         // 1. Thought block
         if let thought = message.thought, !thought.isEmpty {
-            thoughtHeaderButton.isHidden = false
+            let isCompact = isCompactThought(thought)
+            thoughtHeaderButton.isHidden = isCompact
             updateThoughtHeaderAppearance()
             thoughtHeaderButton.contentTintColor = NSColor(cgColor: theme.gutterForeground.cgColor)?.withAlphaComponent(0.85) ?? NSColor.secondaryLabelColor
-            thoughtTextView.isHidden = !isThoughtExpanded
-            thoughtTextView.alphaValue = isThoughtExpanded ? 1 : 0
+            thoughtTextView.isHidden = isCompact ? false : !isThoughtExpanded
+            thoughtTextView.alphaValue = isCompact || isThoughtExpanded ? 1 : 0
             thoughtTextView.cellId = message.id
             thoughtTextView.tvKey = "thought"
 
             thoughtTextView.textStorage?.setAttributedString(
-                formatThoughtMarkdownString(thought, fontSize: 11.5, alpha: 0.8, lineSpacing: 2)
+                formatThoughtMarkdownString(
+                    thought,
+                    fontSize: 11.5,
+                    alpha: 0.8,
+                    lineSpacing: isCompact ? 1.5 : 2
+                )
             )
         } else {
             thoughtHeaderButton.isHidden = true
@@ -4587,6 +4848,9 @@ public final class AgentNativeMessageCell: NSView {
         } else if let tv = view as? AgentSelectableTextView {
             let frame = NSRect(x: horizontalPadding, y: currentY, width: contentWidth, height: height)
             if animated { tv.animator().frame = frame } else { tv.frame = frame }
+            if tv.layer?.mask != nil {
+                tv.layer?.mask = nil
+            }
         } else if let codeBlock = view as? AgentNativeCodeBlockView {
             let codeHeight = measuredTextHeight(
                 for: codeBlock.tv,
@@ -4678,9 +4942,19 @@ public final class AgentNativeMessageCell: NSView {
                     )
                     currentY += h + 8
                 }
+            } else if hasCompactTopThought {
+                let h = measuredTextHeight(
+                    for: thoughtTextView,
+                    attributedString: thoughtTextView.attributedString(),
+                    width: contentWidth
+                )
+                currentY += h + 8
             }
 
             for view in orderedAssistantViews {
+                if isEditedFilesCardView(view) {
+                    currentY += 8
+                }
                 currentY += assistantViewHeight(view, contentWidth: contentWidth) + 6
             }
 
@@ -4802,9 +5076,26 @@ public final class AgentNativeMessageCell: NSView {
                     }
                     currentY += h + 8
                 }
+            } else if hasCompactTopThought {
+                let h = measuredTextHeight(
+                    for: thoughtTextView,
+                    attributedString: thoughtTextView.attributedString(),
+                    width: contentWidth
+                )
+                let tvFrame = NSRect(x: horizontalPadding, y: currentY, width: contentWidth, height: h)
+                thoughtTextView.isHidden = false
+                if animated {
+                    thoughtTextView.animator().frame = tvFrame
+                } else {
+                    thoughtTextView.frame = tvFrame
+                }
+                currentY += h + 8
             }
 
             for view in orderedAssistantViews {
+                if isEditedFilesCardView(view) {
+                    currentY += 8
+                }
                 currentY += applyAssistantViewLayout(
                     view,
                     width: width,
@@ -4815,6 +5106,11 @@ public final class AgentNativeMessageCell: NSView {
         }
 
         layoutNeedsApplication = false
+    }
+
+    private func isEditedFilesCardView(_ view: NSView) -> Bool {
+        guard let editedFilesCardView else { return false }
+        return editedFilesCardView === view
     }
 
     public func finishVisibilityAnimation() {
@@ -4849,7 +5145,7 @@ public final class AgentNativeMessageCell: NSView {
             return [userTextView]
         }
         var views: [AgentSelectableTextView] = []
-        if isThoughtExpanded {
+        if isThoughtExpanded || hasCompactTopThought {
             views.append(thoughtTextView)
         }
         for item in orderedAssistantViews {

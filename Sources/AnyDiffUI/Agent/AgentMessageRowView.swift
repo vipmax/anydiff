@@ -207,33 +207,44 @@ public struct AgentMessageRowView: View {
 
     @ViewBuilder
     private func thinkingBlock(_ thought: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Button(action: {
-                withAnimation(.easeInOut(duration: 0.15)) {
-                    isThinkingExpanded.toggle()
-                }
-            }) {
-                HStack(spacing: 5) {
-                    Image(systemName: isThinkingExpanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 9, weight: .semibold))
-                    Text(message.isStreaming && message.content.isEmpty ? "Thinking..." : "Thoughts")
-                        .font(.system(size: 11, weight: .medium))
-                    Spacer()
-                }
+        if isCompactThought(thought) {
+            Text(thought)
+                .font(.system(size: 11.5))
                 .foregroundColor(Color(theme.gutterForeground).opacity(0.85))
-            }
-            .buttonStyle(.plain)
-
-            if isThinkingExpanded {
-                Text(thought)
-                    .font(.system(size: 11.5, design: .monospaced))
+                .fixedSize(horizontal: false, vertical: true)
+        } else {
+            VStack(alignment: .leading, spacing: 4) {
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        isThinkingExpanded.toggle()
+                    }
+                }) {
+                    HStack(spacing: 5) {
+                        Image(systemName: isThinkingExpanded ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 9, weight: .semibold))
+                        Text(message.isStreaming && message.content.isEmpty ? "Thinking..." : "Thoughts")
+                            .font(.system(size: 11, weight: .medium))
+                        Spacer()
+                    }
                     .foregroundColor(Color(theme.gutterForeground).opacity(0.85))
-                    .padding(8)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6)
-                            .fill(Color(theme.gutterBackground).opacity(0.6))
-                    )
+                }
+                .buttonStyle(.plain)
+
+                if isThinkingExpanded {
+                    Text(thought)
+                        .font(.system(size: 11.5, design: .monospaced))
+                        .foregroundColor(Color(theme.gutterForeground).opacity(0.85))
+                        .padding(8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(Color(theme.gutterBackground).opacity(0.6))
+                        )
+                }
             }
         }
+    }
+
+    private func isCompactThought(_ thought: String) -> Bool {
+        thought.count <= 120 && thought.split(whereSeparator: \.isNewline).count <= 2
     }
 }
