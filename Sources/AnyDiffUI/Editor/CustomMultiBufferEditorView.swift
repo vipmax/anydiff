@@ -314,18 +314,24 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         if let cAnchor = state.cursorAnchor, let mbRow = dm.codeRow(forFilePath: cAnchor.filePath, lineNumber: cAnchor.lineNumber) {
             let maxCol = dm.lineLength(at: mbRow)
             let clampedCol = max(0, min(maxCol, cAnchor.column))
-            self.selectionAnchor = nil
-            self.cursorPoint = MultiBufferPoint(row: mbRow, column: clampedCol)
-            restoredCursor = true
+            let restoredCursorPoint = MultiBufferPoint(row: mbRow, column: clampedCol)
 
+            var restoredAnchor: MultiBufferPoint? = nil
             if let sAnchor = state.selectionAnchor,
                let selectionRow = dm.codeRow(forFilePath: sAnchor.filePath, lineNumber: sAnchor.lineNumber) {
                 let selectionMaxCol = dm.lineLength(at: selectionRow)
-                self.selectionAnchor = MultiBufferPoint(
+                let candidateAnchor = MultiBufferPoint(
                     row: selectionRow,
                     column: max(0, min(selectionMaxCol, sAnchor.column))
                 )
+                if candidateAnchor != restoredCursorPoint {
+                    restoredAnchor = candidateAnchor
+                }
             }
+
+            self.selectionAnchor = restoredAnchor
+            self.cursorPoint = restoredCursorPoint
+            restoredCursor = true
         }
 
         // 2. Restore Scroll Position using Scroll Anchor (keeps viewport pinned)
@@ -861,9 +867,8 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         let maxCol = dm.lineLength(at: row)
         let col = max(0, min(cursorPoint.column, maxCol))
         let clamped = MultiBufferPoint(row: row, column: col)
-        if clamped != cursorPoint {
-            cursorPoint = clamped
-        }
+
+        var newAnchor: MultiBufferPoint? = nil
         if let anchor = selectionAnchor {
             var anchorRow = anchor.row
             if anchorRow < minRow {
@@ -881,7 +886,15 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             }
             let anchorMaxCol = dm.lineLength(at: anchorRow)
             let anchorCol = max(0, min(anchor.column, anchorMaxCol))
-            selectionAnchor = MultiBufferPoint(row: anchorRow, column: anchorCol)
+            let candidateAnchor = MultiBufferPoint(row: anchorRow, column: anchorCol)
+            if candidateAnchor != clamped {
+                newAnchor = candidateAnchor
+            }
+        }
+
+        self.selectionAnchor = newAnchor
+        if clamped != cursorPoint {
+            cursorPoint = clamped
         }
     }
 
@@ -1158,14 +1171,17 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         if let cs = cursorState, let newRow = dm.codeRow(forFilePath: cs.filePath, lineNumber: cs.lineNumber) {
             let maxCol = dm.lineLength(at: newRow)
             let newCursorPoint = MultiBufferPoint(row: newRow, column: min(maxCol, cs.column))
-            cursorPoint = newCursorPoint
 
+            var newAnchor: MultiBufferPoint? = nil
             if let asState = anchorState, let newAnchorRow = dm.codeRow(forFilePath: asState.filePath, lineNumber: asState.lineNumber) {
                 let aMaxCol = dm.lineLength(at: newAnchorRow)
-                selectionAnchor = MultiBufferPoint(row: newAnchorRow, column: min(aMaxCol, asState.column))
-            } else {
-                selectionAnchor = newCursorPoint
+                let candidate = MultiBufferPoint(row: newAnchorRow, column: min(aMaxCol, asState.column))
+                if candidate != newCursorPoint {
+                    newAnchor = candidate
+                }
             }
+            selectionAnchor = newAnchor
+            cursorPoint = newCursorPoint
         }
     }
 
@@ -1782,7 +1798,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                     isDraggingSelection = true
                     let targetPoint = MultiBufferPoint(row: codeInfo.multiBufferRow, column: 0)
                     activeSelectionGranularity = .character
-                    selectionAnchor = targetPoint
+                    selectionAnchor = nil
                     cursorPoint = targetPoint
                     needsDisplay = true
                     return
@@ -1808,8 +1824,12 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                         cursorPoint = MultiBufferPoint(row: codeInfo.multiBufferRow, column: text.count)
                     } else {
                         activeSelectionGranularity = .character
-                        if !isShift || selectionAnchor == nil {
-                            selectionAnchor = targetPoint
+                        if isShift {
+                            if selectionAnchor == nil {
+                                selectionAnchor = cursorPoint
+                            }
+                        } else {
+                            selectionAnchor = nil
                         }
                         cursorPoint = targetPoint
                     }
@@ -1825,15 +1845,23 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         activeSelectionGranularity = .character
         if docY > totalDocumentHeight, let lastCode = displayMap.lastCodeInfo {
             let targetPoint = MultiBufferPoint(row: lastCode.multiBufferRow, column: lastCode.text.count)
-            if !isShift || selectionAnchor == nil {
-                selectionAnchor = targetPoint
+            if isShift {
+                if selectionAnchor == nil {
+                    selectionAnchor = cursorPoint
+                }
+            } else {
+                selectionAnchor = nil
             }
             cursorPoint = targetPoint
             needsDisplay = true
         } else if docY < 0, let firstCode = displayMap.firstCodeInfo {
             let targetPoint = MultiBufferPoint(row: firstCode.multiBufferRow, column: 0)
-            if !isShift || selectionAnchor == nil {
-                selectionAnchor = targetPoint
+            if isShift {
+                if selectionAnchor == nil {
+                    selectionAnchor = cursorPoint
+                }
+            } else {
+                selectionAnchor = nil
             }
             cursorPoint = targetPoint
             needsDisplay = true
@@ -1867,6 +1895,9 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
             switch activeSelectionGranularity {
             case .character:
+                if selectionAnchor == nil {
+                    selectionAnchor = cursorPoint
+                }
                 cursorPoint = MultiBufferPoint(row: targetRow, column: col)
             case .word(let initStart, let initEnd, let initRow):
                 let (curWordStart, curWordEnd) = wordRange(in: text, at: col)
@@ -1890,9 +1921,15 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             needsDisplay = true
         } else {
             if docY > totalDocumentHeight, let lastCode = displayMap.lastCodeInfo {
+                if selectionAnchor == nil {
+                    selectionAnchor = cursorPoint
+                }
                 cursorPoint = MultiBufferPoint(row: lastCode.multiBufferRow, column: lastCode.text.count)
                 needsDisplay = true
             } else if docY < 0, let firstCode = displayMap.firstCodeInfo {
+                if selectionAnchor == nil {
+                    selectionAnchor = cursorPoint
+                }
                 cursorPoint = MultiBufferPoint(row: firstCode.multiBufferRow, column: 0)
                 needsDisplay = true
             }
@@ -2204,91 +2241,179 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
     private func moveCursorLeft(expandSelection: Bool) {
         guard let dm = displayMap else { return }
-        if cursorPoint.column > 0 {
-            cursorPoint.column -= 1
-        } else if let prevRow = dm.previousCodeRow(before: cursorPoint.row) {
-            cursorPoint.row = prevRow
-            cursorPoint.column = dm.lineLength(at: prevRow)
+        var targetRow = cursorPoint.row
+        var targetCol = cursorPoint.column
+        if targetCol > 0 {
+            targetCol -= 1
+        } else if let prevRow = dm.previousCodeRow(before: targetRow) {
+            targetRow = prevRow
+            targetCol = dm.lineLength(at: prevRow)
         }
-        if !expandSelection { selectionAnchor = cursorPoint }
+        let newPoint = MultiBufferPoint(row: targetRow, column: targetCol)
+        if expandSelection {
+            if selectionAnchor == nil {
+                selectionAnchor = cursorPoint
+            }
+        } else {
+            selectionAnchor = nil
+        }
+        cursorPoint = newPoint
     }
 
     private func moveCursorRight(expandSelection: Bool) {
         guard let dm = displayMap else { return }
-        let currentLen = dm.lineLength(at: cursorPoint.row)
-        if cursorPoint.column < currentLen {
-            cursorPoint.column += 1
-        } else if let nextRow = dm.nextCodeRow(after: cursorPoint.row) {
-            cursorPoint.row = nextRow
-            cursorPoint.column = 0
+        var targetRow = cursorPoint.row
+        var targetCol = cursorPoint.column
+        let currentLen = dm.lineLength(at: targetRow)
+        if targetCol < currentLen {
+            targetCol += 1
+        } else if let nextRow = dm.nextCodeRow(after: targetRow) {
+            targetRow = nextRow
+            targetCol = 0
         }
-        if !expandSelection { selectionAnchor = cursorPoint }
+        let newPoint = MultiBufferPoint(row: targetRow, column: targetCol)
+        if expandSelection {
+            if selectionAnchor == nil {
+                selectionAnchor = cursorPoint
+            }
+        } else {
+            selectionAnchor = nil
+        }
+        cursorPoint = newPoint
     }
 
     private func moveCursorUp(expandSelection: Bool) {
         guard let dm = displayMap else { return }
-        if let prevRow = dm.previousCodeRow(before: cursorPoint.row) {
-            cursorPoint.row = prevRow
-            cursorPoint.column = min(cursorPoint.column, dm.lineLength(at: prevRow))
+        var targetRow = cursorPoint.row
+        var targetCol = cursorPoint.column
+        if let prevRow = dm.previousCodeRow(before: targetRow) {
+            targetRow = prevRow
+            targetCol = min(targetCol, dm.lineLength(at: prevRow))
         }
-        if !expandSelection { selectionAnchor = cursorPoint }
+        let newPoint = MultiBufferPoint(row: targetRow, column: targetCol)
+        if expandSelection {
+            if selectionAnchor == nil {
+                selectionAnchor = cursorPoint
+            }
+        } else {
+            selectionAnchor = nil
+        }
+        cursorPoint = newPoint
     }
 
     private func moveCursorDown(expandSelection: Bool) {
         guard let dm = displayMap else { return }
-        if let nextRow = dm.nextCodeRow(after: cursorPoint.row) {
-            cursorPoint.row = nextRow
-            cursorPoint.column = min(cursorPoint.column, dm.lineLength(at: nextRow))
+        var targetRow = cursorPoint.row
+        var targetCol = cursorPoint.column
+        if let nextRow = dm.nextCodeRow(after: targetRow) {
+            targetRow = nextRow
+            targetCol = min(targetCol, dm.lineLength(at: nextRow))
         }
-        if !expandSelection { selectionAnchor = cursorPoint }
+        let newPoint = MultiBufferPoint(row: targetRow, column: targetCol)
+        if expandSelection {
+            if selectionAnchor == nil {
+                selectionAnchor = cursorPoint
+            }
+        } else {
+            selectionAnchor = nil
+        }
+        cursorPoint = newPoint
     }
 
     private func moveCursorWordLeft(expandSelection: Bool) {
         guard let dm = displayMap else { return }
-        if cursorPoint.column > 0 {
-            let line = dm.lineText(at: cursorPoint.row) ?? ""
-            cursorPoint.column = findPreviousWordBoundary(in: line, from: cursorPoint.column)
-        } else if let prevRow = dm.previousCodeRow(before: cursorPoint.row) {
-            cursorPoint.row = prevRow
-            cursorPoint.column = dm.lineLength(at: prevRow)
+        var targetRow = cursorPoint.row
+        var targetCol = cursorPoint.column
+        if targetCol > 0 {
+            let line = dm.lineText(at: targetRow) ?? ""
+            targetCol = findPreviousWordBoundary(in: line, from: targetCol)
+        } else if let prevRow = dm.previousCodeRow(before: targetRow) {
+            targetRow = prevRow
+            targetCol = dm.lineLength(at: prevRow)
         }
-        if !expandSelection { selectionAnchor = cursorPoint }
+        let newPoint = MultiBufferPoint(row: targetRow, column: targetCol)
+        if expandSelection {
+            if selectionAnchor == nil {
+                selectionAnchor = cursorPoint
+            }
+        } else {
+            selectionAnchor = nil
+        }
+        cursorPoint = newPoint
     }
 
     private func moveCursorWordRight(expandSelection: Bool) {
         guard let dm = displayMap else { return }
-        let line = dm.lineText(at: cursorPoint.row) ?? ""
-        if cursorPoint.column < line.count {
-            cursorPoint.column = findNextWordBoundary(in: line, from: cursorPoint.column)
-        } else if let nextRow = dm.nextCodeRow(after: cursorPoint.row) {
-            cursorPoint.row = nextRow
-            cursorPoint.column = 0
+        var targetRow = cursorPoint.row
+        var targetCol = cursorPoint.column
+        let line = dm.lineText(at: targetRow) ?? ""
+        if targetCol < line.count {
+            targetCol = findNextWordBoundary(in: line, from: targetCol)
+        } else if let nextRow = dm.nextCodeRow(after: targetRow) {
+            targetRow = nextRow
+            targetCol = 0
         }
-        if !expandSelection { selectionAnchor = cursorPoint }
+        let newPoint = MultiBufferPoint(row: targetRow, column: targetCol)
+        if expandSelection {
+            if selectionAnchor == nil {
+                selectionAnchor = cursorPoint
+            }
+        } else {
+            selectionAnchor = nil
+        }
+        cursorPoint = newPoint
     }
 
     private func moveCursorToLineStart(expandSelection: Bool) {
-        cursorPoint.column = 0
-        if !expandSelection { selectionAnchor = cursorPoint }
+        let newPoint = MultiBufferPoint(row: cursorPoint.row, column: 0)
+        if expandSelection {
+            if selectionAnchor == nil {
+                selectionAnchor = cursorPoint
+            }
+        } else {
+            selectionAnchor = nil
+        }
+        cursorPoint = newPoint
     }
 
     private func moveCursorToLineEnd(expandSelection: Bool) {
         guard let dm = displayMap else { return }
-        cursorPoint.column = dm.lineLength(at: cursorPoint.row)
-        if !expandSelection { selectionAnchor = cursorPoint }
+        let newPoint = MultiBufferPoint(row: cursorPoint.row, column: dm.lineLength(at: cursorPoint.row))
+        if expandSelection {
+            if selectionAnchor == nil {
+                selectionAnchor = cursorPoint
+            }
+        } else {
+            selectionAnchor = nil
+        }
+        cursorPoint = newPoint
     }
 
     private func moveCursorToDocumentStart(expandSelection: Bool) {
         guard let dm = displayMap else { return }
-        cursorPoint = MultiBufferPoint(row: dm.minCodeRow, column: 0)
-        if !expandSelection { selectionAnchor = cursorPoint }
+        let newPoint = MultiBufferPoint(row: dm.minCodeRow, column: 0)
+        if expandSelection {
+            if selectionAnchor == nil {
+                selectionAnchor = cursorPoint
+            }
+        } else {
+            selectionAnchor = nil
+        }
+        cursorPoint = newPoint
     }
 
     private func moveCursorToDocumentEnd(expandSelection: Bool) {
         guard let dm = displayMap else { return }
         let lastRow = dm.maxCodeRow
-        cursorPoint = MultiBufferPoint(row: lastRow, column: dm.lineLength(at: lastRow))
-        if !expandSelection { selectionAnchor = cursorPoint }
+        let newPoint = MultiBufferPoint(row: lastRow, column: dm.lineLength(at: lastRow))
+        if expandSelection {
+            if selectionAnchor == nil {
+                selectionAnchor = cursorPoint
+            }
+        } else {
+            selectionAnchor = nil
+        }
+        cursorPoint = newPoint
     }
 
     private func pageUpMovement(expandSelection: Bool) {
@@ -2302,9 +2427,16 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                 break
             }
         }
-        cursorPoint.row = targetRow
-        cursorPoint.column = min(cursorPoint.column, dm.lineLength(at: targetRow))
-        if !expandSelection { selectionAnchor = cursorPoint }
+        let targetCol = min(cursorPoint.column, dm.lineLength(at: targetRow))
+        let newPoint = MultiBufferPoint(row: targetRow, column: targetCol)
+        if expandSelection {
+            if selectionAnchor == nil {
+                selectionAnchor = cursorPoint
+            }
+        } else {
+            selectionAnchor = nil
+        }
+        cursorPoint = newPoint
     }
 
     private func pageDownMovement(expandSelection: Bool) {
@@ -2318,9 +2450,16 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                 break
             }
         }
-        cursorPoint.row = targetRow
-        cursorPoint.column = min(cursorPoint.column, dm.lineLength(at: targetRow))
-        if !expandSelection { selectionAnchor = cursorPoint }
+        let targetCol = min(cursorPoint.column, dm.lineLength(at: targetRow))
+        let newPoint = MultiBufferPoint(row: targetRow, column: targetCol)
+        if expandSelection {
+            if selectionAnchor == nil {
+                selectionAnchor = cursorPoint
+            }
+        } else {
+            selectionAnchor = nil
+        }
+        cursorPoint = newPoint
     }
 
     public func insertText(_ string: Any, replacementRange: NSRange) {
@@ -2370,8 +2509,8 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                 return
             }
             rangeToReplace = min(newVisualStart, newVisualEnd)..<max(newVisualStart, newVisualEnd)
+            selectionAnchor = rangeToReplace.lowerBound != rangeToReplace.upperBound ? newVisualStart : nil
             cursorPoint = newVisualEnd
-            selectionAnchor = newVisualStart
             promotedLazyBuffer = true
         }
 
@@ -2411,6 +2550,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         mb.scheduleDebouncedSave(delayMs: 200)
 
         let excerptIdx = startLoc.excerptIndex
+        let newCursorPt: MultiBufferPoint
         if promotedLazyBuffer {
             // Promotion changes every excerpt for this file from slice-relative
             // coordinates to full-file coordinates. The incremental layout still
@@ -2419,9 +2559,9 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             invalidateLayout()
             syncLayoutIfNeeded()
             if let newVisualPt = displayMap.visualPoint(for: buf.id, bufferPoint: newBufRange.upperBound) {
-                cursorPoint = newVisualPt
+                newCursorPt = newVisualPt
             } else {
-                cursorPoint = MultiBufferPoint(row: rangeToReplace.lowerBound.row, column: newBufRange.upperBound.column)
+                newCursorPt = MultiBufferPoint(row: rangeToReplace.lowerBound.row, column: newBufRange.upperBound.column)
             }
         } else if let deltas = displayMap.rebuildExcerpt(at: excerptIdx) {
             updateLayoutAfterExcerptRebuild(
@@ -2430,20 +2570,21 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                 oldDisplayRange: deltas.oldDisplayRange
             )
             if let newVisualPt = displayMap.visualPoint(for: buf.id, bufferPoint: newBufRange.upperBound) {
-                cursorPoint = newVisualPt
+                newCursorPt = newVisualPt
             } else {
-                cursorPoint = MultiBufferPoint(row: rangeToReplace.lowerBound.row, column: newBufRange.upperBound.column)
+                newCursorPt = MultiBufferPoint(row: rangeToReplace.lowerBound.row, column: newBufRange.upperBound.column)
             }
         } else {
             displayMap.rebuild()
             invalidateLayout()
             if let newVisualPt = displayMap.visualPoint(for: buf.id, bufferPoint: newBufRange.upperBound) {
-                cursorPoint = newVisualPt
+                newCursorPt = newVisualPt
             } else {
-                cursorPoint = MultiBufferPoint(row: rangeToReplace.lowerBound.row, column: newBufRange.upperBound.column)
+                newCursorPt = MultiBufferPoint(row: rangeToReplace.lowerBound.row, column: newBufRange.upperBound.column)
             }
         }
-        selectionAnchor = cursorPoint
+        selectionAnchor = nil
+        cursorPoint = newCursorPt
         ensureCursorVisible()
         resetCursorBlink()
         needsDisplay = true
@@ -2474,6 +2615,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             displayMap.rebuild()
             invalidateLayout()
             if let newVisualPt = displayMap.visualPoint(for: bufId, bufferPoint: startBufferPoint) {
+                selectionAnchor = nil
                 cursorPoint = newVisualPt
             }
         }
@@ -2500,6 +2642,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             mb.scheduleDebouncedSave(delayMs: 200)
 
             let excerptIdx = loc.excerptIndex
+            let newCursorPt: MultiBufferPoint
             if let deltas = displayMap.rebuildExcerpt(at: excerptIdx) {
                 updateLayoutAfterExcerptRebuild(
                     excerptIdx: excerptIdx,
@@ -2507,20 +2650,21 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                     oldDisplayRange: deltas.oldDisplayRange
                 )
                 if let vPt = displayMap.visualPoint(for: buf.id, bufferPoint: newRange.upperBound) {
-                    cursorPoint = vPt
+                    newCursorPt = vPt
                 } else {
-                    cursorPoint = MultiBufferPoint(row: cursorPoint.row, column: max(0, cursorPoint.column - 1))
+                    newCursorPt = MultiBufferPoint(row: cursorPoint.row, column: max(0, cursorPoint.column - 1))
                 }
             } else {
                 displayMap.rebuild()
                 invalidateLayout()
                 if let vPt = displayMap.visualPoint(for: buf.id, bufferPoint: newRange.upperBound) {
-                    cursorPoint = vPt
+                    newCursorPt = vPt
                 } else {
-                    cursorPoint = MultiBufferPoint(row: cursorPoint.row, column: max(0, cursorPoint.column - 1))
+                    newCursorPt = MultiBufferPoint(row: cursorPoint.row, column: max(0, cursorPoint.column - 1))
                 }
             }
-            selectionAnchor = cursorPoint
+            selectionAnchor = nil
+            cursorPoint = newCursorPt
             ensureCursorVisible()
             resetCursorBlink()
             needsDisplay = true
@@ -2539,6 +2683,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             mb.scheduleDebouncedSave(delayMs: 200)
 
             let excerptIdx = loc.excerptIndex
+            let newCursorPt: MultiBufferPoint
             if let deltas = displayMap.rebuildExcerpt(at: excerptIdx) {
                 updateLayoutAfterExcerptRebuild(
                     excerptIdx: excerptIdx,
@@ -2546,20 +2691,21 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                     oldDisplayRange: deltas.oldDisplayRange
                 )
                 if let vPt = displayMap.visualPoint(for: buf.id, bufferPoint: newRange.upperBound) {
-                    cursorPoint = vPt
+                    newCursorPt = vPt
                 } else {
-                    cursorPoint = MultiBufferPoint(row: max(0, cursorPoint.row - 1), column: prevLen)
+                    newCursorPt = MultiBufferPoint(row: max(0, cursorPoint.row - 1), column: prevLen)
                 }
             } else {
                 displayMap.rebuild()
                 invalidateLayout()
                 if let vPt = displayMap.visualPoint(for: buf.id, bufferPoint: newRange.upperBound) {
-                    cursorPoint = vPt
+                    newCursorPt = vPt
                 } else {
-                    cursorPoint = MultiBufferPoint(row: max(0, cursorPoint.row - 1), column: prevLen)
+                    newCursorPt = MultiBufferPoint(row: max(0, cursorPoint.row - 1), column: prevLen)
                 }
             }
-            selectionAnchor = cursorPoint
+            selectionAnchor = nil
+            cursorPoint = newCursorPt
             ensureCursorVisible()
             resetCursorBlink()
             needsDisplay = true
@@ -2591,6 +2737,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             displayMap.rebuild()
             invalidateLayout()
             if let newVisualPt = displayMap.visualPoint(for: bufId, bufferPoint: startBufferPoint) {
+                selectionAnchor = nil
                 cursorPoint = newVisualPt
             }
         }
@@ -2618,6 +2765,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             mb.scheduleDebouncedSave(delayMs: 200)
 
             let excerptIdx = loc.excerptIndex
+            let newCursorPt: MultiBufferPoint
             if let deltas = displayMap.rebuildExcerpt(at: excerptIdx) {
                 updateLayoutAfterExcerptRebuild(
                     excerptIdx: excerptIdx,
@@ -2625,16 +2773,21 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                     oldDisplayRange: deltas.oldDisplayRange
                 )
                 if let vPt = displayMap.visualPoint(for: buf.id, bufferPoint: newRange.upperBound) {
-                    cursorPoint = vPt
+                    newCursorPt = vPt
+                } else {
+                    newCursorPt = cursorPoint
                 }
             } else {
                 displayMap.rebuild()
                 invalidateLayout()
                 if let vPt = displayMap.visualPoint(for: buf.id, bufferPoint: newRange.upperBound) {
-                    cursorPoint = vPt
+                    newCursorPt = vPt
+                } else {
+                    newCursorPt = cursorPoint
                 }
             }
-            selectionAnchor = cursorPoint
+            selectionAnchor = nil
+            cursorPoint = newCursorPt
             ensureCursorVisible()
             resetCursorBlink()
             needsDisplay = true
@@ -2652,6 +2805,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             mb.scheduleDebouncedSave(delayMs: 200)
 
             let excerptIdx = loc.excerptIndex
+            let newCursorPt: MultiBufferPoint
             if let deltas = displayMap.rebuildExcerpt(at: excerptIdx) {
                 updateLayoutAfterExcerptRebuild(
                     excerptIdx: excerptIdx,
@@ -2659,16 +2813,21 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                     oldDisplayRange: deltas.oldDisplayRange
                 )
                 if let vPt = displayMap.visualPoint(for: buf.id, bufferPoint: newRange.upperBound) {
-                    cursorPoint = vPt
+                    newCursorPt = vPt
+                } else {
+                    newCursorPt = cursorPoint
                 }
             } else {
                 displayMap.rebuild()
                 invalidateLayout()
                 if let vPt = displayMap.visualPoint(for: buf.id, bufferPoint: newRange.upperBound) {
-                    cursorPoint = vPt
+                    newCursorPt = vPt
+                } else {
+                    newCursorPt = cursorPoint
                 }
             }
-            selectionAnchor = cursorPoint
+            selectionAnchor = nil
+            cursorPoint = newCursorPt
             ensureCursorVisible()
             resetCursorBlink()
             needsDisplay = true
@@ -2726,8 +2885,8 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             }
             mb.scheduleDebouncedSave(delayMs: 200)
             if let sel = transaction.selectionBefore {
+                selectionAnchor = sel.lowerBound != sel.upperBound ? sel.upperBound : nil
                 cursorPoint = sel.lowerBound
-                selectionAnchor = sel.upperBound
             }
             displayMap.rebuild()
             invalidateLayout()
