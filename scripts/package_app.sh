@@ -1,8 +1,12 @@
 #!/bin/zsh
 set -e
 
-echo "🔨 [1/5] Building Release binary with optimizations..."
-swift build -c release
+echo "🔨 [1/5] Building Release binary with extreme size optimizations..."
+swift build -c release \
+    -Xswiftc -Osize \
+    -Xlinker -dead_strip \
+    -Xlinker -exported_symbol -Xlinker _main \
+    -Xswiftc -Xfrontend -Xswiftc -disable-reflection-names
 
 DIST_DIR="dist"
 APP_BUNDLE="${DIST_DIR}/AnyDiff.app"
@@ -15,18 +19,16 @@ rm -rf "${DIST_DIR}"
 mkdir -p "${MACOS_DIR}"
 mkdir -p "${RESOURCES_DIR}"
 
-# Copy binary
+# Copy binary & strip symbols for minimal release size
 cp ".build/release/AnyDiff" "${MACOS_DIR}/AnyDiff"
 chmod +x "${MACOS_DIR}/AnyDiff"
+echo "✂️ [2.5/5] Stripping debug and unexported symbols..."
+strip -u -r "${MACOS_DIR}/AnyDiff"
 
-# Copy Icons
+# Copy Icons (AppIcon.icns includes all resolutions up to 1024x1024)
 if [ -f "Resources/AppIcon.icns" ]; then
     cp "Resources/AppIcon.icns" "${RESOURCES_DIR}/AppIcon.icns"
 fi
-if [ -f "Resources/AppIcon.png" ]; then
-    cp "Resources/AppIcon.png" "${RESOURCES_DIR}/AppIcon.png"
-fi
-
 
 # Create Info.plist
 cat << 'PLIST' > "${CONTENTS_DIR}/Info.plist"
@@ -73,13 +75,13 @@ echo -n "APPL????" > "${CONTENTS_DIR}/PkgInfo"
 echo "🔏 [3/5] Ad-hoc code signing AnyDiff.app..."
 codesign --force --deep --sign - "${APP_BUNDLE}"
 
-# Create ZIP
-echo "🗜️ [4/5] Creating ZIP archive..."
-(cd "${DIST_DIR}" && zip -r -q -y "AnyDiff-macOS.zip" "AnyDiff.app")
+# Create ZIP with maximum compression
+echo "🗜️ [4/5] Creating ZIP archive with maximum compression..."
+(cd "${DIST_DIR}" && zip -9 -r -q -y "AnyDiff-macOS.zip" "AnyDiff.app")
 
-# Create DMG
-echo "💿 [5/5] Creating DMG disk image..."
-hdiutil create -volname "AnyDiff" -srcfolder "${APP_BUNDLE}" -ov -format UDZO "${DIST_DIR}/AnyDiff.dmg" > /dev/null
+# Create DMG with maximum compression
+echo "💿 [5/5] Creating DMG disk image with maximum compression..."
+hdiutil create -volname "AnyDiff" -srcfolder "${APP_BUNDLE}" -ov -format UDZO -imagekey zlib-level=9 "${DIST_DIR}/AnyDiff.dmg" > /dev/null
 
 echo "\n✨ Build and packaging complete! Distribution files ready in dist/:"
 ls -lh "${DIST_DIR}"
