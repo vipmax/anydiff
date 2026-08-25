@@ -354,23 +354,8 @@ public final class MockAgentSessionManager: AgentSessionManager, @unchecked Send
                     AgentEditedFileItem(path: "Sources/AnyDiffUI/Agent/AgentPanelView.swift", additions: 14, deletions: 10)
                 ])
 
-                // Step 3: Keep several realistic tool cards around while a
-                // large markdown response streams into the same message.
-                self.messages[idx].setToolCalls(self.makeStressToolCalls())
-
-                // Simulate new file change arriving during live streaming (appending to live summary)
-                Task { @MainActor [weak self] in
-                    try? await Task.sleep(nanoseconds: 600_000_000)
-                    guard let self, self.status == .busy else { return }
-                    self.liveEditedSummary = AgentEditedFilesSummary(files: [
-                        AgentEditedFileItem(path: "Sources/AnyDiffUI/Agent/AgentInputView.swift", additions: 7, deletions: 4),
-                        AgentEditedFileItem(path: "Sources/AnyDiffUI/Agent/AgentPanelView.swift", additions: 14, deletions: 10),
-                        AgentEditedFileItem(path: "Sources/AnyDiffUI/Views/MainWindowView.swift", additions: 2, deletions: 1)
-                    ])
-                }
-
                 guard await self.streamResponse(
-                    self.makeStressResponse(prompt: "Edit request for «\(trimmed)»"),
+                    self.makeEditResponse(prompt: trimmed),
                     messageId: assistantMsgId
                 ) else { return }
             } else {
@@ -388,25 +373,21 @@ public final class MockAgentSessionManager: AgentSessionManager, @unchecked Send
                     )
                 ])
 
-                try? await Task.sleep(nanoseconds: 1_200_000_000)
+                try? await Task.sleep(nanoseconds: 700_000_000)
                 if Task.isCancelled { return }
                 self.messages[idx].setToolCalls([
                     ToolCallItem(
                         toolName: "fs/read_text_file",
                         path: "Sources/AnyDiffUI/Agent/AgentPanelView.swift",
                         descriptionText: "Inspecting UI layout",
-                        summary: "Read 180 lines successfully",
+                        summary: "Read 48 lines successfully",
                         status: .completed
                     )
                 ])
 
-                // The default path also exercises a mixed tool timeline and
-                // not just a single tiny read card.
-                self.messages[idx].setToolCalls(self.makeStressToolCalls())
-
                 // 3. Stream in medium-sized chunks.
                 guard await self.streamResponse(
-                    self.makeStressResponse(prompt: trimmed),
+                    self.makePromptResponse(prompt: trimmed),
                     messageId: assistantMsgId
                 ) else { return }
             }
@@ -494,6 +475,48 @@ public final class MockAgentSessionManager: AgentSessionManager, @unchecked Send
         ```
 
         If you would like to apply any code modifications based on these images, let me know and I will generate the patch! 🚀
+        """
+    }
+
+    private func makePromptResponse(prompt: String) -> String {
+        return """
+        # Request Breakdown
+
+        Request: `\(prompt)`
+
+        Done. I inspected the project workspace and verified the context.
+
+        ## Verified Items
+        - Layout stability and smooth scrolling.
+        - Real-time Markdown formatting during streaming.
+        - Tool call timeline integration.
+
+        ```swift
+        struct AgentStatusSummary {
+            let status: String = "ready"
+            let filesChecked: Int = 3
+        }
+        ```
+
+        Ready for the next instructions! 🚀
+        """
+    }
+
+    private func makeEditResponse(prompt: String) -> String {
+        return """
+        # Edit Completed
+
+        Applied requested modifications for `\(prompt)`.
+
+        ## Changes Summary
+        - Updated menu and layout settings.
+        - Refined diff and editor state synchronization.
+
+        ```diff
+        + let agentItem = NSMenuItem(title: "Toggle Agent", action: #selector(toggleAgentPanel))
+        ```
+
+        Files compiled and verified cleanly! ⚡️
         """
     }
 

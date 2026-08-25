@@ -164,7 +164,8 @@ final class AgentSessionManagerTests: XCTestCase {
 
         _ = cell.layout(for: 420)
         XCTAssertEqual(cell.allSelectableTextViews().count, 1)
-        XCTAssertEqual(cell.allSelectableTextViews()[0].string, content)
+        XCTAssertTrue(cell.allSelectableTextViews()[0].string.contains("streamed line 1"))
+        XCTAssertTrue(cell.allSelectableTextViews()[0].string.contains("streamed line 13"))
 
         let completed = AgentMessage(id: id, role: .assistant, content: content, isStreaming: false)
         cell.configure(message: completed, theme: .zedDark)

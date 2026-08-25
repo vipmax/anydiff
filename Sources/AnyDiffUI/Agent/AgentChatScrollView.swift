@@ -3958,31 +3958,63 @@ public final class AgentNativeMessageCell: NSView {
             textView.parentCell = self
             textView.cellId = message.id
             textView.tvKey = "md_0"
+            textView.isSelectable = nativeTextSelectionEnabled
             addSubview(textView)
             markdownViews.append(textView)
             streamingRenderedContent = ""
         }
 
-        let font = NSFont.systemFont(ofSize: 13)
-        let color = NSColor(cgColor: theme.foreground.cgColor) ?? .textColor
-        let style = NSMutableParagraphStyle()
-        style.lineSpacing = 3
-        style.alignment = .left
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: font,
-            .foregroundColor: color,
-            .paragraphStyle: style
-        ]
-
-        if content.hasPrefix(streamingRenderedContent) {
-            let oldUTF16Length = streamingRenderedContent.utf16.count
-            let newText = (content as NSString).substring(from: oldUTF16Length)
-            if !newText.isEmpty {
-                textView.textStorage?.append(NSAttributedString(string: newText, attributes: attributes))
+        let sections = compileSections(from: content, splitRichText: false)
+        let mutable = NSMutableAttributedString()
+        for (i, section) in sections.enumerated() {
+            switch section {
+            case .richText(let attr):
+                if i > 0 && mutable.length > 0 {
+                    mutable.append(NSAttributedString(string: "\n\n", attributes: [.font: NSFont.systemFont(ofSize: 13)]))
+                }
+                mutable.append(attr)
+            case .quote(let attr):
+                if i > 0 && mutable.length > 0 {
+                    mutable.append(NSAttributedString(string: "\n", attributes: [.font: NSFont.systemFont(ofSize: 13)]))
+                }
+                let quoteMutable = NSMutableAttributedString()
+                quoteMutable.append(NSAttributedString(string: "▎ ", attributes: [
+                    .font: NSFont.systemFont(ofSize: 13, weight: .bold),
+                    .foregroundColor: NSColor.controlAccentColor
+                ]))
+                quoteMutable.append(attr)
+                mutable.append(quoteMutable)
+            case .codeBlock(_, let code):
+                if i > 0 && mutable.length > 0 {
+                    mutable.append(NSAttributedString(string: "\n", attributes: [.font: NSFont.systemFont(ofSize: 13)]))
+                }
+                let style = NSMutableParagraphStyle()
+                style.lineSpacing = 2
+                let codeColor = NSColor(cgColor: theme.foreground.cgColor) ?? .textColor
+                let codeBg = (NSColor(cgColor: theme.gutterBackground.cgColor) ?? NSColor.windowBackgroundColor).withAlphaComponent(0.65)
+                let codeAttr = NSAttributedString(string: code, attributes: [
+                    .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
+                    .foregroundColor: codeColor,
+                    .backgroundColor: codeBg,
+                    .paragraphStyle: style
+                ])
+                mutable.append(codeAttr)
             }
-        } else {
-            textView.textStorage?.setAttributedString(NSAttributedString(string: content, attributes: attributes))
         }
+
+        if mutable.length == 0 && !content.isEmpty {
+            let font = NSFont.systemFont(ofSize: 13)
+            let color = NSColor(cgColor: theme.foreground.cgColor) ?? .textColor
+            let style = NSMutableParagraphStyle()
+            style.lineSpacing = 3
+            mutable.append(NSAttributedString(string: content, attributes: [
+                .font: font,
+                .foregroundColor: color,
+                .paragraphStyle: style
+            ]))
+        }
+
+        textView.textStorage?.setAttributedString(mutable)
         streamingRenderedContent = content
     }
 
@@ -4477,7 +4509,9 @@ public final class AgentNativeMessageCell: NSView {
 
             let runFont: NSFont
             if intent.rawValue & 4 != 0 {
-                runFont = NSFont.monospacedSystemFont(ofSize: font.pointSize, weight: .regular)
+                runFont = NSFont.monospacedSystemFont(ofSize: max(11.5, font.pointSize - 0.5), weight: .regular)
+                let codeBg = (NSColor(cgColor: theme.gutterBackground.cgColor) ?? NSColor.windowBackgroundColor).withAlphaComponent(0.65)
+                result.addAttribute(.backgroundColor, value: codeBg, range: NSRange(location: location, length: length))
             } else if intent.rawValue & 2 != 0 {
                 runFont = NSFont.systemFont(ofSize: font.pointSize, weight: .bold)
             } else {
