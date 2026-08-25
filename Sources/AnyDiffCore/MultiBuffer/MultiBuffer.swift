@@ -54,6 +54,7 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
         let insertionIndex = oldExcerptIndices.first ?? excerpts.firstIndex(where: { $0.filePath > filePath }) ?? excerpts.count
         let oldBufferIDs = Set(oldExcerptIndices.map { excerpts[$0].bufferId })
 
+        undoManager.invalidate(bufferIds: oldBufferIDs)
         excerpts.removeAll { $0.filePath == filePath }
         for id in oldBufferIDs {
             buffers.removeValue(forKey: id)
@@ -215,6 +216,7 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
             let edit = TextEdit(
                 bufferId: startLoc.bufferId,
                 range: editRangeStart..<editRangeEnd,
+                oldRange: oldStartPt..<oldEndPt,
                 oldText: oldExactText,
                 newText: newText
             )
@@ -237,6 +239,151 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
         let startPt = min(range.lowerBound, newEndPoint)
         let endPt = max(range.lowerBound, newEndPoint)
         return startPt..<endPt
+    }
+
+    /// Applies an external replacement to an already materialized full-file
+    /// buffer and records it after the existing user edits in undo history.
+    /// Lazy diff slices are intentionally excluded: their complete file text
+    /// is not present in memory, so callers must rebuild that file's diff.
+    @discardableResult
+    public func applyExternalTextUpdate(
+        filePath: String,
+        newText: String,
+        updateBaseline: Bool = true
+    ) -> Bool {
+        guard let buffer = buffers.values.first(where: {
+            $0.filePath == filePath && $0.isFullFile && !$0.isLazySlice
+        }) else {
+            return false
+        }
+
+        let oldText = buffer.text()
+        guard oldText != newText else { return false }
+
+        let oldLines = oldText.components(separatedBy: "\n")
+        let newLines = newText.components(separatedBy: "\n")
+        let oldEnd = bufferEndPoint(buffer)
+        var edits = externalTextEdits(
+            buffer: buffer,
+            oldLines: oldLines,
+            newLines: newLines
+        )
+        for edit in edits.reversed() {
+            guard let oldRange = edit.oldRange else { continue }
+            _ = buffer.replace(
+                start: oldRange.lowerBound,
+                end: oldRange.upperBound,
+                with: edit.newText
+            )
+        }
+
+        if buffer.text() != newText {
+            // Keep the Myers path for normal line changes, but fall back to a
+            // single exact replacement for newline-at-EOF edge cases where a
+            // line boundary has no distinct BufferPoint representation.
+            let currentEnd = bufferEndPoint(buffer)
+            _ = buffer.replace(start: .zero, end: currentEnd, with: oldText)
+            let newEnd = bufferEndPoint(for: newLines)
+            _ = buffer.replace(start: .zero, end: oldEnd, with: newText)
+            edits = [TextEdit(
+                bufferId: buffer.id,
+                range: .zero..<newEnd,
+                oldRange: .zero..<oldEnd,
+                oldText: oldText,
+                newText: newText
+            )]
+        }
+        guard buffer.text() == newText else { return false }
+        if updateBaseline {
+            buffer.baselineText = newText
+        }
+        buffer.markSaved()
+
+        // A plain text file has one full-file excerpt. Promoted diff buffers
+        // can still have several hunk excerpts; keep those ranges intact so
+        // the diff layout is not replaced with duplicate full-file excerpts.
+        let matchingExcerptIndices = excerpts.indices.filter { excerpts[$0].bufferId == buffer.id }
+        if matchingExcerptIndices.count == 1, let index = matchingExcerptIndices.first {
+            excerpts[index].bufferRange = 0..<buffer.lineCount
+        }
+
+        undoManager.push(transaction: EditTransaction(edits: edits))
+        version &+= 1
+        return true
+    }
+
+    private func externalTextEdits(
+        buffer: Buffer,
+        oldLines: [String],
+        newLines: [String]
+    ) -> [TextEdit] {
+        let diffLines = LineDiffEngine.shared.diffLines(oldLines: oldLines, newLines: newLines)
+        var edits: [TextEdit] = []
+        var oldRow = 0
+        var newRow = 0
+        var changedOldStart: Int?
+        var changedNewStart: Int?
+
+        func flushChange() {
+            guard let oldStart = changedOldStart, let newStart = changedNewStart else { return }
+            let oldRange = bufferPoint(atLineBoundary: oldStart, lines: oldLines)..<bufferPoint(atLineBoundary: oldRow, lines: oldLines)
+            let newRange = bufferPoint(atLineBoundary: newStart, lines: newLines)..<bufferPoint(atLineBoundary: newRow, lines: newLines)
+            let replacement = lineText(newLines, range: newStart..<newRow)
+            edits.append(TextEdit(
+                bufferId: buffer.id,
+                range: newRange,
+                oldRange: oldRange,
+                oldText: buffer.text(in: oldRange),
+                newText: replacement
+            ))
+            changedOldStart = nil
+            changedNewStart = nil
+        }
+
+        for diffLine in diffLines {
+            switch diffLine.kind {
+            case .unchanged:
+                flushChange()
+                oldRow += 1
+                newRow += 1
+            case .deleted:
+                if changedOldStart == nil { changedOldStart = oldRow }
+                if changedNewStart == nil { changedNewStart = newRow }
+                oldRow += 1
+            case .added:
+                if changedOldStart == nil { changedOldStart = oldRow }
+                if changedNewStart == nil { changedNewStart = newRow }
+                newRow += 1
+            case .header:
+                break
+            }
+        }
+        flushChange()
+        return edits
+    }
+
+    private func bufferPoint(atLineBoundary line: Int, lines: [String]) -> BufferPoint {
+        if line < lines.count {
+            return BufferPoint(row: line, column: 0)
+        }
+        let lastRow = max(0, lines.count - 1)
+        return BufferPoint(row: lastRow, column: lines[lastRow].count)
+    }
+
+    private func bufferEndPoint(_ buffer: Buffer) -> BufferPoint {
+        bufferPoint(atLineBoundary: buffer.lineCount, lines: buffer.lines)
+    }
+
+    private func bufferEndPoint(for lines: [String]) -> BufferPoint {
+        bufferPoint(atLineBoundary: lines.count, lines: lines)
+    }
+
+    private func lineText(_ lines: [String], range: Range<Int>) -> String {
+        var text = lines[range].joined(separator: "\n")
+        if range.upperBound < lines.count {
+            text.append("\n")
+        }
+        return text
     }
 
     /// Inserts text at a point
@@ -381,6 +528,41 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
             }
         }
         return false
+    }
+
+    /// Returns whether a recent AnyDiff save event can safely be ignored.
+    ///
+    /// FSEvents does not identify the process that wrote a file. Comparing the
+    /// current on-disk text with the materialized buffer lets us distinguish
+    /// AnyDiff's own save notification from a real edit made by another
+    /// editor immediately afterwards.
+    public func shouldIgnoreSelfSavedEvent(
+        filePath: String,
+        diskPath: String,
+        threshold: TimeInterval = 3.0
+    ) -> Bool {
+        let recentlySaved = isSelfSavedRecentlyExact(filePath: diskPath, threshold: threshold)
+            || isSelfSavedRecently(filePath: filePath, threshold: threshold)
+        guard recentlySaved else { return false }
+
+        guard let diskText = try? String(contentsOfFile: diskPath, encoding: .utf8) else {
+            return true
+        }
+
+        let canonicalDiskPath = canonicalSavedPath(diskPath)
+        guard let fullBuffer = buffers.values.first(where: { buffer in
+            guard buffer.isFullFile, !buffer.isLazySlice else { return false }
+            if buffer.filePath == filePath { return true }
+            guard let fullDiskPath = buffer.fullDiskPath else { return false }
+            return canonicalSavedPath(fullDiskPath) == canonicalDiskPath
+        }) else {
+            // A lazy diff slice cannot be compared with the complete file;
+            // retain the conservative suppression and let the normal diff
+            // refresh handle it later.
+            return true
+        }
+
+        return fullBuffer.text() == diskText
     }
 
     private func canonicalSavedPath(_ path: String) -> String {
@@ -539,6 +721,7 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
             excerpts[idx] = updated
 
             if ex.bufferId != targetBuf.id {
+                undoManager.invalidate(bufferIds: [ex.bufferId])
                 buffers.removeValue(forKey: ex.bufferId)
             }
         }
@@ -699,6 +882,7 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
                         var updatedLast = last
                         updatedLast.bufferRange = 0..<buf1.lineCount
                         updatedLast.hunk = nil
+                        undoManager.invalidate(bufferIds: [buf2.id])
                         buffers.removeValue(forKey: buf2.id)
                         merged[merged.count - 1] = updatedLast
                         continue

@@ -1381,6 +1381,25 @@ final class MultiBufferTests: XCTestCase {
         XCTAssertFalse(mb.isSelfSavedRecentlyExact(filePath: "/tmp/anydiff-watch/Tests/File.swift"))
     }
 
+    func testSelfSaveEventIsAllowedWhenAnotherEditorChangedDiskText() throws {
+        let filePath = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("anydiff-self-save-\(UUID().uuidString).txt")
+        defer { try? FileManager.default.removeItem(atPath: filePath) }
+
+        let buffer = Buffer(filePath: filePath, text: "local\n")
+        buffer.isFullFile = true
+        buffer.fullDiskPath = filePath
+        let mb = MultiBuffer()
+        mb.addBuffer(buffer)
+        try "local\n".write(toFile: filePath, atomically: true, encoding: .utf8)
+        mb.recordSelfSave(for: filePath)
+
+        XCTAssertTrue(mb.shouldIgnoreSelfSavedEvent(filePath: filePath, diskPath: filePath))
+
+        try "zed\n".write(toFile: filePath, atomically: true, encoding: .utf8)
+        XCTAssertFalse(mb.shouldIgnoreSelfSavedEvent(filePath: filePath, diskPath: filePath))
+    }
+
     func testReplacingOneFilePreservesUnchangedBufferAndExcerptIdentity() {
         let mb = MultiBuffer()
         let oldA = Buffer(filePath: "FileA.swift", text: "old A")
@@ -1400,6 +1419,101 @@ final class MultiBufferTests: XCTestCase {
         XCTAssertEqual(mb.excerpts[1].id, exB.id)
         XCTAssertEqual(mb.excerpts[1].bufferId, oldB.id)
         XCTAssertEqual(mb.line(at: 1), "stable B")
+    }
+
+    func testRemovingBufferInvalidatesUndoAndRedoTransactions() {
+        let mb = MultiBuffer()
+        let old = Buffer(filePath: "old.swift", text: "old")
+        mb.addBuffer(old)
+        mb.addExcerpt(Excerpt(bufferId: old.id, filePath: old.filePath, bufferRange: 0..<1))
+
+        mb.replace(
+            range: MultiBufferPoint(row: 0, column: 3)..<MultiBufferPoint(row: 0, column: 3),
+            with: " edit"
+        )
+        XCTAssertTrue(mb.undoManager.canUndo)
+        _ = mb.undoManager.popUndo()
+        XCTAssertTrue(mb.undoManager.canRedo)
+
+        mb.replaceFile(filePath: old.filePath, buffers: [], excerpts: [])
+
+        XCTAssertFalse(mb.undoManager.canUndo)
+        XCTAssertFalse(mb.undoManager.canRedo)
+    }
+
+    func testTypingAfterCoalescingIntervalCreatesSeparateUndoOperation() {
+        let manager = MultiBufferUndoManager()
+        let bufferId = BufferId()
+        let firstCursor = MultiBufferPoint(row: 0, column: 0)
+        let secondCursor = MultiBufferPoint(row: 0, column: 1)
+        let finalCursor = MultiBufferPoint(row: 0, column: 2)
+
+        manager.push(transaction: EditTransaction(
+            timestamp: Date(timeIntervalSince1970: 100),
+            edits: [TextEdit(
+                bufferId: bufferId,
+                range: BufferPoint(row: 0, column: 0)..<BufferPoint(row: 0, column: 1),
+                oldRange: BufferPoint(row: 0, column: 0)..<BufferPoint(row: 0, column: 0),
+                oldText: "",
+                newText: "a"
+            )],
+            cursorBefore: firstCursor,
+            cursorAfter: secondCursor,
+            isTyping: true
+        ))
+        manager.push(transaction: EditTransaction(
+            timestamp: Date(timeIntervalSince1970: 101.1),
+            edits: [TextEdit(
+                bufferId: bufferId,
+                range: BufferPoint(row: 0, column: 1)..<BufferPoint(row: 0, column: 2),
+                oldRange: BufferPoint(row: 0, column: 1)..<BufferPoint(row: 0, column: 1),
+                oldText: "",
+                newText: "b"
+            )],
+            cursorBefore: secondCursor,
+            cursorAfter: finalCursor,
+            isTyping: true
+        ))
+
+        let second = manager.popUndo()
+        XCTAssertEqual(second?.edits.count, 1)
+        XCTAssertEqual(second?.edits.first?.newText, "b")
+        let first = manager.popUndo()
+        XCTAssertEqual(first?.edits.count, 1)
+        XCTAssertEqual(first?.edits.first?.newText, "a")
+    }
+
+    func testExternalTextUpdateIsAddedAfterUserEditInUndoHistory() {
+        let mb = MultiBuffer()
+        let buffer = Buffer(
+            filePath: "File.swift",
+            text: "one\ntwo\nthree",
+            baselineText: "one\ntwo\nold-three"
+        )
+        buffer.isFullFile = true
+        mb.addBuffer(buffer)
+        mb.addExcerpt(Excerpt(bufferId: buffer.id, filePath: buffer.filePath, bufferRange: 0..<3))
+
+        mb.replace(
+            range: MultiBufferPoint(row: 0, column: 3)..<MultiBufferPoint(row: 0, column: 3),
+            with: "X"
+        )
+        XCTAssertEqual(buffer.text(), "oneX\ntwo\nthree")
+
+        XCTAssertTrue(mb.applyExternalTextUpdate(
+            filePath: buffer.filePath,
+            newText: "oneXY\ntwo\nthreeZ",
+            updateBaseline: false
+        ))
+        XCTAssertEqual(buffer.text(), "oneXY\ntwo\nthreeZ")
+        XCTAssertEqual(buffer.baselineText, "one\ntwo\nold-three")
+
+        let external = mb.undoManager.popUndo()
+        XCTAssertEqual(external?.edits.count, 2)
+        XCTAssertEqual(external?.edits.map(\.newText), ["oneXY\n", "threeZ"])
+        let local = mb.undoManager.popUndo()
+        XCTAssertEqual(local?.edits.first?.oldText, "")
+        XCTAssertEqual(local?.edits.first?.newText, "X")
     }
 
     func testRenamedFileRemovesOldPathAndAddsNewPathWithoutTouchingOthers() {

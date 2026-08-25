@@ -176,6 +176,365 @@ final class CustomMultiBufferEditorUITests: XCTestCase {
         )
     }
 
+    func testEditorUICommandZAndShiftZUndoRedoEdits() throws {
+        let fixture = makeEditor(text: "let value = 1")
+        let editor = fixture.editor
+        let row = fixture.displayMap.minCodeRow
+        let originalCursor = MultiBufferPoint(row: row, column: 13)
+        editor.cursorPoint = originalCursor
+        editor.insertText(" // edited", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertEqual(fixture.buffer.text(), "let value = 1 // edited")
+        let editedCursor = editor.cursorPoint
+        XCTAssertFalse(editor.hasSelection)
+
+        let undoEvent = try makeKeyEvent(for: fixture.window, characters: "z", modifierFlags: [.command])
+        XCTAssertTrue(editor.performKeyEquivalent(with: undoEvent))
+        XCTAssertEqual(fixture.buffer.text(), "let value = 1")
+        XCTAssertEqual(editor.cursorPoint, originalCursor)
+        XCTAssertFalse(editor.hasSelection)
+        XCTAssertTrue(fixture.displayMap.multiBuffer.undoManager.canRedo)
+
+        let redoEvent = try makeKeyEvent(for: fixture.window, characters: "Z", modifierFlags: [.command, .shift])
+        XCTAssertTrue(editor.performKeyEquivalent(with: redoEvent))
+        XCTAssertEqual(fixture.buffer.text(), "let value = 1 // edited")
+        XCTAssertEqual(editor.cursorPoint, editedCursor)
+        XCTAssertFalse(editor.hasSelection)
+        XCTAssertTrue(fixture.displayMap.multiBuffer.undoManager.canUndo)
+    }
+
+    func testEditorUIUndoRedoRestoresSelectionState() throws {
+        let fixture = makeEditor(text: "let value = 1")
+        let editor = fixture.editor
+        let row = fixture.displayMap.minCodeRow
+        let originalAnchor = MultiBufferPoint(row: row, column: 13)
+        let originalCursor = MultiBufferPoint(row: row, column: 5)
+        editor.selectionAnchor = originalAnchor
+        editor.cursorPoint = originalCursor
+        let selectedBeforeEditImage = try render(editor)
+
+        editor.insertText("X", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertEqual(fixture.buffer.text(), "let vX")
+        let editedCursor = editor.cursorPoint
+        XCTAssertFalse(editor.hasSelection)
+        let editedImage = try render(editor)
+        XCTAssertGreaterThan(
+            differingPixelCount(
+                between: selectedBeforeEditImage,
+                and: editedImage,
+                in: wholeImageRect(editedImage)
+            ),
+            0,
+            "Replacing a selection must change the rendered editor"
+        )
+
+        editor.undo(nil)
+        XCTAssertEqual(fixture.buffer.text(), "let value = 1")
+        XCTAssertEqual(editor.selectionAnchor, originalAnchor)
+        XCTAssertEqual(editor.cursorPoint, originalCursor)
+        XCTAssertTrue(editor.hasSelection)
+        let undoneImage = try render(editor)
+        XCTAssertEqual(
+            differingPixelCount(
+                between: selectedBeforeEditImage,
+                and: undoneImage,
+                in: wholeImageRect(undoneImage)
+            ),
+            0,
+            "Undo must restore the rendered text and selection"
+        )
+
+        editor.redo(nil)
+        XCTAssertEqual(fixture.buffer.text(), "let vX")
+        XCTAssertNil(editor.selectionAnchor)
+        XCTAssertEqual(editor.cursorPoint, editedCursor)
+        XCTAssertFalse(editor.hasSelection)
+        let redoneImage = try render(editor)
+        XCTAssertEqual(
+            differingPixelCount(
+                between: editedImage,
+                and: redoneImage,
+                in: wholeImageRect(redoneImage)
+            ),
+            0,
+            "Redo must restore the rendered edited state"
+        )
+    }
+
+    func testEditorUIUndoRedoRestoresCursorAcrossNewlineInsertionAndDeletion() {
+        let insertion = makeEditor(text: "ab\ncd")
+        let insertionEditor = insertion.editor
+        let insertionStart = MultiBufferPoint(row: insertion.displayMap.minCodeRow, column: 2)
+        insertionEditor.cursorPoint = insertionStart
+
+        insertionEditor.insertNewline(nil)
+        XCTAssertEqual(insertion.buffer.text(), "ab\n\ncd")
+        XCTAssertEqual(insertionEditor.cursorPoint, MultiBufferPoint(row: insertion.displayMap.minCodeRow + 1, column: 0))
+
+        insertionEditor.undo(nil)
+        XCTAssertEqual(insertion.buffer.text(), "ab\ncd")
+        XCTAssertEqual(insertionEditor.cursorPoint, insertionStart)
+
+        insertionEditor.redo(nil)
+        XCTAssertEqual(insertion.buffer.text(), "ab\n\ncd")
+        XCTAssertEqual(insertionEditor.cursorPoint, MultiBufferPoint(row: insertion.displayMap.minCodeRow + 1, column: 0))
+
+        let deletion = makeEditor(text: "ab\ncd")
+        let deletionEditor = deletion.editor
+        let deletionStart = MultiBufferPoint(row: deletion.displayMap.minCodeRow + 1, column: 0)
+        deletionEditor.cursorPoint = deletionStart
+
+        deletionEditor.deleteBackward(nil)
+        XCTAssertEqual(deletion.buffer.text(), "abcd")
+        let deletionCursorAfterEdit = deletionEditor.cursorPoint
+
+        deletionEditor.undo(nil)
+        XCTAssertEqual(deletion.buffer.text(), "ab\ncd")
+        XCTAssertEqual(deletionEditor.cursorPoint, deletionStart)
+
+        deletionEditor.redo(nil)
+        XCTAssertEqual(deletion.buffer.text(), "abcd")
+        XCTAssertEqual(deletionEditor.cursorPoint, deletionCursorAfterEdit)
+    }
+
+    func testEditorUIUndoRedoRestoresSelectionAfterBackspaceDeletion() {
+        let fixture = makeEditor(text: "one\ntwo\nthree")
+        let editor = fixture.editor
+        let row = fixture.displayMap.minCodeRow + 1
+        let selectionAnchor = MultiBufferPoint(row: row, column: 0)
+        let selectionCursor = MultiBufferPoint(row: row, column: 3)
+        editor.selectionAnchor = selectionAnchor
+        editor.cursorPoint = selectionCursor
+
+        editor.deleteBackward(nil)
+        XCTAssertEqual(fixture.buffer.text(), "one\n\nthree")
+        XCTAssertFalse(editor.hasSelection)
+        let cursorAfterEdit = editor.cursorPoint
+
+        editor.undo(nil)
+        XCTAssertEqual(fixture.buffer.text(), "one\ntwo\nthree")
+        XCTAssertEqual(editor.selectionAnchor, selectionAnchor)
+        XCTAssertEqual(editor.cursorPoint, selectionCursor)
+        XCTAssertTrue(editor.hasSelection)
+
+        editor.redo(nil)
+        XCTAssertEqual(fixture.buffer.text(), "one\n\nthree")
+        XCTAssertFalse(editor.hasSelection)
+        XCTAssertEqual(editor.cursorPoint, cursorAfterEdit)
+    }
+
+    func testEditorUIUndoRedoRestoresSelectionAfterDeleteKey() {
+        let fixture = makeEditor(text: "one\ntwo\nthree")
+        let editor = fixture.editor
+        let row = fixture.displayMap.minCodeRow + 1
+        let selectionAnchor = MultiBufferPoint(row: row, column: 0)
+        let selectionCursor = MultiBufferPoint(row: row, column: 3)
+        editor.selectionAnchor = selectionAnchor
+        editor.cursorPoint = selectionCursor
+
+        editor.deleteForward(nil)
+        XCTAssertEqual(fixture.buffer.text(), "one\n\nthree")
+        XCTAssertFalse(editor.hasSelection)
+        let cursorAfterEdit = editor.cursorPoint
+
+        editor.undo(nil)
+        XCTAssertEqual(fixture.buffer.text(), "one\ntwo\nthree")
+        XCTAssertEqual(editor.selectionAnchor, selectionAnchor)
+        XCTAssertEqual(editor.cursorPoint, selectionCursor)
+        XCTAssertTrue(editor.hasSelection)
+
+        editor.redo(nil)
+        XCTAssertEqual(fixture.buffer.text(), "one\n\nthree")
+        XCTAssertFalse(editor.hasSelection)
+        XCTAssertEqual(editor.cursorPoint, cursorAfterEdit)
+    }
+
+    func testEditorUITypingCoalescesIntoOneUndoOperation() {
+        let fixture = makeEditor(text: "x")
+        let editor = fixture.editor
+        let row = fixture.displayMap.minCodeRow
+        editor.cursorPoint = MultiBufferPoint(row: row, column: 1)
+
+        editor.insertText("a", replacementRange: NSRange(location: NSNotFound, length: 0))
+        editor.insertText("b", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertEqual(fixture.buffer.text(), "xab")
+        let editedCursor = editor.cursorPoint
+
+        editor.undo(nil)
+        XCTAssertEqual(fixture.buffer.text(), "x")
+        XCTAssertFalse(fixture.displayMap.multiBuffer.undoManager.canUndo)
+        XCTAssertTrue(fixture.displayMap.multiBuffer.undoManager.canRedo)
+        XCTAssertEqual(editor.cursorPoint, MultiBufferPoint(row: row, column: 1))
+
+        editor.redo(nil)
+        XCTAssertEqual(fixture.buffer.text(), "xab")
+        XCTAssertEqual(editor.cursorPoint, editedCursor)
+    }
+
+    func testEditorUINewEditAfterUndoClearsRedoBranch() {
+        let fixture = makeEditor(text: "x")
+        let editor = fixture.editor
+        let row = fixture.displayMap.minCodeRow
+        editor.cursorPoint = MultiBufferPoint(row: row, column: 1)
+
+        editor.insertText("a", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertEqual(fixture.buffer.text(), "xa")
+
+        editor.undo(nil)
+        XCTAssertEqual(fixture.buffer.text(), "x")
+        XCTAssertTrue(fixture.displayMap.multiBuffer.undoManager.canRedo)
+
+        editor.insertText("b", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertEqual(fixture.buffer.text(), "xb")
+        XCTAssertFalse(fixture.displayMap.multiBuffer.undoManager.canRedo)
+
+        editor.undo(nil)
+        XCTAssertEqual(fixture.buffer.text(), "x")
+        XCTAssertTrue(fixture.displayMap.multiBuffer.undoManager.canRedo)
+
+        editor.redo(nil)
+        XCTAssertEqual(fixture.buffer.text(), "xb")
+    }
+
+    func testEditorUIUndoRedoUsesSharedHistoryWithoutMixingFiles() {
+        let multiBuffer = MultiBuffer()
+        multiBuffer.setContentMode(.text)
+        let fileA = Buffer(filePath: "FileA.swift", text: "A")
+        let fileB = Buffer(filePath: "FileB.swift", text: "B")
+        multiBuffer.addBuffer(fileA)
+        multiBuffer.addBuffer(fileB)
+        multiBuffer.setExcerpts([
+            Excerpt(bufferId: fileA.id, filePath: fileA.filePath, bufferRange: 0..<1, isFileStart: true),
+            Excerpt(bufferId: fileB.id, filePath: fileB.filePath, bufferRange: 0..<1, isFileStart: true)
+        ])
+
+        let displayMap = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
+        let editor = CustomMultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 240),
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = editor
+        editor.frame = NSRect(x: 0, y: 0, width: 400, height: 240)
+        editor.isEditable = true
+        editor.invalidateLayout()
+
+        editor.cursorPoint = MultiBufferPoint(row: 0, column: 1)
+        editor.insertText("1", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertEqual(fileA.text(), "A1")
+        XCTAssertEqual(fileB.text(), "B")
+
+        editor.cursorPoint = MultiBufferPoint(row: 1, column: 1)
+        editor.insertText("2", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertEqual(fileA.text(), "A1")
+        XCTAssertEqual(fileB.text(), "B2")
+
+        editor.undo(nil)
+        XCTAssertEqual(fileA.text(), "A1")
+        XCTAssertEqual(fileB.text(), "B")
+
+        editor.undo(nil)
+        XCTAssertEqual(fileA.text(), "A")
+        XCTAssertEqual(fileB.text(), "B")
+
+        editor.redo(nil)
+        XCTAssertEqual(fileA.text(), "A1")
+        XCTAssertEqual(fileB.text(), "B")
+
+        editor.redo(nil)
+        XCTAssertEqual(fileA.text(), "A1")
+        XCTAssertEqual(fileB.text(), "B2")
+    }
+
+    func testEditorUIDeleteAtFileBoundariesAndEmptyLineRestoresWithUndoRedo() {
+        let start = makeEditor(text: "abc")
+        start.editor.cursorPoint = MultiBufferPoint(row: 0, column: 0)
+        start.editor.deleteForward(nil)
+        XCTAssertEqual(start.buffer.text(), "bc")
+        let startCursorAfterEdit = start.editor.cursorPoint
+
+        start.editor.undo(nil)
+        XCTAssertEqual(start.buffer.text(), "abc")
+        XCTAssertEqual(start.editor.cursorPoint, MultiBufferPoint(row: 0, column: 0))
+        start.editor.redo(nil)
+        XCTAssertEqual(start.buffer.text(), "bc")
+        XCTAssertEqual(start.editor.cursorPoint, startCursorAfterEdit)
+
+        let end = makeEditor(text: "abc")
+        end.editor.cursorPoint = MultiBufferPoint(row: 0, column: 3)
+        end.editor.deleteBackward(nil)
+        XCTAssertEqual(end.buffer.text(), "ab")
+        let endCursorAfterEdit = end.editor.cursorPoint
+
+        end.editor.undo(nil)
+        XCTAssertEqual(end.buffer.text(), "abc")
+        XCTAssertEqual(end.editor.cursorPoint, MultiBufferPoint(row: 0, column: 3))
+        end.editor.redo(nil)
+        XCTAssertEqual(end.buffer.text(), "ab")
+        XCTAssertEqual(end.editor.cursorPoint, endCursorAfterEdit)
+
+        let emptyLine = makeEditor(text: "a\n\nb")
+        emptyLine.editor.cursorPoint = MultiBufferPoint(row: 1, column: 0)
+        emptyLine.editor.deleteForward(nil)
+        XCTAssertEqual(emptyLine.buffer.text(), "a\nb")
+        let emptyLineCursorAfterEdit = emptyLine.editor.cursorPoint
+
+        emptyLine.editor.undo(nil)
+        XCTAssertEqual(emptyLine.buffer.text(), "a\n\nb")
+        XCTAssertEqual(emptyLine.editor.cursorPoint, MultiBufferPoint(row: 1, column: 0))
+        emptyLine.editor.redo(nil)
+        XCTAssertEqual(emptyLine.buffer.text(), "a\nb")
+        XCTAssertEqual(emptyLine.editor.cursorPoint, emptyLineCursorAfterEdit)
+    }
+
+    func testEditorUIMultiLineSelectionIncludingNewlinesRestoresWithUndoRedo() {
+        let fixture = makeEditor(text: "one\ntwo\nthree")
+        let editor = fixture.editor
+        let selectionAnchor = MultiBufferPoint(row: 0, column: 1)
+        let selectionCursor = MultiBufferPoint(row: 2, column: 2)
+        editor.selectionAnchor = selectionAnchor
+        editor.cursorPoint = selectionCursor
+
+        editor.deleteBackward(nil)
+        XCTAssertEqual(fixture.buffer.text(), "oree")
+        XCTAssertFalse(editor.hasSelection)
+        let cursorAfterEdit = editor.cursorPoint
+
+        editor.undo(nil)
+        XCTAssertEqual(fixture.buffer.text(), "one\ntwo\nthree")
+        XCTAssertEqual(editor.selectionAnchor, selectionAnchor)
+        XCTAssertEqual(editor.cursorPoint, selectionCursor)
+        XCTAssertTrue(editor.hasSelection)
+
+        editor.redo(nil)
+        XCTAssertEqual(fixture.buffer.text(), "oree")
+        XCTAssertFalse(editor.hasSelection)
+        XCTAssertEqual(editor.cursorPoint, cursorAfterEdit)
+    }
+
+    func testEditorUIExternalChangeIsUndoneBeforeLocalEdit() {
+        let fixture = makeEditor(text: "one\ntwo\nthree")
+        let editor = fixture.editor
+        fixture.buffer.isFullFile = true
+        editor.cursorPoint = MultiBufferPoint(row: fixture.displayMap.minCodeRow, column: 3)
+        editor.insertText("X", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertEqual(fixture.buffer.text(), "oneX\ntwo\nthree")
+
+        XCTAssertTrue(fixture.displayMap.multiBuffer.applyExternalTextUpdate(
+            filePath: fixture.buffer.filePath,
+            newText: "oneXY\ntwo\nthreeZ"
+        ))
+        fixture.displayMap.rebuild()
+        editor.invalidateLayout()
+        XCTAssertEqual(fixture.buffer.text(), "oneXY\ntwo\nthreeZ")
+
+        editor.undo(nil)
+        XCTAssertEqual(fixture.buffer.text(), "oneX\ntwo\nthree")
+        editor.undo(nil)
+        XCTAssertEqual(fixture.buffer.text(), "one\ntwo\nthree")
+    }
+
     func testEditorUIMouseClickHeaderCollapseAndExpand() {
         let text1 = (0..<50).map { "FileA line \($0)" }.joined(separator: "\n")
         let text2 = (0..<50).map { "justfile line \($0)" }.joined(separator: "\n")
@@ -383,6 +742,25 @@ final class CustomMultiBufferEditorUITests: XCTestCase {
             eventNumber: 0,
             clickCount: 1,
             pressure: 1
+        ))
+    }
+
+    private func makeKeyEvent(
+        for window: NSWindow,
+        characters: String,
+        modifierFlags: NSEvent.ModifierFlags
+    ) throws -> NSEvent {
+        try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: modifierFlags,
+            timestamp: 0,
+            windowNumber: window.windowNumber,
+            context: nil,
+            characters: characters,
+            charactersIgnoringModifiers: "z",
+            isARepeat: false,
+            keyCode: 6
         ))
     }
 

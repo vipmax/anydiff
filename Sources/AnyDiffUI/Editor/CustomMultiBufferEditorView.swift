@@ -2068,6 +2068,16 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
     public override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if event.modifierFlags.contains(.command) {
+            let isUndoKey = event.charactersIgnoringModifiers?.lowercased() == "z"
+            let hasDisallowedModifier = event.modifierFlags.contains(.option) || event.modifierFlags.contains(.control)
+            if isUndoKey && !hasDisallowedModifier {
+                if event.modifierFlags.contains(.shift) {
+                    redo(nil)
+                } else {
+                    undo(nil)
+                }
+                return true
+            }
             if event.charactersIgnoringModifiers == "s" {
                 if editingEnabled {
                     _ = displayMap?.multiBuffer.flushImmediateSave()
@@ -2463,6 +2473,10 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     }
 
     public func insertText(_ string: Any, replacementRange: NSRange) {
+        insertText(string, replacementRange: replacementRange, coalesceTyping: true)
+    }
+
+    private func insertText(_ string: Any, replacementRange: NSRange, coalesceTyping: Bool) {
         guard editingEnabled, let displayMap = displayMap else { return }
         let text: String
         if let s = string as? String {
@@ -2525,6 +2539,8 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         let oldStart = min(startLoc.point, endLoc.point)
         let oldEnd = max(startLoc.point, endLoc.point)
         let oldExactText = (oldStart < oldEnd) ? buf.text(in: oldStart..<oldEnd) : ""
+        let cursorBefore = cursorPoint
+        let anchorBefore = selectionAnchor
 
         let newBufRange = buf.replace(start: oldStart, end: oldEnd, with: text)
         let lineDelta = (newBufRange.upperBound.row - oldEnd.row)
@@ -2536,15 +2552,18 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         let edit = TextEdit(
             bufferId: buf.id,
             range: oldStart..<newBufRange.upperBound,
+            oldRange: oldStart..<oldEnd,
             oldText: oldExactText,
             newText: text
         )
-        let transaction = EditTransaction(
+        var transaction = EditTransaction(
             edits: [edit],
             selectionBefore: rangeToReplace,
-            selectionAfter: nil
+            selectionAfter: nil,
+            cursorBefore: cursorBefore,
+            anchorBefore: anchorBefore,
+            isTyping: coalesceTyping && !text.isEmpty && oldStart == oldEnd && anchorBefore == nil
         )
-        mb.undoManager.push(transaction: transaction)
 
         mb.recordSelfEdit(for: buf.filePath)
         mb.scheduleDebouncedSave(delayMs: 200)
@@ -2585,6 +2604,10 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         }
         selectionAnchor = nil
         cursorPoint = newCursorPt
+        transaction.selectionAfter = newCursorPt..<newCursorPt
+        transaction.cursorAfter = newCursorPt
+        transaction.anchorAfter = nil
+        mb.undoManager.push(transaction: transaction)
         ensureCursorVisible()
         resetCursorBlink()
         needsDisplay = true
@@ -2627,6 +2650,8 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
         let buf = loc.buffer
         let bPt = loc.point
+        let cursorBefore = cursorPoint
+        let anchorBefore = selectionAnchor
 
         if bPt.column > 0 {
             let start = BufferPoint(row: bPt.row, column: bPt.column - 1)
@@ -2634,9 +2659,20 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             let newRange = buf.replace(start: start, end: bPt, with: "")
             let lineDelta = (newRange.upperBound.row - bPt.row)
             updateExcerptsAfterEdit(bufferId: buf.id, excerptIndex: loc.excerptIndex, lineDelta: lineDelta)
-            let edit = TextEdit(bufferId: buf.id, range: start..<newRange.upperBound, oldText: oldExact, newText: "")
-            let tx = EditTransaction(edits: [edit], selectionBefore: cursorPoint..<cursorPoint, selectionAfter: nil)
-            mb.undoManager.push(transaction: tx)
+            let edit = TextEdit(
+                bufferId: buf.id,
+                range: start..<newRange.upperBound,
+                oldRange: start..<bPt,
+                oldText: oldExact,
+                newText: ""
+            )
+            var tx = EditTransaction(
+                edits: [edit],
+                selectionBefore: cursorBefore..<cursorBefore,
+                selectionAfter: nil,
+                cursorBefore: cursorBefore,
+                anchorBefore: anchorBefore
+            )
 
             mb.recordSelfEdit(for: buf.filePath)
             mb.scheduleDebouncedSave(delayMs: 200)
@@ -2665,6 +2701,10 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             }
             selectionAnchor = nil
             cursorPoint = newCursorPt
+            tx.selectionAfter = newCursorPt..<newCursorPt
+            tx.cursorAfter = newCursorPt
+            tx.anchorAfter = nil
+            mb.undoManager.push(transaction: tx)
             ensureCursorVisible()
             resetCursorBlink()
             needsDisplay = true
@@ -2675,9 +2715,20 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             let newRange = buf.replace(start: start, end: bPt, with: "")
             let lineDelta = (newRange.upperBound.row - bPt.row)
             updateExcerptsAfterEdit(bufferId: buf.id, excerptIndex: loc.excerptIndex, lineDelta: lineDelta)
-            let edit = TextEdit(bufferId: buf.id, range: start..<newRange.upperBound, oldText: oldExact, newText: "")
-            let tx = EditTransaction(edits: [edit], selectionBefore: cursorPoint..<cursorPoint, selectionAfter: nil)
-            mb.undoManager.push(transaction: tx)
+            let edit = TextEdit(
+                bufferId: buf.id,
+                range: start..<newRange.upperBound,
+                oldRange: start..<bPt,
+                oldText: oldExact,
+                newText: ""
+            )
+            var tx = EditTransaction(
+                edits: [edit],
+                selectionBefore: cursorBefore..<cursorBefore,
+                selectionAfter: nil,
+                cursorBefore: cursorBefore,
+                anchorBefore: anchorBefore
+            )
 
             mb.recordSelfEdit(for: buf.filePath)
             mb.scheduleDebouncedSave(delayMs: 200)
@@ -2706,6 +2757,10 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             }
             selectionAnchor = nil
             cursorPoint = newCursorPt
+            tx.selectionAfter = newCursorPt..<newCursorPt
+            tx.cursorAfter = newCursorPt
+            tx.anchorAfter = nil
+            mb.undoManager.push(transaction: tx)
             ensureCursorVisible()
             resetCursorBlink()
             needsDisplay = true
@@ -2750,6 +2805,8 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         let buf = loc.buffer
         let bPt = loc.point
         let lineLen = buf.lineLength(at: bPt.row)
+        let cursorBefore = cursorPoint
+        let anchorBefore = selectionAnchor
 
         if bPt.column < lineLen {
             let end = BufferPoint(row: bPt.row, column: bPt.column + 1)
@@ -2757,9 +2814,20 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             let newRange = buf.replace(start: bPt, end: end, with: "")
             let lineDelta = (newRange.upperBound.row - end.row)
             updateExcerptsAfterEdit(bufferId: buf.id, excerptIndex: loc.excerptIndex, lineDelta: lineDelta)
-            let edit = TextEdit(bufferId: buf.id, range: bPt..<newRange.upperBound, oldText: oldExact, newText: "")
-            let tx = EditTransaction(edits: [edit], selectionBefore: cursorPoint..<cursorPoint, selectionAfter: nil)
-            mb.undoManager.push(transaction: tx)
+            let edit = TextEdit(
+                bufferId: buf.id,
+                range: bPt..<newRange.upperBound,
+                oldRange: bPt..<end,
+                oldText: oldExact,
+                newText: ""
+            )
+            var tx = EditTransaction(
+                edits: [edit],
+                selectionBefore: cursorBefore..<cursorBefore,
+                selectionAfter: nil,
+                cursorBefore: cursorBefore,
+                anchorBefore: anchorBefore
+            )
 
             mb.recordSelfEdit(for: buf.filePath)
             mb.scheduleDebouncedSave(delayMs: 200)
@@ -2788,6 +2856,10 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             }
             selectionAnchor = nil
             cursorPoint = newCursorPt
+            tx.selectionAfter = newCursorPt..<newCursorPt
+            tx.cursorAfter = newCursorPt
+            tx.anchorAfter = nil
+            mb.undoManager.push(transaction: tx)
             ensureCursorVisible()
             resetCursorBlink()
             needsDisplay = true
@@ -2797,9 +2869,20 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             let newRange = buf.replace(start: bPt, end: end, with: "")
             let lineDelta = (newRange.upperBound.row - end.row)
             updateExcerptsAfterEdit(bufferId: buf.id, excerptIndex: loc.excerptIndex, lineDelta: lineDelta)
-            let edit = TextEdit(bufferId: buf.id, range: bPt..<newRange.upperBound, oldText: oldExact, newText: "")
-            let tx = EditTransaction(edits: [edit], selectionBefore: cursorPoint..<cursorPoint, selectionAfter: nil)
-            mb.undoManager.push(transaction: tx)
+            let edit = TextEdit(
+                bufferId: buf.id,
+                range: bPt..<newRange.upperBound,
+                oldRange: bPt..<end,
+                oldText: oldExact,
+                newText: ""
+            )
+            var tx = EditTransaction(
+                edits: [edit],
+                selectionBefore: cursorBefore..<cursorBefore,
+                selectionAfter: nil,
+                cursorBefore: cursorBefore,
+                anchorBefore: anchorBefore
+            )
 
             mb.recordSelfEdit(for: buf.filePath)
             mb.scheduleDebouncedSave(delayMs: 200)
@@ -2828,6 +2911,10 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             }
             selectionAnchor = nil
             cursorPoint = newCursorPt
+            tx.selectionAfter = newCursorPt..<newCursorPt
+            tx.cursorAfter = newCursorPt
+            tx.anchorAfter = nil
+            mb.undoManager.push(transaction: tx)
             ensureCursorVisible()
             resetCursorBlink()
             needsDisplay = true
@@ -2860,11 +2947,11 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     }
 
     public override func insertNewline(_ sender: Any?) {
-        insertText("\n", replacementRange: NSRange(location: NSNotFound, length: 0))
+        insertText("\n", replacementRange: NSRange(location: NSNotFound, length: 0), coalesceTyping: false)
     }
 
     public override func insertTab(_ sender: Any?) {
-        insertText("    ", replacementRange: NSRange(location: NSNotFound, length: 0))
+        insertText("    ", replacementRange: NSRange(location: NSNotFound, length: 0), coalesceTyping: false)
     }
 
     // MARK: - Undo & Redo
@@ -2884,12 +2971,13 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                 }
             }
             mb.scheduleDebouncedSave(delayMs: 200)
-            if let sel = transaction.selectionBefore {
-                selectionAnchor = sel.lowerBound != sel.upperBound ? sel.upperBound : nil
-                cursorPoint = sel.lowerBound
-            }
             displayMap.rebuild()
             invalidateLayout()
+            restoreSelectionState(
+                cursor: transaction.cursorBefore,
+                anchor: transaction.anchorBefore,
+                fallback: transaction.selectionBefore
+            )
         }
     }
 
@@ -2899,8 +2987,9 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         if let transaction = mb.undoManager.popRedo() {
             for edit in transaction.edits {
                 if let buf = mb.buffer(for: edit.bufferId) {
-                    let oldEndRow = edit.range.upperBound.row
-                    let newRange = buf.replace(start: edit.range.lowerBound, end: edit.range.upperBound, with: edit.newText)
+                    let redoRange = edit.oldRange ?? edit.range
+                    let oldEndRow = redoRange.upperBound.row
+                    let newRange = buf.replace(start: redoRange.lowerBound, end: redoRange.upperBound, with: edit.newText)
                     let lineDelta = newRange.upperBound.row - oldEndRow
                     if lineDelta != 0, let excerptIdx = mb.excerpts.firstIndex(where: { $0.bufferId == edit.bufferId }) {
                         updateExcerptsAfterEdit(bufferId: edit.bufferId, excerptIndex: excerptIdx, lineDelta: lineDelta)
@@ -2910,6 +2999,25 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             mb.scheduleDebouncedSave(delayMs: 200)
             displayMap.rebuild()
             invalidateLayout()
+            restoreSelectionState(
+                cursor: transaction.cursorAfter,
+                anchor: transaction.anchorAfter,
+                fallback: transaction.selectionAfter
+            )
+        }
+    }
+
+    private func restoreSelectionState(
+        cursor: MultiBufferPoint?,
+        anchor: MultiBufferPoint?,
+        fallback: Range<MultiBufferPoint>?
+    ) {
+        if let cursor {
+            selectionAnchor = anchor
+            cursorPoint = cursor
+        } else if let fallback {
+            selectionAnchor = fallback.lowerBound != fallback.upperBound ? fallback.upperBound : nil
+            cursorPoint = fallback.lowerBound
         }
     }
 
@@ -2953,7 +3061,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
     @objc @IBAction public func paste(_ sender: Any?) {
         guard let text = NSPasteboard.general.string(forType: .string) else { return }
-        insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
+        insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0), coalesceTyping: false)
     }
 
     // MARK: - NSTextInputClient Stubs
@@ -2962,7 +3070,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     public func markedRange() -> NSRange { NSRange(location: NSNotFound, length: 0) }
     public func selectedRange() -> NSRange { NSRange(location: 0, length: 0) }
     public func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
-        insertText(string, replacementRange: replacementRange)
+        insertText(string, replacementRange: replacementRange, coalesceTyping: false)
     }
     public func unmarkText() {}
     public func validAttributesForMarkedText() -> [NSAttributedString.Key] { [] }

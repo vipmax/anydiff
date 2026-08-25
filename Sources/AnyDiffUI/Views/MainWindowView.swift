@@ -1495,20 +1495,25 @@ public struct MainWindowView: View {
                 continue
             }
 
-            // AnyDiff's own atomic save emits FSEvents too. The exact-path
-            // marker suppresses only those events; an external edit remains
-            // eligible even when another file is dirty.
-            if multiBuffer.isSelfSavedRecentlyExact(filePath: resolvedEventPath, threshold: 3.0) {
-                continue
-            }
-
             let prefix = resolvedCurrentDir.hasSuffix("/") ? resolvedCurrentDir : resolvedCurrentDir + "/"
             guard resolvedEventPath.hasPrefix(prefix) else { continue }
             let relative = String(resolvedEventPath.dropFirst(prefix.count))
             guard !relative.isEmpty else { continue }
 
-            // Skip files currently being typed in by the user or recently saved
-            if multiBuffer.isFileDirty(filePath: relative) || multiBuffer.isSelfSavedRecently(filePath: relative, threshold: 3.0) {
+            // FSEvents does not identify the writer. Ignore AnyDiff's own
+            // save notification only while the disk text still matches our
+            // materialized buffer; a Zed edit immediately after autosave must
+            // remain eligible for an external undo transaction.
+            if multiBuffer.shouldIgnoreSelfSavedEvent(
+                filePath: relative,
+                diskPath: resolvedEventPath,
+                threshold: 3.0
+            ) {
+                continue
+            }
+
+            // Skip files currently being typed in by the user.
+            if multiBuffer.isFileDirty(filePath: relative) {
                 continue
             }
 
@@ -1805,6 +1810,16 @@ public struct MainWindowView: View {
     /// refreshed file the same construction rules as a normal diff load while
     /// `MultiBuffer.replaceFile` keeps every unrelated buffer/excerpt intact.
     private func applyWatchedFile(path: String, diff: FileDiff?, rawData: Data?) {
+        if let fullPath = externalFilePath(for: path),
+           let externalText = try? String(contentsOfFile: fullPath, encoding: .utf8),
+           multiBuffer.applyExternalTextUpdate(
+               filePath: path,
+               newText: externalText,
+               updateBaseline: multiBuffer.contentMode == .text
+           ) {
+            return
+        }
+
         let collapsed = multiBuffer.excerpts
             .filter { $0.filePath == path }
             .contains { $0.isCollapsed }
@@ -1831,6 +1846,12 @@ public struct MainWindowView: View {
             buffers: Array(rebuilt.buffers.values),
             excerpts: newExcerpts
         )
+    }
+
+    private func externalFilePath(for relativePath: String) -> String? {
+        let base = effectiveBaseDirectory
+        guard !base.isEmpty else { return nil }
+        return URL(fileURLWithPath: base).appendingPathComponent(relativePath).path
     }
 
     private func runGit(arguments: [String]) -> String? {
