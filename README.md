@@ -30,6 +30,7 @@ High-performance native macOS MultiBuffer Diff editor for lightning-fast code re
 - **Multi-Source Git & Web Integration**:
 
   - Automatically loads uncommitted diffs from any local repository.
+  - Supports opening ordinary local files as well as Git diffs.
   - Native support for GitHub Pull Requests, commit URLs, and compare links (`gh pr`, `https://github.com/.../pull/123`, `https://diffs.hub/...`).
   - Paste raw `.diff` / `.patch` files directly from the clipboard (`Cmd + Shift + V`).
 - **Embedded Codex Agent**:

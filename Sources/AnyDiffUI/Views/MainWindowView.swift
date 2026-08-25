@@ -825,6 +825,15 @@ public struct MainWindowView: View {
         let currentDir = effectiveWorkingDirectory
         let isGit = isGitRepository(at: currentDir)
 
+        if summary.contentMode == .text {
+            loadPlainText(
+                data: summary.rawTextData ?? Data(),
+                filePath: summary.files.first?.path ?? "agent/output.txt",
+                isReview: true
+            )
+            return
+        }
+
         // 1. Direct raw diff data attached to the summary
         if let rawData = summary.rawDiffData, !rawData.isEmpty {
             let parsed = GitDiffParser.shared.parseZeroCopy(data: rawData)
@@ -1860,6 +1869,53 @@ public struct MainWindowView: View {
         loadDiff(files: parsedFiles, rawData: data)
     }
 
+    private func loadPlainText(data: Data, filePath: String, isReview: Bool) {
+        let targetMB = isReview ? reviewMultiBuffer : multiBuffer
+        let targetDM = isReview ? reviewDisplayMap : displayMap
+        let text = String(decoding: data, as: UTF8.self)
+        let lines = text.components(separatedBy: "\n")
+        let displayPath = filePath.isEmpty ? "agent/output.txt" : filePath
+
+        if isReview {
+            reviewFileDiffs = [FileDiff(oldPath: displayPath, newPath: displayPath)]
+        } else {
+            fileDiffs = [FileDiff(oldPath: displayPath, newPath: displayPath)]
+        }
+
+        targetMB.clear()
+        targetMB.setContentMode(.text)
+        targetDM.clear()
+        LineLayoutCache.shared.clear()
+        SyntaxHighlighter.shared.clearCache()
+
+        let buffer = Buffer(
+            filePath: displayPath,
+            lines: lines,
+            language: Buffer.detectLanguage(for: displayPath),
+            baselineLines: [],
+            totalAdditions: 0,
+            totalDeletions: 0,
+            startLineNumber: 1,
+            fullDiskPath: nil,
+            diskFileLineCount: lines.count
+        )
+        buffer.isFullFile = true
+        targetMB.addBuffer(buffer)
+        targetMB.addExcerpt(Excerpt(
+            bufferId: buffer.id,
+            filePath: displayPath,
+            fileStatus: .modified,
+            bufferRange: 0..<buffer.lineCount,
+            hunk: nil,
+            isCollapsed: false,
+            isFileStart: true
+        ))
+
+        targetDM.rebuild()
+        targetDM.markContentLoaded()
+        selectedFilePath = displayPath
+    }
+
     public func loadDiff(files parsedFiles: [FileDiff], rawData: Data? = nil, isReview: Bool = false) {
         let targetMB = isReview ? reviewMultiBuffer : multiBuffer
         let targetDM = isReview ? reviewDisplayMap : displayMap
@@ -1872,6 +1928,7 @@ public struct MainWindowView: View {
         }
 
         targetMB.clear()
+        targetMB.setContentMode(.diff)
         targetDM.clear()
         LineLayoutCache.shared.clear()
         SyntaxHighlighter.shared.clearCache()

@@ -2328,6 +2328,8 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
     private var cachedLayoutHeight: CGFloat = 0
     private var cachedTitleText: String?
     private var cachedTitleWidth: CGFloat = 0
+    private var trackingArea: NSTrackingArea?
+    private var isCardHovered = false
 
     public init(
         item: ToolCallItem,
@@ -2369,6 +2371,51 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
 
     private var shouldShowOpenInEditorButton: Bool {
         hasExpandableContent && !hasDiffStats
+    }
+
+    private func updateOpenInEditorButtonVisibility() {
+        openInEditorButton.isHidden = !isCardHovered || !shouldShowOpenInEditorButton
+    }
+
+    private func updateCardHover(for event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        let isInside = bounds.contains(point)
+        guard isCardHovered != isInside else { return }
+        isCardHovered = isInside
+        updateOpenInEditorButtonVisibility()
+    }
+
+    public override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea, trackingArea.rect == bounds {
+            return
+        }
+        if let trackingArea {
+            removeTrackingArea(trackingArea)
+        }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .mouseMoved, .activeInActiveApp],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    public override func mouseEntered(with event: NSEvent) {
+        super.mouseEntered(with: event)
+        updateCardHover(for: event)
+    }
+
+    public override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        updateCardHover(for: event)
+    }
+
+    public override func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+        updateCardHover(for: event)
     }
 
     public func canUpdateInPlace(with newItem: ToolCallItem) -> Bool {
@@ -2484,6 +2531,7 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
             } else if !shouldShowOpenInEditorButton {
                 openInEditorButton.removeFromSuperview()
             }
+            updateOpenInEditorButtonVisibility()
         } else {
             chevronImageView.removeFromSuperview()
             openInEditorButton.removeFromSuperview()
@@ -2617,6 +2665,7 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
             openInEditorButton.action = #selector(openInEditorClicked)
             openInEditorButton.toolTip = "Open in editor"
             headerContainer.addSubview(openInEditorButton)
+            openInEditorButton.isHidden = true
         }
 
         // Clickable diff stats button
@@ -2704,34 +2753,11 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
         guard !content.lines.isEmpty else { return }
 
         let path = item.path ?? "agent/\(item.shortToolName.lowercased())-\(item.id.prefix(8)).txt"
-        let additions = content.hunk?.addedLineCount ?? content.lines.count
-        let deletions = content.hunk?.deletedLineCount ?? 0
-        var diff = "diff --git a/\(path) b/\(path)\n"
-        diff += "--- a/\(path)\n"
-        diff += "+++ b/\(path)\n"
-
-        if let hunk = content.hunk {
-            diff += "\(hunk.header)\n"
-            for line in hunk.lines {
-                let prefix: String
-                switch line.kind {
-                case .added: prefix = "+"
-                case .deleted: prefix = "-"
-                case .unchanged: prefix = " "
-                case .header: prefix = "@"
-                }
-                diff += "\(prefix)\(line.text)\n"
-            }
-        } else {
-            diff += "@@ -0,0 +1,\(max(1, content.lines.count)) @@\n"
-            for line in content.lines {
-                diff += "+\(line)\n"
-            }
-        }
 
         let summary = AgentEditedFilesSummary(
-            files: [AgentEditedFileItem(path: path, additions: additions, deletions: deletions)],
-            rawDiffData: Data(diff.utf8)
+            files: [AgentEditedFileItem(path: path, additions: 0, deletions: 0)],
+            rawTextData: Data(content.lines.joined(separator: "\n").utf8),
+            contentMode: .text
         )
         onReview?(summary)
     }
@@ -2745,10 +2771,12 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
             filePath: item.path ?? item.displayTitle,
             lines: lines,
             language: Buffer.detectLanguage(for: item.path ?? item.displayTitle),
+            baselineLines: content.hunk == nil ? [] : nil,
             startLineNumber: 1,
             diskFileLineCount: lines.count
         )
         let multiBuffer = MultiBuffer()
+        multiBuffer.setContentMode(content.hunk == nil ? .text : .diff)
         multiBuffer.addBuffer(buffer)
         multiBuffer.addExcerpt(Excerpt(
             bufferId: buffer.id,
@@ -3176,10 +3204,10 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
             chevronImageView.frame = NSRect(x: rightX, y: 6.0, width: 10, height: 10)
             rightX -= 6
 
-            if isExpanded && shouldShowOpenInEditorButton {
+            if shouldShowOpenInEditorButton {
                 rightX -= 18
                 openInEditorButton.frame = NSRect(x: rightX, y: 3.0, width: 16, height: 16)
-                openInEditorButton.isHidden = false
+                openInEditorButton.isHidden = !isCardHovered
                 rightX -= 6
             } else {
                 openInEditorButton.isHidden = true

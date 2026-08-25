@@ -7,11 +7,22 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
     public private(set) var excerpts: [Excerpt] = []
     public let undoManager: MultiBufferUndoManager
 
+    /// Describes whether this multibuffer contains plain text or diff content.
+    /// The mode is document-wide because one editor instance renders one
+    /// logical document at a time.
+    public private(set) var contentMode: ContentMode = .diff
+
     /// Monotonically increasing version counter to invalidate layout caches
     public private(set) var version: UInt64 = 0
 
     public init(undoManager: MultiBufferUndoManager = MultiBufferUndoManager()) {
         self.undoManager = undoManager
+    }
+
+    public func setContentMode(_ mode: ContentMode) {
+        guard contentMode != mode else { return }
+        contentMode = mode
+        version &+= 1
     }
 
     // MARK: - Buffer & Excerpt Management
@@ -66,6 +77,7 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
     public func clear() {
         buffers.removeAll()
         excerpts.removeAll()
+        contentMode = .diff
         undoManager.clear()
         version &+= 1
     }

@@ -29,6 +29,8 @@ public struct AgentEditedFilesSummary: Codable, Sendable, Equatable {
     public var postTurnCommitHash: String?
     public var savedCreatedFiles: [String: String]?
     public let rawDiffData: Data?
+    public let rawTextData: Data?
+    public let contentMode: ContentMode
     public var isReverted: Bool
     public let createdFiles: [String]
     public let modifiedFiles: [String]
@@ -40,6 +42,8 @@ public struct AgentEditedFilesSummary: Codable, Sendable, Equatable {
         postTurnCommitHash: String? = nil,
         savedCreatedFiles: [String: String]? = nil,
         rawDiffData: Data? = nil,
+        rawTextData: Data? = nil,
+        contentMode: ContentMode = .diff,
         isReverted: Bool = false,
         createdFiles: [String] = [],
         modifiedFiles: [String] = [],
@@ -50,6 +54,8 @@ public struct AgentEditedFilesSummary: Codable, Sendable, Equatable {
         self.postTurnCommitHash = postTurnCommitHash
         self.savedCreatedFiles = savedCreatedFiles
         self.rawDiffData = rawDiffData
+        self.rawTextData = rawTextData
+        self.contentMode = contentMode
         self.isReverted = isReverted
         self.createdFiles = createdFiles
         self.modifiedFiles = modifiedFiles
@@ -57,7 +63,7 @@ public struct AgentEditedFilesSummary: Codable, Sendable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case files, baseCommitHash, postTurnCommitHash, savedCreatedFiles, rawDiffData, isReverted, createdFiles, modifiedFiles, deletedFiles
+        case files, baseCommitHash, postTurnCommitHash, savedCreatedFiles, rawDiffData, rawTextData, contentMode, isReverted, createdFiles, modifiedFiles, deletedFiles
     }
 
     public init(from decoder: Decoder) throws {
@@ -67,6 +73,8 @@ public struct AgentEditedFilesSummary: Codable, Sendable, Equatable {
         postTurnCommitHash = try container.decodeIfPresent(String.self, forKey: .postTurnCommitHash)
         savedCreatedFiles = try container.decodeIfPresent([String: String].self, forKey: .savedCreatedFiles)
         rawDiffData = try container.decodeIfPresent(Data.self, forKey: .rawDiffData)
+        rawTextData = try container.decodeIfPresent(Data.self, forKey: .rawTextData)
+        contentMode = try container.decodeIfPresent(ContentMode.self, forKey: .contentMode) ?? .diff
         isReverted = try container.decodeIfPresent(Bool.self, forKey: .isReverted) ?? false
         createdFiles = try container.decodeIfPresent([String].self, forKey: .createdFiles) ?? []
         modifiedFiles = try container.decodeIfPresent([String].self, forKey: .modifiedFiles) ?? []
@@ -80,6 +88,8 @@ public struct AgentEditedFilesSummary: Codable, Sendable, Equatable {
         try container.encodeIfPresent(postTurnCommitHash, forKey: .postTurnCommitHash)
         try container.encodeIfPresent(savedCreatedFiles, forKey: .savedCreatedFiles)
         try container.encodeIfPresent(rawDiffData, forKey: .rawDiffData)
+        try container.encodeIfPresent(rawTextData, forKey: .rawTextData)
+        try container.encode(contentMode, forKey: .contentMode)
         try container.encode(isReverted, forKey: .isReverted)
         try container.encode(createdFiles, forKey: .createdFiles)
         try container.encode(modifiedFiles, forKey: .modifiedFiles)

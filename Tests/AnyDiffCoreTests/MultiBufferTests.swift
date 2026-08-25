@@ -1528,4 +1528,41 @@ final class MultiBufferTests: XCTestCase {
 
         XCTAssertEqual(dm.maxLineChars, 250)
     }
+
+    func testTextContentModeIgnoresDiffHunkAndRendersPlainLines() {
+        let lines = ["first line", "second line"]
+        let buffer = Buffer(
+            filePath: "agent/output.txt",
+            lines: lines,
+            baselineLines: []
+        )
+        let hunk = DiffHunk(
+            oldRange: 1..<1,
+            newRange: 1..<3,
+            header: "@@ -0,0 +1,2 @@",
+            lines: lines.enumerated().map { index, line in
+                DiffLine(kind: .added, text: line, newLineNumber: index + 1)
+            },
+            status: .added
+        )
+
+        let mb = MultiBuffer()
+        mb.setContentMode(.text)
+        mb.addBuffer(buffer)
+        mb.addExcerpt(Excerpt(
+            bufferId: buffer.id,
+            filePath: buffer.filePath,
+            fileStatus: .added,
+            bufferRange: 0..<lines.count,
+            hunk: hunk
+        ))
+
+        let dm = DisplayMap(multiBuffer: mb, reviewManager: ReviewManager())
+        let visibleLines = (0..<dm.codeLineCount).compactMap { dm.codeInfo(for: $0) }
+
+        XCTAssertEqual(mb.contentMode, .text)
+        XCTAssertEqual(visibleLines.map(\.text), lines)
+        XCTAssertTrue(visibleLines.allSatisfy { $0.diffKind == .unchanged })
+        XCTAssertTrue(visibleLines.allSatisfy { $0.wordDiffRanges.isEmpty })
+    }
 }

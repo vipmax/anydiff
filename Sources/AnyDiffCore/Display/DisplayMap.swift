@@ -280,7 +280,9 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
             let codeCount: Int
             if excerpt.isCollapsed {
                 codeCount = 0
-            } else if let hunk = excerpt.hunk, usesOriginalHunk(excerpt: excerpt, buffer: buffer) {
+            } else if multiBuffer.contentMode == .diff,
+                      let hunk = excerpt.hunk,
+                      usesOriginalHunk(excerpt: excerpt, buffer: buffer) {
                 if !hunk.lineSpans.isEmpty {
                     codeCount = hunk.lineSpans.count
                     for span in hunk.lineSpans { calculatedMaxChars = max(calculatedMaxChars, Int(span.length)) }
@@ -347,7 +349,9 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
         let newCodeCount: Int
         if excerpt.isCollapsed {
             newCodeCount = 0
-        } else if let hunk = excerpt.hunk, usesOriginalHunk(excerpt: excerpt, buffer: buffer) {
+        } else if multiBuffer.contentMode == .diff,
+                  let hunk = excerpt.hunk,
+                  usesOriginalHunk(excerpt: excerpt, buffer: buffer) {
             if !hunk.lineSpans.isEmpty {
                 newCodeCount = hunk.lineSpans.count
                 for span in hunk.lineSpans { maxLineChars = max(maxLineChars, Int(span.length)) }
@@ -553,7 +557,9 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
         let excerpt = multiBuffer.excerpts[excerptIdx]
         guard let buffer = multiBuffer.buffer(for: excerpt.bufferId) else { return [] }
 
-        if let hunk = excerpt.hunk, usesOriginalHunk(excerpt: excerpt, buffer: buffer) {
+        if multiBuffer.contentMode == .diff,
+           let hunk = excerpt.hunk,
+           usesOriginalHunk(excerpt: excerpt, buffer: buffer) {
             let totalCount = !hunk.lineSpans.isEmpty ? hunk.lineSpans.count : hunk.lines.count
             let clamped = max(0, requestedRange.lowerBound)..<min(totalCount, requestedRange.upperBound)
             guard !clamped.isEmpty else { return [] }
@@ -623,7 +629,8 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
             return cached.result.lines
         }
 
-        if excerpt.fileStatus == .added || !buffer.baselineLines.isEmpty || excerpt.hunk != nil || buffer.fullDiskPath != nil {
+        if multiBuffer.contentMode == .diff &&
+            (excerpt.fileStatus == .added || !buffer.baselineLines.isEmpty || excerpt.hunk != nil || buffer.fullDiskPath != nil) {
             let sliceResult = LineDiffEngine.shared.diffLinesForSlice(
                 oldLines: buffer.baselineLines,
                 newLines: buffer.lines,
@@ -703,6 +710,7 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
     }
 
     private func usesOriginalHunk(excerpt: Excerpt, buffer: Buffer) -> Bool {
+        guard multiBuffer.contentMode == .diff else { return false }
         guard let hunk = excerpt.hunk else { return false }
         if buffer.version == 0 {
             if excerpt.fileStatus == .deleted {
