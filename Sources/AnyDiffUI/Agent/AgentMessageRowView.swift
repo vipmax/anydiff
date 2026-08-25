@@ -9,6 +9,7 @@ public struct AgentMessageRowView: View {
     public var onRestore: ((AgentEditedFilesSummary) -> Void)? = nil
 
     @State private var isThinkingExpanded: Bool = false
+    @State private var previewImageIndex: Int? = nil
 
     public init(
         message: AgentMessage,
@@ -35,37 +36,98 @@ public struct AgentMessageRowView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
+        .overlay {
+            if previewImageIndex != nil && !message.images.isEmpty {
+                AgentImagePreviewModalView(
+                    images: message.images,
+                    selectedIndex: $previewImageIndex,
+                    theme: theme
+                )
+                .transition(.opacity)
+            }
+        }
     }
 
     @ViewBuilder
     private var userBubble: some View {
         HStack {
             Spacer(minLength: 40)
-            Text(message.content)
-                .font(.system(size: 13, weight: .regular))
-                .foregroundColor(.white)
-                .lineLimit(nil)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 9)
-                .background(
-                    RoundedRectangle(cornerRadius: 13)
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    Color(red: 0.10, green: 0.50, blue: 1.0),
-                                    Color(red: 0.05, green: 0.42, blue: 0.94)
-                                ],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
+            VStack(alignment: .trailing, spacing: 8) {
+                if !message.images.isEmpty {
+                    userImagesView
+                }
+                if !message.content.isEmpty {
+                    Text(message.content)
+                        .font(.system(size: 13, weight: .regular))
+                        .foregroundColor(.white)
+                        .lineLimit(nil)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+            .background(
+                RoundedRectangle(cornerRadius: 13)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color(red: 0.10, green: 0.50, blue: 1.0),
+                                Color(red: 0.05, green: 0.42, blue: 0.94)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
                         )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 13)
-                                .stroke(Color(red: 0.40, green: 0.72, blue: 1.0).opacity(0.50), lineWidth: 1.0)
-                        )
-                        .shadow(color: Color(red: 0.05, green: 0.40, blue: 0.95).opacity(0.40), radius: 6, x: 0, y: 2)
-                )
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 13)
+                            .stroke(Color(red: 0.40, green: 0.72, blue: 1.0).opacity(0.50), lineWidth: 1.0)
+                    )
+                    .shadow(color: Color(red: 0.05, green: 0.40, blue: 0.95).opacity(0.40), radius: 6, x: 0, y: 2)
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var userImagesView: some View {
+        let count = message.images.count
+        if count == 1, let singleImage = message.images.first, let nsImg = NSImage(data: singleImage.data) {
+            Button(action: {
+                previewImageIndex = 0
+            }) {
+                Image(nsImage: nsImg)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(maxWidth: 220, maxHeight: 160)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(Color.white.opacity(0.35), lineWidth: 1)
+                    )
+            }
+            .buttonStyle(.plain)
+            .help("Click to enlarge")
+        } else {
+            HStack(spacing: 6) {
+                ForEach(Array(message.images.enumerated()), id: \.element.id) { index, img in
+                    Button(action: {
+                        previewImageIndex = index
+                    }) {
+                        if let nsImg = NSImage(data: img.data) {
+                            Image(nsImage: nsImg)
+                                .resizable()
+                                .aspectRatio(contentMode: .fill)
+                                .frame(width: 54, height: 54)
+                                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                        .stroke(Color.white.opacity(0.35), lineWidth: 1)
+                                )
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .help("Click to enlarge (\(img.filename ?? "image"))")
+                }
+            }
         }
     }
 

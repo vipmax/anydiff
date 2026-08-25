@@ -178,8 +178,13 @@ public final class ACPClient: ACPTransportDelegate, @unchecked Sendable {
         return response.result?.configOptions
     }
 
-    public func sendPrompt(sessionId: String, text: String) async throws {
-        let params = ACPSessionPromptParams(sessionId: sessionId, text: text)
+    public func sendPrompt(sessionId: String, prompt: [ACPSessionPromptParams.PromptItem]) async throws {
+        let params = ACPSessionPromptParams(sessionId: sessionId, prompt: prompt)
+        let _ = try await sendRequest(method: "session/prompt", params: params)
+    }
+
+    public func sendPrompt(sessionId: String, text: String, images: [AgentImageAttachment] = []) async throws {
+        let params = ACPSessionPromptParams(sessionId: sessionId, text: text, images: images)
         let _ = try await sendRequest(method: "session/prompt", params: params)
     }
 

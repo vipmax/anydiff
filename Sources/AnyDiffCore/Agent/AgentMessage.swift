@@ -216,6 +216,7 @@ public struct AgentMessage: Identifiable, Sendable, Equatable {
     public let id: UUID
     public let role: AgentRole
     public var content: String
+    public var images: [AgentImageAttachment]
     public var thought: String?
     public var toolCalls: [ToolCallItem]
     public private(set) var orderedParts: [AgentMessagePart]
@@ -227,6 +228,7 @@ public struct AgentMessage: Identifiable, Sendable, Equatable {
         id: UUID = UUID(),
         role: AgentRole,
         content: String = "",
+        images: [AgentImageAttachment] = [],
         thought: String? = nil,
         toolCalls: [ToolCallItem] = [],
         orderedParts: [AgentMessagePart]? = nil,
@@ -237,6 +239,7 @@ public struct AgentMessage: Identifiable, Sendable, Equatable {
         self.id = id
         self.role = role
         self.content = content
+        self.images = images
         self.thought = thought
         self.toolCalls = toolCalls
         self.orderedParts = orderedParts ?? Self.defaultParts(content: content, toolCalls: toolCalls)

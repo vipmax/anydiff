@@ -16,7 +16,7 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
     private var initializationTask: Task<Void, Never>?
     private var initializationWorkingDirectory: String?
     private var promptTask: Task<Void, Never>?
-    private var pendingPrompt: (text: String, workingDirectory: String)?
+    private var pendingPrompt: (text: String, images: [AgentImageAttachment], workingDirectory: String)?
 
     public init(client: ACPClient = ACPClient()) {
         self.client = client
@@ -53,16 +53,16 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
         }
     }
 
-    public override func sendPrompt(_ text: String, workingDirectory: String) {
+    public override func sendPrompt(_ text: String, images: [AgentImageAttachment] = [], workingDirectory: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty || !images.isEmpty else { return }
 
         // Never let two lifecycle tasks mutate the same ACP client. A prompt
         // can be staged while the process is starting, then drained after the
         // initialize + session/new handshake completes.
         guard currentStreamMessageId == nil, promptTask == nil, pendingPrompt == nil else { return }
 
-        let userMsg = AgentMessage(role: .user, content: trimmed)
+        let userMsg = AgentMessage(role: .user, content: trimmed, images: images)
         messages.append(userMsg)
 
         let assistantMsgId = UUID()
@@ -70,7 +70,7 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
         let assistantMsg = AgentMessage(id: assistantMsgId, role: .assistant, content: "", isStreaming: true)
         messages.append(assistantMsg)
 
-        pendingPrompt = (text: trimmed, workingDirectory: workingDirectory)
+        pendingPrompt = (text: trimmed, images: images, workingDirectory: workingDirectory)
         if isReadyForPrompt, currentSessionId != nil, currentWorkingDirectory == workingDirectory, client.isConnected {
             startPendingPromptIfPossible()
         } else {
@@ -169,7 +169,7 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
         promptTask = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                try await self.client.sendPrompt(sessionId: sessionId, text: pending.text)
+                try await self.client.sendPrompt(sessionId: sessionId, text: pending.text, images: pending.images)
                 self.status = .idle
                 self.statusMessage = nil
                 let (summary, _) = AgentGitChangesDetector.computeTurnSummary(

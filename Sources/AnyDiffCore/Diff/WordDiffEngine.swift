@@ -31,10 +31,10 @@ public final class WordDiffEngine: Sendable {
         let totalTokens = oldTokens.count + newTokens.count
         guard !lcs.isEmpty, totalTokens > 0 else { return ([], []) }
 
-        // Similarity check: if shared tokens are less than 25% of total tokens,
+        // Similarity check: if shared tokens are less than 60% of total tokens,
         // it's a completely different line — suppress word diff to avoid noise.
         let similarity = Double(lcs.count * 2) / Double(totalTokens)
-        if similarity < 0.25 {
+        if similarity < 0.60 {
             return ([], [])
         }
 
@@ -247,9 +247,8 @@ public final class WordDiffEngine: Sendable {
 
     /// Computes intra-line word diffs for adjacent deleted/added lines in a hunk
     /// following balanced word-diff rules:
-    /// 1. Equal line count (1:1 or N:N line replacement only).
-    /// 2. Line count cap (<= 8 lines).
-    /// 3. Similarity check (skips completely unrelated code rewrites).
+    /// 1. Only one deleted line paired with one added line.
+    /// 2. Similarity check (skips completely unrelated code rewrites).
     public func processWordDiffs(lines: inout [DiffLine]) {
         guard lines.count <= 250 else { return }
         var i = 0
@@ -266,22 +265,20 @@ public final class WordDiffEngine: Sendable {
                     i += 1
                 }
 
-                // Only perform word diff if deletedCount == addedCount (1:1 or N:N replacement)
-                // and the count does not exceed MAX_WORD_DIFF_LINE_COUNT (8).
-                guard deletedIndices.count == addedIndices.count && deletedIndices.count <= 8 else {
+                // Only perform word diff for a single-line replacement. Multi-line
+                // replacements are easier to read with line-level highlighting only.
+                guard deletedIndices.count == 1 && addedIndices.count == 1 else {
                     continue
                 }
 
-                for k in 0..<deletedIndices.count {
-                    let dIdx = deletedIndices[k]
-                    let aIdx = addedIndices[k]
-                    let (oldRanges, newRanges) = diffWords(
-                        oldText: lines[dIdx].text,
-                        newText: lines[aIdx].text
-                    )
-                    lines[dIdx].wordDiffRanges = oldRanges
-                    lines[aIdx].wordDiffRanges = newRanges
-                }
+                let dIdx = deletedIndices[0]
+                let aIdx = addedIndices[0]
+                let (oldRanges, newRanges) = diffWords(
+                    oldText: lines[dIdx].text,
+                    newText: lines[aIdx].text
+                )
+                lines[dIdx].wordDiffRanges = oldRanges
+                lines[aIdx].wordDiffRanges = newRanges
             } else {
                 i += 1
             }

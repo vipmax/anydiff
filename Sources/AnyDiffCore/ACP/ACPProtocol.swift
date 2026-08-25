@@ -855,13 +855,39 @@ public struct ACPSetConfigOptionResult: Codable, Sendable {
 }
 
 public struct ACPSessionPromptParams: Codable, Sendable {
-    public struct PromptItem: Codable, Sendable {
+    public struct PromptItem: Codable, Sendable, Equatable {
         public let type: String
         public let text: String?
+        public let data: String?
+        public let mimeType: String?
+        public let uri: String?
+
+        public init(type: String = "text", text: String? = nil, data: String? = nil, mimeType: String? = nil, uri: String? = nil) {
+            self.type = type
+            self.text = text
+            self.data = data
+            self.mimeType = mimeType
+            self.uri = uri
+        }
 
         public init(type: String = "text", text: String) {
             self.type = type
             self.text = text
+            self.data = nil
+            self.mimeType = nil
+            self.uri = nil
+        }
+
+        public static func text(_ text: String) -> PromptItem {
+            PromptItem(type: "text", text: text)
+        }
+
+        public static func image(data: String, mimeType: String, uri: String? = nil) -> PromptItem {
+            PromptItem(type: "image", text: nil, data: data, mimeType: mimeType, uri: uri)
+        }
+
+        public static func image(attachment: AgentImageAttachment) -> PromptItem {
+            PromptItem(type: "image", text: nil, data: attachment.base64String, mimeType: attachment.mimeType, uri: nil)
         }
     }
 
@@ -876,6 +902,18 @@ public struct ACPSessionPromptParams: Codable, Sendable {
     public init(sessionId: String, prompt: [PromptItem]) {
         self.sessionId = sessionId
         self.prompt = prompt
+    }
+
+    public init(sessionId: String, text: String, images: [AgentImageAttachment] = []) {
+        self.sessionId = sessionId
+        var items: [PromptItem] = []
+        if !text.isEmpty {
+            items.append(.text(text))
+        }
+        for img in images {
+            items.append(.image(attachment: img))
+        }
+        self.prompt = items.isEmpty ? [PromptItem.text(text)] : items
     }
 }
 

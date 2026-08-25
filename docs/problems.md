@@ -39,6 +39,26 @@ Relevant code:
 
 Add the result event types to `isTool`, then add regression coverage for a running tool transitioning to completed or failed with output.
 
+### Virtualized diff editor stutters while scrolling
+
+Scrolling can trigger repeated preparation work for the same visible diff. In `DisplayMap.getDiffLines`, the `usesOriginalHunk` path materializes the whole hunk (up to 4,096 lines) and recalculates word-level diff ranges every time the viewport is painted, even though only a small slice is visible. `CustomMultiBufferEditorView.drawCodeLine` also requests syntax highlighting and CoreText layout for every visible line on each draw.
+
+Long lines and many changed tokens make the stutter more noticeable, but the primary issue is repeated work per scroll frame rather than the amount of text alone. Existing `SyntaxHighlighter` and `LineLayoutCache` caches reduce some layout cost, but they do not cache the prepared original hunk with its `wordDiffRanges`.
+
+Recommended fix:
+
+- Cache the prepared hunk by `excerpt.id` and the relevant buffer/hunk revision, then return only the requested viewport slice.
+- Invalidate that entry when the buffer, hunk, or excerpt range changes.
+- Add a bounded line-render cache for the attributed string and `CTLine`, keyed by text, language, theme, and font. Keep cursor, selection, line backgrounds, and word-diff rectangles as dynamic overlays.
+
+Relevant code:
+
+- `Sources/AnyDiffCore/Display/DisplayMap.swift:551-613`
+- `Sources/AnyDiffUI/Editor/CustomMultiBufferEditorView.swift:987-1007`
+- `Sources/AnyDiffUI/Editor/CustomMultiBufferEditorView.swift:1368-1437`
+- `Sources/AnyDiffCore/Syntax/SyntaxHighlighter.swift:102-149`
+- `Sources/AnyDiffCore/Display/LineLayoutCache.swift:16-33`
+
 ## Validation
 
 - `swift test -c debug --filter AnyDiffCoreTests --skip Performance` — passed, 105 tests; 1 network test skipped.

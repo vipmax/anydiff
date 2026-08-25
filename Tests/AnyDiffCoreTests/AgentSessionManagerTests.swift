@@ -88,10 +88,11 @@ final class AgentSessionManagerTests: XCTestCase {
         let mockManager = MockAgentSessionManager()
         XCTAssertEqual(mockManager.status, .idle)
         XCTAssertEqual(mockManager.initializationState, .ready)
-        XCTAssertEqual(mockManager.messages.count, 12)
+        XCTAssertEqual(mockManager.messages.count, 14)
         XCTAssertEqual(mockManager.messages[0].role, .user)
         XCTAssertEqual(mockManager.messages[1].role, .assistant)
-        XCTAssertEqual(mockManager.contextUsagePercentage, 68)
+        XCTAssertEqual(mockManager.messages[12].images.count, 2)
+        XCTAssertEqual(mockManager.contextUsagePercentage, 72)
         XCTAssertGreaterThan(mockManager.messages[11].content.count, 10_000)
         XCTAssertEqual(mockManager.messages[11].toolCalls.count, 6)
         XCTAssertGreaterThan(mockManager.messages[11].toolCalls[2].output?.count ?? 0, 10_000)
@@ -105,7 +106,7 @@ final class AgentSessionManagerTests: XCTestCase {
         )
 
         mockManager.clearSession()
-        XCTAssertEqual(mockManager.messages.count, 12)
+        XCTAssertEqual(mockManager.messages.count, 14)
     }
 
     func testHeavyMockMessageKeepsRichTextLayersBounded() {
@@ -290,5 +291,23 @@ final class AgentSessionManagerTests: XCTestCase {
             exp2.fulfill()
         }
         wait(for: [exp2], timeout: 1.0)
+    }
+
+    func testSendPromptWithImages() {
+        let manager = ACPAgentSessionManager()
+        let tempDir = NSTemporaryDirectory()
+
+        let dummyData = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+        let img1 = AgentImageAttachment(data: dummyData, filename: "img1.png")
+        let img2 = AgentImageAttachment(data: dummyData, filename: "img2.png")
+
+        manager.sendPrompt("Inspect these 2 mock screenshots", images: [img1, img2], workingDirectory: tempDir)
+
+        XCTAssertEqual(manager.messages.count, 2)
+        XCTAssertEqual(manager.messages[0].role, .user)
+        XCTAssertEqual(manager.messages[0].content, "Inspect these 2 mock screenshots")
+        XCTAssertEqual(manager.messages[0].images.count, 2)
+        XCTAssertEqual(manager.messages[0].images[0].filename, "img1.png")
+        XCTAssertEqual(manager.messages[0].images[1].filename, "img2.png")
     }
 }

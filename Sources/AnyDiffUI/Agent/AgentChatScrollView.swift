@@ -11,6 +11,7 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
     public var onReview: ((AgentEditedFilesSummary) -> Void)?
     public var onRevert: ((AgentEditedFilesSummary) -> Void)?
     public var onRestore: ((AgentEditedFilesSummary) -> Void)?
+    public var onPreviewImages: (([AgentImageAttachment], Int) -> Void)?
 
     public init(
         messages: [AgentMessage],
@@ -19,7 +20,8 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
         onNearBottomChanged: @escaping (Bool) -> Void = { _ in },
         onReview: ((AgentEditedFilesSummary) -> Void)? = nil,
         onRevert: ((AgentEditedFilesSummary) -> Void)? = nil,
-        onRestore: ((AgentEditedFilesSummary) -> Void)? = nil
+        onRestore: ((AgentEditedFilesSummary) -> Void)? = nil,
+        onPreviewImages: (([AgentImageAttachment], Int) -> Void)? = nil
     ) {
         self.messages = messages
         self.theme = theme
@@ -28,6 +30,7 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
         self.onReview = onReview
         self.onRevert = onRevert
         self.onRestore = onRestore
+        self.onPreviewImages = onPreviewImages
     }
 
     public func makeNSView(context: Context) -> AgentNativeStandardChatScrollView {
@@ -36,6 +39,7 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
         scrollView.onReview = onReview
         scrollView.onRevert = onRevert
         scrollView.onRestore = onRestore
+        scrollView.onPreviewImages = onPreviewImages
         scrollView.update(
             messages: messages,
             theme: theme,
@@ -50,6 +54,7 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
         scrollView.onReview = onReview
         scrollView.onRevert = onRevert
         scrollView.onRestore = onRestore
+        scrollView.onPreviewImages = onPreviewImages
         scrollView.update(
             messages: messages,
             theme: theme,
@@ -107,6 +112,29 @@ public final class AgentNativeChatScrollView: NSScrollView {
         }
 
         documentView = documentViewCustom
+        registerForDraggedTypes([.fileURL, .png, .tiff])
+    }
+
+    public override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        let pb = sender.draggingPasteboard
+        if !ImageAttachmentHelpers.extractImages(from: pb).isEmpty {
+            return .copy
+        }
+        return []
+    }
+
+    public override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let pb = sender.draggingPasteboard
+        let images = ImageAttachmentHelpers.extractImages(from: pb)
+        if !images.isEmpty {
+            NotificationCenter.default.post(
+                name: Notification.Name("anyDiffAttachImages"),
+                object: nil,
+                userInfo: ["images": images]
+            )
+            return true
+        }
+        return false
     }
 
     deinit {
@@ -271,6 +299,11 @@ public final class AgentNativeStandardChatScrollView: NSScrollView {
             documentViewCustom.onRestore = onRestore
         }
     }
+    public var onPreviewImages: (([AgentImageAttachment], Int) -> Void)? {
+        didSet {
+            documentViewCustom.onPreviewImages = onPreviewImages
+        }
+    }
 
     public override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -299,6 +332,30 @@ public final class AgentNativeStandardChatScrollView: NSScrollView {
         ) { [weak self] _ in
             self?.notifyNearBottomChanged()
         }
+
+        registerForDraggedTypes([.fileURL, .png, .tiff])
+    }
+
+    public override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        let pb = sender.draggingPasteboard
+        if !ImageAttachmentHelpers.extractImages(from: pb).isEmpty {
+            return .copy
+        }
+        return []
+    }
+
+    public override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let pb = sender.draggingPasteboard
+        let images = ImageAttachmentHelpers.extractImages(from: pb)
+        if !images.isEmpty {
+            NotificationCenter.default.post(
+                name: Notification.Name("anyDiffAttachImages"),
+                object: nil,
+                userInfo: ["images": images]
+            )
+            return true
+        }
+        return false
     }
 
     deinit {
@@ -459,6 +516,7 @@ public final class AgentNativeStandardChatDocumentView: NSView {
     public var onReview: ((AgentEditedFilesSummary) -> Void)?
     public var onRevert: ((AgentEditedFilesSummary) -> Void)?
     public var onRestore: ((AgentEditedFilesSummary) -> Void)?
+    public var onPreviewImages: (([AgentImageAttachment], Int) -> Void)?
 
     public override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -539,6 +597,9 @@ public final class AgentNativeStandardChatDocumentView: NSView {
                 cell.onReview = onReview
                 cell.onRevert = onRevert
                 cell.onRestore = onRestore
+                cell.onPreviewImages = { [weak self] imgs, idx in
+                    self?.onPreviewImages?(imgs, idx)
+                }
                 if themeChanged || messagesByID[message.id] != message {
                     cell.configure(message: message, theme: theme)
                 }
@@ -551,6 +612,9 @@ public final class AgentNativeStandardChatDocumentView: NSView {
                 cell.onReview = onReview
                 cell.onRevert = onRevert
                 cell.onRestore = onRestore
+                cell.onPreviewImages = { [weak self] imgs, idx in
+                    self?.onPreviewImages?(imgs, idx)
+                }
                 cell.onToggleThought = { [weak self] in
                     guard let self else { return }
                     scrollView.stopFollowingBottom()
@@ -3108,6 +3172,8 @@ public final class AgentNativeMessageCell: NSView {
     // Subviews
     private let userBubbleView = NSView()
     private let userTextView = AgentSelectableTextView()
+    private var userImageViews: [NSButton] = []
+    public var onPreviewImages: (([AgentImageAttachment], Int) -> Void)?
     private let thoughtHeaderButton = NSButton()
     private let thoughtTextView = AgentSelectableTextView()
     private var toolCallViews: [NSView] = []
@@ -3205,6 +3271,28 @@ public final class AgentNativeMessageCell: NSView {
             userBubbleView.layer?.backgroundColor = NSColor(srgbRed: 0.07, green: 0.46, blue: 0.96, alpha: 0.94).cgColor
             userBubbleView.layer?.borderColor = NSColor(srgbRed: 0.40, green: 0.72, blue: 1.0, alpha: 0.55).cgColor
 
+            userImageViews.forEach { $0.removeFromSuperview() }
+            userImageViews.removeAll()
+
+            for (index, img) in message.images.enumerated() {
+                if let nsImage = NSImage(data: img.data) {
+                    let btn = NSButton()
+                    btn.image = nsImage
+                    btn.imageScaling = .scaleProportionallyUpOrDown
+                    btn.isBordered = false
+                    btn.wantsLayer = true
+                    btn.layer?.cornerRadius = 8
+                    btn.layer?.masksToBounds = true
+                    btn.layer?.borderWidth = 1
+                    btn.layer?.borderColor = NSColor.white.withAlphaComponent(0.35).cgColor
+                    btn.target = self
+                    btn.action = #selector(handleImageClick(_:))
+                    btn.tag = index
+                    userBubbleView.addSubview(btn)
+                    userImageViews.append(btn)
+                }
+            }
+
             let style = NSMutableParagraphStyle()
             style.lineSpacing = 3
             style.alignment = .left
@@ -3214,6 +3302,7 @@ public final class AgentNativeMessageCell: NSView {
                 .paragraphStyle: style
             ])
             userTextView.textStorage?.setAttributedString(attr)
+            userTextView.isHidden = message.content.isEmpty
             clearAssistantViews()
         } else {
             thoughtTextView.cellId = message.id
@@ -3986,6 +4075,10 @@ public final class AgentNativeMessageCell: NSView {
         }
     }
 
+    @objc private func handleImageClick(_ sender: NSButton) {
+        onPreviewImages?(message.images, sender.tag)
+    }
+
     @objc private func copyCodeSnippet(_ sender: NSButton) {
         guard let code = sender.identifier?.rawValue else { return }
         let pb = NSPasteboard.general
@@ -4205,12 +4298,15 @@ public final class AgentNativeMessageCell: NSView {
 
         if message.role == .user {
             let maxBubbleWidth = min(contentWidth * 0.85, 480)
-            let textHeight = measuredTextHeight(
+            let hasImages = !userImageViews.isEmpty
+            let imagesHeight: CGFloat = hasImages ? (userImageViews.count == 1 ? 140 : 54) : 0
+            let hasText = !message.content.isEmpty
+            let textHeight = hasText ? measuredTextHeight(
                 for: userTextView,
                 attributedString: userTextView.attributedString(),
                 width: maxBubbleWidth - 28
-            )
-            let bubbleHeight = textHeight + 18
+            ) : 0
+            let bubbleHeight = (imagesHeight > 0 ? imagesHeight + (hasText ? 8 : 0) : 0) + textHeight + 18
             height = bubbleHeight + 8
         } else {
             var currentY: CGFloat = 4
@@ -4245,14 +4341,18 @@ public final class AgentNativeMessageCell: NSView {
 
         if message.role == .user {
             let maxBubbleWidth = min(contentWidth * 0.85, 480)
-            let textHeight = measuredTextHeight(
+            let hasImages = !userImageViews.isEmpty
+            let imagesHeight: CGFloat = hasImages ? (userImageViews.count == 1 ? 140 : 54) : 0
+            let imagesWidth: CGFloat = hasImages ? (userImageViews.count == 1 ? 180 : min(maxBubbleWidth - 28, CGFloat(userImageViews.count) * 54 + CGFloat(max(0, userImageViews.count - 1)) * 6)) : 0
+            let hasText = !message.content.isEmpty
+            let textHeight = hasText ? measuredTextHeight(
                 for: userTextView,
                 attributedString: userTextView.attributedString(),
                 width: maxBubbleWidth - 28
-            )
-            let textWidth = measureTextWidth(userTextView.attributedString().string, font: NSFont.systemFont(ofSize: 13))
-            let bubbleWidth = min(maxBubbleWidth, textWidth + 28)
-            let bubbleHeight = textHeight + 18
+            ) : 0
+            let textWidth = hasText ? measureTextWidth(userTextView.attributedString().string, font: NSFont.systemFont(ofSize: 13)) : 0
+            let bubbleWidth = min(maxBubbleWidth, max(textWidth, imagesWidth) + 28)
+            let bubbleHeight = (imagesHeight > 0 ? imagesHeight + (hasText ? 8 : 0) : 0) + textHeight + 18
 
             let bubbleFrame = NSRect(
                 x: width - horizontalPadding - bubbleWidth,
@@ -4260,13 +4360,37 @@ public final class AgentNativeMessageCell: NSView {
                 width: bubbleWidth,
                 height: bubbleHeight
             )
-            let tvFrame = NSRect(x: 14, y: 9, width: bubbleWidth - 28, height: textHeight)
             if animated {
                 userBubbleView.animator().frame = bubbleFrame
-                userTextView.animator().frame = tvFrame
             } else {
                 userBubbleView.frame = bubbleFrame
-                userTextView.frame = tvFrame
+            }
+
+            var currentInsideY: CGFloat = 9
+            if hasImages {
+                if userImageViews.count == 1, let singleBtn = userImageViews.first {
+                    let imgW = min(bubbleWidth - 28, 180)
+                    let imgFrame = NSRect(x: 14, y: currentInsideY, width: imgW, height: 140)
+                    if animated { singleBtn.animator().frame = imgFrame } else { singleBtn.frame = imgFrame }
+                } else {
+                    for (i, btn) in userImageViews.enumerated() {
+                        let btnFrame = NSRect(x: 14 + CGFloat(i) * 60, y: currentInsideY, width: 54, height: 54)
+                        if animated { btn.animator().frame = btnFrame } else { btn.frame = btnFrame }
+                    }
+                }
+                currentInsideY += imagesHeight + (hasText ? 8 : 0)
+            }
+
+            if hasText {
+                let tvFrame = NSRect(x: 14, y: currentInsideY, width: bubbleWidth - 28, height: textHeight)
+                userTextView.isHidden = false
+                if animated {
+                    userTextView.animator().frame = tvFrame
+                } else {
+                    userTextView.frame = tvFrame
+                }
+            } else {
+                userTextView.isHidden = true
             }
         } else {
             var currentY: CGFloat = 4

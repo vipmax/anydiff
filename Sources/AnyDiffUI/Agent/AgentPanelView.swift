@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import AnyDiffCore
 
 public struct AgentPanelView: View {
@@ -9,6 +10,7 @@ public struct AgentPanelView: View {
     public var fileDiffsSummary: String?
     public var agentAccentColor: Color
     public var onReview: ((AgentEditedFilesSummary) -> Void)?
+    public var onPreviewImages: (([AgentImageAttachment], Int, Bool) -> Void)?
 
     @State private var inputText: String = ""
     @State private var isInputCollapsed: Bool = false
@@ -17,6 +19,9 @@ public struct AgentPanelView: View {
     @State private var inputContentHeight: CGFloat = 22
     @State private var hoveredQuickAction: String?
     @State private var lastKnownStatus: AgentConnectionStatus = .disconnected
+    @State private var isPanelDropTargeted: Bool = false
+    @State private var previewImages: [AgentImageAttachment]? = nil
+    @State private var previewImageIndex: Int? = nil
 
     public init(
         agentManager: AgentSessionManager,
@@ -25,7 +30,8 @@ public struct AgentPanelView: View {
         currentSelectedFile: String? = nil,
         fileDiffsSummary: String? = nil,
         agentAccentColor: Color = .accentColor,
-        onReview: ((AgentEditedFilesSummary) -> Void)? = nil
+        onReview: ((AgentEditedFilesSummary) -> Void)? = nil,
+        onPreviewImages: (([AgentImageAttachment], Int, Bool) -> Void)? = nil
     ) {
         self.agentManager = agentManager
         self.theme = theme
@@ -34,6 +40,7 @@ public struct AgentPanelView: View {
         self.fileDiffsSummary = fileDiffsSummary
         self.agentAccentColor = agentAccentColor
         self.onReview = onReview
+        self.onPreviewImages = onPreviewImages
     }
 
     public var body: some View {
@@ -97,6 +104,49 @@ public struct AgentPanelView: View {
             }
         }
         .background(Color(theme.background))
+        .onDrop(of: [UTType.image, UTType.fileURL, UTType.png, UTType.jpeg, UTType.tiff, UTType.url], isTargeted: $isPanelDropTargeted) { providers in
+            ImageAttachmentHelpers.extractImages(from: providers) { droppedImages in
+                guard !droppedImages.isEmpty else { return }
+                NotificationCenter.default.post(
+                    name: Notification.Name("anyDiffAttachImages"),
+                    object: nil,
+                    userInfo: ["images": droppedImages]
+                )
+            }
+            return true
+        }
+        .overlay {
+            if isPanelDropTargeted {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(Color(theme.background).opacity(0.88))
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(agentAccentColor, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+                        .padding(8)
+
+                    VStack(spacing: 12) {
+                        Image(systemName: "photo.badge.plus")
+                            .font(.system(size: 38, weight: .medium))
+                            .foregroundColor(agentAccentColor)
+                        Text("Drop images to attach to chat")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(Color(theme.foreground))
+                    }
+                }
+                .allowsHitTesting(false)
+                .transition(.opacity)
+            }
+        }
+        .overlay {
+            if onPreviewImages == nil, let images = previewImages, previewImageIndex != nil {
+                AgentImagePreviewModalView(
+                    images: images,
+                    selectedIndex: $previewImageIndex,
+                    theme: theme
+                )
+                .transition(.opacity)
+            }
+        }
         .onAppear {
             agentManager.prepareAgent(workingDirectory: workingDirectory)
         }
@@ -125,9 +175,19 @@ public struct AgentPanelView: View {
             accentColor: agentAccentColor,
             isCollapsed: $isInputCollapsed,
             calculatedHeight: $inputContentHeight,
-            onSend: handleSendPrompt,
+            onSend: { prompt, images in
+                handleSendPrompt(prompt, images: images)
+            },
             onCancel: { agentManager.cancel() },
-            onReview: onReview
+            onReview: onReview,
+            onPreviewImages: { imgs, idx, isDraft in
+                if let onPreviewImages = onPreviewImages {
+                    onPreviewImages(imgs, idx, isDraft)
+                } else {
+                    previewImages = imgs
+                    previewImageIndex = idx
+                }
+            }
         )
     }
 
@@ -158,6 +218,14 @@ public struct AgentPanelView: View {
                 },
                 onRestore: { summary in
                     agentManager.restoreTurn(summary: summary, workingDirectory: workingDirectory)
+                },
+                onPreviewImages: { imgs, idx in
+                    if let onPreviewImages = onPreviewImages {
+                        onPreviewImages(imgs, idx, false)
+                    } else {
+                        previewImages = imgs
+                        previewImageIndex = idx
+                    }
                 }
             )
         }
@@ -280,7 +348,7 @@ public struct AgentPanelView: View {
         }
     }
 
-    private func handleSendPrompt(_ prompt: String) {
+    private func handleSendPrompt(_ prompt: String, images: [AgentImageAttachment] = []) {
         var finalPrompt = prompt
         if finalPrompt.contains("@diff"), let summary = fileDiffsSummary {
             finalPrompt = finalPrompt.replacingOccurrences(of: "@diff", with: "\n\n[Diff Context]:\n\(summary)\n")
@@ -288,7 +356,7 @@ public struct AgentPanelView: View {
         // A new prompt starts a new turn, so resume following the latest
         // output even if the user previously opened a tool card for inspection.
         scrollToBottomRequest &+= 1
-        agentManager.sendPrompt(finalPrompt, workingDirectory: workingDirectory)
+        agentManager.sendPrompt(finalPrompt, images: images, workingDirectory: workingDirectory)
     }
 
     @ViewBuilder

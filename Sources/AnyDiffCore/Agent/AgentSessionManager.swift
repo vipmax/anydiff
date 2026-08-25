@@ -146,7 +146,11 @@ open class AgentSessionManager: ObservableObject, @unchecked Sendable {
             .name
     }
 
-    open func sendPrompt(_ text: String, workingDirectory: String) {}
+    open func sendPrompt(_ text: String, images: [AgentImageAttachment] = [], workingDirectory: String) {}
+
+    open func sendPrompt(_ text: String, workingDirectory: String) {
+        sendPrompt(text, images: [], workingDirectory: workingDirectory)
+    }
 
     /// Prepares the agent independently from sending the first prompt. The
     /// UI calls this when the panel appears so startup never races with the

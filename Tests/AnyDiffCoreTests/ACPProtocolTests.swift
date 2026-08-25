@@ -41,6 +41,32 @@ final class ACPProtocolTests: XCTestCase {
         XCTAssertEqual(decodedCancel.sessionId, "sess-123")
     }
 
+    func testSessionPromptWithImagesEncoding() throws {
+        let encoder = JSONEncoder()
+        let decoder = JSONDecoder()
+
+        let dummyImageData = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+        let attachment = AgentImageAttachment(
+            data: dummyImageData,
+            mimeType: "image/png",
+            filename: "screenshot.png",
+            width: 800,
+            height: 600
+        )
+
+        let prompt = ACPSessionPromptParams(sessionId: "sess-img-1", text: "Look at this screenshot", images: [attachment])
+        let data = try encoder.encode(prompt)
+        let decoded = try decoder.decode(ACPSessionPromptParams.self, from: data)
+
+        XCTAssertEqual(decoded.sessionId, "sess-img-1")
+        XCTAssertEqual(decoded.prompt.count, 2)
+        XCTAssertEqual(decoded.prompt[0].type, "text")
+        XCTAssertEqual(decoded.prompt[0].text, "Look at this screenshot")
+        XCTAssertEqual(decoded.prompt[1].type, "image")
+        XCTAssertEqual(decoded.prompt[1].mimeType, "image/png")
+        XCTAssertEqual(decoded.prompt[1].data, dummyImageData.base64EncodedString())
+    }
+
     func testSessionUpdateStreamingNotifications() throws {
         let json = """
         {

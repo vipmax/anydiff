@@ -150,6 +150,28 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
         activeReviewSummary = nil
     }
 
+    public struct ActiveImagePreviewState: Equatable, Sendable {
+        public var images: [AgentImageAttachment]
+        public var selectedIndex: Int
+        public var isDraft: Bool
+
+        public init(images: [AgentImageAttachment], selectedIndex: Int = 0, isDraft: Bool = false) {
+            self.images = images
+            self.selectedIndex = selectedIndex
+            self.isDraft = isDraft
+        }
+    }
+
+    @Published public var activeImagePreview: ActiveImagePreviewState? = nil
+
+    public func showImagePreview(images: [AgentImageAttachment], selectedIndex: Int = 0, isDraft: Bool = false) {
+        activeImagePreview = ActiveImagePreviewState(images: images, selectedIndex: selectedIndex, isDraft: isDraft)
+    }
+
+    public func closeImagePreview() {
+        activeImagePreview = nil
+    }
+
     public var allPresets: [AgentPreset] {
         AgentPreset.defaultPresets + customPresets
     }

@@ -11,6 +11,7 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
     @Binding public var calculatedHeight: CGFloat
     public var onSend: () -> Void
     public var onFocusChanged: ((Bool) -> Void)?
+    public var onImagesPasted: (([AgentImageAttachment]) -> Void)?
 
     public init(
         text: Binding<String>,
@@ -20,7 +21,8 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
         maxHeight: CGFloat = 160,
         calculatedHeight: Binding<CGFloat>,
         onSend: @escaping () -> Void,
-        onFocusChanged: ((Bool) -> Void)? = nil
+        onFocusChanged: ((Bool) -> Void)? = nil,
+        onImagesPasted: (([AgentImageAttachment]) -> Void)? = nil
     ) {
         self._text = text
         self.placeholder = placeholder
@@ -30,6 +32,7 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
         self._calculatedHeight = calculatedHeight
         self.onSend = onSend
         self.onFocusChanged = onFocusChanged
+        self.onImagesPasted = onImagesPasted
     }
 
     public func makeNSView(context: Context) -> NSScrollView {
@@ -42,6 +45,7 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
         scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = true
         scrollView.wantsLayer = true
+        scrollView.registerForDraggedTypes([.fileURL, .png, .tiff])
 
         let textView = AgentInputCustomTextView()
         textView.isRichText = false
@@ -63,6 +67,8 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
         textView.placeholderString = placeholder
         textView.onSend = onSend
         textView.onFocusChanged = onFocusChanged
+        textView.onImagesPasted = onImagesPasted
+        textView.registerForDraggedTypes([.fileURL, .png, .tiff])
         textView.onHeightChanged = { [weak coordinator = context.coordinator] newHeight in
             coordinator?.reportHeight(newHeight)
         }
@@ -91,6 +97,7 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
             tv.insertionPointColor = NSColor(cgColor: theme.foreground.cgColor) ?? .textColor
             tv.onSend = onSend
             tv.onFocusChanged = onFocusChanged
+            tv.onImagesPasted = onImagesPasted
         }
     }
 
@@ -154,6 +161,7 @@ public final class AgentInputCustomTextView: NSTextView {
     public var onSend: (() -> Void)?
     public var onHeightChanged: ((CGFloat) -> Void)?
     public var onFocusChanged: ((Bool) -> Void)?
+    public var onImagesPasted: (([AgentImageAttachment]) -> Void)?
 
     public override func becomeFirstResponder() -> Bool {
         let didBecomeFirstResponder = super.becomeFirstResponder()
@@ -185,6 +193,37 @@ public final class AgentInputCustomTextView: NSTextView {
         recalculateHeight()
     }
 
+    public override func paste(_ sender: Any?) {
+        let images = ImageAttachmentHelpers.extractImages(from: .general)
+        if !images.isEmpty {
+            onImagesPasted?(images)
+            if let string = NSPasteboard.general.string(forType: .string), !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                super.paste(sender)
+            }
+            recalculateHeight()
+            return
+        }
+        super.paste(sender)
+        recalculateHeight()
+    }
+
+    public override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        let images = ImageAttachmentHelpers.extractImages(from: sender.draggingPasteboard)
+        if !images.isEmpty {
+            return .copy
+        }
+        return super.draggingEntered(sender)
+    }
+
+    public override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let images = ImageAttachmentHelpers.extractImages(from: sender.draggingPasteboard)
+        if !images.isEmpty {
+            onImagesPasted?(images)
+            return true
+        }
+        return super.performDragOperation(sender)
+    }
+
     public func recalculateHeight() {
         guard let lm = layoutManager, let tc = textContainer else { return }
         lm.ensureLayout(for: tc)
@@ -212,10 +251,13 @@ public struct AgentInputView: View {
     public var theme: Theme
     public var accentColor: Color
     @Binding public var isCollapsed: Bool
-    public var onSend: (String) -> Void
+    public var onSend: (String, [AgentImageAttachment]) -> Void
     public var onCancel: () -> Void
     public var onReview: ((AgentEditedFilesSummary) -> Void)?
+    public var onPreviewImages: (([AgentImageAttachment], Int, Bool) -> Void)?
 
+    @State private var attachedImages: [AgentImageAttachment] = []
+    @State private var previewImageIndex: Int? = nil
     @State private var isSettingsPopoverPresented: Bool = false
     @Binding private var calculatedHeight: CGFloat
     @State private var isContextUsageHovered: Bool = false
@@ -229,9 +271,10 @@ public struct AgentInputView: View {
         accentColor: Color = .accentColor,
         isCollapsed: Binding<Bool>,
         calculatedHeight: Binding<CGFloat>,
-        onSend: @escaping (String) -> Void,
+        onSend: @escaping (String, [AgentImageAttachment]) -> Void,
         onCancel: @escaping () -> Void,
-        onReview: ((AgentEditedFilesSummary) -> Void)? = nil
+        onReview: ((AgentEditedFilesSummary) -> Void)? = nil,
+        onPreviewImages: (([AgentImageAttachment], Int, Bool) -> Void)? = nil
     ) {
         self._text = text
         self.agentManager = agentManager
@@ -242,6 +285,31 @@ public struct AgentInputView: View {
         self.onSend = onSend
         self.onCancel = onCancel
         self.onReview = onReview
+        self.onPreviewImages = onPreviewImages
+    }
+
+    public init(
+        text: Binding<String>,
+        agentManager: AgentSessionManager,
+        theme: Theme,
+        accentColor: Color = .accentColor,
+        isCollapsed: Binding<Bool>,
+        calculatedHeight: Binding<CGFloat>,
+        onSend: @escaping (String) -> Void,
+        onCancel: @escaping () -> Void,
+        onReview: ((AgentEditedFilesSummary) -> Void)? = nil,
+        onPreviewImages: (([AgentImageAttachment], Int, Bool) -> Void)? = nil
+    ) {
+        self._text = text
+        self.agentManager = agentManager
+        self.theme = theme
+        self.accentColor = accentColor
+        self._isCollapsed = isCollapsed
+        self._calculatedHeight = calculatedHeight
+        self.onSend = { prompt, _ in onSend(prompt) }
+        self.onCancel = onCancel
+        self.onReview = onReview
+        self.onPreviewImages = onPreviewImages
     }
 
     private var isBusy: Bool {
@@ -249,16 +317,76 @@ public struct AgentInputView: View {
     }
 
     public var body: some View {
-        if isCollapsed {
-            collapsedView
-        } else {
-            expandedView
+        ZStack {
+            if isCollapsed {
+                collapsedView
+            } else {
+                expandedView
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffAttachImages"))) { notification in
+            if let newImages = notification.userInfo?["images"] as? [AgentImageAttachment], !newImages.isEmpty {
+                withAnimation(.spring(response: 0.25, dampingFraction: 0.75)) {
+                    attachedImages.append(contentsOf: newImages)
+                    isCollapsed = false
+                }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffDeleteDraftImage"))) { notification in
+            if let delIdx = notification.userInfo?["index"] as? Int {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    if delIdx >= 0 && delIdx < attachedImages.count {
+                        attachedImages.remove(at: delIdx)
+                    }
+                }
+            }
+        }
+        .overlay {
+            if onPreviewImages == nil, previewImageIndex != nil && !attachedImages.isEmpty {
+                AgentImagePreviewModalView(
+                    images: attachedImages,
+                    selectedIndex: $previewImageIndex,
+                    onDelete: { delIdx in
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            if delIdx >= 0 && delIdx < attachedImages.count {
+                                attachedImages.remove(at: delIdx)
+                            }
+                        }
+                    },
+                    theme: theme
+                )
+                .transition(.opacity)
+            }
         }
     }
 
     @ViewBuilder
     private var expandedView: some View {
         VStack(spacing: 8) {
+            // Attached images miniature strip
+            if !attachedImages.isEmpty {
+                AgentInputAttachmentThumbnailView(
+                    images: attachedImages,
+                    theme: theme,
+                    onSelect: { index in
+                        if let onPreviewImages = onPreviewImages {
+                            onPreviewImages(attachedImages, index, true)
+                        } else {
+                            previewImageIndex = index
+                        }
+                    },
+                    onDelete: { index in
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            if index >= 0 && index < attachedImages.count {
+                                attachedImages.remove(at: index)
+                            }
+                        }
+                    }
+                )
+                .padding(.top, 2)
+                .padding(.horizontal, 4)
+            }
+
             // Main text input row with multi-line smooth scrolling
             HStack(alignment: .top, spacing: 8) {
                 AgentAutoGrowingTextView(
@@ -271,12 +399,17 @@ public struct AgentInputView: View {
                     onSend: handleSend,
                     onFocusChanged: { focused in
                         isInputFocused = focused
+                    },
+                    onImagesPasted: { newImages in
+                        withAnimation(.spring(response: 0.25, dampingFraction: 0.75)) {
+                            attachedImages.append(contentsOf: newImages)
+                        }
                     }
                 )
                 .frame(maxWidth: .infinity)
                 .frame(height: calculatedHeight)
             }
-            .padding(.top, 4)
+            .padding(.top, attachedImages.isEmpty ? 4 : 0)
             .padding(.horizontal, 4)
 
             // Bottom toolbar row inside input capsule
@@ -601,7 +734,9 @@ public struct AgentInputView: View {
     }
 
     private var sendButton: some View {
-        ZStack {
+        let canSend = (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachedImages.isEmpty) && agentManager.canAcceptPrompt
+
+        return ZStack {
             Button(action: onCancel) {
                 Image(systemName: "stop.circle.fill")
                     .font(.system(size: 24))
@@ -617,16 +752,16 @@ public struct AgentInputView: View {
             Button(action: handleSend) {
                 ZStack {
                     Circle()
-                        .fill(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? Color.secondary.opacity(0.18) : accentColor)
+                        .fill(canSend ? accentColor : Color.secondary.opacity(0.18))
                         .frame(width: 26, height: 26)
 
                     Image(systemName: "arrow.up")
                         .font(.system(size: 12, weight: .bold))
-                        .foregroundColor(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? Color(theme.gutterForeground).opacity(0.6) : .white)
+                        .foregroundColor(canSend ? .white : Color(theme.gutterForeground).opacity(0.6))
                 }
             }
             .buttonStyle(.plain)
-            .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !agentManager.canAcceptPrompt)
+            .disabled(!canSend)
             .help(agentManager.initializationState == .starting ? "Starting agent…" : "Send Prompt (Enter)")
             .opacity(isBusy ? 0 : 1)
             .scaleEffect(isBusy ? 0.82 : 1)
@@ -724,10 +859,12 @@ public struct AgentInputView: View {
         guard !isBusy else { return }
         guard agentManager.canAcceptPrompt else { return }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty || !attachedImages.isEmpty else { return }
+        let imagesToSend = attachedImages
+        attachedImages = []
         text = ""
         calculatedHeight = 22
-        onSend(trimmed)
+        onSend(trimmed, imagesToSend)
     }
 }
 

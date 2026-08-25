@@ -92,6 +92,29 @@ final class WordDiffTests: XCTestCase {
         XCTAssertFalse(newDiffs.isEmpty)
     }
 
+    func testWordDiffSuppressesLowSimilarityReplacement() {
+        let oldLine = "Привет, бро! 🚀 **AnyDiff** — это нативный и ультраб быстрый macOS Git/Diff клиент."
+        let newLine = "Hello! 🚀 **AnyDiff** is a native, ultra-fast macOS Git/Diff client built in Swift."
+
+        let (oldDiffs, newDiffs) = WordDiffEngine.shared.diffWords(oldText: oldLine, newText: newLine)
+
+        XCTAssertTrue(oldDiffs.isEmpty)
+        XCTAssertTrue(newDiffs.isEmpty)
+    }
+
+    func testWordDiffIsDisabledForMultiLineReplacement() {
+        var lines = [
+            DiffLine(kind: .deleted, text: "let first = oldValue"),
+            DiffLine(kind: .deleted, text: "let second = oldValue"),
+            DiffLine(kind: .added, text: "let first = newValue"),
+            DiffLine(kind: .added, text: "let second = newValue")
+        ]
+
+        WordDiffEngine.shared.processWordDiffs(lines: &lines)
+
+        XCTAssertTrue(lines.allSatisfy { $0.wordDiffRanges.isEmpty })
+    }
+
     func testLiveWordDiffRecalculationOnEdit() {
         let diffSample = """
         --- a/Calculator.swift

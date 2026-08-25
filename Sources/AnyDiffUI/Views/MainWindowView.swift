@@ -152,6 +152,42 @@ public struct MainWindowView: View {
             handleWindowDrop(providers: providers)
         }
         .overlay(windowDropOverlayView)
+        .overlay {
+            if let preview = agentCoordinator.activeImagePreview {
+                AgentImagePreviewModalView(
+                    images: preview.images,
+                    selectedIndex: Binding(
+                        get: { agentCoordinator.activeImagePreview?.selectedIndex },
+                        set: { newIdx in
+                            if let newIdx = newIdx {
+                                agentCoordinator.activeImagePreview?.selectedIndex = newIdx
+                            } else {
+                                agentCoordinator.activeImagePreview = nil
+                            }
+                        }
+                    ),
+                    onDelete: preview.isDraft ? { delIdx in
+                        NotificationCenter.default.post(
+                            name: Notification.Name("anyDiffDeleteDraftImage"),
+                            object: nil,
+                            userInfo: ["index": delIdx]
+                        )
+                        if let currentImages = agentCoordinator.activeImagePreview?.images, delIdx < currentImages.count {
+                            var updated = currentImages
+                            updated.remove(at: delIdx)
+                            if updated.isEmpty {
+                                agentCoordinator.activeImagePreview = nil
+                            } else {
+                                agentCoordinator.activeImagePreview?.images = updated
+                            }
+                        }
+                    } : nil,
+                    theme: activeTheme
+                )
+                .transition(.opacity)
+                .zIndex(999)
+            }
+        }
         .sheet(item: commentModalBinding) { target in
             commentModalView(for: target)
         }
@@ -304,6 +340,9 @@ public struct MainWindowView: View {
                         agentAccentColor: activeSession.preset.color,
                         onReview: { summary in
                             beginReview(summary: summary)
+                        },
+                        onPreviewImages: { imgs, idx, isDraft in
+                            agentCoordinator.showImagePreview(images: imgs, selectedIndex: idx, isDraft: isDraft)
                         }
                     )
                     .id(activeSession.id)
