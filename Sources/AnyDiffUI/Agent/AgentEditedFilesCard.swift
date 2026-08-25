@@ -4,6 +4,7 @@ import AnyDiffCore
 public struct AgentEditedFilesCard: View {
     public let summary: AgentEditedFilesSummary
     public let theme: Theme
+    public var accentColor: Color
     public let disableAgentColors: Bool
     public var onReview: ((AgentEditedFilesSummary) -> Void)? = nil
     public var onRevert: ((AgentEditedFilesSummary) -> Void)? = nil
@@ -16,6 +17,7 @@ public struct AgentEditedFilesCard: View {
     public init(
         summary: AgentEditedFilesSummary,
         theme: Theme,
+        accentColor: Color = .accentColor,
         disableAgentColors: Bool = false,
         onReview: ((AgentEditedFilesSummary) -> Void)? = nil,
         onRevert: ((AgentEditedFilesSummary) -> Void)? = nil,
@@ -23,6 +25,7 @@ public struct AgentEditedFilesCard: View {
     ) {
         self.summary = summary
         self.theme = theme
+        self.accentColor = accentColor
         self.disableAgentColors = disableAgentColors
         self.onReview = onReview
         self.onRevert = onRevert
@@ -31,34 +34,83 @@ public struct AgentEditedFilesCard: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            // Header Row
-            HStack(alignment: .center, spacing: 10) {
-                // Left Icon Box
-                ZStack {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(Color(nsColor: .controlBackgroundColor).opacity(0.75))
-                        .frame(width: 32, height: 32)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                    .stroke(Color.white.opacity(0.12), lineWidth: 0)
-                        )
+            // Header Row: Left Title, Right Actions & Stats
+            HStack(alignment: .center, spacing: 8) {
+                // Title (Left aligned)
+                Text(summary.displayTitle)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(summary.isReverted ? Color(theme.gutterForeground) : Color(theme.foreground))
 
-                    Image(systemName: summary.isReverted ? "arrow.uturn.backward" : "square.badge.plus")
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundColor(summary.isReverted ? Color(theme.gutterForeground) : Color(theme.foreground).opacity(0.9))
-                }
+                Spacer()
 
-                // Title & Delta Counters
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(summary.displayTitle)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(summary.isReverted ? Color(theme.gutterForeground) : Color(theme.foreground))
-
+                // Actions & Stats (Right aligned: Revert, Review, +/-)
+                HStack(alignment: .center, spacing: 8) {
                     if summary.isReverted {
-                        Text("Changes reverted")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(Color(theme.gutterForeground).opacity(0.8))
+                        // Restore Button
+                        Button(action: {
+                            onRestore?(summary)
+                        }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "arrow.uturn.forward")
+                                    .font(.system(size: 10, weight: .semibold))
+                                Text("Restore")
+                                    .font(.system(size: 11.5, weight: .medium))
+                            }
+                            .foregroundColor(isRestoreHovered ? Color.blue.opacity(0.95) : Color(theme.foreground).opacity(0.85))
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 4.5)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .fill(isRestoreHovered ? Color.blue.opacity(0.16) : Color.white.opacity(0.06))
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .onHover { isRestoreHovered = $0 }
+                        .help("Restore changes that were reverted")
                     } else {
+                        // Revert Button
+                        Button(action: {
+                            onRevert?(summary)
+                        }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "arrow.uturn.backward")
+                                    .font(.system(size: 10, weight: .semibold))
+                                Text("Revert")
+                                    .font(.system(size: 11.5, weight: .medium))
+                            }
+                            .foregroundColor(isRevertHovered ? Color.red.opacity(0.95) : Color(theme.foreground).opacity(0.85))
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 4.5)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .fill(isRevertHovered ? Color.red.opacity(0.16) : Color.white.opacity(0.06))
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .onHover { isRevertHovered = $0 }
+                        .help("Revert changes made during this turn")
+
+                        // Review Button
+                        Button(action: {
+                            onReview?(summary)
+                        }) {
+                            Text("Review")
+                                .font(.system(size: 11.5, weight: .medium))
+                                .foregroundColor(isReviewHovered ? Color(theme.foreground) : Color(theme.foreground).opacity(0.95))
+                                .padding(.horizontal, 11)
+                                .padding(.vertical, 4.5)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                        .fill(isReviewHovered ? accentColor.opacity(0.28) : accentColor.opacity(0.16))
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .onHover { isReviewHovered = $0 }
+                        .help("Review diff in MultiBuffer editor")
+                    }
+
+                    // Delta Counters (+ / -) on the far right
+                    if !summary.isReverted {
                         HStack(spacing: 5) {
                             if summary.totalAdditions > 0 {
                                 Text("+\(summary.totalAdditions)")
@@ -69,101 +121,18 @@ public struct AgentEditedFilesCard: View {
                                     .foregroundColor(fileStatColor(.red))
                             }
                         }
-                        .font(.system(size: 11, weight: .bold, design: .monospaced))
-                    }
-                }
-
-                Spacer()
-
-                if summary.isReverted {
-                    // Restore Button
-                    Button(action: {
-                        onRestore?(summary)
-                    }) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "arrow.uturn.forward")
-                                .font(.system(size: 10, weight: .semibold))
-                            Text("Restore")
-                                .font(.system(size: 12, weight: .medium))
-                        }
-                        .foregroundColor(isRestoreHovered ? Color.blue.opacity(0.95) : Color(theme.foreground).opacity(0.85))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(
-                            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .fill(isRestoreHovered ? Color.blue.opacity(0.14) : Color.white.opacity(0.06))
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .stroke(isRestoreHovered ? Color.blue.opacity(0.35) : Color.white.opacity(0.12), lineWidth: 0)
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .onHover { hovering in
-                        isRestoreHovered = hovering
-                    }
-                    .help("Restore changes that were reverted")
-                } else {
-                    // Revert Button
-                    Button(action: {
-                        onRevert?(summary)
-                    }) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "arrow.uturn.backward")
-                                .font(.system(size: 10, weight: .semibold))
-                            Text("Revert")
-                                .font(.system(size: 12, weight: .medium))
-                        }
-                        .foregroundColor(isRevertHovered ? Color.red.opacity(0.95) : Color(theme.foreground).opacity(0.85))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(
-                            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .fill(isRevertHovered ? Color.red.opacity(0.14) : Color.white.opacity(0.06))
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .stroke(isRevertHovered ? Color.red.opacity(0.35) : Color.white.opacity(0.12), lineWidth: 0)
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .onHover { hovering in
-                        isRevertHovered = hovering
-                    }
-                    .help("Revert changes made during this turn")
-
-                    // Review Button
-                    Button(action: {
-                        onReview?(summary)
-                    }) {
-                        Text("Review")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundColor(Color(theme.foreground))
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 5)
-                            .background(
-                                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                    .fill(isReviewHovered ? Color.white.opacity(0.18) : Color.white.opacity(0.09))
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                    .stroke(Color.white.opacity(0.14), lineWidth: 0)
-                            )
-                    }
-                    .buttonStyle(.plain)
-                    .onHover { hovering in
-                        isReviewHovered = hovering
+                        .font(.system(size: 11.5, weight: .bold, design: .monospaced))
                     }
                 }
             }
 
             // Divider
             Rectangle()
-                .fill(Color.white.opacity(0.08))
+                .fill(accentColor.opacity(0.12))
                 .frame(height: 0.8)
 
             // File Rows
-            VStack(spacing: 8) {
+            VStack(spacing: 7) {
                 ForEach(summary.files) { file in
                     fileRow(file)
                 }
@@ -171,12 +140,21 @@ public struct AgentEditedFilesCard: View {
         }
         .padding(12)
         .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color(nsColor: .windowBackgroundColor).opacity(0.55))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Color.white.opacity(0.10), lineWidth: 0)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            accentColor.opacity(0.12),
+                            accentColor.opacity(0.05)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color(nsColor: .windowBackgroundColor).opacity(0.65))
+                )
         )
     }
 

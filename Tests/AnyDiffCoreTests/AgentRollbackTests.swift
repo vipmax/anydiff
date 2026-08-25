@@ -2,57 +2,87 @@ import XCTest
 @testable import AnyDiffCore
 
 final class AgentRollbackTests: XCTestCase {
+    private static var gitTemplateURL: URL?
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["ANYDIFF_RUN_AGENT_ROLLBACK_TESTS"] == "1"
+            || environment["ANYDIFF_RUN_INTEGRATION_TESTS"] == "1" else {
+            throw XCTSkip("Agent rollback Git tests skipped. Run with ANYDIFF_RUN_AGENT_ROLLBACK_TESTS=1 or ANYDIFF_RUN_INTEGRATION_TESTS=1 to enable them.")
+        }
+
+        if Self.gitTemplateURL == nil {
+            Self.gitTemplateURL = try Self.createGitTemplate()
+        }
+    }
+
+    override class func tearDown() {
+        if let gitTemplateURL {
+            try? FileManager.default.removeItem(at: gitTemplateURL)
+        }
+        gitTemplateURL = nil
+        super.tearDown()
+    }
 
     private func createTempGitRepo() throws -> URL {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("anydiff_test_repo_\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-
-        let processInit = Process()
-        processInit.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        processInit.arguments = ["-C", tempDir.path, "init"]
-        try processInit.run()
-        processInit.waitUntilExit()
-
-        // Configure dummy user for commits
-        let configName = Process()
-        configName.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        configName.arguments = ["-C", tempDir.path, "config", "user.name", "TestUser"]
-        try configName.run()
-        configName.waitUntilExit()
-
-        let configEmail = Process()
-        configEmail.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        configEmail.arguments = ["-C", tempDir.path, "config", "user.email", "test@example.com"]
-        try configEmail.run()
-        configEmail.waitUntilExit()
-
+        guard let gitTemplateURL = Self.gitTemplateURL else {
+            throw NSError(domain: "AgentRollbackTests", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "Git test template is not initialized"
+            ])
+        }
+        try FileManager.default.copyItem(at: gitTemplateURL, to: tempDir)
         return tempDir
     }
 
-    private func commitFile(repoDir: URL, relativePath: String, content: String) throws {
-        let fileURL = repoDir.appendingPathComponent(relativePath)
-        try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try content.write(to: fileURL, atomically: true, encoding: .utf8)
+    private static func createGitTemplate() throws -> URL {
+        let templateURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("anydiff_agent_rollback_template_\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: templateURL, withIntermediateDirectories: true)
 
-        let add = Process()
-        add.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        add.arguments = ["-C", repoDir.path, "add", relativePath]
-        try add.run()
-        add.waitUntilExit()
+        let baselineFiles = [
+            "hello.txt": "Line 1\nLine 2\n",
+            "initial.txt": "Initial\n",
+            "to_delete.txt": "Delete me\n",
+            "file.txt": "Original\n",
+            "existing.txt": "Original existing\n",
+            "deleted.txt": "Original deleted\n"
+        ]
+        for (relativePath, content) in baselineFiles {
+            let fileURL = templateURL.appendingPathComponent(relativePath)
+            try content.write(to: fileURL, atomically: true, encoding: .utf8)
+        }
 
-        let commit = Process()
-        commit.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        commit.arguments = ["-C", repoDir.path, "commit", "-m", "Commit \(relativePath)"]
-        try commit.run()
-        commit.waitUntilExit()
+        try runGit(in: templateURL, arguments: ["init"])
+        try runGit(in: templateURL, arguments: ["add", "."])
+        try runGit(in: templateURL, arguments: [
+            "-c", "user.name=TestUser",
+            "-c", "user.email=test@example.com",
+            "commit", "-m", "Create rollback test baseline"
+        ])
+        return templateURL
+    }
+
+    private static func runGit(in directory: URL, arguments: [String]) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = ["-C", directory.path] + arguments
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            throw NSError(domain: "AgentRollbackTests", code: Int(process.terminationStatus), userInfo: [
+                NSLocalizedDescriptionKey: "git command failed: \(arguments.joined(separator: " "))"
+            ])
+        }
     }
 
     func testRevertModifiedFile() throws {
         let repo = try createTempGitRepo()
         defer { try? FileManager.default.removeItem(at: repo) }
-
-        try commitFile(repoDir: repo, relativePath: "hello.txt", content: "Line 1\nLine 2\n")
 
         // Pre-turn snapshot
         let snapshot = AgentGitChangesDetector.capturePreTurnSnapshot(workingDirectory: repo.path)
@@ -83,8 +113,6 @@ final class AgentRollbackTests: XCTestCase {
         let repo = try createTempGitRepo()
         defer { try? FileManager.default.removeItem(at: repo) }
 
-        try commitFile(repoDir: repo, relativePath: "initial.txt", content: "Initial\n")
-
         // Pre-turn snapshot
         let snapshot = AgentGitChangesDetector.capturePreTurnSnapshot(workingDirectory: repo.path)
 
@@ -113,8 +141,6 @@ final class AgentRollbackTests: XCTestCase {
     func testRevertDeletedFile() throws {
         let repo = try createTempGitRepo()
         defer { try? FileManager.default.removeItem(at: repo) }
-
-        try commitFile(repoDir: repo, relativePath: "to_delete.txt", content: "Delete me\n")
 
         // Pre-turn snapshot
         let snapshot = AgentGitChangesDetector.capturePreTurnSnapshot(workingDirectory: repo.path)
@@ -146,9 +172,6 @@ final class AgentRollbackTests: XCTestCase {
     func testRevertTurnWithMixedOperations() throws {
         let repo = try createTempGitRepo()
         defer { try? FileManager.default.removeItem(at: repo) }
-
-        try commitFile(repoDir: repo, relativePath: "existing.txt", content: "Original existing\n")
-        try commitFile(repoDir: repo, relativePath: "deleted.txt", content: "Original deleted\n")
 
         // Pre-turn snapshot
         let snapshot = AgentGitChangesDetector.capturePreTurnSnapshot(workingDirectory: repo.path)
@@ -190,8 +213,6 @@ final class AgentRollbackTests: XCTestCase {
         let repo = try createTempGitRepo()
         defer { try? FileManager.default.removeItem(at: repo) }
 
-        try commitFile(repoDir: repo, relativePath: "file.txt", content: "Original\n")
-
         let snapshot = AgentGitChangesDetector.capturePreTurnSnapshot(workingDirectory: repo.path)
         try "Changed\n".write(to: repo.appendingPathComponent("file.txt"), atomically: true, encoding: .utf8)
 
@@ -227,8 +248,6 @@ final class AgentRollbackTests: XCTestCase {
     func testRestoreTurnWithCreatedAndDeletedFiles() throws {
         let repo = try createTempGitRepo()
         defer { try? FileManager.default.removeItem(at: repo) }
-
-        try commitFile(repoDir: repo, relativePath: "existing.txt", content: "Original existing\n")
 
         let snapshot = AgentGitChangesDetector.capturePreTurnSnapshot(workingDirectory: repo.path)
 

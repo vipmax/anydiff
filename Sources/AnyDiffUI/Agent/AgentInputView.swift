@@ -363,118 +363,126 @@ public struct AgentInputView: View {
     @ViewBuilder
     private var expandedView: some View {
         VStack(spacing: 8) {
-            // Attached images miniature strip
-            if !attachedImages.isEmpty {
-                AgentInputAttachmentThumbnailView(
-                    images: attachedImages,
+            // Live changed files top banner
+            if let liveSummary = agentManager.liveEditedSummary, isBusy || agentManager.messages.last?.isStreaming == true {
+                AgentLiveChangesBannerView(
+                    summary: liveSummary,
                     theme: theme,
-                    onSelect: { index in
-                        if let onPreviewImages = onPreviewImages {
-                            onPreviewImages(attachedImages, index, true)
-                        } else {
-                            previewImageIndex = index
-                        }
-                    },
-                    onDelete: { index in
-                        withAnimation(.easeInOut(duration: 0.15)) {
-                            if index >= 0 && index < attachedImages.count {
-                                attachedImages.remove(at: index)
+                    accentColor: accentColor,
+                    onReview: onReview
+                )
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+
+            VStack(spacing: 8) {
+                // Attached images miniature strip
+                if !attachedImages.isEmpty {
+                    AgentInputAttachmentThumbnailView(
+                        images: attachedImages,
+                        theme: theme,
+                        onSelect: { index in
+                            if let onPreviewImages = onPreviewImages {
+                                onPreviewImages(attachedImages, index, true)
+                            } else {
+                                previewImageIndex = index
+                            }
+                        },
+                        onDelete: { index in
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                if index >= 0 && index < attachedImages.count {
+                                    attachedImages.remove(at: index)
+                                }
                             }
                         }
-                    }
-                )
-                .padding(.top, 2)
-                .padding(.horizontal, 4)
-            }
+                    )
+                    .padding(.top, 2)
+                    .padding(.horizontal, 4)
+                }
 
-            // Main text input row with multi-line smooth scrolling
-            HStack(alignment: .top, spacing: 8) {
-                AgentAutoGrowingTextView(
-                    text: $text,
-                    placeholder: "Ask anything...",
-                    theme: theme,
-                    minHeight: 22,
-                    maxHeight: 160,
-                    calculatedHeight: $calculatedHeight,
-                    onSend: handleSend,
-                    onFocusChanged: { focused in
-                        isInputFocused = focused
-                    },
-                    onImagesPasted: { newImages in
-                        withAnimation(.spring(response: 0.25, dampingFraction: 0.75)) {
-                            attachedImages.append(contentsOf: newImages)
+                // Main text input row with multi-line smooth scrolling
+                HStack(alignment: .top, spacing: 8) {
+                    AgentAutoGrowingTextView(
+                        text: $text,
+                        placeholder: "Ask anything...",
+                        theme: theme,
+                        minHeight: 22,
+                        maxHeight: 160,
+                        calculatedHeight: $calculatedHeight,
+                        onSend: handleSend,
+                        onFocusChanged: { focused in
+                            isInputFocused = focused
+                        },
+                        onImagesPasted: { newImages in
+                            withAnimation(.spring(response: 0.25, dampingFraction: 0.75)) {
+                                attachedImages.append(contentsOf: newImages)
+                            }
                         }
+                    )
+                    .frame(maxWidth: .infinity)
+                    .frame(height: calculatedHeight)
+                }
+                .padding(.top, attachedImages.isEmpty ? 4 : 0)
+                .padding(.horizontal, 4)
+
+                // Bottom toolbar row inside input capsule
+                HStack(spacing: 8) {
+                    Spacer(minLength: 0)
+
+                    agentStatusOrSettingsView
+
+                    // Context Usage Percentage (if available)
+                    if let pct = agentManager.contextUsagePercentage {
+                        contextUsageRing(percentage: pct)
                     }
-                )
-                .frame(maxWidth: .infinity)
-                .frame(height: calculatedHeight)
-            }
-            .padding(.top, attachedImages.isEmpty ? 4 : 0)
-            .padding(.horizontal, 4)
 
-            // Bottom toolbar row inside input capsule
-            HStack(spacing: 8) {
-                if let liveSummary = agentManager.liveEditedSummary, isBusy || agentManager.messages.last?.isStreaming == true {
-                    liveChangesPill(summary: liveSummary)
-                        .transition(.scale(scale: 0.9).combined(with: .opacity))
-                }
-
-                Spacer(minLength: 0)
-
-                agentStatusOrSettingsView
-
-                // Context Usage Percentage (if available)
-                if let pct = agentManager.contextUsagePercentage {
-                    contextUsageRing(percentage: pct)
-                }
-
-                // Collapse input button
-                Button(action: {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        isCollapsed = true
+                    // Collapse input button
+                    Button(action: {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            isCollapsed = true
+                        }
+                    }) {
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(Color(theme.gutterForeground).opacity(0.8))
+                            .padding(2)
+                            .contentShape(Rectangle())
                     }
-                }) {
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundColor(Color(theme.gutterForeground).opacity(0.8))
-                        .padding(2)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("Hide / Collapse Input")
-                .agentInputInteractiveHover(
-                    cornerRadius: 7,
-                    horizontalPadding: 4,
-                    verticalPadding: 3
-                )
+                    .buttonStyle(.plain)
+                    .help("Hide / Collapse Input")
+                    .agentInputInteractiveHover(
+                        cornerRadius: 7,
+                        horizontalPadding: 4,
+                        verticalPadding: 3
+                    )
 
-                sendButton
+                    sendButton
+                }
+                .padding(.horizontal, 4)
+                .padding(.bottom, 2)
             }
-            .padding(.horizontal, 4)
-            .padding(.bottom, 2)
+            .padding(10)
+            .background(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(Color(theme.inputBackground))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .fill(accentColor.opacity(isInputFocused ? 0.035 : 0))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .stroke(
+                                isInputFocused ? accentColor.opacity(0.62) : Color(theme.excerptHeaderBorder).opacity(0.8),
+                                lineWidth: isInputFocused ? 1.4 : 1.2
+                            )
+                    )
+                    .shadow(
+                        color: isInputFocused ? accentColor.opacity(0.16) : .clear,
+                        radius: isInputFocused ? 14 : 0,
+                        y: isInputFocused ? 2 : 0
+                    )
+            )
+            .animation(.easeOut(duration: 0.16), value: isInputFocused)
         }
-        .padding(10)
-        .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Color(theme.inputBackground))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .fill(accentColor.opacity(isInputFocused ? 0.035 : 0))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .stroke(
-                            isInputFocused ? accentColor.opacity(0.62) : Color(theme.excerptHeaderBorder).opacity(0.8),
-                            lineWidth: isInputFocused ? 1.4 : 1.2
-                        )
-                )
-                .shadow(
-                    color: isInputFocused ? accentColor.opacity(0.16) : .clear,
-                    radius: isInputFocused ? 14 : 0,
-                    y: isInputFocused ? 2 : 0
-                )
-        )
-        .animation(.easeOut(duration: 0.16), value: isInputFocused)
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
     }
@@ -779,58 +787,6 @@ public struct AgentInputView: View {
     }
 
     @ViewBuilder
-    private func liveChangesPill(summary: AgentEditedFilesSummary) -> some View {
-        Button(action: {
-            onReview?(summary)
-        }) {
-            HStack(spacing: 5) {
-                Text("·")
-                    .foregroundColor(Color(theme.gutterForeground))
-                    .font(.system(size: 13, weight: .bold))
-
-                HStack(spacing: 4) {
-                    Text(summary.files.count == 1 ? "1 file changed" : "\(summary.files.count) files changed")
-                        .font(.system(size: 11.5, weight: .medium))
-                        .foregroundColor(Color(theme.foreground).opacity(0.85))
-
-                    if summary.totalAdditions > 0 {
-                        Text("+\(summary.totalAdditions)")
-                            .font(.system(size: 11, weight: .bold, design: .monospaced))
-                            .foregroundColor(Color.green.opacity(0.95))
-                    }
-                    if summary.totalDeletions > 0 {
-                        Text("-\(summary.totalDeletions)")
-                            .font(.system(size: 11, weight: .bold, design: .monospaced))
-                            .foregroundColor(Color.red.opacity(0.95))
-                    }
-                }
-                .padding(.horizontal, 9)
-                .padding(.vertical, 3.5)
-                .background(
-                    Capsule(style: .continuous)
-                        .fill(Color(nsColor: .controlBackgroundColor).opacity(0.65))
-                )
-                .overlay(
-                    Capsule(style: .continuous)
-                        .stroke(
-                            LinearGradient(
-                                colors: [
-                                    Color(red: 0.35, green: 0.60, blue: 0.95).opacity(0.95),
-                                    Color(red: 0.25, green: 0.50, blue: 0.90).opacity(0.85)
-                                ],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            ),
-                            lineWidth: 1.3
-                        )
-                )
-            }
-        }
-        .buttonStyle(.plain)
-        .help("View live changes in MultiBuffer (Read-Only)")
-    }
-
-    @ViewBuilder
     private var collapsedView: some View {
         Button(action: {
             withAnimation(.easeInOut(duration: 0.2)) {
@@ -904,42 +860,24 @@ private final class AgentInputPointingHandNSView: NSView {
     private var trackingArea: NSTrackingArea?
 
     override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea, trackingArea.rect == bounds {
+            return
+        }
         if let trackingArea {
             removeTrackingArea(trackingArea)
         }
 
         let options: NSTrackingArea.Options = [
             .activeInKeyWindow,
-            .inVisibleRect,
-            .mouseEnteredAndExited,
-            .mouseMoved,
             .cursorUpdate
         ]
-        trackingArea = NSTrackingArea(rect: bounds, options: options, owner: self)
-        if let trackingArea {
-            addTrackingArea(trackingArea)
-        }
-        super.updateTrackingAreas()
-    }
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        window?.invalidateCursorRects(for: self)
-    }
-
-    override func resetCursorRects() {
-        addCursorRect(bounds, cursor: .pointingHand)
+        let area = NSTrackingArea(rect: bounds, options: options, owner: self)
+        addTrackingArea(area)
+        trackingArea = area
     }
 
     override func cursorUpdate(with event: NSEvent) {
-        NSCursor.pointingHand.set()
-    }
-
-    override func mouseEntered(with event: NSEvent) {
-        NSCursor.pointingHand.set()
-    }
-
-    override func mouseMoved(with event: NSEvent) {
         NSCursor.pointingHand.set()
     }
 
@@ -963,5 +901,92 @@ private extension View {
                 verticalPadding: verticalPadding
             )
         )
+    }
+}
+
+public struct AgentLiveChangesBannerView: View {
+    public let summary: AgentEditedFilesSummary
+    public let theme: Theme
+    public let accentColor: Color
+    public var onReview: ((AgentEditedFilesSummary) -> Void)?
+
+    @State private var isHovered: Bool = false
+
+    public init(
+        summary: AgentEditedFilesSummary,
+        theme: Theme,
+        accentColor: Color,
+        onReview: ((AgentEditedFilesSummary) -> Void)? = nil
+    ) {
+        self.summary = summary
+        self.theme = theme
+        self.accentColor = accentColor
+        self.onReview = onReview
+    }
+
+    public var body: some View {
+        Button(action: {
+            onReview?(summary)
+        }) {
+            HStack(spacing: 8) {
+                // Left section: pencil icon, files count, +/- counters
+                HStack(spacing: 7) {
+                    Image(systemName: "pencil.line")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(accentColor)
+
+                    Text(summary.files.count == 1 ? "1 file changed" : "\(summary.files.count) files changed")
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundColor(Color(theme.foreground))
+
+                    if summary.totalAdditions > 0 {
+                        Text("+\(summary.totalAdditions)")
+                            .font(.system(size: 12, weight: .bold, design: .monospaced))
+                            .foregroundColor(Color(red: 0.28, green: 0.82, blue: 0.45))
+                    }
+
+                    if summary.totalDeletions > 0 {
+                        Text("-\(summary.totalDeletions)")
+                            .font(.system(size: 12, weight: .bold, design: .monospaced))
+                            .foregroundColor(Color(red: 0.96, green: 0.32, blue: 0.28))
+                    }
+                }
+
+                Spacer(minLength: 8)
+
+                // Right section: Review ↗
+                HStack(spacing: 3) {
+                    Text("Review")
+                        .font(.system(size: 12.5, weight: .semibold))
+                    Image(systemName: "arrow.up.right")
+                        .font(.system(size: 10.5, weight: .bold))
+                }
+                .foregroundColor(accentColor)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .fill(.ultraThinMaterial)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 13, style: .continuous)
+                            .fill(accentColor.opacity(isHovered ? 0.12 : 0.05))
+                    )
+            )
+            .shadow(
+                color: accentColor.opacity(isHovered ? 0.14 : 0.04),
+                radius: isHovered ? 8 : 4,
+                y: 1
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.14)) {
+                isHovered = hovering
+            }
+        }
+        .overlay(AgentInputPointingHandCursorView())
+        .help("Review live changes in MultiBuffer (Read-Only)")
     }
 }

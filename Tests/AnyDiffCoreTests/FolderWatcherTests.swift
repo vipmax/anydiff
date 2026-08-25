@@ -87,6 +87,8 @@ final class FolderWatcherTests: XCTestCase {
     }
 
     func testFolderWatcherDetectsFileCreationAndModification() throws {
+        try requireIntegrationTestsEnabled()
+
         let expectation = XCTestExpectation(description: "Detects file creation")
         let box = SafeEventsBox()
 
@@ -119,6 +121,8 @@ final class FolderWatcherTests: XCTestCase {
     }
 
     func testFolderWatcherDetectsFileDeletion() throws {
+        try requireIntegrationTestsEnabled()
+
         let file = tempDirectory.appendingPathComponent("to_delete.txt")
         try "will delete".write(to: file, atomically: true, encoding: .utf8)
 
@@ -144,6 +148,8 @@ final class FolderWatcherTests: XCTestCase {
     }
 
     func testFolderWatcherAsyncStream() async throws {
+        try requireIntegrationTestsEnabled()
+
         let file = tempDirectory.appendingPathComponent("async_test.txt")
         let stream = FolderWatcher.events(for: tempDirectory, latency: 0.05)
 

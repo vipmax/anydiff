@@ -241,7 +241,9 @@ final class AgentSessionCoordinatorTests: XCTestCase {
         wait(for: [exp], timeout: 1.0)
     }
 
-    func testSnapshotTurnDiffCalculation() {
+    func testSnapshotTurnDiffCalculation() throws {
+        try requireIntegrationTestsEnabled()
+
         let snapshot = AgentGitChangesDetector.capturePreTurnSnapshot(workingDirectory: "/tmp")
         XCTAssertNotNil(snapshot)
 
@@ -281,4 +283,3 @@ final class AgentSessionCoordinatorTests: XCTestCase {
         XCTAssertTrue(diffText.contains("+let c = 30"))
     }
 }
-

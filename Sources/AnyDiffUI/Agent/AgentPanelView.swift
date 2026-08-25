@@ -207,6 +207,7 @@ public struct AgentPanelView: View {
             AgentChatScrollRepresentable(
                 messages: agentManager.messages,
                 theme: theme,
+                accentColor: agentAccentColor,
                 toolcallColorMode: toolcallColorMode,
                 scrollToBottomTrigger: scrollToBottomRequest,
                 onNearBottomChanged: { nearBottom in

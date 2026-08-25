@@ -6,6 +6,7 @@ import AnyDiffCore
 public struct AgentChatScrollRepresentable: NSViewRepresentable {
     public var messages: [AgentMessage]
     public var theme: Theme
+    public var accentColor: Color
     public var toolcallColorMode: ToolcallColorMode
     public var scrollToBottomTrigger: Int
     public var onNearBottomChanged: (Bool) -> Void
@@ -17,6 +18,7 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
     public init(
         messages: [AgentMessage],
         theme: Theme,
+        accentColor: Color = .accentColor,
         toolcallColorMode: ToolcallColorMode = .full,
         scrollToBottomTrigger: Int,
         onNearBottomChanged: @escaping (Bool) -> Void = { _ in },
@@ -27,6 +29,7 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
     ) {
         self.messages = messages
         self.theme = theme
+        self.accentColor = accentColor
         self.toolcallColorMode = toolcallColorMode
         self.scrollToBottomTrigger = scrollToBottomTrigger
         self.onNearBottomChanged = onNearBottomChanged
@@ -36,6 +39,67 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
         self.onPreviewImages = onPreviewImages
     }
 
+    public func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    public class Coordinator {
+        var lastMessageCount: Int = -1
+        var lastLastMessageId: UUID? = nil
+        var lastLastMessageContentCount: Int = -1
+        var lastLastMessageStreaming: Bool = false
+        var lastLastMessageToolCallsCount: Int = -1
+        var lastThemeId: String = ""
+        var lastAccentColor: Color = .accentColor
+        var lastToolcallColorMode: ToolcallColorMode = .full
+        var lastScrollToBottomTrigger: Int = -1
+
+        func needsUpdate(
+            messages: [AgentMessage],
+            theme: Theme,
+            accentColor: Color,
+            toolcallColorMode: ToolcallColorMode,
+            trigger: Int
+        ) -> Bool {
+            if theme.id != lastThemeId || accentColor != lastAccentColor || toolcallColorMode != lastToolcallColorMode || trigger != lastScrollToBottomTrigger {
+                record(messages: messages, theme: theme, accentColor: accentColor, toolcallColorMode: toolcallColorMode, trigger: trigger)
+                return true
+            }
+            if messages.count != lastMessageCount {
+                record(messages: messages, theme: theme, accentColor: accentColor, toolcallColorMode: toolcallColorMode, trigger: trigger)
+                return true
+            }
+            if let last = messages.last {
+                if last.id != lastLastMessageId ||
+                   last.content.count != lastLastMessageContentCount ||
+                   last.isStreaming != lastLastMessageStreaming ||
+                   last.toolCalls.count != lastLastMessageToolCallsCount {
+                    record(messages: messages, theme: theme, accentColor: accentColor, toolcallColorMode: toolcallColorMode, trigger: trigger)
+                    return true
+                }
+            }
+            return false
+        }
+
+        func record(
+            messages: [AgentMessage],
+            theme: Theme,
+            accentColor: Color,
+            toolcallColorMode: ToolcallColorMode,
+            trigger: Int
+        ) {
+            lastMessageCount = messages.count
+            lastLastMessageId = messages.last?.id
+            lastLastMessageContentCount = messages.last?.content.count ?? -1
+            lastLastMessageStreaming = messages.last?.isStreaming ?? false
+            lastLastMessageToolCallsCount = messages.last?.toolCalls.count ?? -1
+            lastThemeId = theme.id
+            lastAccentColor = accentColor
+            lastToolcallColorMode = toolcallColorMode
+            lastScrollToBottomTrigger = trigger
+        }
+    }
+
     public func makeNSView(context: Context) -> AgentNativeStandardChatScrollView {
         let scrollView = AgentNativeStandardChatScrollView()
         scrollView.onNearBottomChanged = onNearBottomChanged
@@ -43,9 +107,17 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
         scrollView.onRevert = onRevert
         scrollView.onRestore = onRestore
         scrollView.onPreviewImages = onPreviewImages
+        context.coordinator.record(
+            messages: messages,
+            theme: theme,
+            accentColor: accentColor,
+            toolcallColorMode: toolcallColorMode,
+            trigger: scrollToBottomTrigger
+        )
         scrollView.update(
             messages: messages,
             theme: theme,
+            accentColor: accentColor,
             toolcallColorMode: toolcallColorMode,
             animated: false,
             scrollToBottomTrigger: scrollToBottomTrigger
@@ -59,9 +131,24 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
         scrollView.onRevert = onRevert
         scrollView.onRestore = onRestore
         scrollView.onPreviewImages = onPreviewImages
+
+        // If SwiftUI called updateNSView purely because of an unrelated UI state change
+        // (like isChatNearBottom button appearing or parent view re-evaluating during scroll),
+        // skip the update so scrolling is 100% free of layout passes and main-thread work.
+        guard context.coordinator.needsUpdate(
+            messages: messages,
+            theme: theme,
+            accentColor: accentColor,
+            toolcallColorMode: toolcallColorMode,
+            trigger: scrollToBottomTrigger
+        ) else {
+            return
+        }
+
         scrollView.update(
             messages: messages,
             theme: theme,
+            accentColor: accentColor,
             toolcallColorMode: toolcallColorMode,
             animated: true,
             scrollToBottomTrigger: scrollToBottomTrigger
@@ -286,6 +373,7 @@ public final class AgentNativeStandardChatScrollView: NSScrollView {
     private var lastNearBottom: Bool?
     private var pendingMessages: [AgentMessage]?
     private var pendingTheme: Theme?
+    private var pendingAccentColor: Color = .accentColor
     private var pendingToolcallColorMode: ToolcallColorMode = .full
     private var pendingAnimated = false
     private var pendingScrollToBottomTrigger = 0
@@ -333,12 +421,20 @@ public final class AgentNativeStandardChatScrollView: NSScrollView {
         drawsBackground = false
         borderType = .noBorder
         scrollsDynamically = true
+        wantsLayer = true
+        layerContentsRedrawPolicy = .onSetNeedsDisplay
+
+        let clipView = FlippedClipView()
+        clipView.drawsBackground = false
+        clipView.wantsLayer = true
+        clipView.postsBoundsChangedNotifications = true
+        self.contentView = clipView
+
         documentView = documentViewCustom
 
-        contentView.postsBoundsChangedNotifications = true
         boundsChangeObserver = NotificationCenter.default.addObserver(
             forName: NSView.boundsDidChangeNotification,
-            object: contentView,
+            object: clipView,
             queue: .main
         ) { [weak self] _ in
             self?.notifyNearBottomChanged()
@@ -380,6 +476,7 @@ public final class AgentNativeStandardChatScrollView: NSScrollView {
     public func update(
         messages: [AgentMessage],
         theme: Theme,
+        accentColor: Color = .accentColor,
         toolcallColorMode: ToolcallColorMode = .full,
         animated: Bool,
         scrollToBottomTrigger: Int = 0,
@@ -387,6 +484,7 @@ public final class AgentNativeStandardChatScrollView: NSScrollView {
     ) {
         pendingMessages = messages
         pendingTheme = theme
+        pendingAccentColor = accentColor
         pendingToolcallColorMode = toolcallColorMode
         pendingAnimated = animated
         pendingScrollToBottomTrigger = scrollToBottomTrigger
@@ -423,17 +521,16 @@ public final class AgentNativeStandardChatScrollView: NSScrollView {
         documentViewCustom.updateMessages(
             messages,
             theme: theme,
+            accentColor: pendingAccentColor,
             toolcallColorMode: pendingToolcallColorMode,
             in: self,
             animated: pendingAnimated
         )
 
         if shouldScrollToBottom {
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                self.scrollToBottom(animated: true)
-                self.notifyNearBottomChanged()
-            }
+            let isStreaming = messages.last?.isStreaming == true
+            self.scrollToBottom(animated: !isStreaming)
+            self.notifyNearBottomChanged()
         }
     }
 
@@ -448,6 +545,9 @@ public final class AgentNativeStandardChatScrollView: NSScrollView {
             guard let self, let width = self.pendingResizeWidth else { return }
             self.pendingResizeWidth = nil
             self.documentViewCustom.layoutContent(for: width)
+            if self.followsBottom {
+                self.scrollToBottom(animated: false)
+            }
         }
         resizeLayoutWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.04, execute: workItem)
@@ -460,6 +560,9 @@ public final class AgentNativeStandardChatScrollView: NSScrollView {
         if let width = pendingResizeWidth, width > 50 {
             pendingResizeWidth = nil
             documentViewCustom.layoutContent(for: width)
+            if followsBottom {
+                scrollToBottom(animated: false)
+            }
         }
     }
 
@@ -473,6 +576,7 @@ public final class AgentNativeStandardChatScrollView: NSScrollView {
                 contentView.animator().setBoundsOrigin(targetPoint)
             }
         } else {
+            contentView.layer?.removeAllAnimations()
             contentView.scroll(to: targetPoint)
             reflectScrolledClipView(contentView)
         }
@@ -488,11 +592,12 @@ public final class AgentNativeStandardChatScrollView: NSScrollView {
     public var isNearBottom: Bool {
         let clipBounds = contentView.bounds
         let docHeight = documentViewCustom.bounds.height
-        return docHeight <= clipBounds.height || clipBounds.maxY >= docHeight - 35
+        return docHeight <= clipBounds.height || clipBounds.maxY >= docHeight - 45
     }
 
     private func notifyNearBottomChanged() {
         let nearBottom = isNearBottom
+        followsBottom = nearBottom
         guard lastNearBottom != nearBottom else { return }
         lastNearBottom = nearBottom
         onNearBottomChanged?(nearBottom)
@@ -501,19 +606,6 @@ public final class AgentNativeStandardChatScrollView: NSScrollView {
 
 public final class AgentNativeStandardChatDocumentView: NSView {
     public override var isFlipped: Bool { true }
-
-    public override func resetCursorRects() {
-        super.resetCursorRects()
-        addCursorRect(bounds, cursor: .arrow)
-    }
-
-    public override func cursorUpdate(with event: NSEvent) {
-        NSCursor.arrow.set()
-    }
-
-    public override func mouseMoved(with event: NSEvent) {
-        NSCursor.arrow.set()
-    }
 
     private let stackView = NSStackView()
     private let topSpacer = NSView()
@@ -525,6 +617,7 @@ public final class AgentNativeStandardChatDocumentView: NSView {
     private var widthConstraints: [UUID: NSLayoutConstraint] = [:]
     private var messagesByID: [UUID: AgentMessage] = [:]
     private var theme: Theme = .zedDark
+    private var accentColor: Color = .accentColor
     private var toolcallColorMode: ToolcallColorMode = .full
     private var bottomInset: CGFloat = 0
     fileprivate private(set) var lastLayoutWidth: CGFloat = 0
@@ -544,6 +637,9 @@ public final class AgentNativeStandardChatDocumentView: NSView {
     }
 
     private func setup() {
+        wantsLayer = true
+        layerContentsRedrawPolicy = .onSetNeedsDisplay
+        stackView.wantsLayer = true
         stackView.orientation = .vertical
         stackView.alignment = .leading
         stackView.distribution = .fill
@@ -573,6 +669,7 @@ public final class AgentNativeStandardChatDocumentView: NSView {
     fileprivate func updateMessages(
         _ newMessages: [AgentMessage],
         theme: Theme,
+        accentColor: Color = .accentColor,
         toolcallColorMode: ToolcallColorMode,
         in scrollView: AgentNativeStandardChatScrollView,
         animated: Bool
@@ -580,11 +677,12 @@ public final class AgentNativeStandardChatDocumentView: NSView {
         let newIds = newMessages.map(\.id)
         let oldIds = orderedCells.map(\.id)
         let themeChanged = theme.id != self.theme.id
+        let accentChanged = accentColor != self.accentColor
         let displayModeChanged = toolcallColorMode != self.toolcallColorMode
         let messagesChanged = newIds != oldIds || newMessages.contains { message in
             messagesByID[message.id] != message
         }
-        guard messagesChanged || themeChanged || displayModeChanged else {
+        guard messagesChanged || themeChanged || accentChanged || displayModeChanged else {
             let width = max(100, scrollView.contentView.bounds.width)
             if abs(width - lastLayoutWidth) > 0.5 {
                 layoutContent(for: width)
@@ -592,8 +690,8 @@ public final class AgentNativeStandardChatDocumentView: NSView {
             return
         }
 
-        let wasAtBottom = scrollView.isNearBottom
         self.theme = theme
+        self.accentColor = accentColor
         self.toolcallColorMode = toolcallColorMode
 
         let newIDSet = Set(newIds)
@@ -618,10 +716,11 @@ public final class AgentNativeStandardChatDocumentView: NSView {
                 cell.onPreviewImages = { [weak self] imgs, idx in
                     self?.onPreviewImages?(imgs, idx)
                 }
-                if themeChanged || displayModeChanged || messagesByID[message.id] != message {
+                if themeChanged || accentChanged || displayModeChanged || messagesByID[message.id] != message {
                     cell.configure(
                         message: message,
                         theme: theme,
+                        accentColor: accentColor,
                         toolcallColorMode: toolcallColorMode
                     )
                 }
@@ -629,6 +728,7 @@ public final class AgentNativeStandardChatDocumentView: NSView {
                 cell = AgentNativeMessageCell(
                     message: message,
                     theme: theme,
+                    accentColor: accentColor,
                     toolcallColorMode: toolcallColorMode,
                     nativeTextSelectionEnabled: true
                 )
@@ -644,6 +744,11 @@ public final class AgentNativeStandardChatDocumentView: NSView {
                     self.layoutContent(for: max(100, scrollView.contentView.bounds.width))
                 }
                 cell.onToggleTool = { [weak self] in
+                    guard let self else { return }
+                    scrollView.stopFollowingBottom()
+                    self.layoutContent(for: max(100, scrollView.contentView.bounds.width))
+                }
+                cell.onToggleUserExpand = { [weak self] in
                     guard let self else { return }
                     scrollView.stopFollowingBottom()
                     self.layoutContent(for: max(100, scrollView.contentView.bounds.width))
@@ -671,7 +776,7 @@ public final class AgentNativeStandardChatDocumentView: NSView {
         }
 
         layoutContent(for: max(100, scrollView.contentView.bounds.width))
-        if scrollView.followsBottom && (wasAtBottom || oldIds.isEmpty) {
+        if scrollView.followsBottom || oldIds.isEmpty {
             scrollView.scrollToBottom(animated: animated && newMessages.last?.isStreaming != true)
         }
     }
@@ -704,24 +809,6 @@ public final class FlippedClipView: NSClipView {
 
 public class AgentNativeFlippedView: NSView {
     public override var isFlipped: Bool { true }
-
-    public override func resetCursorRects() {
-        super.resetCursorRects()
-        addCursorRect(bounds, cursor: .arrow)
-    }
-
-    public override func cursorUpdate(with event: NSEvent) {
-        NSCursor.arrow.set()
-    }
-
-    public override func mouseEntered(with event: NSEvent) {
-        super.mouseEntered(with: event)
-        NSCursor.arrow.set()
-    }
-
-    public override func mouseMoved(with event: NSEvent) {
-        NSCursor.arrow.set()
-    }
 }
 
 /// Read-only labels in the chat must never advertise text editing.
@@ -757,23 +844,6 @@ public final class AgentNativeStaticTextField: NSTextField {
         refusesFirstResponder = true
         focusRingType = .none
     }
-
-    public override func resetCursorRects() {
-        addCursorRect(bounds, cursor: .arrow)
-    }
-
-    public override func cursorUpdate(with event: NSEvent) {
-        NSCursor.arrow.set()
-    }
-
-    public override func mouseEntered(with event: NSEvent) {
-        super.mouseEntered(with: event)
-        NSCursor.arrow.set()
-    }
-
-    public override func mouseMoved(with event: NSEvent) {
-        NSCursor.arrow.set()
-    }
 }
 
 public final class AgentNativeCodeBlockHeaderView: AgentNativeFlippedView {
@@ -798,10 +868,6 @@ public final class AgentNativeCodeBlockHeaderView: AgentNativeFlippedView {
         copyBtn.alphaValue = 0.0
     }
 
-    public override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        window?.invalidateCursorRects(for: self)
-    }
 
     @objc public func toggleCodeBlock() {
         setExpanded(!isExpanded)
@@ -1000,9 +1066,6 @@ public final class AgentSelectableTextView: NSTextView {
     public weak var parentCell: AgentNativeMessageCell?
     public var cellId: UUID?
     public var tvKey: String = ""
-    private var cursorTrackingArea: NSTrackingArea?
-    // Cursor tracking is handled by the document view. Per-text-view
-    // tracking areas are prohibitively expensive while scrolling long chats.
 
     public init() {
         let textStorage = NSTextStorage()
@@ -1044,45 +1107,6 @@ public final class AgentSelectableTextView: NSTextView {
     }
 
     public override var isFlipped: Bool { true }
-
-    public override func updateTrackingAreas() {
-        if let cursorTrackingArea {
-            removeTrackingArea(cursorTrackingArea)
-        }
-        cursorTrackingArea = NSTrackingArea(
-            rect: bounds,
-            options: [.inVisibleRect, .activeInKeyWindow, .mouseEnteredAndExited, .mouseMoved, .cursorUpdate],
-            owner: self,
-            userInfo: nil
-        )
-        if let cursorTrackingArea {
-            addTrackingArea(cursorTrackingArea)
-        }
-        super.updateTrackingAreas()
-    }
-
-    public override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        window?.invalidateCursorRects(for: self)
-    }
-
-    public override func resetCursorRects() {
-        // These text views are read-only chat content. Keep text selection
-        // available, but do not show NSTextView's editing I-beam cursor.
-        addCursorRect(bounds, cursor: .arrow)
-    }
-
-    public override func cursorUpdate(with event: NSEvent) {
-        NSCursor.arrow.set()
-    }
-
-    public override func mouseEntered(with event: NSEvent) {
-        NSCursor.arrow.set()
-    }
-
-    public override func mouseMoved(with event: NSEvent) {
-        NSCursor.arrow.set()
-    }
 
     public override func hitTest(_ point: NSPoint) -> NSView? {
         if let sv = enclosingScrollView, !(sv is AgentNativeChatScrollView) {
@@ -1311,6 +1335,15 @@ public final class AgentNativeChatDocumentView: NSView {
             } else {
                 let cell = AgentNativeMessageCell(message: message, theme: theme)
                 cell.onToggleThought = { [weak self, weak cell] in
+                    guard let self = self, let cell = cell else { return }
+                    self.layoutMessages(
+                        width: self.lastRenderedWidth,
+                        isResize: false,
+                        anchorCellId: cell.message.id,
+                        animated: true
+                    )
+                }
+                cell.onToggleUserExpand = { [weak self, weak cell] in
                     guard let self = self, let cell = cell else { return }
                     self.layoutMessages(
                         width: self.lastRenderedWidth,
@@ -2215,17 +2248,24 @@ public final class AgentNativeDiffStatsButton: NSButton {
 
     public override func updateTrackingAreas() {
         super.updateTrackingAreas()
+        if let trackingArea, trackingArea.rect == bounds {
+            return
+        }
         if let trackingArea {
             removeTrackingArea(trackingArea)
         }
         let area = NSTrackingArea(
             rect: bounds,
-            options: [.mouseEnteredAndExited, .activeInActiveApp],
+            options: [.mouseEnteredAndExited, .activeInActiveApp, .cursorUpdate],
             owner: self,
             userInfo: nil
         )
         addTrackingArea(area)
         self.trackingArea = area
+    }
+
+    public override func cursorUpdate(with event: NSEvent) {
+        NSCursor.pointingHand.set()
     }
 
     public override func mouseEntered(with event: NSEvent) {
@@ -2247,10 +2287,6 @@ public final class AgentNativeDiffStatsButton: NSButton {
     public override func layout() {
         super.layout()
         badgeLabel.frame = NSRect(x: 4, y: 1, width: max(0, bounds.width - 8), height: bounds.height - 2)
-    }
-
-    public override func resetCursorRects() {
-        addCursorRect(bounds, cursor: .pointingHand)
     }
 }
 
@@ -3273,21 +3309,73 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
     }
 }
 
-public final class AgentNativeMessageCell: NSView {
-    public override var isFlipped: Bool { true }
+public final class AgentHoverButton: NSButton {
+    private var trackingArea: NSTrackingArea?
+    private var isHovered = false
 
-    public override func resetCursorRects() {
-        super.resetCursorRects()
-        addCursorRect(bounds, cursor: .arrow)
+    public override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setup()
+    }
+
+    public required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setup()
+    }
+
+    private func setup() {
+        isBordered = false
+        setButtonType(.momentaryPushIn)
+        wantsLayer = true
+        layer?.cornerRadius = 5
+        layer?.masksToBounds = true
+        layer?.backgroundColor = NSColor.clear.cgColor
+        contentTintColor = .white
+    }
+
+    public override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea, trackingArea.rect == bounds {
+            return
+        }
+        if let trackingArea {
+            removeTrackingArea(trackingArea)
+        }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeInActiveApp, .cursorUpdate],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        self.trackingArea = area
     }
 
     public override func cursorUpdate(with event: NSEvent) {
-        NSCursor.arrow.set()
+        NSCursor.pointingHand.set()
     }
 
-    public override func mouseMoved(with event: NSEvent) {
-        NSCursor.arrow.set()
+    public override func mouseEntered(with event: NSEvent) {
+        super.mouseEntered(with: event)
+        isHovered = true
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.12
+            layer?.backgroundColor = NSColor.white.withAlphaComponent(0.15).cgColor
+        }
     }
+
+    public override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        isHovered = false
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.12
+            layer?.backgroundColor = NSColor.clear.cgColor
+        }
+    }
+}
+
+public final class AgentNativeMessageCell: NSView {
+    public override var isFlipped: Bool { true }
 
     // Temporary performance switch: keep the code-block implementation in
     // place, but omit these heavy expandable cards from the chat output while
@@ -3299,14 +3387,19 @@ public final class AgentNativeMessageCell: NSView {
 
     public var onToggleThought: (() -> Void)?
     public var onToggleTool: (() -> Void)?
+    public var onToggleUserExpand: (() -> Void)?
     public var onReview: ((AgentEditedFilesSummary) -> Void)?
     public var onRevert: ((AgentEditedFilesSummary) -> Void)?
     public var onRestore: ((AgentEditedFilesSummary) -> Void)?
     public private(set) var message: AgentMessage
     private var theme: Theme
+    private var accentColor: Color
     private var toolcallColorMode: ToolcallColorMode
     private let nativeTextSelectionEnabled: Bool
     private var isThoughtExpanded: Bool = false
+    private var isUserTextExpanded: Bool = false
+    private let maxUserTextCollapsedHeight: CGFloat = 160
+    private let userTextCollapseThreshold: CGFloat = 190
     private var expandedToolIds: Set<String> = []
     private var toolCallIDs: [String] = []
     private var inlineThoughtViews: [AgentNativeThoughtBlockView] = []
@@ -3333,8 +3426,9 @@ public final class AgentNativeMessageCell: NSView {
     }
 
     // Subviews
-    private let userBubbleView = NSView()
+    private let userBubbleView = AgentNativeFlippedView()
     private let userTextView = AgentSelectableTextView()
+    private let userExpandButton = AgentHoverButton()
     private var userImageViews: [NSButton] = []
     public var onPreviewImages: (([AgentImageAttachment], Int) -> Void)?
     private let thoughtHeaderButton = NSButton()
@@ -3359,16 +3453,18 @@ public final class AgentNativeMessageCell: NSView {
     public init(
         message: AgentMessage,
         theme: Theme,
+        accentColor: Color = .accentColor,
         toolcallColorMode: ToolcallColorMode = .full,
         nativeTextSelectionEnabled: Bool = false
     ) {
         self.message = message
         self.theme = theme
+        self.accentColor = accentColor
         self.toolcallColorMode = toolcallColorMode
         self.nativeTextSelectionEnabled = nativeTextSelectionEnabled
         super.init(frame: .zero)
         setup()
-        configure(message: message, theme: theme, toolcallColorMode: toolcallColorMode)
+        configure(message: message, theme: theme, accentColor: accentColor, toolcallColorMode: toolcallColorMode)
     }
 
     public required init?(coder: NSCoder) {
@@ -3379,7 +3475,7 @@ public final class AgentNativeMessageCell: NSView {
         wantsLayer = true
         userBubbleView.wantsLayer = true
         userBubbleView.layer?.cornerRadius = 13
-        userBubbleView.layer?.borderWidth = 1.0
+        userBubbleView.layer?.borderWidth = 0.0
         userBubbleView.layer?.masksToBounds = false
         userBubbleView.layer?.shadowColor = NSColor(srgbRed: 0.05, green: 0.42, blue: 0.96, alpha: 0.50).cgColor
         userBubbleView.layer?.shadowOpacity = 0.55
@@ -3387,8 +3483,15 @@ public final class AgentNativeMessageCell: NSView {
         userBubbleView.layer?.shadowRadius = 8
 
         userTextView.parentCell = self
+        userTextView.wantsLayer = true
+        userTextView.layer?.masksToBounds = true
         userBubbleView.addSubview(userTextView)
+        userBubbleView.addSubview(userExpandButton)
         addSubview(userBubbleView)
+
+        userExpandButton.target = self
+        userExpandButton.action = #selector(toggleUserTextExpand)
+        updateUserExpandButtonAppearance()
 
         thoughtHeaderButton.isBordered = false
         thoughtHeaderButton.setButtonType(.momentaryPushIn)
@@ -3409,9 +3512,40 @@ public final class AgentNativeMessageCell: NSView {
         addSubview(thoughtTextView)
     }
 
+    @objc private func toggleUserTextExpand() {
+        isUserTextExpanded.toggle()
+        updateUserExpandButtonAppearance()
+        invalidateLayoutCache()
+        onToggleUserExpand?()
+    }
+
+    private func updateUserExpandButtonAppearance() {
+        let title = isUserTextExpanded ? "Show less" : "Show more"
+        let symbolName = isUserTextExpanded ? "chevron.up" : "chevron.down"
+        if let img = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil) {
+            let config = NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold)
+            userExpandButton.image = img.withSymbolConfiguration(config)
+        }
+        userExpandButton.imagePosition = .imageTrailing
+        userExpandButton.imageHugsTitle = true
+
+        let style = NSMutableParagraphStyle()
+        style.alignment = .center
+        let attr = NSAttributedString(
+            string: title + " ",
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 11.5, weight: .medium),
+                .foregroundColor: NSColor.white.withAlphaComponent(0.95),
+                .paragraphStyle: style
+            ]
+        )
+        userExpandButton.attributedTitle = attr
+    }
+
     public func configure(
         message: AgentMessage,
         theme: Theme,
+        accentColor: Color = .accentColor,
         toolcallColorMode: ToolcallColorMode = .full
     ) {
         let previousMessage = self.message
@@ -3423,6 +3557,7 @@ public final class AgentNativeMessageCell: NSView {
             message.content.hasPrefix(previousMessage.content)
 
         let themeChanged = theme.id != self.theme.id
+        let accentChanged = accentColor != self.accentColor
         let displayModeChanged = toolcallColorMode != self.toolcallColorMode
         let toolCallsChanged = message.toolCalls != previousMessage.toolCalls
         let partsChanged = message.orderedParts != previousMessage.orderedParts
@@ -3430,6 +3565,7 @@ public final class AgentNativeMessageCell: NSView {
 
         self.message = message
         self.theme = theme
+        self.accentColor = accentColor
         self.toolcallColorMode = toolcallColorMode
         invalidateLayoutCache()
 
@@ -3440,7 +3576,8 @@ public final class AgentNativeMessageCell: NSView {
             thoughtHeaderButton.isHidden = true
             thoughtTextView.isHidden = true
             userBubbleView.layer?.backgroundColor = NSColor(srgbRed: 0.07, green: 0.46, blue: 0.96, alpha: 0.94).cgColor
-            userBubbleView.layer?.borderColor = NSColor(srgbRed: 0.40, green: 0.72, blue: 1.0, alpha: 0.55).cgColor
+            userBubbleView.layer?.borderWidth = 0.0
+            userBubbleView.layer?.borderColor = nil
 
             userImageViews.forEach { $0.removeFromSuperview() }
             userImageViews.removeAll()
@@ -3515,7 +3652,7 @@ public final class AgentNativeMessageCell: NSView {
             // 2. Tool calls. Keep unchanged cards alive while a running tool
             // streams status/output updates. Rebuilding the whole list here
             // made every tool event recreate all headers and nested views.
-            if toolCallsChanged || themeChanged || displayModeChanged || toolCallViews.isEmpty {
+            if toolCallsChanged || themeChanged || accentChanged || displayModeChanged || toolCallViews.isEmpty {
                 updateToolCallViews(
                     previousItems: previousMessage.toolCalls,
                     newItems: message.toolCalls,
@@ -3548,6 +3685,7 @@ public final class AgentNativeMessageCell: NSView {
                 let cardView = AgentEditedFilesCard(
                     summary: summary,
                     theme: theme,
+                    accentColor: accentColor,
                     disableAgentColors: toolcallColorMode != .full,
                     onReview: { [weak self] rev in
                         self?.onReview?(rev)
@@ -4480,12 +4618,18 @@ public final class AgentNativeMessageCell: NSView {
             let hasImages = !userImageViews.isEmpty
             let imagesHeight: CGFloat = hasImages ? (userImageViews.count == 1 ? 140 : 54) : 0
             let hasText = !message.content.isEmpty
-            let textHeight = hasText ? measuredTextHeight(
+            let fullTextHeight = hasText ? measuredTextHeight(
                 for: userTextView,
                 attributedString: userTextView.attributedString(),
                 width: maxBubbleWidth - 28
             ) : 0
-            let bubbleHeight = (imagesHeight > 0 ? imagesHeight + (hasText ? 8 : 0) : 0) + textHeight + 18
+
+            let isCollapsible = fullTextHeight > userTextCollapseThreshold
+            let displayedTextHeight = (isCollapsible && !isUserTextExpanded) ? maxUserTextCollapsedHeight : fullTextHeight
+            let buttonHeight: CGFloat = isCollapsible ? 22 : 0
+            let buttonSpacing: CGFloat = isCollapsible ? 4 : 0
+
+            let bubbleHeight = 9 + imagesHeight + (hasImages && hasText ? 8 : 0) + displayedTextHeight + (isCollapsible ? (buttonSpacing + buttonHeight) : 0) + 9
             height = bubbleHeight + 8
         } else {
             var currentY: CGFloat = 4
@@ -4524,14 +4668,21 @@ public final class AgentNativeMessageCell: NSView {
             let imagesHeight: CGFloat = hasImages ? (userImageViews.count == 1 ? 140 : 54) : 0
             let imagesWidth: CGFloat = hasImages ? (userImageViews.count == 1 ? 180 : min(maxBubbleWidth - 28, CGFloat(userImageViews.count) * 54 + CGFloat(max(0, userImageViews.count - 1)) * 6)) : 0
             let hasText = !message.content.isEmpty
-            let textHeight = hasText ? measuredTextHeight(
+            let fullTextHeight = hasText ? measuredTextHeight(
                 for: userTextView,
                 attributedString: userTextView.attributedString(),
                 width: maxBubbleWidth - 28
             ) : 0
+
+            let isCollapsible = fullTextHeight > userTextCollapseThreshold
+            let displayedTextHeight = (isCollapsible && !isUserTextExpanded) ? maxUserTextCollapsedHeight : fullTextHeight
+            let buttonHeight: CGFloat = isCollapsible ? 22 : 0
+            let buttonSpacing: CGFloat = isCollapsible ? 4 : 0
+
             let textWidth = hasText ? measureTextWidth(userTextView.attributedString().string, font: NSFont.systemFont(ofSize: 13)) : 0
-            let bubbleWidth = min(maxBubbleWidth, max(textWidth, imagesWidth) + 28)
-            let bubbleHeight = (imagesHeight > 0 ? imagesHeight + (hasText ? 8 : 0) : 0) + textHeight + 18
+            let minWidthForButton: CGFloat = isCollapsible ? 110 : 0
+            let bubbleWidth = min(maxBubbleWidth, max(max(textWidth, imagesWidth), minWidthForButton) + 28)
+            let bubbleHeight = 9 + imagesHeight + (hasImages && hasText ? 8 : 0) + displayedTextHeight + (isCollapsible ? (buttonSpacing + buttonHeight) : 0) + 9
 
             let bubbleFrame = NSRect(
                 x: width - horizontalPadding - bubbleWidth,
@@ -4561,15 +4712,36 @@ public final class AgentNativeMessageCell: NSView {
             }
 
             if hasText {
-                let tvFrame = NSRect(x: 14, y: currentInsideY, width: bubbleWidth - 28, height: textHeight)
+                let tvFrame = NSRect(x: 14, y: currentInsideY, width: bubbleWidth - 28, height: displayedTextHeight)
                 userTextView.isHidden = false
                 if animated {
                     userTextView.animator().frame = tvFrame
                 } else {
                     userTextView.frame = tvFrame
                 }
+
+                if isCollapsible {
+                    userExpandButton.isHidden = false
+                    updateUserExpandButtonAppearance()
+
+                    let btnWidth: CGFloat = 92
+                    let btnFrame = NSRect(
+                        x: bubbleWidth - 14 - btnWidth,
+                        y: currentInsideY + displayedTextHeight + buttonSpacing,
+                        width: btnWidth,
+                        height: buttonHeight
+                    )
+                    if animated {
+                        userExpandButton.animator().frame = btnFrame
+                    } else {
+                        userExpandButton.frame = btnFrame
+                    }
+                } else {
+                    userExpandButton.isHidden = true
+                }
             } else {
                 userTextView.isHidden = true
+                userExpandButton.isHidden = true
             }
         } else {
             var currentY: CGFloat = 4

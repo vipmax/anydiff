@@ -10,6 +10,12 @@ public struct AgentMessageRowView: View {
 
     @State private var isThinkingExpanded: Bool = false
     @State private var previewImageIndex: Int? = nil
+    @State private var isUserTextExpanded: Bool = false
+    @State private var isHoveringExpandButton: Bool = false
+
+    private var isCollapsibleUserText: Bool {
+        message.content.count > 300 || message.content.filter({ $0 == "\n" }).count >= 7
+    }
 
     public init(
         message: AgentMessage,
@@ -52,7 +58,7 @@ public struct AgentMessageRowView: View {
     private var userBubble: some View {
         HStack {
             Spacer(minLength: 40)
-            VStack(alignment: .trailing, spacing: 8) {
+            VStack(alignment: .trailing, spacing: 6) {
                 if !message.images.isEmpty {
                     userImagesView
                 }
@@ -60,8 +66,33 @@ public struct AgentMessageRowView: View {
                     Text(message.content)
                         .font(.system(size: 13, weight: .regular))
                         .foregroundColor(.white)
-                        .lineLimit(nil)
+                        .lineLimit(isCollapsibleUserText && !isUserTextExpanded ? 8 : nil)
                         .fixedSize(horizontal: false, vertical: true)
+                }
+                if isCollapsibleUserText {
+                    Button(action: {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            isUserTextExpanded.toggle()
+                        }
+                    }) {
+                        HStack(spacing: 4) {
+                            Text(isUserTextExpanded ? "Show less" : "Show more")
+                            Image(systemName: isUserTextExpanded ? "chevron.up" : "chevron.down")
+                                .font(.system(size: 9, weight: .semibold))
+                        }
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundColor(.white.opacity(0.95))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(
+                            RoundedRectangle(cornerRadius: 5)
+                                .fill(isHoveringExpandButton ? Color.white.opacity(0.15) : Color.clear)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .onHover { hovering in
+                        isHoveringExpandButton = hovering
+                    }
                 }
             }
             .padding(.horizontal, 14)
@@ -77,10 +108,6 @@ public struct AgentMessageRowView: View {
                             startPoint: .top,
                             endPoint: .bottom
                         )
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 13)
-                            .stroke(Color(red: 0.40, green: 0.72, blue: 1.0).opacity(0.50), lineWidth: 1.0)
                     )
                     .shadow(color: Color(red: 0.05, green: 0.40, blue: 0.95).opacity(0.40), radius: 6, x: 0, y: 2)
             )
