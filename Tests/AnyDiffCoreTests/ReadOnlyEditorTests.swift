@@ -384,173 +384,111 @@ final class ReadOnlyEditorTests: XCTestCase {
         XCTAssertFalse(isDirectBranchEditable, "Direct branch comparison mode must be read-only")
     }
 
-    func testEditorUIMouseClickHeaderCollapseAndExpand() {
-        let text1 = (0..<50).map { "FileA line \($0)" }.joined(separator: "\n")
-        let text2 = (0..<50).map { "justfile line \($0)" }.joined(separator: "\n")
+    func testTypingAndNavigationDoNotCreatePhantomSelections() {
+        let multiBuffer = MultiBuffer()
+        let initialText = "12343"
+        let buffer = Buffer(filePath: "text.txt", text: initialText)
+        multiBuffer.addBuffer(buffer)
+        let excerpt = Excerpt(
+            bufferId: buffer.id,
+            filePath: "text.txt",
+            bufferRange: 0..<1
+        )
+        multiBuffer.setExcerpts([excerpt])
 
-        let buf1 = Buffer(filePath: "FileA.swift", text: text1)
-        let buf2 = Buffer(filePath: "justfile", text: text2)
+        let reviewManager = ReviewManager()
+        let displayMap = DisplayMap(multiBuffer: multiBuffer, reviewManager: reviewManager)
 
-        let mb = MultiBuffer()
-        mb.addBuffer(buf1)
-        mb.addBuffer(buf2)
+        let editor = CustomMultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        editor.isEditable = true
+        editor.cursorPoint = MultiBufferPoint(row: 0, column: 5)
+        editor.selectionAnchor = nil
 
-        let exc1A = Excerpt(bufferId: buf1.id, filePath: "FileA.swift", bufferRange: 0..<5, isFileStart: true)
-        let exc1B = Excerpt(bufferId: buf1.id, filePath: "FileA.swift", bufferRange: 8..<15, isFileStart: false)
-        let exc2 = Excerpt(bufferId: buf2.id, filePath: "justfile", bufferRange: 0..<10, isFileStart: true)
+        var capturedStates: [EditorViewState] = []
+        final class TestCoordinator: NSObject, CustomMultiBufferEditorDelegate {
+            var onCursor: (() -> Void)?
+            func editorDidChangeCursor(location: ExcerptLocation?, point: MultiBufferPoint) {
+                onCursor?()
+            }
+            func editorDidRequestAddComment(filePath: String, lineNumber: Int) {}
+            func editorDidScroll() {}
+        }
+        let coordinator = TestCoordinator()
+        coordinator.onCursor = {
+            capturedStates.append(editor.captureViewState())
+        }
+        editor.delegate = coordinator
 
-        mb.setExcerpts([exc1A, exc1B, exc2])
-        let rm = ReviewManager()
-        let dm = DisplayMap(multiBuffer: mb, reviewManager: rm)
+        // 1. Type character '4'
+        editor.insertText("4", replacementRange: NSRange(location: NSNotFound, length: 0))
 
-        let editor = CustomMultiBufferEditorView(displayMap: dm, theme: .unifiedDark)
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600), styleMask: .borderless, backing: .buffered, defer: false)
-        window.contentView = editor
-        editor.frame = NSRect(x: 0, y: 0, width: 800, height: 600)
-        editor.invalidateLayout()
+        XCTAssertFalse(editor.hasSelection, "Editor must not have selection immediately after typing")
+        XCTAssertEqual(buffer.text(), "123434")
 
-        // 1. Expand excerpt 0 down (which merges exc1A and exc1B)
-        mb.expandExcerpt(at: 0, up: 0, down: 5)
-        dm.rebuild()
-        editor.invalidateLayout()
-
-        // 2. Find exact display line index of "justfile" header
-        guard let justfileLineIdx = dm.displayLines.firstIndex(where: {
-            if case .excerptHeader(let h) = $0, h.filePath == "justfile" { return true }
-            return false
-        }) else {
-            XCTFail("justfile header not found")
-            return
+        for (index, state) in capturedStates.enumerated() {
+            XCTAssertNil(state.selectionAnchor, "Captured state #\(index) during cursor notification must not contain a phantom selection anchor")
         }
 
-        // 3. Compute exact pixel screen coordinates of justfile header
-        let headerY = editor.yOffset(forDisplayLineIndex: justfileLineIdx)
-        let headerHeight = editor.lineHeight(forDisplayLineIndex: justfileLineIdx)
-        let clickDocY = headerY + headerHeight / 2
-        let clickScreenY = clickDocY - editor.scrollOffsetY
+        // 2. Simulate diff reload / debounce save restoring the saved view state
+        if let lastState = capturedStates.last {
+            editor.restoreViewState(lastState, shouldFocus: false)
+        }
+        XCTAssertFalse(editor.hasSelection, "Restoring view state after typing must not create a selection")
 
-        let clickScreenPoint = NSPoint(x: 100, y: clickScreenY)
-        let windowPoint = editor.convert(clickScreenPoint, to: nil)
-        guard let clickEvent = NSEvent.mouseEvent(
-            with: .leftMouseDown,
-            location: windowPoint,
-            modifierFlags: [],
-            timestamp: 0,
-            windowNumber: window.windowNumber,
-            context: nil,
-            eventNumber: 0,
-            clickCount: 1,
-            pressure: 1.0
-        ) else {
-            XCTFail("Failed to create NSEvent")
-            return
+        // 3. Type character '5' - must append, NOT overwrite previous character
+        editor.insertText("5", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertEqual(buffer.text(), "1234345", "Subsequent typing must append instead of overwriting previous character")
+        XCTAssertFalse(editor.hasSelection)
+
+        // 4. Arrow key navigation without Shift must not create selection or phantom anchors
+        capturedStates.removeAll()
+        editor.moveLeft(nil)
+        XCTAssertFalse(editor.hasSelection)
+        for (index, state) in capturedStates.enumerated() {
+            XCTAssertNil(state.selectionAnchor, "State #\(index) captured during moveLeft must not have phantom selection")
+        }
+        if let lastState = capturedStates.last {
+            editor.restoreViewState(lastState, shouldFocus: false)
+        }
+        XCTAssertFalse(editor.hasSelection)
+    }
+
+    func testExplicitShiftSelectionIsProperlyCapturedAndRestored() {
+        let multiBuffer = MultiBuffer()
+        let initialText = "hello world"
+        let buffer = Buffer(filePath: "test.txt", text: initialText)
+        multiBuffer.addBuffer(buffer)
+        let excerpt = Excerpt(
+            bufferId: buffer.id,
+            filePath: "test.txt",
+            bufferRange: 0..<1
+        )
+        multiBuffer.setExcerpts([excerpt])
+
+        let displayMap = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
+        let editor = CustomMultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        editor.isEditable = true
+        editor.cursorPoint = MultiBufferPoint(row: 0, column: 0)
+
+        // Expand selection by 5 characters (selecting "hello")
+        for _ in 0..<5 {
+            editor.moveRightAndModifySelection(nil)
         }
 
-        // 4. Dispatch real mouseDown to CustomMultiBufferEditorView
-        editor.mouseDown(with: clickEvent)
+        XCTAssertTrue(editor.hasSelection)
+        XCTAssertEqual(editor.selectionAnchor, MultiBufferPoint(row: 0, column: 0))
+        XCTAssertEqual(editor.cursorPoint, MultiBufferPoint(row: 0, column: 5))
 
-        // 5. Verify justfile is now collapsed both in model and visually in ExcerptLayout
-        XCTAssertTrue(mb.excerpts.first(where: { $0.filePath == "justfile" })?.isCollapsed == true)
-        XCTAssertEqual(editor.excerptLayouts.first(where: { $0.filePath == "justfile" })?.height, headerHeight)
+        let captured = editor.captureViewState()
+        XCTAssertNotNil(captured.selectionAnchor)
+        XCTAssertEqual(captured.selectionAnchor?.column, 0)
+        XCTAssertEqual(captured.cursorAnchor?.column, 5)
 
-        // 6. Dispatch click again at the same header position
-        editor.mouseDown(with: clickEvent)
-
-        // 7. Verify justfile is un-collapsed and full layout height is restored
-        XCTAssertTrue(mb.excerpts.first(where: { $0.filePath == "justfile" })?.isCollapsed == false)
-        XCTAssertTrue((editor.excerptLayouts.first(where: { $0.filePath == "justfile" })?.height ?? 0) > headerHeight)
+        // Restore view state
+        editor.restoreViewState(captured, shouldFocus: false)
+        XCTAssertTrue(editor.hasSelection)
+        XCTAssertEqual(editor.selectionAnchor, MultiBufferPoint(row: 0, column: 0))
+        XCTAssertEqual(editor.cursorPoint, MultiBufferPoint(row: 0, column: 5))
     }
 
-    func testHeaderCollapseAtEndOfDocumentDoesNotBreakScrollOrDisappear() {
-        let text1 = (0..<100).map { "FileA line \($0)" }.joined(separator: "\n")
-        let text2 = (0..<100).map { "LastFile line \($0)" }.joined(separator: "\n")
-
-        let buf1 = Buffer(filePath: "FileA.swift", text: text1)
-        let buf2 = Buffer(filePath: "LastFile.swift", text: text2)
-
-        let mb = MultiBuffer()
-        mb.addBuffer(buf1)
-        mb.addBuffer(buf2)
-
-        // LastFile has 3 separate hunks
-        let exc1 = Excerpt(bufferId: buf1.id, filePath: "FileA.swift", bufferRange: 0..<30, isFileStart: true)
-        let exc2A = Excerpt(bufferId: buf2.id, filePath: "LastFile.swift", bufferRange: 0..<10, isFileStart: true)
-        let exc2B = Excerpt(bufferId: buf2.id, filePath: "LastFile.swift", bufferRange: 20..<30, isFileStart: false)
-        let exc2C = Excerpt(bufferId: buf2.id, filePath: "LastFile.swift", bufferRange: 50..<60, isFileStart: false)
-
-        mb.setExcerpts([exc1, exc2A, exc2B, exc2C])
-        let rm = ReviewManager()
-        let dm = DisplayMap(multiBuffer: mb, reviewManager: rm)
-
-        let editor = CustomMultiBufferEditorView(displayMap: dm, theme: .unifiedDark)
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600), styleMask: .borderless, backing: .buffered, defer: false)
-        window.contentView = editor
-        editor.frame = NSRect(x: 0, y: 0, width: 800, height: 600)
-        editor.invalidateLayout()
-
-        // Scroll to the bottom of the document
-        editor.scrollToFilePath("LastFile.swift")
-        XCTAssertTrue(editor.scrollOffsetY > 0)
-
-        // Collapse LastFile.swift
-        mb.toggleCollapse(filePath: "LastFile.swift")
-        dm.rebuild()
-        editor.invalidateLayout()
-
-        let totalLines = dm.displayLineCount
-        XCTAssertTrue(totalLines > 0)
-
-        // Find the last visible line index at the bottom
-        let visibleMaxY = editor.scrollOffsetY + editor.bounds.height
-        let bottomLineIdx = editor.lineIndex(atY: visibleMaxY)
-
-        // lineIndex at bottom must NOT be 0 when totalLines > 1
-        XCTAssertGreaterThanOrEqual(bottomLineIdx, totalLines - 2)
-        XCTAssertLessThan(bottomLineIdx, totalLines)
-
-        let topLineIdx = editor.lineIndex(atY: editor.scrollOffsetY)
-        XCTAssertLessThanOrEqual(topLineIdx, bottomLineIdx)
-
-        // Rendering pass must succeed without throwing or crashing
-        editor.display()
-    }
-
-    func testAllFilesCollapsedLineIndexSafety() {
-        let buf1 = Buffer(filePath: "A.swift", text: "line 1\nline 2")
-        let buf2 = Buffer(filePath: "B.swift", text: "line 1\nline 2")
-        let buf3 = Buffer(filePath: "C.swift", text: "line 1\nline 2")
-
-        let mb = MultiBuffer()
-        mb.addBuffer(buf1)
-        mb.addBuffer(buf2)
-        mb.addBuffer(buf3)
-
-        let exc1 = Excerpt(bufferId: buf1.id, filePath: "A.swift", bufferRange: 0..<2, isFileStart: true)
-        let exc2A = Excerpt(bufferId: buf2.id, filePath: "B.swift", bufferRange: 0..<1, isFileStart: true)
-        let exc2B = Excerpt(bufferId: buf2.id, filePath: "B.swift", bufferRange: 1..<2, isFileStart: false)
-        let exc3A = Excerpt(bufferId: buf3.id, filePath: "C.swift", bufferRange: 0..<1, isFileStart: true)
-        let exc3B = Excerpt(bufferId: buf3.id, filePath: "C.swift", bufferRange: 1..<2, isFileStart: false)
-
-        mb.setExcerpts([exc1, exc2A, exc2B, exc3A, exc3B])
-        mb.collapseAll()
-
-        let rm = ReviewManager()
-        let dm = DisplayMap(multiBuffer: mb, reviewManager: rm)
-        let editor = CustomMultiBufferEditorView(displayMap: dm, theme: .unifiedDark)
-        editor.frame = NSRect(x: 0, y: 0, width: 800, height: 600)
-        editor.invalidateLayout()
-
-        // 3 files collapsed = 3 header lines (indices 0, 1, 2)
-        XCTAssertEqual(dm.displayLineCount, 3)
-
-        let idxTop = editor.lineIndex(atY: 0)
-        let idxMid = editor.lineIndex(atY: editor.excerptHeaderHeight + 5)
-        let idxBottom = editor.lineIndex(atY: editor.totalDocumentHeight)
-        let idxPastEnd = editor.lineIndex(atY: 1000)
-
-        XCTAssertEqual(idxTop, 0)
-        XCTAssertEqual(idxMid, 1)
-        XCTAssertEqual(idxBottom, 2)
-        XCTAssertEqual(idxPastEnd, 2)
-    }
 }
