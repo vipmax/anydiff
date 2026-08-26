@@ -156,10 +156,6 @@ public struct EditorHostView: NSViewRepresentable {
         public func editorDidScroll() {
             guard !isSwitchingDisplayMap else { return }
             saveCurrentViewState()
-            if let file = currentViewState?.selectedFilePath,
-               let mapID = activeDisplayMapID {
-                lastScrolledFilePaths[mapID] = file
-            }
         }
 
         var currentViewState: EditorViewState? {

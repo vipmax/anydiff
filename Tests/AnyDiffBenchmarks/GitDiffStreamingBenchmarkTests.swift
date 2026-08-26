@@ -379,6 +379,7 @@ final class GitDiffStreamingBenchmarkTests: XCTestCase {
         var totalLinesRendered = 0
         var rssCheckpoints: [(percent: Int, rss: Double)] = []
 
+        let lineCache = LineRenderCache()
         var currentLine = 0
         while currentLine < totalLines {
             let endLine = min(totalLines, currentLine + 50)
@@ -388,14 +389,20 @@ final class GitDiffStreamingBenchmarkTests: XCTestCase {
             for item in items {
                 if case .code(let info) = item.line {
                     totalLinesRendered += 1
-                    let attr = SyntaxHighlighter.shared.highlight(
-                        line: info.text,
-                        language: info.language,
-                        font: font,
-                        theme: theme
-                    )
-                    let ctLine = LineLayoutCache.shared.getOrCreateCTLine(attributedString: attr)
-                    _ = LineLayoutCache.shared.xOffset(in: ctLine, for: min(10, info.text.count))
+                    let ctLine: CTLine
+                    if let cached = lineCache.get(lineIndex: item.displayLineIndex) {
+                        ctLine = cached
+                    } else {
+                        let attr = SyntaxHighlighter.shared.highlight(
+                            line: info.text,
+                            language: info.language,
+                            font: font,
+                            theme: theme
+                        )
+                        ctLine = CTLineCreateWithAttributedString(attr)
+                        lineCache.set(lineIndex: item.displayLineIndex, ctLine: ctLine)
+                    }
+                    _ = ctLine.xOffset(for: min(10, info.text.count))
                 }
             }
 

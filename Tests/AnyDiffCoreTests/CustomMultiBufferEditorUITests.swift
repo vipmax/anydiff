@@ -725,6 +725,75 @@ final class CustomMultiBufferEditorUITests: XCTestCase {
         RunLoop.main.run(until: Date().addingTimeInterval(seconds))
     }
 
+    func testLineRenderCacheInvalidationOnTyping() throws {
+        let fixture = makeEditor(text: "line 0\nline 1\nline 2")
+        let editor = fixture.editor
+        _ = try render(editor)
+
+        XCTAssertNotNil(editor.lineCache.get(lineIndex: 1), "Cache should be populated after render")
+
+        // Type 'x' at start of line 1
+        editor.cursorPoint = MultiBufferPoint(row: 1, column: 0)
+        editor.insertText("x", replacementRange: NSRange(location: NSNotFound, length: 0))
+
+        XCTAssertNil(
+            editor.lineCache.get(lineIndex: 1),
+            "Cache must be cleared immediately after typing"
+        )
+
+        editor.needsDisplay = true
+        let imageAfter = try render(editor)
+        XCTAssertNotNil(editor.lineCache.get(lineIndex: 1), "Cache repopulates on render")
+        XCTAssertNotNil(imageAfter)
+    }
+
+    func testThemeChangeClearsSyntaxHighlighterAndLineRenderCache() throws {
+        let fixture = makeEditor(text: "func helloWorld() -> String { return \"test\" }")
+        let editor = fixture.editor
+        _ = try render(editor)
+
+        // Switch to GitHub Dark or Light theme
+        editor.theme = .githubDark
+        // Verify cache was cleared and will re-populate with new theme colors
+        XCTAssertNil(editor.lineCache.get(lineIndex: 0))
+        let imageAfterTheme = try render(editor)
+        XCTAssertNotNil(imageAfterTheme)
+    }
+
+    func testFontSizeChangeClearsSyntaxHighlighterAndLineRenderCache() throws {
+        let fixture = makeEditor(text: "func helloWorld() -> String { return \"test\" }")
+        let editor = fixture.editor
+        _ = try render(editor)
+
+        // Change font size (zoom)
+        editor.font = .monospacedSystemFont(ofSize: 20, weight: .regular)
+        XCTAssertNil(editor.lineCache.get(lineIndex: 0))
+        let imageAfterZoom = try render(editor)
+        XCTAssertNotNil(imageAfterZoom)
+    }
+
+    func testMultiEditorLineRenderCacheIsolation() throws {
+        let fixture1 = makeEditor(text: "editor 1 content")
+        let fixture2 = makeEditor(text: "editor 2 content")
+        let editor1 = fixture1.editor
+        let editor2 = fixture2.editor
+
+        _ = try render(editor1)
+        _ = try render(editor2)
+
+        let ctLine1 = editor1.lineCache.get(lineIndex: 1)
+        let ctLine2 = editor2.lineCache.get(lineIndex: 1)
+
+        XCTAssertNotNil(ctLine1)
+        XCTAssertNotNil(ctLine2)
+        XCTAssertFalse(ctLine1 === ctLine2, "Each editor instance must maintain its own independent direct line cache")
+
+        // Mutating editor 1 should NOT invalidate editor 2 cache
+        editor1.insertText("change", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertNil(editor1.lineCache.get(lineIndex: 1))
+        XCTAssertNotNil(editor2.lineCache.get(lineIndex: 1), "Editor 2 cache must remain intact when Editor 1 is edited")
+    }
+
     private func makeMouseEvent(
         for editor: CustomMultiBufferEditorView,
         window: NSWindow,

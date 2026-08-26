@@ -1985,7 +1985,6 @@ public struct MainWindowView: View {
         targetMB.clear()
         targetMB.setContentMode(.text)
         targetDM.clear()
-        LineLayoutCache.shared.clear()
         SyntaxHighlighter.shared.clearCache()
 
         let buffer = Buffer(
@@ -2030,7 +2029,6 @@ public struct MainWindowView: View {
         targetMB.clear()
         targetMB.setContentMode(.diff)
         targetDM.clear()
-        LineLayoutCache.shared.clear()
         SyntaxHighlighter.shared.clearCache()
 
         let baseDir = effectiveBaseDirectory

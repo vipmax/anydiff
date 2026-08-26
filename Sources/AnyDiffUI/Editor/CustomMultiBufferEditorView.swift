@@ -37,10 +37,14 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         didSet {
             // CTLine stores resolved foreground colors, so cached lines must be
             // discarded when the palette changes (including system appearance changes).
-            LineLayoutCache.shared.clear()
+            SyntaxHighlighter.shared.clearCache()
+            lineCache.clear()
             needsDisplay = true
         }
     }
+
+    /// Direct-mapped CoreText line cache owned per editor instance (lock-free)
+    public let lineCache = LineRenderCache()
 
     /// Adjusts the scrollbar thumb for enough contrast in both appearances.
     private var scrollbarThumbBaseColor: NSColor {
@@ -73,6 +77,10 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     private var editingEnabled: Bool {
         isEditable && !ignoreEdits
     }
+
+    private static let gutterFont = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+    private static let headerTitleFont = NSFont.systemFont(ofSize: 12, weight: .semibold)
+    private static let badgeFont = NSFont.monospacedSystemFont(ofSize: 10, weight: .bold)
 
     // Layout Metrics
     public private(set) var lineHeight: CGFloat = 22
@@ -693,6 +701,8 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     }
 
     public func invalidateLayout() {
+        SyntaxHighlighter.shared.clearCache()
+        lineCache.clear()
         guard let displayMap = displayMap else {
             contentTotalHeight = 0
             contentNeededWidth = 0
@@ -785,6 +795,8 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
     /// O(1) Fast scoped layout mutation for ONLY the edited excerpt
     private func updateLayoutAfterExcerptRebuild(excerptIdx: Int, displayDelta: Int, oldDisplayRange: Range<Int>) {
+        SyntaxHighlighter.shared.clearCache()
+        lineCache.clear()
         guard let dm = displayMap, excerptIdx >= 0 && excerptIdx < excerptLayouts.count else {
             invalidateLayout()
             return
@@ -1321,7 +1333,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         }
 
         let pathAttr: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 12, weight: .semibold),
+            .font: Self.headerTitleFont,
             .foregroundColor: titleColor
         ]
         let pathStr = NSAttributedString(string: info.filePath, attributes: pathAttr)
@@ -1335,7 +1347,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         var delWidth: CGFloat = 0
         if info.deletions > 0 {
             let delAttr: [NSAttributedString.Key: Any] = [
-                .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .bold),
+                .font: Self.badgeFont,
                 .foregroundColor: NSColor.systemRed
             ]
             let delStr = NSAttributedString(string: "-\(info.deletions)", attributes: delAttr)
@@ -1348,7 +1360,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         var addWidth: CGFloat = 0
         if info.additions > 0 {
             let addAttr: [NSAttributedString.Key: Any] = [
-                .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .bold),
+                .font: Self.badgeFont,
                 .foregroundColor: NSColor.systemGreen
             ]
             let addStr = NSAttributedString(string: "+\(info.additions)", attributes: addAttr)
@@ -1408,6 +1420,22 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
     // MARK: - Code Line Drawing
 
+    @inlinable
+    func getOrCreateCTLine(for lineIdx: Int, text: String, language: String) -> CTLine {
+        if let cached = lineCache.get(lineIndex: lineIdx) {
+            return cached
+        }
+        let attrText = SyntaxHighlighter.shared.highlight(
+            line: text,
+            language: language,
+            font: font,
+            theme: theme
+        )
+        let created = CTLineCreateWithAttributedString(attrText)
+        lineCache.set(lineIndex: lineIdx, ctLine: created)
+        return created
+    }
+
     private func drawCodeLine(info: DisplayCodeLineInfo, lineIdx: Int, in rect: CGRect, context: CGContext) {
         let isCurrentCursorLine = window?.firstResponder === self && info.multiBufferRow == cursorPoint.row
         let fullLineWidth = max(rect.width, bounds.width + scrollOffsetX, totalDocumentWidth)
@@ -1427,21 +1455,15 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
         // 2. Syntax Highlighting & Word Diff Highlighting
         let codeStartX = rect.minX + gutterWidth + 12
-        let attrText = SyntaxHighlighter.shared.highlight(
-            line: info.text,
-            language: info.language,
-            font: font,
-            theme: theme
-        )
-        let ctLine = LineLayoutCache.shared.getOrCreateCTLine(attributedString: attrText)
+        let ctLine = getOrCreateCTLine(for: lineIdx, text: info.text, language: info.language)
 
         // Word Diff Highlight Rectangles
         if !info.wordDiffRanges.isEmpty {
             let wordBgColor = (info.diffKind == .added) ? theme.diffAddedWordHighlight : theme.diffDeletedWordHighlight
             context.setFillColor(wordBgColor.cgColor)
             for range in info.wordDiffRanges {
-                let startX = LineLayoutCache.shared.xOffset(in: ctLine, for: range.lowerBound)
-                let endX = LineLayoutCache.shared.xOffset(in: ctLine, for: range.upperBound)
+                let startX = ctLine.xOffset(for: range.lowerBound)
+                let endX = ctLine.xOffset(for: range.upperBound)
                 let wordRect = CGRect(x: codeStartX + startX, y: rect.minY + 2, width: max(4, endX - startX), height: rect.height - 4)
                 let rounded = CGPath(roundedRect: wordRect, cornerWidth: 3, cornerHeight: 3, transform: nil)
                 context.addPath(rounded)
@@ -1454,8 +1476,8 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
            info.multiBufferRow >= selRange.lowerBound.row && info.multiBufferRow <= selRange.upperBound.row {
             let startCol = (info.multiBufferRow == selRange.lowerBound.row) ? selRange.lowerBound.column : 0
             let endCol = (info.multiBufferRow == selRange.upperBound.row) ? selRange.upperBound.column : info.text.count
-            let startX = LineLayoutCache.shared.xOffset(in: ctLine, for: min(info.text.count, max(0, startCol)))
-            let endX = LineLayoutCache.shared.xOffset(in: ctLine, for: min(info.text.count, max(startCol, endCol)))
+            let startX = ctLine.xOffset(for: min(info.text.count, max(0, startCol)))
+            let endX = ctLine.xOffset(for: min(info.text.count, max(startCol, endCol)))
             let selRect = CGRect(x: codeStartX + startX, y: rect.minY, width: max(3, endX - startX), height: rect.height)
             context.setFillColor(theme.selectionBackground.cgColor)
             context.fill(selRect)
@@ -1472,7 +1494,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         // 3. Draw Caret / Cursor if focused on this line
         if isCurrentCursorLine && isCursorVisible {
             let clampedCol = min(info.text.count, max(0, cursorPoint.column))
-            let cursorX = codeStartX + LineLayoutCache.shared.xOffset(in: ctLine, for: clampedCol)
+            let cursorX = codeStartX + ctLine.xOffset(for: clampedCol)
             let cursorRect = CGRect(x: cursorX, y: rect.minY + 2, width: 2, height: rect.height - 4)
             context.setFillColor(theme.diffModifiedGutter.cgColor)
             context.fill(cursorRect)
@@ -1523,9 +1545,8 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                 color = theme.gutterForeground
             }
 
-            let numFont = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
             let str = NSAttributedString(string: "\(num)", attributes: [
-                .font: numFont,
+                .font: Self.gutterFont,
                 .foregroundColor: color
             ])
             let line = CTLineCreateWithAttributedString(str)
@@ -1816,10 +1837,9 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                     // Position cursor in code
                     isDraggingSelection = true
                     let text = codeInfo.text
-                    let attr = SyntaxHighlighter.shared.highlight(line: text, language: codeInfo.language, font: font, theme: theme)
-                    let ctLine = LineLayoutCache.shared.getOrCreateCTLine(attributedString: attr)
+                    let ctLine = getOrCreateCTLine(for: lineIdx, text: text, language: codeInfo.language)
                     let xOffset = max(0, docX - (gutterWidth + 12))
-                    let charIdx = LineLayoutCache.shared.characterIndex(in: ctLine, at: xOffset)
+                    let charIdx = ctLine.characterIndex(at: xOffset)
                     let col = max(0, min(text.count, charIdx))
                     let targetPoint = MultiBufferPoint(row: codeInfo.multiBufferRow, column: col)
 
@@ -1896,10 +1916,9 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
         if case .code(let codeInfo) = line {
             let text = codeInfo.text
-            let attr = SyntaxHighlighter.shared.highlight(line: text, language: codeInfo.language, font: font, theme: theme)
-            let ctLine = LineLayoutCache.shared.getOrCreateCTLine(attributedString: attr)
+            let ctLine = getOrCreateCTLine(for: lineIdx, text: text, language: codeInfo.language)
             let xOffset = max(0, docX - (gutterWidth + 12))
-            let charIdx = LineLayoutCache.shared.characterIndex(in: ctLine, at: xOffset)
+            let charIdx = ctLine.characterIndex(at: xOffset)
             let col = max(0, min(text.count, charIdx))
             let targetRow = codeInfo.multiBufferRow
 

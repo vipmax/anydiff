@@ -29,15 +29,13 @@ public final class SyntaxHighlighter: @unchecked Sendable {
     public static let shared = SyntaxHighlighter()
 
     private struct CacheKey: Hashable {
-        let themeId: String
         let language: String
-        let fontSize: CGFloat
         let line: String
     }
 
     private var cache: [CacheKey: NSAttributedString] = [:]
     private var cacheKeys: [CacheKey] = []
-    private let maxEntries = 1000
+    private let maxEntries = 2000
     private let cacheLock = NSLock()
 
     private let swiftKeywords: Set<String> = [
@@ -113,7 +111,7 @@ public final class SyntaxHighlighter: @unchecked Sendable {
             ])
         }
 
-        let key = CacheKey(themeId: theme.id, language: language, fontSize: font.pointSize, line: line)
+        let key = CacheKey(language: language, line: line)
         cacheLock.lock()
         if let cached = cache[key] {
             cacheLock.unlock()
