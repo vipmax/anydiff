@@ -42,6 +42,16 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         }
     }
 
+    /// Adjusts the scrollbar thumb for enough contrast in both appearances.
+    private var scrollbarThumbBaseColor: NSColor {
+        if theme.isDark {
+            return theme.gutterForeground.blended(withFraction: 0.70, of: .white)
+                ?? theme.gutterForeground
+        }
+        return theme.gutterForeground.blended(withFraction: 0.30, of: .black)
+            ?? theme.gutterForeground
+    }
+
     public var font: NSFont = .monospacedSystemFont(ofSize: 13, weight: .regular) {
         didSet {
             updateFontMetrics()
@@ -1076,7 +1086,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
         // 4. Draw Overlay Scrollbars with Auto-Hide Fade (Vertical & Horizontal)
         if scrollbarAlpha > 0.01 {
-            let thumbColor = theme.gutterForeground.withAlphaComponent(0.45 * scrollbarAlpha)
+            let thumbColor = scrollbarThumbBaseColor.withAlphaComponent(0.45 * scrollbarAlpha)
 
             if visibleScrollbarAxis == .vertical, let geometry = verticalScrollbarGeometry() {
                 context.setFillColor(thumbColor.cgColor)
