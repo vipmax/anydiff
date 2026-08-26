@@ -6,20 +6,32 @@ public struct AgentImagePreviewModalView: View {
     public let images: [AgentImageAttachment]
     @Binding public var selectedIndex: Int?
     public var onDelete: ((Int) -> Void)? = nil
+    public var onEdit: ((Int, AgentImageAttachment) -> Void)? = nil
+    public var allowsEditing: Bool = false
     public var theme: Theme
 
     @State private var zoomScale: CGFloat = 1.0
+    @State private var isDrawingMode: Bool = false
+    @State private var drawingColor: Color = .red
+    @State private var canUndoDrawing: Bool = false
+    @State private var undoDrawingRequest: Int = 0
+    @State private var copyImageRequest: Int = 0
+    @State private var editedImageDataByID: [UUID: Data] = [:]
     @State private var localKeyMonitor: Any? = nil
 
     public init(
         images: [AgentImageAttachment],
         selectedIndex: Binding<Int?>,
+        allowsEditing: Bool = false,
         onDelete: ((Int) -> Void)? = nil,
+        onEdit: ((Int, AgentImageAttachment) -> Void)? = nil,
         theme: Theme
     ) {
         self.images = images
         self._selectedIndex = selectedIndex
         self.onDelete = onDelete
+        self.onEdit = onEdit
+        self.allowsEditing = allowsEditing
         self.theme = theme
     }
 
@@ -115,6 +127,8 @@ public struct AgentImagePreviewModalView: View {
         }
         .onChange(of: selectedIndex) { _ in
             resetZoom(animated: false)
+            isDrawingMode = false
+            canUndoDrawing = false
         }
     }
 
@@ -171,7 +185,55 @@ public struct AgentImagePreviewModalView: View {
                 .frame(height: 24)
                 .background(Color.white.opacity(0.25))
 
-            Button(action: copyCurrentImage) {
+            if allowsEditing {
+                Button {
+                    isDrawingMode.toggle()
+                } label: {
+                    Image(systemName: "pencil")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(isDrawingMode ? .black : .white.opacity(0.9))
+                        .frame(width: 34, height: 34)
+                        .background(
+                            Circle()
+                                .fill(isDrawingMode ? Color.white : Color.clear)
+                        )
+                }
+                .buttonStyle(.plain)
+                .help(isDrawingMode ? "Stop drawing" : "Draw on image")
+
+                ColorPicker("Choose pencil color", selection: $drawingColor, supportsOpacity: false)
+                    .labelsHidden()
+                    .frame(width: 34, height: 34)
+                    .background {
+                        Circle()
+                            .fill(drawingColor)
+                            .frame(width: 16, height: 16)
+                            .overlay(
+                                Circle()
+                                    .stroke(Color.white.opacity(0.85), lineWidth: 1)
+                            )
+                            .allowsHitTesting(false)
+                    }
+                    .help("Choose pencil color")
+
+                Button {
+                    undoDrawingRequest &+= 1
+                } label: {
+                    Image(systemName: "arrow.uturn.backward")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.white.opacity(canUndoDrawing ? 0.9 : 0.3))
+                        .frame(width: 34, height: 34)
+                }
+                .buttonStyle(.plain)
+                .disabled(!canUndoDrawing)
+                .help("Undo last stroke (Cmd Z)")
+            }
+
+            Divider()
+                .frame(height: 24)
+                .background(Color.white.opacity(0.25))
+
+            Button(action: { copyImageRequest &+= 1 }) {
                 Image(systemName: "doc.on.clipboard")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(.white.opacity(0.9))
@@ -247,10 +309,32 @@ public struct AgentImagePreviewModalView: View {
         if let nsImage = NSImage(data: item.data) {
             AgentZoomableImageViewRepresentable(
                 image: nsImage,
+                imageID: item.id,
+                drawingColor: NSColor(drawingColor),
                 zoomScale: $zoomScale,
+                isDrawingMode: Binding(
+                    get: { allowsEditing && isDrawingMode },
+                    set: { isDrawingMode = $0 }
+                ),
+                undoRequest: undoDrawingRequest,
+                copyRequest: copyImageRequest,
                 onPrevious: showPrevious,
                 onNext: showNext,
-                onClose: close
+                onClose: close,
+                onDrawingStateChanged: { canUndo in
+                    DispatchQueue.main.async {
+                        canUndoDrawing = canUndo
+                    }
+                },
+                onRenderedImageChanged: { data in
+                    DispatchQueue.main.async {
+                        if let data {
+                            editedImageDataByID[item.id] = data
+                        } else {
+                            editedImageDataByID.removeValue(forKey: item.id)
+                        }
+                    }
+                }
             )
             .id(item.id)
             .transition(.opacity)
@@ -365,15 +449,6 @@ public struct AgentImagePreviewModalView: View {
         }
     }
 
-    private func copyCurrentImage() {
-        guard let item = currentImage,
-              let image = NSImage(data: item.data) else { return }
-
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.writeObjects([image])
-    }
-
     private func toggleZoom() {
         withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
             if zoomScale > 1.05 {
@@ -411,6 +486,22 @@ public struct AgentImagePreviewModalView: View {
     }
 
     private func close() {
+        if allowsEditing, let onEdit {
+            for (index, item) in images.enumerated() {
+                guard let data = editedImageDataByID[item.id] else { continue }
+                let editedImage = AgentImageAttachment(
+                    id: item.id,
+                    data: data,
+                    mimeType: "image/png",
+                    filename: item.filename,
+                    width: item.width,
+                    height: item.height,
+                    fileSize: data.count
+                )
+                onEdit(index, editedImage)
+            }
+        }
+
         withAnimation(.easeOut(duration: 0.15)) {
             selectedIndex = nil
         }
@@ -446,6 +537,18 @@ public struct AgentImagePreviewModalView: View {
             case 29: // 0
                 if event.modifierFlags.contains(.command) {
                     resetZoom()
+                    return nil
+                }
+                return event
+            case 6: // Z
+                if allowsEditing && event.modifierFlags.contains(.command) {
+                    undoDrawingRequest &+= 1
+                    return nil
+                }
+                return event
+            case 8: // C
+                if event.modifierFlags.contains(.command) {
+                    copyImageRequest &+= 1
                     return nil
                 }
                 return event

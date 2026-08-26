@@ -95,22 +95,24 @@ public struct AgentMessageRowView: View {
                     }
                 }
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 9)
-            .background(
-                RoundedRectangle(cornerRadius: 13)
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                Color(red: 0.10, green: 0.50, blue: 1.0),
-                                Color(red: 0.05, green: 0.42, blue: 0.94)
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
+            .padding(.horizontal, message.images.isEmpty ? 14 : 0)
+            .padding(.vertical, message.images.isEmpty ? 9 : 0)
+            .background {
+                if message.images.isEmpty {
+                    RoundedRectangle(cornerRadius: 13)
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    Color(red: 0.10, green: 0.50, blue: 1.0),
+                                    Color(red: 0.05, green: 0.42, blue: 0.94)
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
                         )
-                    )
-                    .shadow(color: Color(red: 0.05, green: 0.40, blue: 0.95).opacity(0.40), radius: 6, x: 0, y: 2)
-            )
+                        .shadow(color: Color(red: 0.05, green: 0.40, blue: 0.95).opacity(0.40), radius: 6, x: 0, y: 2)
+                }
+            }
         }
     }
 
@@ -126,10 +128,6 @@ public struct AgentMessageRowView: View {
                     .aspectRatio(contentMode: .fit)
                     .frame(maxWidth: 220, maxHeight: 160)
                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .stroke(Color.white.opacity(0.35), lineWidth: 1)
-                    )
             }
             .buttonStyle(.plain)
             .help("Click to enlarge")
@@ -145,10 +143,6 @@ public struct AgentMessageRowView: View {
                                 .aspectRatio(contentMode: .fill)
                                 .frame(width: 54, height: 54)
                                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                        .stroke(Color.white.opacity(0.35), lineWidth: 1)
-                                )
                         }
                     }
                     .buttonStyle(.plain)

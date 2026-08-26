@@ -4,23 +4,44 @@ import QuartzCore
 
 public struct AgentZoomableImageViewRepresentable: NSViewRepresentable {
     public var image: NSImage?
+    public var imageID: UUID?
+    public var drawingColor: NSColor
     @Binding public var zoomScale: CGFloat
+    @Binding public var isDrawingMode: Bool
+    public var undoRequest: Int
+    public var copyRequest: Int
     public var onPrevious: (() -> Void)?
     public var onNext: (() -> Void)?
     public var onClose: (() -> Void)?
+    public var onDrawingStateChanged: ((Bool) -> Void)?
+    public var onRenderedImageChanged: ((Data?) -> Void)?
 
     public init(
         image: NSImage?,
+        imageID: UUID? = nil,
+        drawingColor: NSColor = .systemRed,
         zoomScale: Binding<CGFloat>,
+        isDrawingMode: Binding<Bool> = .constant(false),
+        undoRequest: Int = 0,
+        copyRequest: Int = 0,
         onPrevious: (() -> Void)? = nil,
         onNext: (() -> Void)? = nil,
-        onClose: (() -> Void)? = nil
+        onClose: (() -> Void)? = nil,
+        onDrawingStateChanged: ((Bool) -> Void)? = nil,
+        onRenderedImageChanged: ((Data?) -> Void)? = nil
     ) {
         self.image = image
+        self.imageID = imageID
+        self.drawingColor = drawingColor
         self._zoomScale = zoomScale
+        self._isDrawingMode = isDrawingMode
+        self.undoRequest = undoRequest
+        self.copyRequest = copyRequest
         self.onPrevious = onPrevious
         self.onNext = onNext
         self.onClose = onClose
+        self.onDrawingStateChanged = onDrawingStateChanged
+        self.onRenderedImageChanged = onRenderedImageChanged
     }
 
     public func makeCoordinator() -> Coordinator {
@@ -29,6 +50,8 @@ public struct AgentZoomableImageViewRepresentable: NSViewRepresentable {
 
     public class Coordinator {
         var isInternalGestureUpdate = false
+        var lastUndoRequest = 0
+        var lastCopyRequest = 0
     }
 
     public func makeNSView(context: Context) -> AgentNativeZoomableImageView {
@@ -44,7 +67,13 @@ public struct AgentZoomableImageViewRepresentable: NSViewRepresentable {
         view.onPrevious = onPrevious
         view.onNext = onNext
         view.onClose = onClose
-        view.setImage(image, zoomScale: zoomScale)
+        view.isDrawingMode = isDrawingMode
+        view.drawingColor = drawingColor
+        view.onDrawingStateChanged = onDrawingStateChanged
+        view.onRenderedImageChanged = onRenderedImageChanged
+        coordinator.lastUndoRequest = undoRequest
+        coordinator.lastCopyRequest = copyRequest
+        view.setImage(image, imageID: imageID, zoomScale: zoomScale)
         return view
     }
 
@@ -52,6 +81,20 @@ public struct AgentZoomableImageViewRepresentable: NSViewRepresentable {
         nsView.onPrevious = onPrevious
         nsView.onNext = onNext
         nsView.onClose = onClose
+        nsView.isDrawingMode = isDrawingMode
+        nsView.drawingColor = drawingColor
+        nsView.onDrawingStateChanged = onDrawingStateChanged
+        nsView.onRenderedImageChanged = onRenderedImageChanged
+
+        if context.coordinator.lastUndoRequest != undoRequest {
+            context.coordinator.lastUndoRequest = undoRequest
+            nsView.undoDrawing()
+        }
+
+        if context.coordinator.lastCopyRequest != copyRequest {
+            context.coordinator.lastCopyRequest = copyRequest
+            nsView.copyImageToPasteboard()
+        }
 
         if context.coordinator.isInternalGestureUpdate {
             // Change originated from user trackpad / mouse gesture inside the NSView itself.
@@ -60,24 +103,46 @@ public struct AgentZoomableImageViewRepresentable: NSViewRepresentable {
             return
         }
 
-        nsView.updateImage(image, externalZoomScale: zoomScale)
+        nsView.updateImage(image, imageID: imageID, externalZoomScale: zoomScale)
     }
 }
 
 public final class AgentNativeZoomableImageView: NSView {
     public override var isFlipped: Bool { true }
 
+    public var drawingColor: NSColor = .systemRed {
+        didSet {
+            redrawDrawing()
+        }
+    }
+    public var isDrawingMode: Bool = false {
+        didSet {
+            guard oldValue != isDrawingMode else { return }
+            if !isDrawingMode {
+                activeStroke.removeAll()
+                redrawDrawing()
+            }
+            updateCursor()
+        }
+    }
     public var onZoomScaleChanged: ((CGFloat) -> Void)?
+    public var onDrawingStateChanged: ((Bool) -> Void)?
+    public var onRenderedImageChanged: ((Data?) -> Void)?
     public var onPrevious: (() -> Void)?
     public var onNext: (() -> Void)?
     public var onClose: (() -> Void)?
 
     private var currentImage: NSImage?
+    private var currentImageID: UUID?
     private var zoomScale: CGFloat = 1.0
     private var panOffset: CGPoint = .zero
 
     private let imageLayer = CALayer()
     private let shadowLayer = CALayer()
+    private let drawingLayer = CALayer()
+    private var drawingShapeLayers: [CAShapeLayer] = []
+    private var drawingStrokes: [[CGPoint]] = []
+    private var activeStroke: [CGPoint] = []
 
     private var isDragging: Bool = false
     private var dragStartMouseLocation: CGPoint = .zero
@@ -112,6 +177,9 @@ public final class AgentNativeZoomableImageView: NSView {
         imageLayer.borderWidth = 1.0
         imageLayer.borderColor = NSColor.white.withAlphaComponent(0.25).cgColor
         shadowLayer.addSublayer(imageLayer)
+
+        drawingLayer.masksToBounds = true
+        imageLayer.addSublayer(drawingLayer)
     }
 
     public override func updateTrackingAreas() {
@@ -142,7 +210,9 @@ public final class AgentNativeZoomableImageView: NSView {
     }
 
     private func updateCursor() {
-        if zoomScale > 1.01 {
+        if isDrawingMode {
+            NSCursor.crosshair.set()
+        } else if zoomScale > 1.01 {
             if isDragging {
                 NSCursor.closedHand.set()
             } else {
@@ -153,22 +223,37 @@ public final class AgentNativeZoomableImageView: NSView {
         }
     }
 
-    public func setImage(_ image: NSImage?, zoomScale: CGFloat) {
+    public func setImage(_ image: NSImage?, imageID: UUID? = nil, zoomScale: CGFloat) {
         self.currentImage = image
+        self.currentImageID = imageID
         self.zoomScale = zoomScale
         self.panOffset = .zero
+        drawingStrokes.removeAll()
+        activeStroke.removeAll()
         applyImageToLayer()
         updateLayout(animated: false)
+        onDrawingStateChanged?(false)
+        onRenderedImageChanged?(nil)
     }
 
-    public func updateImage(_ image: NSImage?, externalZoomScale: CGFloat) {
-        let imageChanged = currentImage != image
+    public func updateImage(_ image: NSImage?, imageID: UUID? = nil, externalZoomScale: CGFloat) {
+        let imageChanged: Bool
+        if let imageID {
+            imageChanged = currentImageID != imageID
+        } else {
+            imageChanged = currentImage !== image
+        }
         self.currentImage = image
+        self.currentImageID = imageID
         if imageChanged {
             self.zoomScale = externalZoomScale
             self.panOffset = .zero
+            drawingStrokes.removeAll()
+            activeStroke.removeAll()
             applyImageToLayer()
             updateLayout(animated: false)
+            onDrawingStateChanged?(false)
+            onRenderedImageChanged?(nil)
         } else if abs(self.zoomScale - externalZoomScale) > 0.01 {
             // Programmatic change from UI button (e.g. Toolbar + / - / reset)
             zoom(to: externalZoomScale, centeredAt: nil, animated: true)
@@ -268,6 +353,8 @@ public final class AgentNativeZoomableImageView: NSView {
             CATransaction.commit()
         }
 
+        drawingLayer.frame = imageLayer.bounds
+        redrawDrawing()
         updateCursor()
     }
 
@@ -299,6 +386,154 @@ public final class AgentNativeZoomableImageView: NSView {
 
         updateLayout(animated: animated)
         onZoomScaleChanged?(clampedScale)
+    }
+
+    // MARK: - Drawing
+
+    public func undoDrawing() {
+        guard !drawingStrokes.isEmpty else { return }
+        drawingStrokes.removeLast()
+        redrawDrawing()
+        onDrawingStateChanged?(!drawingStrokes.isEmpty)
+        onRenderedImageChanged?(drawingStrokes.isEmpty ? nil : renderedImageData())
+    }
+
+    public func copyImageToPasteboard() {
+        guard let image = renderedImage() else { return }
+
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.writeObjects([image])
+    }
+
+    private func renderedImageData() -> Data? {
+        guard let image = renderedImage(),
+              let tiffData = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiffData) else { return nil }
+        return bitmap.representation(using: .png, properties: [:])
+    }
+
+    private func imageFrameInView() -> CGRect {
+        let fitSize = calculateFitSize()
+        guard fitSize.width > 0, fitSize.height > 0 else { return .zero }
+
+        let visualSize = CGSize(
+            width: fitSize.width * zoomScale,
+            height: fitSize.height * zoomScale
+        )
+        let center = CGPoint(
+            x: bounds.midX + panOffset.x,
+            y: bounds.midY + panOffset.y
+        )
+
+        return CGRect(
+            x: floor(center.x - visualSize.width / 2),
+            y: floor(center.y - visualSize.height / 2),
+            width: ceil(visualSize.width),
+            height: ceil(visualSize.height)
+        )
+    }
+
+    private func normalizedImagePoint(from viewPoint: CGPoint, clamped: Bool = false) -> CGPoint? {
+        let imageFrame = imageFrameInView()
+        guard imageFrame.width > 0, imageFrame.height > 0 else { return nil }
+        guard clamped || imageFrame.contains(viewPoint) else { return nil }
+
+        let x = (viewPoint.x - imageFrame.minX) / imageFrame.width
+        let y = (viewPoint.y - imageFrame.minY) / imageFrame.height
+        return CGPoint(
+            x: max(0, min(1, x)),
+            y: max(0, min(1, y))
+        )
+    }
+
+    private func redrawDrawing() {
+        drawingShapeLayers.forEach { $0.removeFromSuperlayer() }
+        drawingShapeLayers.removeAll()
+
+        let allStrokes = drawingStrokes + (activeStroke.isEmpty ? [] : [activeStroke])
+        guard drawingLayer.bounds.width > 0, drawingLayer.bounds.height > 0 else { return }
+
+        for stroke in allStrokes where !stroke.isEmpty {
+            let path = CGMutablePath()
+            let firstPoint = CGPoint(
+                x: stroke[0].x * drawingLayer.bounds.width,
+                y: stroke[0].y * drawingLayer.bounds.height
+            )
+            path.move(to: firstPoint)
+
+            if stroke.count == 1 {
+                path.addLine(to: firstPoint)
+            } else {
+                for point in stroke.dropFirst() {
+                    path.addLine(to: CGPoint(
+                        x: point.x * drawingLayer.bounds.width,
+                        y: point.y * drawingLayer.bounds.height
+                    ))
+                }
+            }
+
+            let shapeLayer = CAShapeLayer()
+            shapeLayer.frame = drawingLayer.bounds
+            shapeLayer.path = path
+            shapeLayer.fillColor = nil
+            shapeLayer.strokeColor = drawingColor.withAlphaComponent(0.95).cgColor
+            shapeLayer.lineWidth = max(3, min(10, drawingLayer.bounds.width * 0.006))
+            shapeLayer.lineCap = .round
+            shapeLayer.lineJoin = .round
+            drawingLayer.addSublayer(shapeLayer)
+            drawingShapeLayers.append(shapeLayer)
+        }
+    }
+
+    private func renderedImage() -> NSImage? {
+        guard let currentImage, !drawingStrokes.isEmpty else { return currentImage }
+        let size = currentImage.size
+        guard size.width > 0, size.height > 0 else { return currentImage }
+
+        let outputImage = NSImage(size: size)
+        outputImage.lockFocus()
+        currentImage.draw(
+            in: NSRect(origin: .zero, size: size),
+            from: .zero,
+            operation: .sourceOver,
+            fraction: 1
+        )
+
+        if let context = NSGraphicsContext.current?.cgContext {
+            context.saveGState()
+            context.setStrokeColor(drawingColor.withAlphaComponent(0.95).cgColor)
+            context.setLineWidth(max(3, min(10, size.width * 0.006)))
+            context.setLineCap(.round)
+            context.setLineJoin(.round)
+
+            for stroke in drawingStrokes where !stroke.isEmpty {
+                let path = CGMutablePath()
+                let firstPoint = CGPoint(
+                    x: stroke[0].x * size.width,
+                    y: (1 - stroke[0].y) * size.height
+                )
+                path.move(to: firstPoint)
+
+                if stroke.count == 1 {
+                    path.addLine(to: firstPoint)
+                } else {
+                    for point in stroke.dropFirst() {
+                        path.addLine(to: CGPoint(
+                            x: point.x * size.width,
+                            y: (1 - point.y) * size.height
+                        ))
+                    }
+                }
+
+                context.addPath(path)
+                context.strokePath()
+            }
+            context.restoreGState()
+        }
+
+        outputImage.unlockFocus()
+        return outputImage
     }
 
     // MARK: - Gestures & Event Handling
@@ -362,6 +597,15 @@ public final class AgentNativeZoomableImageView: NSView {
 
     public override func mouseDown(with event: NSEvent) {
         let loc = convert(event.locationInWindow, from: nil)
+
+        if isDrawingMode {
+            guard let point = normalizedImagePoint(from: loc) else { return }
+            activeStroke = [point]
+            redrawDrawing()
+            updateCursor()
+            return
+        }
+
         dragStartMouseLocation = loc
         dragStartPanOffset = panOffset
         isDragging = true
@@ -369,6 +613,15 @@ public final class AgentNativeZoomableImageView: NSView {
     }
 
     public override func mouseDragged(with event: NSEvent) {
+        if isDrawingMode {
+            guard !activeStroke.isEmpty else { return }
+            let loc = convert(event.locationInWindow, from: nil)
+            guard let point = normalizedImagePoint(from: loc, clamped: true) else { return }
+            activeStroke.append(point)
+            redrawDrawing()
+            return
+        }
+
         guard isDragging else { return }
         let loc = convert(event.locationInWindow, from: nil)
 
@@ -386,6 +639,19 @@ public final class AgentNativeZoomableImageView: NSView {
     }
 
     public override func mouseUp(with event: NSEvent) {
+        if isDrawingMode {
+            guard !activeStroke.isEmpty else { return }
+            if activeStroke.count == 1 {
+                activeStroke.append(activeStroke[0])
+            }
+            drawingStrokes.append(activeStroke)
+            activeStroke.removeAll()
+            redrawDrawing()
+            onDrawingStateChanged?(true)
+            onRenderedImageChanged?(renderedImageData())
+            return
+        }
+
         isDragging = false
         updateCursor()
 

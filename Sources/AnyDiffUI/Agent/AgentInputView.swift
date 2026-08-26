@@ -367,17 +367,31 @@ public struct AgentInputView: View {
                 }
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffUpdateDraftImage"))) { notification in
+            guard let index = notification.userInfo?["index"] as? Int,
+                  let image = notification.userInfo?["image"] as? AgentImageAttachment,
+                  index >= 0,
+                  index < attachedImages.count else { return }
+            withAnimation(.easeInOut(duration: 0.15)) {
+                attachedImages[index] = image
+            }
+        }
         .overlay {
             if onPreviewImages == nil, previewImageIndex != nil && !attachedImages.isEmpty {
                 AgentImagePreviewModalView(
                     images: attachedImages,
                     selectedIndex: $previewImageIndex,
+                    allowsEditing: true,
                     onDelete: { delIdx in
                         withAnimation(.easeInOut(duration: 0.15)) {
                             if delIdx >= 0 && delIdx < attachedImages.count {
                                 attachedImages.remove(at: delIdx)
                             }
                         }
+                    },
+                    onEdit: { index, image in
+                        guard index >= 0, index < attachedImages.count else { return }
+                        attachedImages[index] = image
                     },
                     theme: theme
                 )

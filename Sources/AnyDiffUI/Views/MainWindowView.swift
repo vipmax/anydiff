@@ -167,6 +167,7 @@ public struct MainWindowView: View {
                             }
                         }
                     ),
+                    allowsEditing: preview.isDraft,
                     onDelete: preview.isDraft ? { delIdx in
                         NotificationCenter.default.post(
                             name: Notification.Name("anyDiffDeleteDraftImage"),
@@ -181,6 +182,20 @@ public struct MainWindowView: View {
                             } else {
                                 agentCoordinator.activeImagePreview?.images = updated
                             }
+                        }
+                    } : nil,
+                    onEdit: preview.isDraft ? { index, image in
+                        NotificationCenter.default.post(
+                            name: Notification.Name("anyDiffUpdateDraftImage"),
+                            object: nil,
+                            userInfo: ["index": index, "image": image]
+                        )
+                        if let currentImages = agentCoordinator.activeImagePreview?.images,
+                           index >= 0,
+                           index < currentImages.count {
+                            var updated = currentImages
+                            updated[index] = image
+                            agentCoordinator.activeImagePreview?.images = updated
                         }
                     } : nil,
                     theme: activeTheme
