@@ -227,9 +227,14 @@ public struct MainWindowView: View {
         .onChange(of: followsSystemAppearance) { _ in updateWindowAppearance() }
         .onChange(of: isWatchModeEnabled) { enabled in
             if enabled {
-                let currentDir = effectiveWorkingDirectory
+                guard let currentDir = loadableWorkingDirectory else {
+                    folderWatcher?.stop()
+                    folderWatcher = nil
+                    pendingWatchPaths.removeAll()
+                    return
+                }
                 restartWatcher(for: currentDir)
-                startPendingWatchRefresh(directory: URL(fileURLWithPath: currentDir).resolvingSymlinksInPath().path)
+                startPendingWatchRefresh(directory: currentDir)
             } else {
                 folderWatcher?.stop()
                 folderWatcher = nil
@@ -574,7 +579,19 @@ public struct MainWindowView: View {
     @ViewBuilder
     private var emptyStatusHeaderView: some View {
         VStack(spacing: 6) {
-            if repoStatus == .notGitRepository {
+            if loadableWorkingDirectory == nil {
+                Image(systemName: "folder.badge.plus")
+                    .font(.system(size: 34, weight: .light))
+                    .foregroundColor(Color(activeTheme.gutterForeground).opacity(0.8))
+
+                Text("Choose a Git Repository")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(Color(activeTheme.foreground))
+
+                Text("Open a repository to view its changes.")
+                    .font(.system(size: 12))
+                    .foregroundColor(Color(activeTheme.gutterForeground))
+            } else if repoStatus == .notGitRepository {
                 Image(systemName: "folder.badge.questionmark")
                     .font(.system(size: 34, weight: .light))
                     .foregroundColor(Color(activeTheme.gutterForeground).opacity(0.8))
@@ -1340,18 +1357,30 @@ public struct MainWindowView: View {
 
     // MARK: - Current Directory Diff Loading
 
+    private var loadableWorkingDirectory: String? {
+        let candidate: String?
+        if let currentPath, !currentPath.isEmpty {
+            candidate = currentPath
+        } else if let initialPath, !initialPath.isEmpty {
+            candidate = initialPath
+        } else {
+            candidate = nil
+        }
+
+        guard let candidate else { return nil }
+        let resolved = URL(fileURLWithPath: (candidate as NSString).expandingTildeInPath)
+            .standardizedFileURL
+            .path
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        guard !resolved.isEmpty, resolved != home else { return nil }
+        return resolved
+    }
+
     public var effectiveWorkingDirectory: String {
-        if let currentPath = currentPath, !currentPath.isEmpty {
-            return (currentPath as NSString).expandingTildeInPath
+        if let loadableWorkingDirectory {
+            return loadableWorkingDirectory
         }
-        if let initialPath = initialPath, !initialPath.isEmpty {
-            return (initialPath as NSString).expandingTildeInPath
-        }
-        let cwd = FileManager.default.currentDirectoryPath
-        if cwd == "/" || cwd.isEmpty {
-            return FileManager.default.homeDirectoryForCurrentUser.path
-        }
-        return cwd
+        return FileManager.default.homeDirectoryForCurrentUser.path
     }
 
     public var effectiveBaseDirectory: String {
@@ -1375,6 +1404,11 @@ public struct MainWindowView: View {
             comparisonTarget = .workingTree
         }
 
+        guard let currentDir = loadableWorkingDirectory else {
+            clearLocalDirectoryState()
+            return
+        }
+
         guard !isReloading else {
             hasPendingGitStateReload = true
             return
@@ -1382,7 +1416,6 @@ public struct MainWindowView: View {
         loadGeneration &+= 1
         let generation = loadGeneration
         isReloading = true
-        let currentDir = effectiveWorkingDirectory
         multiBuffer.baseDirectory = currentDir
         let folderName = (currentDir as NSString).lastPathComponent
         self.currentFolderName = folderName
@@ -1434,12 +1467,41 @@ public struct MainWindowView: View {
         }
     }
 
+    private func clearLocalDirectoryState() {
+        loadGeneration &+= 1
+        gitStateReloadWorkItem?.cancel()
+        gitStateReloadWorkItem = nil
+        hasPendingGitStateReload = false
+        isReloading = false
+        isStreaming = false
+        streamingCount = 0
+
+        folderWatcher?.stop()
+        folderWatcher = nil
+        pendingWatchPaths.removeAll()
+        watchRefreshGeneration &+= 1
+        watchRefreshInFlight = false
+
+        currentFolderName = ""
+        currentBranch = ""
+        localBranches = []
+        remoteBranches = []
+        repoStatus = .notGitRepository
+        selectedFilePath = nil
+        multiBuffer.baseDirectory = nil
+        loadDiff(files: [])
+
+        DispatchQueue.main.async {
+            NSApp.windows.first?.title = "AnyDiff"
+        }
+    }
+
     private func restartWatcher(for directoryPath: String) {
         folderWatcher?.stop()
         folderWatcher = nil
 
         guard isWatchModeEnabled, !directoryPath.isEmpty else { return }
-        guard FileManager.default.fileExists(atPath: directoryPath) else { return }
+        guard loadableWorkingDirectory == URL(fileURLWithPath: directoryPath).standardizedFileURL.path else { return }
 
         let resolvedURL = URL(fileURLWithPath: directoryPath).resolvingSymlinksInPath()
         let watcher = FolderWatcher(url: resolvedURL, latency: 0.25) { events in
@@ -1547,7 +1609,9 @@ public struct MainWindowView: View {
     /// Serializes watch reads while coalescing events that arrive during an
     /// in-flight read. No path is discarded when a second event batch arrives.
     private func startPendingWatchRefresh(directory: String, checkRenames: Bool = false) {
-        guard !pendingWatchPaths.isEmpty, !watchRefreshInFlight else { return }
+        guard loadableWorkingDirectory == URL(fileURLWithPath: directory).standardizedFileURL.path,
+              !pendingWatchPaths.isEmpty,
+              !watchRefreshInFlight else { return }
         let paths = pendingWatchPaths
         pendingWatchPaths.removeAll()
         watchRefreshInFlight = true

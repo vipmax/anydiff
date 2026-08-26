@@ -363,6 +363,9 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
     }
 
     private func bufferPoint(atLineBoundary line: Int, lines: [String]) -> BufferPoint {
+        guard !lines.isEmpty else {
+            return .zero
+        }
         if line < lines.count {
             return BufferPoint(row: line, column: 0)
         }

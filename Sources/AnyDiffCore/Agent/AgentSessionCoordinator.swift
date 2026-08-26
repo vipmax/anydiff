@@ -212,8 +212,13 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
             acp.agentTitle = initialPreset.name
             let initialManager: AgentSessionManager = acp
             #endif
+            #if DEBUG
+            let initialSessionTitle = mock ? "Mock Session" : "Session 1"
+            #else
+            let initialSessionTitle = "Session 1"
+            #endif
             let firstSession = AgentSessionItem(
-                title: mock ? "Mock Session" : "Session 1",
+                title: initialSessionTitle,
                 manager: initialManager,
                 isMock: mock,
                 preset: initialPreset

@@ -1516,6 +1516,21 @@ final class MultiBufferTests: XCTestCase {
         XCTAssertEqual(local?.edits.first?.newText, "X")
     }
 
+    func testExternalTextUpdateHandlesEmptyFullFileBuffer() {
+        let mb = MultiBuffer()
+        let buffer = Buffer(filePath: "Empty.txt", text: "")
+        buffer.isFullFile = true
+        mb.addBuffer(buffer)
+        mb.addExcerpt(Excerpt(bufferId: buffer.id, filePath: buffer.filePath, bufferRange: 0..<0))
+
+        XCTAssertTrue(mb.applyExternalTextUpdate(
+            filePath: buffer.filePath,
+            newText: "created",
+            updateBaseline: false
+        ))
+        XCTAssertEqual(buffer.text(), "created")
+    }
+
     func testRenamedFileRemovesOldPathAndAddsNewPathWithoutTouchingOthers() {
         let mb = MultiBuffer()
         let old = Buffer(filePath: "old.swift", text: "renamed")

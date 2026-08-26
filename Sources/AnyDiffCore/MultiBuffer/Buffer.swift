@@ -315,6 +315,12 @@ public final class Buffer: Identifiable, @unchecked Sendable {
         }
 
         var currentLines = ensureMutableLines()
+        if currentLines.isEmpty {
+            // Empty files have no materialized row yet, but an insertion still
+            // needs a valid row to replace. Keep the empty-file representation
+            // compatible with the editor's row-based coordinate model.
+            currentLines = [""]
+        }
         let replacementLines = newText.components(separatedBy: "\n")
 
         let startLine = currentLines[clampedStart.row]
