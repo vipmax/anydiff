@@ -1,11 +1,18 @@
 import AppKit
 import SwiftUI
 import QuartzCore
+import CoreImage
+
+public enum AgentDrawingTool: Equatable {
+    case pencil
+    case blur
+}
 
 public struct AgentZoomableImageViewRepresentable: NSViewRepresentable {
     public var image: NSImage?
     public var imageID: UUID?
     public var drawingColor: NSColor
+    public var drawingTool: AgentDrawingTool
     @Binding public var zoomScale: CGFloat
     @Binding public var isDrawingMode: Bool
     public var undoRequest: Int
@@ -20,6 +27,7 @@ public struct AgentZoomableImageViewRepresentable: NSViewRepresentable {
         image: NSImage?,
         imageID: UUID? = nil,
         drawingColor: NSColor = .systemRed,
+        drawingTool: AgentDrawingTool = .pencil,
         zoomScale: Binding<CGFloat>,
         isDrawingMode: Binding<Bool> = .constant(false),
         undoRequest: Int = 0,
@@ -33,6 +41,7 @@ public struct AgentZoomableImageViewRepresentable: NSViewRepresentable {
         self.image = image
         self.imageID = imageID
         self.drawingColor = drawingColor
+        self.drawingTool = drawingTool
         self._zoomScale = zoomScale
         self._isDrawingMode = isDrawingMode
         self.undoRequest = undoRequest
@@ -69,6 +78,7 @@ public struct AgentZoomableImageViewRepresentable: NSViewRepresentable {
         view.onClose = onClose
         view.isDrawingMode = isDrawingMode
         view.drawingColor = drawingColor
+        view.drawingTool = drawingTool
         view.onDrawingStateChanged = onDrawingStateChanged
         view.onRenderedImageChanged = onRenderedImageChanged
         coordinator.lastUndoRequest = undoRequest
@@ -82,6 +92,7 @@ public struct AgentZoomableImageViewRepresentable: NSViewRepresentable {
         nsView.onNext = onNext
         nsView.onClose = onClose
         nsView.isDrawingMode = isDrawingMode
+        nsView.drawingTool = drawingTool
         nsView.drawingColor = drawingColor
         nsView.onDrawingStateChanged = onDrawingStateChanged
         nsView.onRenderedImageChanged = onRenderedImageChanged
@@ -109,6 +120,20 @@ public struct AgentZoomableImageViewRepresentable: NSViewRepresentable {
 
 public final class AgentNativeZoomableImageView: NSView {
     public override var isFlipped: Bool { true }
+
+    private struct DrawingStroke {
+        let points: [CGPoint]
+        let tool: AgentDrawingTool
+    }
+
+    public var drawingTool: AgentDrawingTool = .pencil {
+        didSet {
+            if oldValue != drawingTool {
+                activeStroke.removeAll()
+                redrawDrawing()
+            }
+        }
+    }
 
     public var drawingColor: NSColor = .systemRed {
         didSet {
@@ -140,9 +165,12 @@ public final class AgentNativeZoomableImageView: NSView {
     private let imageLayer = CALayer()
     private let shadowLayer = CALayer()
     private let drawingLayer = CALayer()
+    private let blurLayer = CALayer()
+    private let blurMaskLayer = CAShapeLayer()
     private var drawingShapeLayers: [CAShapeLayer] = []
-    private var drawingStrokes: [[CGPoint]] = []
+    private var drawingStrokes: [DrawingStroke] = []
     private var activeStroke: [CGPoint] = []
+    private var activeDrawingTool: AgentDrawingTool = .pencil
 
     private var isDragging: Bool = false
     private var dragStartMouseLocation: CGPoint = .zero
@@ -179,6 +207,14 @@ public final class AgentNativeZoomableImageView: NSView {
         shadowLayer.addSublayer(imageLayer)
 
         drawingLayer.masksToBounds = true
+        blurLayer.masksToBounds = true
+        blurLayer.contentsGravity = .resizeAspect
+        blurLayer.mask = blurMaskLayer
+        blurMaskLayer.fillColor = nil
+        blurMaskLayer.strokeColor = NSColor.white.cgColor
+        blurMaskLayer.lineCap = .round
+        blurMaskLayer.lineJoin = .round
+        imageLayer.addSublayer(blurLayer)
         imageLayer.addSublayer(drawingLayer)
     }
 
@@ -263,13 +299,25 @@ public final class AgentNativeZoomableImageView: NSView {
     private func applyImageToLayer() {
         guard let img = currentImage else {
             imageLayer.contents = nil
+            blurLayer.contents = nil
             return
         }
         if let cgImage = img.cgImage(forProposedRect: nil, context: nil, hints: nil) {
             imageLayer.contents = cgImage
+            blurLayer.contents = blurredCGImage(from: cgImage)
         } else {
             imageLayer.contents = img
+            blurLayer.contents = nil
         }
+    }
+
+    private func blurredCGImage(from cgImage: CGImage) -> CGImage? {
+        let input = CIImage(cgImage: cgImage)
+        guard let filter = CIFilter(name: "CIGaussianBlur") else { return nil }
+        filter.setValue(input, forKey: kCIInputImageKey)
+        filter.setValue(18.0, forKey: kCIInputRadiusKey)
+        guard let output = filter.outputImage?.cropped(to: input.extent) else { return nil }
+        return CIContext().createCGImage(output, from: input.extent)
     }
 
     public override func layout() {
@@ -354,6 +402,7 @@ public final class AgentNativeZoomableImageView: NSView {
         }
 
         drawingLayer.frame = imageLayer.bounds
+        blurLayer.frame = imageLayer.bounds
         redrawDrawing()
         updateCursor()
     }
@@ -451,38 +500,41 @@ public final class AgentNativeZoomableImageView: NSView {
         drawingShapeLayers.forEach { $0.removeFromSuperlayer() }
         drawingShapeLayers.removeAll()
 
-        let allStrokes = drawingStrokes + (activeStroke.isEmpty ? [] : [activeStroke])
+        blurMaskLayer.frame = drawingLayer.bounds
+        blurMaskLayer.path = nil
+
         guard drawingLayer.bounds.width > 0, drawingLayer.bounds.height > 0 else { return }
 
-        for stroke in allStrokes where !stroke.isEmpty {
-            let path = CGMutablePath()
-            let firstPoint = CGPoint(
-                x: stroke[0].x * drawingLayer.bounds.width,
-                y: stroke[0].y * drawingLayer.bounds.height
-            )
-            path.move(to: firstPoint)
+        let allStrokes = drawingStrokes + (activeStroke.isEmpty ? [] : [
+            DrawingStroke(points: activeStroke, tool: activeDrawingTool)
+        ])
+        let blurPath = CGMutablePath()
+        var hasBlurStroke = false
 
-            if stroke.count == 1 {
-                path.addLine(to: firstPoint)
-            } else {
-                for point in stroke.dropFirst() {
-                    path.addLine(to: CGPoint(
-                        x: point.x * drawingLayer.bounds.width,
-                        y: point.y * drawingLayer.bounds.height
-                    ))
-                }
+        for stroke in allStrokes where !stroke.points.isEmpty {
+            let path = annotationPath(stroke.points, in: drawingLayer.bounds.size, flipY: false)
+
+            switch stroke.tool {
+            case .pencil:
+                let shapeLayer = CAShapeLayer()
+                shapeLayer.frame = drawingLayer.bounds
+                shapeLayer.path = path
+                shapeLayer.fillColor = nil
+                shapeLayer.strokeColor = drawingColor.withAlphaComponent(0.95).cgColor
+                shapeLayer.lineWidth = pencilLineWidth(for: drawingLayer.bounds.size)
+                shapeLayer.lineCap = .round
+                shapeLayer.lineJoin = .round
+                drawingLayer.addSublayer(shapeLayer)
+                drawingShapeLayers.append(shapeLayer)
+            case .blur:
+                blurPath.addPath(path)
+                hasBlurStroke = true
             }
+        }
 
-            let shapeLayer = CAShapeLayer()
-            shapeLayer.frame = drawingLayer.bounds
-            shapeLayer.path = path
-            shapeLayer.fillColor = nil
-            shapeLayer.strokeColor = drawingColor.withAlphaComponent(0.95).cgColor
-            shapeLayer.lineWidth = max(3, min(10, drawingLayer.bounds.width * 0.006))
-            shapeLayer.lineCap = .round
-            shapeLayer.lineJoin = .round
-            drawingLayer.addSublayer(shapeLayer)
-            drawingShapeLayers.append(shapeLayer)
+        if hasBlurStroke {
+            blurMaskLayer.path = blurPath
+            blurMaskLayer.lineWidth = blurLineWidth(for: drawingLayer.bounds.size)
         }
     }
 
@@ -501,32 +553,36 @@ public final class AgentNativeZoomableImageView: NSView {
         )
 
         if let context = NSGraphicsContext.current?.cgContext {
+            let hasBlurStrokes = drawingStrokes.contains { $0.tool == .blur }
+            if hasBlurStrokes,
+               let sourceCGImage = currentImage.cgImage(forProposedRect: nil, context: nil, hints: nil),
+               let blurredCGImage = blurredCGImage(from: sourceCGImage) {
+                let blurredImage = NSImage(cgImage: blurredCGImage, size: size)
+                for stroke in drawingStrokes where stroke.tool == .blur && !stroke.points.isEmpty {
+                    context.saveGState()
+                    context.addPath(annotationPath(stroke.points, in: size, flipY: true))
+                    context.setLineWidth(blurLineWidth(for: size))
+                    context.setLineCap(.round)
+                    context.replacePathWithStrokedPath()
+                    context.clip()
+                    blurredImage.draw(
+                        in: NSRect(origin: .zero, size: size),
+                        from: .zero,
+                        operation: .sourceOver,
+                        fraction: 1
+                    )
+                    context.restoreGState()
+                }
+            }
+
             context.saveGState()
             context.setStrokeColor(drawingColor.withAlphaComponent(0.95).cgColor)
-            context.setLineWidth(max(3, min(10, size.width * 0.006)))
+            context.setLineWidth(pencilLineWidth(for: size))
             context.setLineCap(.round)
             context.setLineJoin(.round)
 
-            for stroke in drawingStrokes where !stroke.isEmpty {
-                let path = CGMutablePath()
-                let firstPoint = CGPoint(
-                    x: stroke[0].x * size.width,
-                    y: (1 - stroke[0].y) * size.height
-                )
-                path.move(to: firstPoint)
-
-                if stroke.count == 1 {
-                    path.addLine(to: firstPoint)
-                } else {
-                    for point in stroke.dropFirst() {
-                        path.addLine(to: CGPoint(
-                            x: point.x * size.width,
-                            y: (1 - point.y) * size.height
-                        ))
-                    }
-                }
-
-                context.addPath(path)
+            for stroke in drawingStrokes where stroke.tool == .pencil && !stroke.points.isEmpty {
+                context.addPath(annotationPath(stroke.points, in: size, flipY: true))
                 context.strokePath()
             }
             context.restoreGState()
@@ -534,6 +590,37 @@ public final class AgentNativeZoomableImageView: NSView {
 
         outputImage.unlockFocus()
         return outputImage
+    }
+
+    private func annotationPath(_ points: [CGPoint], in size: CGSize, flipY: Bool) -> CGPath {
+        let path = CGMutablePath()
+        guard let first = points.first else { return path }
+
+        func mappedPoint(_ point: CGPoint) -> CGPoint {
+            CGPoint(
+                x: point.x * size.width,
+                y: (flipY ? 1 - point.y : point.y) * size.height
+            )
+        }
+
+        let firstPoint = mappedPoint(first)
+        path.move(to: firstPoint)
+        if points.count == 1 {
+            path.addLine(to: firstPoint)
+        } else {
+            for point in points.dropFirst() {
+                path.addLine(to: mappedPoint(point))
+            }
+        }
+        return path
+    }
+
+    private func pencilLineWidth(for size: CGSize) -> CGFloat {
+        max(3, min(10, size.width * 0.006))
+    }
+
+    private func blurLineWidth(for size: CGSize) -> CGFloat {
+        max(28, min(96, min(size.width, size.height) * 0.08))
     }
 
     // MARK: - Gestures & Event Handling
@@ -600,6 +687,7 @@ public final class AgentNativeZoomableImageView: NSView {
 
         if isDrawingMode {
             guard let point = normalizedImagePoint(from: loc) else { return }
+            activeDrawingTool = drawingTool
             activeStroke = [point]
             redrawDrawing()
             updateCursor()
@@ -644,7 +732,7 @@ public final class AgentNativeZoomableImageView: NSView {
             if activeStroke.count == 1 {
                 activeStroke.append(activeStroke[0])
             }
-            drawingStrokes.append(activeStroke)
+            drawingStrokes.append(DrawingStroke(points: activeStroke, tool: activeDrawingTool))
             activeStroke.removeAll()
             redrawDrawing()
             onDrawingStateChanged?(true)

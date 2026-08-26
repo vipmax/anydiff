@@ -12,6 +12,7 @@ public struct AgentImagePreviewModalView: View {
 
     @State private var zoomScale: CGFloat = 1.0
     @State private var isDrawingMode: Bool = false
+    @State private var isBlurMode: Bool = false
     @State private var drawingColor: Color = .red
     @State private var canUndoDrawing: Bool = false
     @State private var undoDrawingRequest: Int = 0
@@ -128,6 +129,7 @@ public struct AgentImagePreviewModalView: View {
         .onChange(of: selectedIndex) { _ in
             resetZoom(animated: false)
             isDrawingMode = false
+            isBlurMode = false
             canUndoDrawing = false
         }
     }
@@ -187,7 +189,12 @@ public struct AgentImagePreviewModalView: View {
 
             if allowsEditing {
                 Button {
-                    isDrawingMode.toggle()
+                    if isDrawingMode && !isBlurMode {
+                        isDrawingMode = false
+                    } else {
+                        isBlurMode = false
+                        isDrawingMode = true
+                    }
                 } label: {
                     Image(systemName: "pencil")
                         .font(.system(size: 13, weight: .semibold))
@@ -199,7 +206,27 @@ public struct AgentImagePreviewModalView: View {
                         )
                 }
                 .buttonStyle(.plain)
-                .help(isDrawingMode ? "Stop drawing" : "Draw on image")
+                .help(isDrawingMode && !isBlurMode ? "Stop drawing" : "Draw on image")
+
+                Button {
+                    if isDrawingMode && isBlurMode {
+                        isDrawingMode = false
+                    } else {
+                        isBlurMode = true
+                        isDrawingMode = true
+                    }
+                } label: {
+                    Image(systemName: "eye.slash")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(isDrawingMode && isBlurMode ? .black : .white.opacity(0.9))
+                        .frame(width: 34, height: 34)
+                        .background(
+                            Circle()
+                                .fill(isDrawingMode && isBlurMode ? Color.white : Color.clear)
+                        )
+                }
+                .buttonStyle(.plain)
+                .help(isDrawingMode && isBlurMode ? "Stop blurring" : "Blur sensitive information")
 
                 ColorPicker("Choose pencil color", selection: $drawingColor, supportsOpacity: false)
                     .labelsHidden()
@@ -311,6 +338,7 @@ public struct AgentImagePreviewModalView: View {
                 image: nsImage,
                 imageID: item.id,
                 drawingColor: NSColor(drawingColor),
+                drawingTool: isBlurMode ? .blur : .pencil,
                 zoomScale: $zoomScale,
                 isDrawingMode: Binding(
                     get: { allowsEditing && isDrawingMode },
