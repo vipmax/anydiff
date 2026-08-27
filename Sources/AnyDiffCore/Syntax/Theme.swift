@@ -274,7 +274,7 @@ public struct Theme: Identifiable, Sendable {
 
     public static let unifiedDark = Theme(
         id: "unified-dark",
-        name: "macOS Window Unified",
+        name: "macOS Dark",
         isDark: true,
         background: NSColor(red: 43.0 / 255.0, green: 41.0 / 255.0, blue: 40.0 / 255.0, alpha: 1.0),
         gutterBackground: NSColor(red: 43.0 / 255.0, green: 41.0 / 255.0, blue: 40.0 / 255.0, alpha: 1.0),

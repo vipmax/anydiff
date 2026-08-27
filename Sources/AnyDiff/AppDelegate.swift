@@ -16,7 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         let mainWindow = NSWindow(
-            contentRect: NSRect(x: 100, y: 100, width: 1100, height: 750),
+            contentRect: NSRect(x: 100, y: 100, width: 1260, height: 800),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false

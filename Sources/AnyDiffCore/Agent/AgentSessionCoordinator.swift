@@ -54,7 +54,7 @@ public struct AgentPreset: Identifiable, Equatable, Sendable, Codable {
         id: "codex",
         name: "Codex",
         command: "CODEX_PATH=\"$(command -v codex || true)\" npx -y @agentclientprotocol/codex-acp",
-        iconName: "sparkles",
+        iconName: "openai",
         colorName: "white",
         providerName: "OpenAI",
         summary: "Codex ACP over stdio via npx"
@@ -63,7 +63,7 @@ public struct AgentPreset: Identifiable, Equatable, Sendable, Codable {
         id: "agy",
         name: "Antigravity",
         command: "command -v agy-acp-server >/dev/null 2>&1 && agy-acp-server || agy --acp",
-        iconName: "bolt.fill",
+        iconName: "googlegemini",
         colorName: "blue",
         providerName: "Google",
         summary: "Google Antigravity ACP server"
@@ -72,7 +72,7 @@ public struct AgentPreset: Identifiable, Equatable, Sendable, Codable {
         id: "claude",
         name: "Claude Code",
         command: "npx -y @agentclientprotocol/claude-agent-acp",
-        iconName: "brain",
+        iconName: "claude",
         colorName: "orange",
         providerName: "Anthropic",
         summary: "Claude Code agent over ACP"

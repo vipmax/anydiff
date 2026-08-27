@@ -120,9 +120,7 @@ public struct AgentSavedSessionsView: View {
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
                         .fill(presetColor.opacity(0.18))
                         .frame(width: 22, height: 22)
-                    Image(systemName: preset.iconName)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(presetColor)
+                    AgentIconView(icon: preset.iconName, tintColor: presetColor, size: 12)
                 }
 
                 Text("\(preset.name) Sessions")

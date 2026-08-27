@@ -10,6 +10,7 @@ public struct AgentStartScreenView: View {
     @State private var customName: String = ""
     @State private var customCommand: String = ""
     @State private var customArgs: String = ""
+    @State private var customIcon: String = "terminal"
     @State private var selectedColorName: String = "teal"
     @State private var viewingSessionsPreset: AgentPreset? = nil
 
@@ -218,11 +219,7 @@ public struct AgentStartScreenView: View {
             .padding(.vertical, 10)
             .background(
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(Color(theme.foreground).opacity(0.02))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(Color(theme.excerptHeaderBorder).opacity(0.45), lineWidth: 1)
+                    .fill(Color(theme.foreground).opacity(0.03))
             )
         }
         .buttonStyle(.plain)
@@ -303,6 +300,33 @@ public struct AgentStartScreenView: View {
             }
 
             VStack(alignment: .leading, spacing: 5) {
+                Text("ICON (SLUG, URL OR SF SYMBOL)")
+                    .font(.system(size: 9.5, weight: .bold))
+                    .foregroundColor(Color(theme.gutterForeground))
+
+                HStack(spacing: 10) {
+                    ZStack {
+                        Circle()
+                            .fill(color(for: selectedColorName).opacity(0.16))
+                            .frame(width: 32, height: 32)
+                        AgentIconView(icon: customIcon.isEmpty ? "terminal" : customIcon, tintColor: color(for: selectedColorName), size: 16)
+                    }
+
+                    TextField("e.g. claude, ollama, deepseek, or https://...", text: $customIcon)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 11.5))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 6)
+                        .background(Color(theme.background))
+                        .cornerRadius(6)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(Color(theme.excerptHeaderBorder), lineWidth: 1)
+                        )
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 5) {
                 Text("COLOR ACCENT")
                     .font(.system(size: 9.5, weight: .bold))
                     .foregroundColor(Color(theme.gutterForeground))
@@ -365,11 +389,13 @@ public struct AgentStartScreenView: View {
             name: customName,
             command: customCommand,
             arguments: customArgs,
-            colorName: selectedColorName
+            colorName: selectedColorName,
+            iconName: customIcon.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "terminal" : customIcon.trimmingCharacters(in: .whitespacesAndNewlines)
         )
         customName = ""
         customCommand = ""
         customArgs = ""
+        customIcon = "terminal"
         isAddingCustom = false
         withAnimation(.easeInOut(duration: 0.2)) {
             _ = coordinator.createNewSession(workingDirectory: workingDirectory, preset: preset)
@@ -420,14 +446,9 @@ private struct AgentCardButton: View {
         HStack(spacing: 12) {
             ZStack {
                 RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(presetColor.opacity(isHovered ? 0.18 : 0.10))
+                    .fill(presetColor.opacity(isHovered ? 0.16 : 0.09))
                     .frame(width: 40, height: 40)
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .stroke(presetColor.opacity(isHovered ? 0.46 : 0.20), lineWidth: 1)
-                    .frame(width: 40, height: 40)
-                Image(systemName: preset.iconName)
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundColor(presetColor)
+                AgentIconView(icon: preset.iconName, tintColor: presetColor, size: 20)
             }
 
             VStack(alignment: .center, spacing: 2) {
@@ -514,14 +535,7 @@ private struct AgentCardButton: View {
         .padding(.vertical, 10)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color(theme.foreground).opacity(isHovered ? 0.065 : 0.035))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(
-                    isHovered ? presetColor.opacity(0.40) : Color(theme.excerptHeaderBorder).opacity(0.34),
-                    lineWidth: 1
-                )
+                .fill(Color(theme.foreground).opacity(isHovered ? 0.07 : 0.035))
         )
         .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .onTapGesture {

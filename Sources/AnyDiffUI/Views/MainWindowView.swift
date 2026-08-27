@@ -384,9 +384,9 @@ public struct MainWindowView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .navigationSplitViewColumnWidth(
-            min: agentCoordinator.isPanelOpen ? 280 : 0,
-            ideal: agentCoordinator.isPanelOpen ? 500 : 0,
-            max: agentCoordinator.isPanelOpen ? 800 : 0
+            min: agentCoordinator.isPanelOpen ? 320 : 0,
+            ideal: agentCoordinator.isPanelOpen ? 560 : 0,
+            max: agentCoordinator.isPanelOpen ? 950 : 0
         )
     }
 
