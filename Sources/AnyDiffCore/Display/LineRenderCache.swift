@@ -46,6 +46,23 @@ public final class LineRenderCache: @unchecked Sendable {
     public func clear() {
         slots = [LineCacheSlot](repeating: LineCacheSlot(), count: Self.slotCount)
     }
+
+    /// Invalidates all cached lines at and below the given line index (e.g. when lines are inserted or deleted)
+    public func invalidate(from lineIndex: Int) {
+        for i in 0..<Self.slotCount {
+            if slots[i].lineIndex >= lineIndex {
+                slots[i] = LineCacheSlot()
+            }
+        }
+    }
+
+    /// Invalidates a single cached line index (e.g. on in-place character edit)
+    public func invalidate(lineIndex: Int) {
+        let slot = lineIndex & Self.slotMask
+        if slots[slot].lineIndex == lineIndex {
+            slots[slot] = LineCacheSlot()
+        }
+    }
 }
 
 public extension CTLine {

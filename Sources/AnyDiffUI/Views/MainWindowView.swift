@@ -647,15 +647,6 @@ public struct MainWindowView: View {
         HStack(spacing: 6) {
             if case .remote(let ref) = comparisonTarget {
                 remoteHeaderButton(for: ref)
-
-                Button(action: openInBrowser) {
-                    Image(systemName: "arrow.up.right")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(.secondary)
-                }
-                .buttonStyle(ToolbarHoverButtonStyle())
-                .help("Open Pull Request in Browser (Cmd+Shift+B)")
-
                 readOnlyBadge
             } else {
                 localHeaderButton
@@ -1505,7 +1496,7 @@ public struct MainWindowView: View {
 
         let resolvedURL = URL(fileURLWithPath: directoryPath).resolvingSymlinksInPath()
         let watcher = FolderWatcher(url: resolvedURL, latency: 0.25) { events in
-            DispatchQueue.main.async {
+            DispatchQueue.global(qos: .userInitiated).async {
                 self.handleFolderWatcherEvents(events)
             }
         }
@@ -1539,9 +1530,12 @@ public struct MainWindowView: View {
         guard !meaningful.isEmpty else { return }
 
         if isReloading {
-            hasPendingGitStateReload = true
+            DispatchQueue.main.async {
+                self.hasPendingGitStateReload = true
+            }
             return
         }
+
         // Check if any event was caused by git commit, checkout, branch switch, add/reset
         let hasGitStateChange = meaningful.contains { event in
             event.path.contains("/.git/HEAD")
@@ -1552,7 +1546,9 @@ public struct MainWindowView: View {
         }
 
         if hasGitStateChange {
-            scheduleGitStateReload()
+            DispatchQueue.main.async {
+                self.scheduleGitStateReload()
+            }
             return
         }
 
@@ -1601,9 +1597,11 @@ public struct MainWindowView: View {
         }
 
         guard !changedPaths.isEmpty else { return }
-        pendingWatchPaths.formUnion(changedPaths)
-        guard !watchRefreshInFlight else { return }
-        startPendingWatchRefresh(directory: resolvedCurrentDir, checkRenames: hasRenameEvents)
+        DispatchQueue.main.async {
+            self.pendingWatchPaths.formUnion(changedPaths)
+            guard !self.watchRefreshInFlight else { return }
+            self.startPendingWatchRefresh(directory: resolvedCurrentDir, checkRenames: hasRenameEvents)
+        }
     }
 
     /// Serializes watch reads while coalescing events that arrive during an
@@ -1687,7 +1685,7 @@ public struct MainWindowView: View {
                     let diff = result.files.first { $0.displayPath == path }
                     self.applyWatchedFile(path: path, diff: diff, rawData: result.data)
                 }
-                self.displayMap.rebuild()
+                self.displayMap.rebuild(invalidatingPaths: safePaths)
                 self.displayMap.markContentLoaded()
                 self.updateWatchedFileDiffs(result.files, safePaths: safePaths)
             }

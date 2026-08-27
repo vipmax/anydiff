@@ -1694,4 +1694,29 @@ final class MultiBufferTests: XCTestCase {
         XCTAssertTrue(visibleLines.allSatisfy { $0.diffKind == .unchanged })
         XCTAssertTrue(visibleLines.allSatisfy { $0.wordDiffRanges.isEmpty })
     }
+
+    func testLineRenderCachePartialInvalidation() {
+        let cache = LineRenderCache()
+        let attrStr = NSAttributedString(string: "hello")
+        let ctLine = CTLineCreateWithAttributedString(attrStr)
+
+        cache.set(lineIndex: 10, ctLine: ctLine)
+        cache.set(lineIndex: 11, ctLine: ctLine)
+        cache.set(lineIndex: 12, ctLine: ctLine)
+
+        XCTAssertNotNil(cache.get(lineIndex: 10))
+        XCTAssertNotNil(cache.get(lineIndex: 11))
+        XCTAssertNotNil(cache.get(lineIndex: 12))
+
+        // Invalidate single line
+        cache.invalidate(lineIndex: 11)
+        XCTAssertNotNil(cache.get(lineIndex: 10))
+        XCTAssertNil(cache.get(lineIndex: 11))
+        XCTAssertNotNil(cache.get(lineIndex: 12))
+
+        // Invalidate from 10
+        cache.invalidate(from: 10)
+        XCTAssertNil(cache.get(lineIndex: 10))
+        XCTAssertNil(cache.get(lineIndex: 12))
+    }
 }

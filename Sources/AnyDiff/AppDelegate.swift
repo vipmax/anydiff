@@ -8,6 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let iconLoader = AppIconLoader()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        UserDefaults.standard.register(defaults: ["NSAppSleepDisabled": true])
         NSApp.setActivationPolicy(.regular)
 
         if let icon = loadAppIcon() {

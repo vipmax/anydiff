@@ -22,12 +22,6 @@ extension AppDelegate {
         let openURLItem = NSMenuItem(title: "Open GitHub PR / URL...", action: #selector(openURLAction(_:)), keyEquivalent: "O")
         openURLItem.keyEquivalentModifierMask = [.command, .shift]
         fileMenu.addItem(openURLItem)
-        let openBrowserItem = NSMenuItem(title: "Open in Browser", action: #selector(openInBrowserAction(_:)), keyEquivalent: "B")
-        openBrowserItem.keyEquivalentModifierMask = [.command, .shift]
-        fileMenu.addItem(openBrowserItem)
-        let openTerminalItem = NSMenuItem(title: "Open in Terminal", action: #selector(openInTerminalAction(_:)), keyEquivalent: "T")
-        openTerminalItem.keyEquivalentModifierMask = [.command, .shift]
-        fileMenu.addItem(openTerminalItem)
         fileMenu.addItem(NSMenuItem.separator())
         fileMenu.addItem(NSMenuItem(title: "Reload Diff", action: #selector(reloadDiffAction(_:)), keyEquivalent: "r"))
         let watchItem = NSMenuItem(title: "Toggle Watch Mode", action: #selector(toggleWatchModeAction(_:)), keyEquivalent: "w")
@@ -147,14 +141,6 @@ extension AppDelegate {
 
     @objc func openURLAction(_ sender: Any?) {
         NotificationCenter.default.post(name: Notification.Name("anyDiffOpenURL"), object: nil)
-    }
-
-    @objc func openInBrowserAction(_ sender: Any?) {
-        NotificationCenter.default.post(name: Notification.Name("anyDiffOpenInBrowser"), object: nil)
-    }
-
-    @objc func openInTerminalAction(_ sender: Any?) {
-        NotificationCenter.default.post(name: Notification.Name("anyDiffOpenInTerminal"), object: nil)
     }
 
     @objc func reloadDiffAction(_ sender: Any?) {

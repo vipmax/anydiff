@@ -247,47 +247,13 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         if topLineIdx >= 0 && topLineIdx < dm.displayLineCount {
             let lineY = yOffset(forDisplayLineIndex: topLineIdx)
             let pixelOffset = scrollOffsetY - lineY
-            if let displayL = dm.displayLine(at: topLineIdx) {
-                switch displayL {
-                case .excerptHeader(let hInfo):
-                    scrollAnchor = EditorScrollAnchor(
-                        filePath: hInfo.filePath,
-                        lineNumber: nil,
-                        isHeader: true,
-                        pixelOffsetInLine: pixelOffset
-                    )
-                case .code(let cInfo):
-                    if cInfo.excerptIndex >= 0 && cInfo.excerptIndex < dm.multiBuffer.excerpts.count {
-                        let file = dm.multiBuffer.excerpts[cInfo.excerptIndex].filePath
-                        let lineNum = cInfo.newLineNumber ?? cInfo.oldLineNumber
-                        scrollAnchor = EditorScrollAnchor(
-                            filePath: file,
-                            lineNumber: lineNum,
-                            isHeader: false,
-                            pixelOffsetInLine: pixelOffset
-                        )
-                    }
-                case .foldGap(let gInfo):
-                    if gInfo.excerptIndex >= 0 && gInfo.excerptIndex < dm.multiBuffer.excerpts.count {
-                        let file = dm.multiBuffer.excerpts[gInfo.excerptIndex].filePath
-                        scrollAnchor = EditorScrollAnchor(
-                            filePath: file,
-                            lineNumber: nil,
-                            isHeader: false,
-                            pixelOffsetInLine: pixelOffset
-                        )
-                    }
-                case .inlineComment(let cInfo):
-                    if cInfo.excerptIndex >= 0 && cInfo.excerptIndex < dm.multiBuffer.excerpts.count {
-                        let file = dm.multiBuffer.excerpts[cInfo.excerptIndex].filePath
-                        scrollAnchor = EditorScrollAnchor(
-                            filePath: file,
-                            lineNumber: cInfo.lineNumber,
-                            isHeader: false,
-                            pixelOffsetInLine: pixelOffset
-                        )
-                    }
-                }
+            if let fastAnchor = dm.fastScrollAnchor(forDisplayLineIndex: topLineIdx) {
+                scrollAnchor = EditorScrollAnchor(
+                    filePath: fastAnchor.filePath,
+                    lineNumber: fastAnchor.lineNumber,
+                    isHeader: fastAnchor.isHeader,
+                    pixelOffsetInLine: pixelOffset
+                )
             }
         }
 
@@ -302,17 +268,12 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     }
 
     private func editorCursorAnchor(for point: MultiBufferPoint, in dm: DisplayMap) -> EditorCursorAnchor? {
-        guard let info = dm.codeInfo(for: point.row),
-              info.excerptIndex >= 0,
-              info.excerptIndex < dm.multiBuffer.excerpts.count else {
+        guard let loc = dm.fastSourceLocation(forCodeRow: point.row) else {
             return nil
         }
-
-        let excerpt = dm.multiBuffer.excerpts[info.excerptIndex]
-        let lineNum = info.newLineNumber ?? info.oldLineNumber ?? 1
         return EditorCursorAnchor(
-            filePath: excerpt.filePath,
-            lineNumber: lineNum,
+            filePath: loc.filePath,
+            lineNumber: loc.lineNumber,
             column: point.column
         )
     }
@@ -795,8 +756,13 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
     /// O(1) Fast scoped layout mutation for ONLY the edited excerpt
     private func updateLayoutAfterExcerptRebuild(excerptIdx: Int, displayDelta: Int, oldDisplayRange: Range<Int>) {
-        SyntaxHighlighter.shared.clearCache()
-        lineCache.clear()
+        if displayDelta != 0 {
+            lineCache.invalidate(from: oldDisplayRange.lowerBound)
+        } else {
+            for lIdx in oldDisplayRange {
+                lineCache.invalidate(lineIndex: lIdx)
+            }
+        }
         guard let dm = displayMap, excerptIdx >= 0 && excerptIdx < excerptLayouts.count else {
             invalidateLayout()
             return

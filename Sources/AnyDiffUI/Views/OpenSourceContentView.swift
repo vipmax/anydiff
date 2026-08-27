@@ -282,21 +282,6 @@ public struct OpenSourceContentView: View {
                             }
                         )
                     }
-
-                    Spacer()
-
-                    if case .remote = currentComparisonTarget, let onOpenInBrowser = onOpenInBrowser {
-                        Button(action: onOpenInBrowser) {
-                            HStack(spacing: 3) {
-                                Text("Open in Browser")
-                                    .font(.system(size: 10))
-                                Image(systemName: "arrow.up.right")
-                                    .font(.system(size: 8, weight: .bold))
-                            }
-                            .foregroundColor(.accentColor)
-                        }
-                        .buttonStyle(PlainHoverButtonStyle())
-                    }
                 }
                 .padding(.horizontal, 4)
                 .padding(.top, 1)

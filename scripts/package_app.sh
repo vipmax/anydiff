@@ -62,6 +62,8 @@ cat << 'PLIST' > "${CONTENTS_DIR}/Info.plist"
     <true/>
     <key>NSRequiresAquaSystemAppearance</key>
     <false/>
+    <key>NSSupportsAppNap</key>
+    <false/>
     <key>NSHumanReadableCopyright</key>
     <string>Copyright © 2026 AnyDiff. All rights reserved.</string>
 </dict>

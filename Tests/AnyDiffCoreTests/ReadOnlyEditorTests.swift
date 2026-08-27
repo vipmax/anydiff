@@ -491,4 +491,45 @@ final class ReadOnlyEditorTests: XCTestCase {
         XCTAssertEqual(editor.cursorPoint, MultiBufferPoint(row: 0, column: 5))
     }
 
+    func testFastSourceLocationAndScrollAnchorAcrossMultipleFiles() {
+        let multiBuffer = MultiBuffer()
+        let buf1 = Buffer(filePath: "FileA.swift", text: "aaa\nbbb\nccc")
+        let buf2 = Buffer(filePath: "FileB.swift", text: "111\n222\n333")
+        multiBuffer.addBuffer(buf1)
+        multiBuffer.addBuffer(buf2)
+        multiBuffer.setExcerpts([
+            Excerpt(bufferId: buf1.id, filePath: "FileA.swift", bufferRange: 0..<3),
+            Excerpt(bufferId: buf2.id, filePath: "FileB.swift", bufferRange: 0..<3)
+        ])
+        let dm = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
+        dm.rebuild()
+
+        // Test FileA locations
+        let loc0 = dm.fastSourceLocation(forCodeRow: 0)
+        XCTAssertEqual(loc0?.filePath, "FileA.swift")
+        XCTAssertEqual(loc0?.lineNumber, 1)
+
+        let loc2 = dm.fastSourceLocation(forCodeRow: 2)
+        XCTAssertEqual(loc2?.filePath, "FileA.swift")
+        XCTAssertEqual(loc2?.lineNumber, 3)
+
+        // Test FileB locations
+        let loc3 = dm.fastSourceLocation(forCodeRow: 3)
+        XCTAssertEqual(loc3?.filePath, "FileB.swift")
+        XCTAssertEqual(loc3?.lineNumber, 1)
+
+        let loc5 = dm.fastSourceLocation(forCodeRow: 5)
+        XCTAssertEqual(loc5?.filePath, "FileB.swift")
+        XCTAssertEqual(loc5?.lineNumber, 3)
+
+        // Test scroll anchors (headers and code lines)
+        let headerAnchor = dm.fastScrollAnchor(forDisplayLineIndex: 0)
+        XCTAssertEqual(headerAnchor?.filePath, "FileA.swift")
+        XCTAssertTrue(headerAnchor?.isHeader == true)
+
+        let codeAnchor = dm.fastScrollAnchor(forDisplayLineIndex: 1)
+        XCTAssertEqual(codeAnchor?.filePath, "FileA.swift")
+        XCTAssertEqual(codeAnchor?.lineNumber, 1)
+        XCTAssertFalse(codeAnchor?.isHeader == true)
+    }
 }

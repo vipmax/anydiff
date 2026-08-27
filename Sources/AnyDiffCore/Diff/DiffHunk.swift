@@ -9,8 +9,7 @@ public enum DiffLineKind: String, Codable, Sendable {
 }
 
 /// A single line in a diff hunk
-public struct DiffLine: Identifiable, Sendable, Equatable {
-    public var id = UUID()
+public struct DiffLine: Sendable, Equatable {
     public var kind: DiffLineKind
     public var text: String
     public var oldLineNumber: Int?

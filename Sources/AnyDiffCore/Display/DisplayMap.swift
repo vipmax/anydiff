@@ -213,10 +213,17 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
     // MARK: - Rebuild & Range Indexing
 
     /// Rebuilds the prefix-sum Virtual Range Index across excerpts in O(Excerpts)
-    public func rebuild() {
+    public func rebuild(invalidatingPaths: Set<String>? = nil) {
         excerptLocations.removeAll(keepingCapacity: true)
-        excerptDiffCache.removeAll(keepingCapacity: false)
-        hunkBufferRowRankCache.removeAll(keepingCapacity: false)
+        if let invalidatingPaths {
+            for excerpt in multiBuffer.excerpts where invalidatingPaths.contains(excerpt.filePath) {
+                excerptDiffCache.removeValue(forKey: excerpt.id)
+                hunkBufferRowRankCache.removeValue(forKey: excerpt.id)
+            }
+        } else {
+            excerptDiffCache.removeAll(keepingCapacity: false)
+            hunkBufferRowRankCache.removeAll(keepingCapacity: false)
+        }
 
         var runningDisplayIdx = 0
         var runningMBRow = 0
@@ -770,6 +777,66 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
         return nil
     }
 
+    /// Fast O(log N) source location resolution without materializing diff lines, strings, or running LCS.
+    public func fastSourceLocation(forCodeRow codeRow: MultiBufferRow) -> (filePath: String, lineNumber: Int)? {
+        guard let locIdx = excerptIndex(forCodeRow: codeRow),
+              locIdx >= 0 && locIdx < multiBuffer.excerpts.count else { return nil }
+        let excerpt = multiBuffer.excerpts[locIdx]
+        let loc = excerptLocations[locIdx]
+        let offset = codeRow - loc.codeRange.lowerBound
+        guard offset >= 0 && offset < loc.codeLineCount else { return nil }
+
+        let lineNumber: Int
+        if let hunk = excerpt.hunk, !hunk.lineSpans.isEmpty, offset < hunk.lineSpans.count {
+            let span = hunk.lineSpans[offset]
+            lineNumber = Int(span.newLineNumber > 0 ? span.newLineNumber : (span.oldLineNumber > 0 ? span.oldLineNumber : 1))
+        } else if let hunk = excerpt.hunk, !hunk.lines.isEmpty, offset < hunk.lines.count {
+            let line = hunk.lines[offset]
+            lineNumber = line.newLineNumber ?? line.oldLineNumber ?? 1
+        } else if let cached = excerptDiffCache[excerpt.id], offset < cached.result.lines.count {
+            let line = cached.result.lines[offset].line
+            lineNumber = line.newLineNumber ?? line.oldLineNumber ?? (multiBuffer.buffer(for: excerpt.bufferId)?.startLineNumber ?? 1)
+        } else {
+            let base = multiBuffer.buffer(for: excerpt.bufferId)?.startLineNumber ?? 1
+            lineNumber = base + offset
+        }
+        return (excerpt.filePath, lineNumber)
+    }
+
+    /// Fast O(log N) scroll anchor resolution for display line index without materializing diff lines.
+    public func fastScrollAnchor(forDisplayLineIndex lineIdx: Int) -> (filePath: String, lineNumber: Int?, isHeader: Bool)? {
+        guard let locIdx = excerptIndex(forDisplayLineIndex: lineIdx),
+              locIdx >= 0 && locIdx < multiBuffer.excerpts.count else { return nil }
+        let excerpt = multiBuffer.excerpts[locIdx]
+        let loc = excerptLocations[locIdx]
+
+        if loc.hasHeader && lineIdx == loc.displayRange.lowerBound {
+            return (excerpt.filePath, nil, true)
+        }
+
+        let codeStart = loc.displayRange.lowerBound + (loc.hasHeader ? 1 : 0) + (loc.hasTopGap ? 1 : 0)
+        let offset = lineIdx - codeStart
+        if offset >= 0 && offset < loc.codeLineCount {
+            let lineNumber: Int
+            if let hunk = excerpt.hunk, !hunk.lineSpans.isEmpty, offset < hunk.lineSpans.count {
+                let span = hunk.lineSpans[offset]
+                lineNumber = Int(span.newLineNumber > 0 ? span.newLineNumber : (span.oldLineNumber > 0 ? span.oldLineNumber : 1))
+            } else if let hunk = excerpt.hunk, !hunk.lines.isEmpty, offset < hunk.lines.count {
+                let line = hunk.lines[offset]
+                lineNumber = line.newLineNumber ?? line.oldLineNumber ?? 1
+            } else if let cached = excerptDiffCache[excerpt.id], offset < cached.result.lines.count {
+                let line = cached.result.lines[offset].line
+                lineNumber = line.newLineNumber ?? line.oldLineNumber ?? (multiBuffer.buffer(for: excerpt.bufferId)?.startLineNumber ?? 1)
+            } else {
+                let base = multiBuffer.buffer(for: excerpt.bufferId)?.startLineNumber ?? 1
+                lineNumber = base + offset
+            }
+            return (excerpt.filePath, lineNumber, false)
+        }
+
+        return (excerpt.filePath, nil, false)
+    }
+
     public func codeInfo(for multiBufferRow: MultiBufferRow) -> DisplayCodeLineInfo? {
         guard let locIdx = excerptIndex(forCodeRow: multiBufferRow) else { return nil }
         let loc = excerptLocations[locIdx]
@@ -971,6 +1038,39 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
         return false
     }
 
+    /// Fast O(1) row resolution for cursor mapping without materializing DisplayCodeLineInfo or VisibleLineItem arrays.
+    public func lineBufferRowAndDiffKind(forCodeRow codeRow: MultiBufferRow) -> (bufferRow: Int, isDeleted: Bool)? {
+        guard let locIdx = excerptIndex(forCodeRow: codeRow),
+              locIdx >= 0 && locIdx < multiBuffer.excerpts.count else { return nil }
+        let excerpt = multiBuffer.excerpts[locIdx]
+        let loc = excerptLocations[locIdx]
+        let offset = codeRow - loc.codeRange.lowerBound
+        guard offset >= 0 && offset < loc.codeLineCount else { return nil }
+        guard let buffer = multiBuffer.buffer(for: excerpt.bufferId) else { return nil }
+
+        if multiBuffer.contentMode == .diff,
+           let hunk = excerpt.hunk,
+           usesOriginalHunk(excerpt: excerpt, buffer: buffer) {
+            let bRow = bufferRow(beforeHunkLine: offset, in: hunk)
+            let isDel: Bool
+            if !hunk.lineSpans.isEmpty && offset < hunk.lineSpans.count {
+                isDel = hunk.lineSpans[offset].kind == .deleted
+            } else if !hunk.lines.isEmpty && offset < hunk.lines.count {
+                isDel = hunk.lines[offset].kind == .deleted
+            } else {
+                isDel = false
+            }
+            return (bRow, isDel)
+        } else {
+            let diffLines = getCachedDiffLines(for: locIdx)
+            if offset < diffLines.count {
+                let item = diffLines[offset]
+                return (item.bufferRow, item.line.kind == .deleted)
+            }
+        }
+        return nil
+    }
+
     /// Translates visual MultiBufferPoint to exact (Buffer, BufferPoint)
     public func bufferLocation(for point: MultiBufferPoint) -> (buffer: Buffer, point: BufferPoint, isDeleted: Bool, excerptIndex: Int)? {
         guard let info = codeInfo(for: point.row) else { return nil }
@@ -994,26 +1094,26 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
             var high = end
             while low <= high {
                 let mid = (low + high) / 2
-                guard let cInfo = codeInfo(for: mid) else { break }
+                guard let lineInfo = lineBufferRowAndDiffKind(forCodeRow: mid) else { break }
 
-                if cInfo.bufferRow < bufferPoint.row {
+                if lineInfo.bufferRow < bufferPoint.row {
                     low = mid + 1
-                } else if cInfo.bufferRow > bufferPoint.row {
+                } else if lineInfo.bufferRow > bufferPoint.row {
                     high = mid - 1
                 } else {
-                    if cInfo.diffKind != .deleted {
+                    if !lineInfo.isDeleted {
                         return MultiBufferPoint(row: mid, column: bufferPoint.column)
                     } else {
                         var candidate = mid + 1
                         while candidate <= end {
-                            if let candInfo = codeInfo(for: candidate), candInfo.diffKind != .deleted {
+                            if let candInfo = lineBufferRowAndDiffKind(forCodeRow: candidate), !candInfo.isDeleted {
                                 return MultiBufferPoint(row: candidate, column: bufferPoint.column)
                             }
                             candidate += 1
                         }
                         var prevCandidate = mid - 1
                         while prevCandidate >= start {
-                            if let prevInfo = codeInfo(for: prevCandidate), prevInfo.diffKind != .deleted {
+                            if let prevInfo = lineBufferRowAndDiffKind(forCodeRow: prevCandidate), !prevInfo.isDeleted {
                                 return MultiBufferPoint(row: prevCandidate, column: bufferPoint.column)
                             }
                             prevCandidate -= 1
