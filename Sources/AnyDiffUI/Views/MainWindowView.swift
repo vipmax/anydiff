@@ -772,10 +772,6 @@ public struct MainWindowView: View {
                 .font(.system(size: 11, weight: .semibold))
         }
         .foregroundColor(.secondary)
-        .padding(.horizontal, 7)
-        .padding(.vertical, 3.5)
-        .background(Color.secondary.opacity(0.12))
-        .cornerRadius(5)
         .fixedSize()
         .help("Read-only mode.")
     }

@@ -100,100 +100,55 @@ public final class WordDiffEngine: Sendable {
         return (oldDiffs, newDiffs)
     }
 
-    /// Splits text into word/punctuation/whitespace tokens with character offsets and 32-bit FNV-1a hashes (Zero Heap Allocations)
+    /// Splits text into word/punctuation/whitespace tokens with character offsets and 32-bit FNV-1a hashes
     public func tokenize(_ text: String) -> [Token] {
         guard !text.isEmpty else { return [] }
         var tokens: [Token] = []
         tokens.reserveCapacity(min(64, text.count / 3 + 1))
 
-        let utf8 = text.utf8
-        let handled = utf8.withContiguousStorageIfAvailable { buffer -> Bool in
-            guard let base = buffer.baseAddress else { return false }
-            let count = buffer.count
-            var i = 0
-            var charOffset = 0
-
-            @inline(__always)
-            func isWordByte(_ b: UInt8) -> Bool {
-                (b >= 0x30 && b <= 0x39) || // 0-9
-                (b >= 0x41 && b <= 0x5A) || // A-Z
-                (b >= 0x61 && b <= 0x7A) || // a-z
-                b == 0x5F                   // _
-            }
-
-            @inline(__always)
-            func isWhitespaceByte(_ b: UInt8) -> Bool {
-                b == 0x20 || b == 0x09 || b == 0x0A || b == 0x0D
-            }
-
-            while i < count {
-                let startChar = charOffset
-                let b = base[i]
-
-                var h: UInt32 = 2166136261
-                if isWhitespaceByte(b) {
-                    while i < count && isWhitespaceByte(base[i]) {
-                        h = (h ^ UInt32(base[i])) &* 16777619
-                        i += 1
-                        charOffset += 1
-                    }
-                } else if isWordByte(b) {
-                    while i < count && isWordByte(base[i]) {
-                        h = (h ^ UInt32(base[i])) &* 16777619
-                        i += 1
-                        charOffset += 1
-                    }
-                } else if b < 0x80 {
-                    h = (h ^ UInt32(b)) &* 16777619
-                    i += 1
-                    charOffset += 1
-                } else {
-                    let chStart = i
-                    i += 1
-                    while i < count && (base[i] & 0xC0) == 0x80 { i += 1 }
-                    let scalarLen = i - chStart
-                    for k in 0..<scalarLen {
-                        h = (h ^ UInt32(base[chStart + k])) &* 16777619
-                    }
-                    charOffset += 1
-                }
-
-                tokens.append(Token(hash: h, range: startChar..<charOffset))
-            }
-            return true
-        } ?? false
-
-        if handled {
-            return tokens
+        @inline(__always)
+        func isWord(_ s: Unicode.Scalar) -> Bool {
+            let v = s.value
+            return (v >= 0x30 && v <= 0x39) || // 0-9
+                   (v >= 0x41 && v <= 0x5A) || // A-Z
+                   (v >= 0x61 && v <= 0x7A) || // a-z
+                   v == 0x5F ||                 // _
+                   s.properties.isAlphabetic ||
+                   s.properties.numericType != nil
         }
 
-        // Fallback for non-contiguous string representation
         let scalars = text.unicodeScalars
         var idx = scalars.startIndex
         var charOffset = 0
+
         while idx < scalars.endIndex {
-            let start = charOffset
-            let ch = scalars[idx]
+            let startChar = charOffset
+            let s = scalars[idx]
             var h: UInt32 = 2166136261
-            if ch.value == 0x20 || ch.value == 0x09 || (ch.value > 127 && ch.properties.isWhitespace) {
-                while idx < scalars.endIndex && (scalars[idx].value == 0x20 || scalars[idx].value == 0x09 || (scalars[idx].value > 127 && scalars[idx].properties.isWhitespace)) {
-                    h = (h ^ scalars[idx].value) &* 16777619
+
+            if s.properties.isWhitespace {
+                while idx < scalars.endIndex && scalars[idx].properties.isWhitespace {
+                    let cur = scalars[idx]
+                    h = (h ^ cur.value) &* 16777619
+                    charOffset += cur.utf16.count
                     idx = scalars.index(after: idx)
-                    charOffset += 1
                 }
-            } else if (ch.value >= 0x30 && ch.value <= 0x39) || (ch.value >= 0x41 && ch.value <= 0x5A) || (ch.value >= 0x61 && ch.value <= 0x7A) || ch.value == 0x5F || (ch.value > 127 && ch.properties.isAlphabetic) {
-                while idx < scalars.endIndex && ((scalars[idx].value >= 0x30 && scalars[idx].value <= 0x39) || (scalars[idx].value >= 0x41 && scalars[idx].value <= 0x5A) || (scalars[idx].value >= 0x61 && scalars[idx].value <= 0x7A) || scalars[idx].value == 0x5F || (scalars[idx].value > 127 && scalars[idx].properties.isAlphabetic)) {
-                    h = (h ^ scalars[idx].value) &* 16777619
+            } else if isWord(s) {
+                while idx < scalars.endIndex && isWord(scalars[idx]) {
+                    let cur = scalars[idx]
+                    h = (h ^ cur.value) &* 16777619
+                    charOffset += cur.utf16.count
                     idx = scalars.index(after: idx)
-                    charOffset += 1
                 }
             } else {
-                h = (h ^ ch.value) &* 16777619
+                h = (h ^ s.value) &* 16777619
+                charOffset += s.utf16.count
                 idx = scalars.index(after: idx)
-                charOffset += 1
             }
-            tokens.append(Token(hash: h, range: start..<charOffset))
+
+            tokens.append(Token(hash: h, range: startChar..<charOffset))
         }
+
         return tokens
     }
 

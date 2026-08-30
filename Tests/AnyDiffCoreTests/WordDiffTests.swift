@@ -93,13 +93,31 @@ final class WordDiffTests: XCTestCase {
     }
 
     func testWordDiffSuppressesLowSimilarityReplacement() {
-        let oldLine = "Привет, бро! 🚀 **AnyDiff** — это нативный и ультраб быстрый macOS Git/Diff клиент."
-        let newLine = "Hello! 🚀 **AnyDiff** is a native, ultra-fast macOS Git/Diff client built in Swift."
+        let oldLine = "let greeting = \"Привет, мир! Как твои дела сегодня?\""
+        let newLine = "let title = \"Welcome to the AnyDiff application!\""
 
         let (oldDiffs, newDiffs) = WordDiffEngine.shared.diffWords(oldText: oldLine, newText: newLine)
 
         XCTAssertTrue(oldDiffs.isEmpty)
         XCTAssertTrue(newDiffs.isEmpty)
+    }
+
+    func testWordDiffCyrillicIntraLine() {
+        let oldLine = "Привет, дорогой друг!"
+        let newLine = "Привет, любимый друг!"
+
+        let (oldDiffs, newDiffs) = WordDiffEngine.shared.diffWords(oldText: oldLine, newText: newLine)
+
+        XCTAssertEqual(oldDiffs.count, 1)
+        XCTAssertEqual(newDiffs.count, 1)
+        if let oRange = oldDiffs.first, let nRange = newDiffs.first {
+            let oStart = oldLine.utf16.index(oldLine.utf16.startIndex, offsetBy: oRange.lowerBound)
+            let oEnd = oldLine.utf16.index(oldLine.utf16.startIndex, offsetBy: oRange.upperBound)
+            let nStart = newLine.utf16.index(newLine.utf16.startIndex, offsetBy: nRange.lowerBound)
+            let nEnd = newLine.utf16.index(newLine.utf16.startIndex, offsetBy: nRange.upperBound)
+            XCTAssertEqual(String(oldLine.utf16[oStart..<oEnd]), "дорогой")
+            XCTAssertEqual(String(newLine.utf16[nStart..<nEnd]), "любимый")
+        }
     }
 
     func testWordDiffIsDisabledForMultiLineReplacement() {
