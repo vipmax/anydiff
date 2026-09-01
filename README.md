@@ -127,20 +127,24 @@ AnyDiff
 
 ## 📦 Installation
 
-### One-Line Install (macOS)
+### Via Homebrew (Recommended)
 
 ```bash
-# Via GitHub CLI (for private/authorized access)
-gh release download v1.0.0 -R vipmax/anydiff -p "AnyDiff-macOS.zip" -O - | tar -x -C /Applications && xattr -cr /Applications/AnyDiff.app
-
-# Or run the install script:
-gh api repos/vipmax/anydiff/contents/scripts/install.sh -H "Accept: application/vnd.github.raw" | bash
+brew install --cask vipmax/tap/anydiff
 ```
 
-Once installed, use the CLI anywhere:
+### Direct Download (.dmg / .zip)
+
+Download the latest release from the [GitHub Releases](https://github.com/vipmax/anydiff/releases/latest) page:
+- **[AnyDiff.dmg](https://github.com/vipmax/anydiff/releases/download/v1.1.0/AnyDiff.dmg)** — open and drag to `/Applications`
+- **[AnyDiff-macOS.zip](https://github.com/vipmax/anydiff/releases/download/v1.1.0/AnyDiff-macOS.zip)** — extract and move to `/Applications`
+
+### CLI Usage
+
+Once installed, launch AnyDiff from your terminal anywhere:
 ```bash
-anydiff .                      # Open diff in current git repo
-anydiff ~/dev/my-project       # Open specific project
+anydiff .                      # Open diff for the current repository
+anydiff ~/dev/my-project       # Open diff for a specific directory
 ```
 
 ---
