@@ -10,9 +10,16 @@ High-performance native macOS MultiBuffer Diff editor for lightning-fast code re
 ![Tests](https://img.shields.io/badge/tests-170%2B%20passing-brightgreen?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 
+Install via Homebrew:
+
 ```bash
-# Install via Homebrew
 brew install --cask vipmax/tap/anydiff
+```
+
+If macOS Gatekeeper prevents opening after installation:
+
+```bash
+xattr -cr /Applications/AnyDiff.app
 ```
 
 Or download directly from [Releases](https://github.com/vipmax/anydiff/releases/latest) ([.dmg](https://github.com/vipmax/anydiff/releases/download/v1.1.0/AnyDiff.dmg) / [.zip](https://github.com/vipmax/anydiff/releases/download/v1.1.0/AnyDiff-macOS.zip)).
