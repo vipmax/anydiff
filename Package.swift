@@ -21,7 +21,10 @@ let package = Package(
         .target(
             name: "AnyDiffUI",
             dependencies: ["AnyDiffCore"],
-            path: "Sources/AnyDiffUI"
+            path: "Sources/AnyDiffUI",
+            resources: [
+                .process("Resources")
+            ]
         ),
         .executableTarget(
             name: "AnyDiff",

@@ -186,12 +186,12 @@ public struct SidebarFileListView: View {
                 if totalAdds > 0 {
                     Text("+\(totalAdds)")
                         .font(.system(size: 10, weight: .bold, design: .monospaced))
-                        .foregroundColor(.green)
+                        .foregroundColor(Color(theme.diffAddedGutter))
                 }
                 if totalDels > 0 {
                     Text("-\(totalDels)")
                         .font(.system(size: 10, weight: .bold, design: .monospaced))
-                        .foregroundColor(.red)
+                        .foregroundColor(Color(theme.diffDeletedGutter))
                 }
             }
         }

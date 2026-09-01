@@ -271,7 +271,7 @@ final class FileTableCellView: NSTableCellView {
         // File Icon
         iconImageView.image = FileIconProvider.shared.image(for: file.displayPath, pointSize: 14, weight: .medium)
 
-        // File Path & Name with Status-Based Color (Added = Green, Deleted = Red, Renamed = Purple)
+        // File Path & Name with Status-Based Color from Theme (Added, Deleted, Renamed)
         if file.status == .renamed {
             let oldName = (file.oldPath as NSString).lastPathComponent
             let newName = (file.newPath as NSString).lastPathComponent
@@ -280,7 +280,7 @@ final class FileTableCellView: NSTableCellView {
             } else {
                 nameLabel.stringValue = newName
             }
-            nameLabel.textColor = NSColor.systemPurple
+            nameLabel.textColor = theme.diffModifiedGutter
 
             let oldDir = (file.oldPath as NSString).deletingLastPathComponent
             let newDir = (file.newPath as NSString).deletingLastPathComponent
@@ -304,9 +304,11 @@ final class FileTableCellView: NSTableCellView {
 
             switch file.status {
             case .added:
-                nameLabel.textColor = NSColor.systemGreen
+                nameLabel.textColor = theme.diffAddedGutter
             case .deleted:
-                nameLabel.textColor = NSColor.systemRed
+                nameLabel.textColor = theme.diffDeletedGutter
+            case .renamed:
+                nameLabel.textColor = theme.diffModifiedGutter
             default:
                 nameLabel.textColor = theme.foreground
             }
@@ -321,6 +323,10 @@ final class FileTableCellView: NSTableCellView {
                 dirLabel.isHidden = true
             }
         }
+
+        // Stats matching active theme
+        additionsLabel.textColor = theme.diffAddedGutter
+        deletionsLabel.textColor = theme.diffDeletedGutter
 
         // Stats
         if file.additions > 0 {

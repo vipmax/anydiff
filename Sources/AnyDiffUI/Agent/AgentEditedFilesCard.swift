@@ -46,49 +46,41 @@ public struct AgentEditedFilesCard: View {
                 // Actions & Stats (Right aligned: Revert, Review, +/-)
                 HStack(alignment: .center, spacing: 8) {
                     if summary.isReverted {
-                        // Restore Button
+                        // Redo Button
                         Button(action: {
                             onRestore?(summary)
                         }) {
-                            HStack(spacing: 4) {
-                                Image(systemName: "arrow.uturn.forward")
-                                    .font(.system(size: 10, weight: .semibold))
-                                Text("Restore")
-                                    .font(.system(size: 11.5, weight: .medium))
-                            }
-                            .foregroundColor(isRestoreHovered ? Color.blue.opacity(0.95) : Color(theme.foreground).opacity(0.85))
-                            .padding(.horizontal, 9)
-                            .padding(.vertical, 4.5)
-                            .background(
-                                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                    .fill(isRestoreHovered ? Color.blue.opacity(0.16) : Color.white.opacity(0.06))
-                            )
+                            Text("Redo")
+                                .font(.system(size: 11.5, weight: .medium))
+                                .foregroundColor(isRestoreHovered ? Color.blue.opacity(0.95) : Color(theme.foreground).opacity(0.85))
+                                .padding(.horizontal, 9)
+                                .padding(.vertical, 4.5)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                        .fill(isRestoreHovered ? Color.blue.opacity(0.16) : Color.white.opacity(0.06))
+                                )
                         }
                         .buttonStyle(.plain)
                         .onHover { isRestoreHovered = $0 }
-                        .help("Restore changes that were reverted")
+                        .help("Redo changes that were undone")
                     } else {
-                        // Revert Button
+                        // Undo Button
                         Button(action: {
                             onRevert?(summary)
                         }) {
-                            HStack(spacing: 4) {
-                                Image(systemName: "arrow.uturn.backward")
-                                    .font(.system(size: 10, weight: .semibold))
-                                Text("Revert")
-                                    .font(.system(size: 11.5, weight: .medium))
-                            }
-                            .foregroundColor(isRevertHovered ? Color.red.opacity(0.95) : Color(theme.foreground).opacity(0.85))
-                            .padding(.horizontal, 9)
-                            .padding(.vertical, 4.5)
-                            .background(
-                                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                    .fill(isRevertHovered ? Color.red.opacity(0.16) : Color.white.opacity(0.06))
-                            )
+                            Text("Undo")
+                                .font(.system(size: 11.5, weight: .medium))
+                                .foregroundColor(isRevertHovered ? Color.red.opacity(0.95) : Color(theme.foreground).opacity(0.85))
+                                .padding(.horizontal, 9)
+                                .padding(.vertical, 4.5)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                        .fill(isRevertHovered ? Color.red.opacity(0.16) : Color.white.opacity(0.06))
+                                )
                         }
                         .buttonStyle(.plain)
                         .onHover { isRevertHovered = $0 }
-                        .help("Revert changes made during this turn")
+                        .help("Undo changes made during this turn")
 
                         // Review Button
                         Button(action: {
@@ -161,24 +153,27 @@ public struct AgentEditedFilesCard: View {
     @ViewBuilder
     private func fileRow(_ file: AgentEditedFileItem) -> some View {
         HStack(alignment: .center, spacing: 6) {
-            // Path: Directory (muted) + Filename (prominent)
-            HStack(spacing: 0) {
-                if !file.directory.isEmpty {
-                    Text(file.directory)
-                        .foregroundColor(Color(theme.gutterForeground).opacity(0.9))
-                }
+            // Filename (prominent) + Directory (muted, ellipsized)
+            HStack(spacing: 8) {
                 Text(file.filename)
                     .fontWeight(.semibold)
                     .foregroundColor(Color(theme.foreground))
+                    .layoutPriority(1)
+
+                let dirString = file.directory.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !dirString.isEmpty {
+                    Text(dirString)
+                        .foregroundColor(Color(theme.gutterForeground).opacity(0.85))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
             }
             .font(.system(size: 11.5, design: .monospaced))
-            .lineLimit(1)
-            .truncationMode(.middle)
 
             Spacer(minLength: 12)
 
             // Stats (+ / -)
-            HStack(spacing: 4) {
+            HStack(spacing: 5) {
                 if file.additions > 0 {
                     Text("+\(file.additions)")
                         .foregroundColor(fileStatColor(.green))
@@ -188,7 +183,7 @@ public struct AgentEditedFilesCard: View {
                         .foregroundColor(fileStatColor(.red))
                 }
             }
-            .font(.system(size: 11, weight: .bold, design: .monospaced))
+            .font(.system(size: 11.5, weight: .bold, design: .monospaced))
         }
     }
 

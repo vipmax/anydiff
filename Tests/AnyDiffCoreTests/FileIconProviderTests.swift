@@ -58,5 +58,27 @@ final class FileIconProviderTests: XCTestCase {
         XCTAssertNotNil(img1)
         XCTAssertNotNil(img2)
         XCTAssertEqual(img1, img2, "Cached NSImage should be reused for identical symbol, color, and size")
+
+        let tsIcon = FileIconProvider.icon(for: "App.ts")
+        XCTAssertEqual(tsIcon.languageName, "TypeScript")
+        XCTAssertNotNil(tsIcon.iconName ?? tsIcon.svg)
+
+        let tsImg = FileIconProvider.shared.image(for: "App.ts", pointSize: 13)
+        XCTAssertNotNil(tsImg)
+        XCTAssertEqual(tsImg.size.width, 13)
+        XCTAssertEqual(tsImg.size.height, 13)
+    }
+
+    func testBundleModuleSVGLoading() {
+        let testFiles = ["main.rs", "server.py", "app.go", "Dockerfile", "data.json", "styles.css", "icon.svg"]
+        for file in testFiles {
+            let icon = FileIconProvider.icon(for: file)
+            XCTAssertNotNil(icon.iconName ?? icon.svg, "Expected SVG icon for \(file)")
+            let img = FileIconProvider.shared.image(for: file, pointSize: 14)
+            XCTAssertNotNil(img, "Expected NSImage for \(file)")
+            XCTAssertEqual(img.size.width, 14, "Expected 14pt width for \(file)")
+            XCTAssertEqual(img.size.height, 14, "Expected 14pt height for \(file)")
+        }
     }
 }
+

@@ -479,6 +479,9 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
     public override func updateTrackingAreas() {
         super.updateTrackingAreas()
+        if let trackingArea, trackingArea.rect == bounds {
+            return
+        }
         if let existing = trackingArea {
             removeTrackingArea(existing)
         }
@@ -1274,26 +1277,24 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         let iconY = rect.minY + (rect.height - iconSize) / 2.0
         let icon = FileIconProvider.shared.image(for: info.filePath, pointSize: 12, weight: .medium)
 
-        NSGraphicsContext.saveGraphicsState()
-        let gContext = NSGraphicsContext(cgContext: context, flipped: isFlipped)
-        NSGraphicsContext.current = gContext
         icon.draw(
             in: CGRect(x: iconX, y: iconY, width: iconSize, height: iconSize),
             from: .zero,
             operation: .sourceOver,
-            fraction: contentAlpha
+            fraction: contentAlpha,
+            respectFlipped: true,
+            hints: nil
         )
-        NSGraphicsContext.restoreGraphicsState()
 
         // Title and Breadcrumbs Text
         let titleColor: NSColor
         switch info.fileStatus {
         case .added:
-            titleColor = NSColor.systemGreen
+            titleColor = theme.diffAddedGutter
         case .deleted:
-            titleColor = NSColor.systemRed
+            titleColor = theme.diffDeletedGutter
         case .renamed:
-            titleColor = NSColor.systemPurple
+            titleColor = theme.diffModifiedGutter
         default:
             titleColor = theme.foreground
         }
@@ -1308,13 +1309,13 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         let titleStartX: CGFloat = iconX + iconSize + 6
         let titleEndX = titleStartX + titleWidth
 
-        // Diff Badges (+N -M) matching sidebar style
+        // Diff Badges (+N -M) matching sidebar style and active theme
         var delLine: CTLine?
         var delWidth: CGFloat = 0
         if info.deletions > 0 {
             let delAttr: [NSAttributedString.Key: Any] = [
                 .font: Self.badgeFont,
-                .foregroundColor: NSColor.systemRed
+                .foregroundColor: theme.diffDeletedGutter
             ]
             let delStr = NSAttributedString(string: "-\(info.deletions)", attributes: delAttr)
             let line = CTLineCreateWithAttributedString(delStr)
@@ -1327,7 +1328,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         if info.additions > 0 {
             let addAttr: [NSAttributedString.Key: Any] = [
                 .font: Self.badgeFont,
-                .foregroundColor: NSColor.systemGreen
+                .foregroundColor: theme.diffAddedGutter
             ]
             let addStr = NSAttributedString(string: "+\(info.additions)", attributes: addAttr)
             let line = CTLineCreateWithAttributedString(addStr)
@@ -1427,10 +1428,16 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         if !info.wordDiffRanges.isEmpty {
             let wordBgColor = (info.diffKind == .added) ? theme.diffAddedWordHighlight : theme.diffDeletedWordHighlight
             context.setFillColor(wordBgColor.cgColor)
+            let horizontalPadding: CGFloat = 2
             for range in info.wordDiffRanges {
                 let startX = ctLine.xOffset(for: range.lowerBound)
                 let endX = ctLine.xOffset(for: range.upperBound)
-                let wordRect = CGRect(x: codeStartX + startX, y: rect.minY + 2, width: max(4, endX - startX), height: rect.height - 4)
+                let wordRect = CGRect(
+                    x: codeStartX + startX - horizontalPadding,
+                    y: rect.minY + 2,
+                    width: max(4, endX - startX) + (horizontalPadding * 2),
+                    height: rect.height - 4
+                )
                 let rounded = CGPath(roundedRect: wordRect, cornerWidth: 3, cornerHeight: 3, transform: nil)
                 context.addPath(rounded)
                 context.fillPath()

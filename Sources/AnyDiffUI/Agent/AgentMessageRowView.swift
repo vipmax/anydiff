@@ -39,7 +39,7 @@ public struct AgentMessageRowView: View {
                 assistantBubble
             }
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 16)
         .padding(.vertical, 6)
         .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
         .overlay {

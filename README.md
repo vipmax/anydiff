@@ -2,12 +2,12 @@
 
 High-performance native macOS MultiBuffer Diff editor for lightning-fast code reviews and in-place editing in Swift.
 
-![AnyDiff Overview](https://i.imgur.com/SgdOxs2.png)
+![AnyDiff Overview](https://i.imgur.com/3bVQp8G.png)
 
 ![macOS](https://img.shields.io/badge/macOS-14.0%2B-blue?style=flat-square&logo=apple)
 ![Swift](https://img.shields.io/badge/Swift-6.0-orange?style=flat-square&logo=swift)
 ![Build](https://img.shields.io/badge/build-passing-brightgreen?style=flat-square)
-![Tests](https://img.shields.io/badge/tests-56%2F56%20passing-brightgreen?style=flat-square)
+![Tests](https://img.shields.io/badge/tests-170%2B%20passing-brightgreen?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 
 ---
@@ -28,22 +28,17 @@ High-performance native macOS MultiBuffer Diff editor for lightning-fast code re
 - **Intra-Line Word Diff**: High-precision token- and character-level highlighting powered by Myers LCS with common prefix/suffix pruning.
 - **Inline Code Review**: Add threaded review comments and notes on any line.
 - **Multi-Source Git & Web Integration**:
-
   - Automatically loads uncommitted diffs from any local repository.
   - Supports opening ordinary local files as well as Git diffs.
   - Native support for GitHub Pull Requests, commit URLs, and compare links (`gh pr`, `https://github.com/.../pull/123`, `https://diffs.hub/...`).
   - Paste raw `.diff` / `.patch` files directly from the clipboard (`Cmd + Shift + V`).
-- **Embedded Codex Agent**:
-  - Native side panel for explaining the current diff, reviewing changes, generating commit messages, inspecting files, editing code, and running commands.
-  - Live mode communicates with an ACP-compatible agent over JSON-RPC 2.0, with streamed text/thoughts, tool-call progress, errors, and context usage.
-  - Includes a Mock mode for UI development and demos; switch between Mock and Live from the panel.
+- **Embedded AI Agent (ACP Protocol)**:
+  - Native side panel for explaining diffs, reviewing code changes, generating commit messages, and running commands via JSON-RPC 2.0.
+  - Multi-provider support: Codex, Claude Code, Gemini / Antigravity, and Custom ACP agents.
+- **Rich Vector File Icons (Devicon SVGs)**: Crisp, high-resolution vector icons for 30+ major languages and configuration formats (TypeScript, React/TSX, JavaScript, Python, Rust, Go, Swift, Kotlin, Java, C++, C#, Docker, Git, SQL, Markdown, YAML, TOML, etc.) natively rendered via AppKit vector SVGs with 120 FPS caching.
 - **Minimalist macOS Titlebar & Dark Themes**:
   - Curated themes: `Unified Dark`, `Tokyo Night`, `GitHub Dark`, and `Monokai Pro`.
   - Tokenized syntax highlighting for Swift, Rust, TypeScript, JavaScript, Python, C++, Go, and JSON.
-
----
-
-![AnyDiff MultiBuffer Editing](https://i.imgur.com/5Oq71Iy.png)
 
 ---
 
@@ -74,28 +69,35 @@ High-performance native macOS MultiBuffer Diff editor for lightning-fast code re
 
 ---
 
-## 🤖 Embedded Codex Agent
+## 🤖 Embedded AI Agent (ACP Protocol)
 
-AnyDiff includes an optional agent panel alongside the diff editor. It is designed to work in the context of the currently opened repository and provides quick actions for explaining the current diff, reviewing changes, and drafting a commit message. Prompts can also be entered manually; the input supports multiline text with **Shift + Enter** or **Option + Enter**.
+AnyDiff includes a powerful native side panel powered by the **Agent Client Protocol (ACP)** over JSON-RPC 2.0. The agent operates directly within the context of the opened repository and diff, allowing you to review changes, explain complex logic, draft commit messages, generate code fixes, and run terminal commands seamlessly.
 
-The agent has two modes:
+Toggle the panel anytime with **`Cmd + Option + A`**.
 
-- **Mock**: local scripted responses for demos, UI development, and offline testing. It can be selected from the agent panel without requiring an external process.
-- **ACP Live**: launches the configured ACP command in the opened repository and maintains a session for the conversation. The default preset for a new installation is Codex, using:
+### 🌟 Key Capabilities
 
-```bash
-npx -y @agentclientprotocol/codex-acp
-```
+- **Multi-Provider Support & Presets**:
+  - **OpenAI / Codex**: `@agentclientprotocol/codex-acp`
+  - **Anthropic / Claude Code**: `@anthropic-ai/claude-code`
+  - **Google Gemini / Antigravity**: Native Gemini CLI integration
+  - **Custom ACP Agents**: Run any custom agent binary or command via stdio JSON-RPC
+  - **Mock Mode**: Built-in offline simulator for rapid UI testing and demos
+- **Visual Tool Call Cards**: Real-time visualization of agent actions — file reads, directory inspections, and bash commands with collapsible status cards.
+- **Interactive File Changes & Diff Jumps**: The **Edited Files Card** displays all files modified by the agent during the conversation, allowing you to jump directly to specific file diffs in the editor.
+- **Multimodal Image Attachments**: Drag-and-drop or paste images/screenshots directly into the chat prompt with live thumbnails and a full-screen zoomable preview modal (`AgentZoomableImageView`).
+- **Streaming Reasoning & Thoughts**: Real-time rendering of model thinking processes with customizable reasoning effort level controls (Low / Medium / High).
+- **Token & Context Usage Gauge**: Live tracking of prompt/completion tokens and context window capacity.
+- **Session History & Saved Chats Drawer**: Automatically saves conversation threads per workspace; seamlessly switch between, rename, or resume past agent sessions.
+- **Quick-Action Presets**: One-click prompts to *Explain Diff*, *Review Changes*, and *Generate Commit Message*.
+- **Granular Permissions & Safety**: Client-side approval prompts for disk writes and terminal commands before any modifications are executed.
 
-Live mode requires a working Node.js installation with `npx` available on `PATH`. The configured ACP agent runs in the opened working directory and may request permission to read or write files and execute terminal commands there. Review permission prompts before approving tool calls.
+### ⚙️ Architecture
 
-The live integration is built in `AnyDiffCore` and consists of:
-
-- `ACPTransport`: launches the agent as a child process and exchanges newline-delimited JSON over stdin/stdout while collecting stderr logs.
-- `ACPClient`: implements JSON-RPC request/response and notification dispatch, including initialization, session creation, prompts, cancellation, streamed updates, filesystem access, and terminal requests.
-- `ACPAgentSessionManager`: connects the protocol client to the observable chat state, handles reconnection and model/reasoning-effort options, and normalizes tool events for the UI.
-
-The panel is implemented in `AnyDiffUI/Agent`. It renders Markdown and code blocks, keeps a native selectable chat scroll view, shows expandable tool-call cards, supports cancellation and session reset, and displays model, reasoning-effort, and context-usage controls. The agent can respond to client-side filesystem and terminal requests inside the opened working directory, subject to the permission choices made in the panel.
+The ACP integration is built natively in `AnyDiffCore` and `AnyDiffUI`:
+- **`ACPTransport`**: Manages the child agent process lifecycle, streaming JSON-RPC payloads over `stdin`/`stdout` and capturing diagnostics on `stderr`.
+- **`ACPClient`**: Handles JSON-RPC 2.0 protocol handshakes, capability negotiation, prompt dispatch, cancellation, tool execution callbacks, and filesystem permission requests.
+- **`ACPAgentSessionCoordinator`**: Bridges protocol events directly to the high-performance SwiftUI / AppKit chat feed.
 
 ---
 
@@ -115,10 +117,10 @@ AnyDiff
 │   ├── AnyDiffUI/            # Native presentation layer (SwiftUI + custom AppKit CoreText engine)
 │   │   ├── Editor/           # CustomMultiBufferEditorView, ExcerptLayout, LineCache, Virtual Scroll
 │   │   ├── Agent/            # Chat panel, Markdown rendering, input, and tool-call cards
-│   │   └── Views/            # MainWindowView, SidebarFileListView, Modals
-│   └── AnyDiff/              # Application entry point (main.swift, AppDelegate)
+│   │   └─ Views/            # MainWindowView, SidebarFileListView, FileIconProvider, Icons, Modals
+│   └─ AnyDiff/              # Application entry point (main.swift, AppDelegate)
 └── Tests/
-    └── AnyDiffCoreTests/     # Comprehensive unit & AppKit UI integration test suites (39 tests)
+    └─ AnyDiffCoreTests/     # Comprehensive unit & AppKit UI integration test suites (170+ tests)
 ```
 
 ---

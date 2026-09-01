@@ -304,9 +304,42 @@ public struct Theme: Identifiable, Sendable {
         diffModifiedGutter: NSColor(red: 0.38, green: 0.68, blue: 0.96, alpha: 1.0)
     )
 
+    public static let vesper = Theme(
+        id: "vesper",
+        name: "Vesper",
+        isDark: true,
+        background: NSColor(red: 0.063, green: 0.063, blue: 0.063, alpha: 1.0),
+        gutterBackground: NSColor(red: 0.063, green: 0.063, blue: 0.063, alpha: 1.0),
+        currentLineBackground: NSColor(red: 0.094, green: 0.094, blue: 0.094, alpha: 1.0),
+        selectionBackground: NSColor(red: 1.0, green: 1.0, blue: 1.0, alpha: 0.16),
+        excerptHeaderBackground: NSColor(red: 0.063, green: 0.063, blue: 0.063, alpha: 1.0),
+        excerptHeaderBorder: NSColor(red: 0.157, green: 0.157, blue: 0.157, alpha: 1.0),
+        foreground: NSColor(red: 1.0, green: 1.0, blue: 1.0, alpha: 1.0),
+        gutterForeground: NSColor(red: 0.314, green: 0.314, blue: 0.314, alpha: 1.0),
+        gutterActiveForeground: NSColor(red: 0.700, green: 0.700, blue: 0.700, alpha: 1.0),
+        foldPlaceholderForeground: NSColor(red: 0.400, green: 0.400, blue: 0.400, alpha: 1.0),
+        keyword: NSColor(red: 0.627, green: 0.627, blue: 0.627, alpha: 1.0),
+        type: NSColor(red: 1.0, green: 0.780, blue: 0.600, alpha: 1.0),
+        function: NSColor(red: 1.0, green: 0.780, blue: 0.600, alpha: 1.0),
+        string: NSColor(red: 0.600, green: 1.0, blue: 0.894, alpha: 1.0),
+        number: NSColor(red: 1.0, green: 0.780, blue: 0.600, alpha: 1.0),
+        comment: NSColor(red: 0.400, green: 0.400, blue: 0.400, alpha: 1.0),
+        property: NSColor(red: 0.647, green: 0.988, blue: 0.714, alpha: 1.0),
+        operator: NSColor(red: 0.627, green: 0.627, blue: 0.627, alpha: 1.0),
+        punctuation: NSColor(red: 0.627, green: 0.627, blue: 0.627, alpha: 1.0),
+        diffAddedGutter: NSColor(red: 0.600, green: 1.0, blue: 0.894, alpha: 1.0),
+        diffAddedBackground: NSColor(red: 0.600, green: 1.0, blue: 0.894, alpha: 0.15),
+        diffAddedWordHighlight: NSColor(red: 0.600, green: 1.0, blue: 0.894, alpha: 0.35),
+        diffDeletedGutter: NSColor(red: 1.0, green: 0.502, blue: 0.502, alpha: 1.0),
+        diffDeletedBackground: NSColor(red: 1.0, green: 0.502, blue: 0.502, alpha: 0.15),
+        diffDeletedWordHighlight: NSColor(red: 1.0, green: 0.502, blue: 0.502, alpha: 0.35),
+        diffModifiedGutter: NSColor(red: 1.0, green: 0.780, blue: 0.600, alpha: 1.0)
+    )
+
     public static let allThemes: [Theme] = [
         .macOSLight,
         .unifiedDark,
+        .vesper,
         .zedGray,
         .zedDark,
         .tokyoNight,

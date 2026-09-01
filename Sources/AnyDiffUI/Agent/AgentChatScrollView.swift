@@ -437,7 +437,9 @@ public final class AgentNativeStandardChatScrollView: NSScrollView {
             object: clipView,
             queue: .main
         ) { [weak self] _ in
-            self?.notifyNearBottomChanged()
+            guard let self else { return }
+            self.notifyNearBottomChanged()
+            self.documentViewCustom.updateVisibleCells(in: self.contentView)
         }
 
         registerForDraggedTypes([.fileURL, .png, .tiff])
@@ -607,14 +609,14 @@ public final class AgentNativeStandardChatScrollView: NSScrollView {
 public final class AgentNativeStandardChatDocumentView: NSView {
     public override var isFlipped: Bool { true }
 
-    private let stackView = NSStackView()
-    private let topSpacer = NSView()
-    private let bottomSpacer = NSView()
-    private var bottomSpacerHeight: NSLayoutConstraint!
+    public struct CellEntry {
+        public let id: UUID
+        public let cell: AgentNativeMessageCell
+        public var frame: NSRect
+    }
+
     private var cells: [UUID: AgentNativeMessageCell] = [:]
-    private var orderedCells: [(id: UUID, cell: AgentNativeMessageCell)] = []
-    private var heightConstraints: [UUID: NSLayoutConstraint] = [:]
-    private var widthConstraints: [UUID: NSLayoutConstraint] = [:]
+    private var orderedCells: [CellEntry] = []
     private var messagesByID: [UUID: AgentMessage] = [:]
     private var theme: Theme = .zedDark
     private var accentColor: Color = .accentColor
@@ -639,22 +641,6 @@ public final class AgentNativeStandardChatDocumentView: NSView {
     private func setup() {
         wantsLayer = true
         layerContentsRedrawPolicy = .onSetNeedsDisplay
-        stackView.wantsLayer = true
-        stackView.orientation = .vertical
-        stackView.alignment = .leading
-        stackView.distribution = .fill
-        stackView.spacing = 10
-        stackView.translatesAutoresizingMaskIntoConstraints = true
-
-        topSpacer.translatesAutoresizingMaskIntoConstraints = false
-        bottomSpacer.translatesAutoresizingMaskIntoConstraints = false
-        stackView.addArrangedSubview(topSpacer)
-        stackView.addArrangedSubview(bottomSpacer)
-        addSubview(stackView)
-
-        topSpacer.heightAnchor.constraint(equalToConstant: 8).isActive = true
-        bottomSpacerHeight = bottomSpacer.heightAnchor.constraint(equalToConstant: 16)
-        bottomSpacerHeight.isActive = true
     }
 
     fileprivate func setBottomInset(_ inset: CGFloat) {
@@ -662,7 +648,6 @@ public final class AgentNativeStandardChatDocumentView: NSView {
         guard abs(newInset - bottomInset) >= 1.0 else { return }
 
         bottomInset = newInset
-        bottomSpacerHeight.constant = 16 + bottomInset
         layoutContent(for: max(100, lastLayoutWidth))
     }
 
@@ -696,16 +681,11 @@ public final class AgentNativeStandardChatDocumentView: NSView {
 
         let newIDSet = Set(newIds)
         for (id, cell) in cells where !newIDSet.contains(id) {
-            stackView.removeArrangedSubview(cell)
             cell.removeFromSuperview()
-            heightConstraints[id]?.isActive = false
-            widthConstraints[id]?.isActive = false
-            heightConstraints.removeValue(forKey: id)
-            widthConstraints.removeValue(forKey: id)
-                cells.removeValue(forKey: id)
+            cells.removeValue(forKey: id)
         }
 
-        var newOrdered: [(id: UUID, cell: AgentNativeMessageCell)] = []
+        var newOrdered: [CellEntry] = []
         for message in newMessages {
             let cell: AgentNativeMessageCell
             if let existing = cells[message.id] {
@@ -756,27 +736,14 @@ public final class AgentNativeStandardChatDocumentView: NSView {
                     scrollView.stopFollowingBottom()
                     self.layoutContent(for: max(100, scrollView.contentView.bounds.width))
                 }
-                cell.translatesAutoresizingMaskIntoConstraints = false
-                let heightConstraint = cell.heightAnchor.constraint(equalToConstant: 1)
-                let widthConstraint = cell.widthAnchor.constraint(equalToConstant: 1)
-                heightConstraint.isActive = true
-                widthConstraint.isActive = true
-                heightConstraints[message.id] = heightConstraint
-                widthConstraints[message.id] = widthConstraint
                 cells[message.id] = cell
             }
 
-            newOrdered.append((id: message.id, cell: cell))
+            newOrdered.append(CellEntry(id: message.id, cell: cell, frame: .zero))
         }
 
         orderedCells = newOrdered
         messagesByID = Dictionary(uniqueKeysWithValues: newMessages.map { ($0.id, $0) })
-        if newIds != oldIds {
-            stackView.setViews(
-                [topSpacer] + newOrdered.map(\.cell) + [bottomSpacer],
-                in: .top
-            )
-        }
 
         layoutContent(for: max(100, scrollView.contentView.bounds.width))
         for item in orderedCells {
@@ -791,21 +758,51 @@ public final class AgentNativeStandardChatDocumentView: NSView {
         let contentWidth = max(100, width)
         lastLayoutWidth = contentWidth
 
-        var contentHeight: CGFloat = 8 + 16 + bottomInset
-        contentHeight += CGFloat(orderedCells.count + 1) * 10
+        var currentY: CGFloat = 8
 
-        for item in orderedCells {
-            let height = item.cell.layout(for: contentWidth)
-            heightConstraints[item.id]?.constant = height
-            widthConstraints[item.id]?.constant = contentWidth
-            contentHeight += height
+        for i in 0..<orderedCells.count {
+            let cell = orderedCells[i].cell
+            let height = cell.layout(for: contentWidth)
+            let cellFrame = NSRect(x: 0, y: currentY, width: contentWidth, height: height)
+            orderedCells[i].frame = cellFrame
+            currentY += height + 10
         }
 
+        let contentHeight = currentY + 6 + bottomInset
         let viewportHeight = enclosingScrollView?.contentView.bounds.height ?? 0
         let documentHeight = max(contentHeight, viewportHeight)
         setFrameSize(NSSize(width: contentWidth, height: documentHeight))
-        stackView.frame = NSRect(x: 0, y: 0, width: contentWidth, height: contentHeight)
-        stackView.layoutSubtreeIfNeeded()
+
+        updateVisibleCells(in: enclosingScrollView?.contentView)
+    }
+
+    public func updateVisibleCells(in clipView: NSClipView?) {
+        guard !orderedCells.isEmpty else { return }
+        let clip = clipView ?? enclosingScrollView?.contentView
+        let vis = clip?.documentVisibleRect ?? bounds
+        // 600px buffer above and below for smooth pre-rendering without jank
+        let bufferRect = NSRect(
+            x: 0,
+            y: max(0, vis.minY - 600),
+            width: max(vis.width, bounds.width),
+            height: vis.height + 1200
+        )
+
+        for item in orderedCells {
+            let isVisible = item.frame.intersects(bufferRect)
+            if isVisible {
+                if item.cell.superview == nil {
+                    item.cell.frame = item.frame
+                    addSubview(item.cell)
+                } else if item.cell.frame != item.frame {
+                    item.cell.frame = item.frame
+                }
+            } else {
+                if item.cell.superview != nil {
+                    item.cell.removeFromSuperview()
+                }
+            }
+        }
     }
 }
 
@@ -3360,6 +3357,20 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
 public final class AgentHoverButton: NSButton {
     private var trackingArea: NSTrackingArea?
     private var isHovered = false
+    public var defaultBackgroundColor: NSColor = NSColor.clear {
+        didSet {
+            if !isHovered {
+                layer?.backgroundColor = defaultBackgroundColor.cgColor
+            }
+        }
+    }
+    public var hoverBackgroundColor: NSColor = NSColor.white.withAlphaComponent(0.15) {
+        didSet {
+            if isHovered {
+                layer?.backgroundColor = hoverBackgroundColor.cgColor
+            }
+        }
+    }
 
     public override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -3374,10 +3385,12 @@ public final class AgentHoverButton: NSButton {
     private func setup() {
         isBordered = false
         setButtonType(.momentaryPushIn)
+        imagePosition = .imageLeading
+        imageScaling = .scaleProportionallyDown
         wantsLayer = true
         layer?.cornerRadius = 5
         layer?.masksToBounds = true
-        layer?.backgroundColor = NSColor.clear.cgColor
+        layer?.backgroundColor = defaultBackgroundColor.cgColor
         contentTintColor = .white
     }
 
@@ -3408,7 +3421,7 @@ public final class AgentHoverButton: NSButton {
         isHovered = true
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.12
-            layer?.backgroundColor = NSColor.white.withAlphaComponent(0.15).cgColor
+            layer?.backgroundColor = hoverBackgroundColor.cgColor
         }
     }
 
@@ -3417,7 +3430,331 @@ public final class AgentHoverButton: NSButton {
         isHovered = false
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.12
-            layer?.backgroundColor = NSColor.clear.cgColor
+            layer?.backgroundColor = defaultBackgroundColor.cgColor
+        }
+    }
+}
+
+public final class AgentNativeEditedFileRowView: AgentNativeFlippedView {
+    private let filenameLabel = AgentNativeStaticTextField(labelWithString: "")
+    private let directoryLabel = AgentNativeStaticTextField(labelWithString: "")
+    private let statsLabel = AgentNativeStaticTextField(labelWithString: "")
+
+    public override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        addSubview(filenameLabel)
+        addSubview(directoryLabel)
+        addSubview(statsLabel)
+        filenameLabel.lineBreakMode = .byClipping
+        directoryLabel.lineBreakMode = .byTruncatingMiddle
+    }
+
+    public required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    public func configure(file: AgentEditedFileItem, theme: Theme) {
+        filenameLabel.attributedStringValue = NSAttributedString(
+            string: file.filename,
+            attributes: [
+                .foregroundColor: theme.foreground,
+                .font: NSFont.monospacedSystemFont(ofSize: 11.5, weight: .semibold)
+            ]
+        )
+
+        let dirString = file.directory.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !dirString.isEmpty {
+            directoryLabel.isHidden = false
+            directoryLabel.attributedStringValue = NSAttributedString(
+                string: dirString,
+                attributes: [
+                    .foregroundColor: theme.gutterForeground.withAlphaComponent(0.85),
+                    .font: NSFont.monospacedSystemFont(ofSize: 11.5, weight: .regular)
+                ]
+            )
+        } else {
+            directoryLabel.isHidden = true
+            directoryLabel.stringValue = ""
+        }
+
+        let statsAttr = NSMutableAttributedString()
+        if file.additions > 0 {
+            statsAttr.append(NSAttributedString(
+                string: "+\(file.additions)",
+                attributes: [
+                    .foregroundColor: NSColor.systemGreen.withAlphaComponent(0.95),
+                    .font: NSFont.monospacedSystemFont(ofSize: 11.5, weight: .bold)
+                ]
+            ))
+        }
+        if file.deletions > 0 {
+            if file.additions > 0 {
+                statsAttr.append(NSAttributedString(
+                    string: " ",
+                    attributes: [
+                        .font: NSFont.monospacedSystemFont(ofSize: 11.5, weight: .bold)
+                    ]
+                ))
+            }
+            statsAttr.append(NSAttributedString(
+                string: "-\(file.deletions)",
+                attributes: [
+                    .foregroundColor: NSColor.systemRed.withAlphaComponent(0.95),
+                    .font: NSFont.monospacedSystemFont(ofSize: 11.5, weight: .bold)
+                ]
+            ))
+        }
+        statsLabel.attributedStringValue = statsAttr
+    }
+
+    public func applyLayout(width: CGFloat) {
+        let statsSize = statsLabel.sizeThatFits(NSSize(width: 120, height: 18))
+        let statsWidth = statsSize.width
+        statsLabel.frame = NSRect(x: max(0, width - statsWidth), y: 0, width: statsWidth, height: 18)
+
+        let availableTextWidth = max(0, width - statsWidth - 8)
+        let nameSize = filenameLabel.sizeThatFits(NSSize(width: availableTextWidth, height: 18))
+        let nameWidth = min(availableTextWidth, nameSize.width)
+        filenameLabel.frame = NSRect(x: 0, y: 0, width: nameWidth, height: 18)
+
+        if !directoryLabel.isHidden {
+            let dirX = nameWidth + 8
+            let dirWidth = max(0, availableTextWidth - dirX)
+            directoryLabel.frame = NSRect(x: dirX, y: 0, width: dirWidth, height: 18)
+        }
+    }
+}
+
+public final class AgentNativeEditedFilesCardView: AgentNativeFlippedView {
+    public private(set) var summary: AgentEditedFilesSummary
+    private var theme: Theme
+    private var accentColor: Color
+    private var disableAgentColors: Bool
+    public var onReview: ((AgentEditedFilesSummary) -> Void)?
+    public var onRevert: ((AgentEditedFilesSummary) -> Void)?
+    public var onRestore: ((AgentEditedFilesSummary) -> Void)?
+
+    private let titleLabel = AgentNativeStaticTextField(labelWithString: "")
+    private let statsLabel = AgentNativeStaticTextField(labelWithString: "")
+    private let restoreButton = AgentHoverButton(frame: .zero)
+    private let revertButton = AgentHoverButton(frame: .zero)
+    private let reviewButton = AgentHoverButton(frame: .zero)
+    private let divider = NSBox()
+    private var fileRowViews: [AgentNativeEditedFileRowView] = []
+
+    public init(
+        summary: AgentEditedFilesSummary,
+        theme: Theme,
+        accentColor: Color = .accentColor,
+        disableAgentColors: Bool = false
+    ) {
+        self.summary = summary
+        self.theme = theme
+        self.accentColor = accentColor
+        self.disableAgentColors = disableAgentColors
+        super.init(frame: .zero)
+        setup()
+        configure(summary: summary, theme: theme, accentColor: accentColor, disableAgentColors: disableAgentColors)
+    }
+
+    public required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    private func setup() {
+        wantsLayer = true
+        layer?.cornerRadius = 10
+        layer?.masksToBounds = true
+        layer?.borderWidth = 1.0
+
+        titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        addSubview(titleLabel)
+
+        statsLabel.font = .monospacedSystemFont(ofSize: 11.5, weight: .bold)
+        addSubview(statsLabel)
+
+        restoreButton.target = self
+        restoreButton.action = #selector(handleRestoreClicked)
+        addSubview(restoreButton)
+
+        revertButton.target = self
+        revertButton.action = #selector(handleRevertClicked)
+        addSubview(revertButton)
+
+        reviewButton.target = self
+        reviewButton.action = #selector(handleReviewClicked)
+        addSubview(reviewButton)
+
+        divider.boxType = .separator
+        addSubview(divider)
+    }
+
+    @objc private func handleRestoreClicked() {
+        onRestore?(summary)
+    }
+
+    @objc private func handleRevertClicked() {
+        onRevert?(summary)
+    }
+
+    @objc private func handleReviewClicked() {
+        onReview?(summary)
+    }
+
+    public func configure(
+        summary: AgentEditedFilesSummary,
+        theme: Theme,
+        accentColor: Color,
+        disableAgentColors: Bool
+    ) {
+        self.summary = summary
+        self.theme = theme
+        self.accentColor = accentColor
+        self.disableAgentColors = disableAgentColors
+
+        let nsAccent = NSColor(accentColor)
+        let fgColor = summary.isReverted ? theme.gutterForeground : theme.foreground
+        titleLabel.textColor = fgColor
+        titleLabel.stringValue = summary.displayTitle
+
+        layer?.backgroundColor = nsAccent.withAlphaComponent(0.08).cgColor
+        layer?.borderColor = nsAccent.withAlphaComponent(0.18).cgColor
+
+        if summary.isReverted {
+            restoreButton.isHidden = false
+            revertButton.isHidden = true
+            reviewButton.isHidden = true
+            statsLabel.isHidden = true
+
+            restoreButton.imagePosition = .noImage
+            restoreButton.image = nil
+            restoreButton.contentTintColor = NSColor.systemBlue
+            restoreButton.defaultBackgroundColor = NSColor.white.withAlphaComponent(0.06)
+            restoreButton.hoverBackgroundColor = NSColor.systemBlue.withAlphaComponent(0.20)
+            restoreButton.attributedTitle = NSAttributedString(
+                string: "Redo",
+                attributes: [
+                    .font: NSFont.systemFont(ofSize: 11.5, weight: .medium),
+                    .foregroundColor: NSColor.systemBlue
+                ]
+            )
+        } else {
+            restoreButton.isHidden = true
+            revertButton.isHidden = false
+            reviewButton.isHidden = false
+            statsLabel.isHidden = false
+
+            revertButton.imagePosition = .noImage
+            revertButton.image = nil
+            revertButton.contentTintColor = NSColor.systemRed.withAlphaComponent(0.9)
+            revertButton.defaultBackgroundColor = NSColor.white.withAlphaComponent(0.06)
+            revertButton.hoverBackgroundColor = NSColor.systemRed.withAlphaComponent(0.20)
+            revertButton.attributedTitle = NSAttributedString(
+                string: "Undo",
+                attributes: [
+                    .font: NSFont.systemFont(ofSize: 11.5, weight: .medium),
+                    .foregroundColor: NSColor.systemRed.withAlphaComponent(0.9)
+                ]
+            )
+
+            reviewButton.imagePosition = .noImage
+            reviewButton.image = nil
+            reviewButton.contentTintColor = fgColor
+            reviewButton.defaultBackgroundColor = NSColor.white.withAlphaComponent(0.06)
+            reviewButton.hoverBackgroundColor = NSColor.white.withAlphaComponent(0.15)
+            reviewButton.attributedTitle = NSAttributedString(
+                string: "Review",
+                attributes: [
+                    .font: NSFont.systemFont(ofSize: 11.5, weight: .medium),
+                    .foregroundColor: fgColor.withAlphaComponent(0.95)
+                ]
+            )
+
+            let statsAttr = NSMutableAttributedString()
+            if summary.totalAdditions > 0 {
+                statsAttr.append(NSAttributedString(
+                    string: "+\(summary.totalAdditions)",
+                    attributes: [.foregroundColor: NSColor.systemGreen.withAlphaComponent(0.95), .font: NSFont.monospacedSystemFont(ofSize: 11.5, weight: .bold)]
+                ))
+            }
+            if summary.totalDeletions > 0 {
+                if summary.totalAdditions > 0 {
+                    statsAttr.append(NSAttributedString(
+                        string: " ",
+                        attributes: [.font: NSFont.monospacedSystemFont(ofSize: 11.5, weight: .bold)]
+                    ))
+                }
+                statsAttr.append(NSAttributedString(
+                    string: "-\(summary.totalDeletions)",
+                    attributes: [.foregroundColor: NSColor.systemRed.withAlphaComponent(0.95), .font: NSFont.monospacedSystemFont(ofSize: 11.5, weight: .bold)]
+                ))
+            }
+            statsLabel.attributedStringValue = statsAttr
+        }
+
+        while fileRowViews.count < summary.files.count {
+            let row = AgentNativeEditedFileRowView()
+            addSubview(row)
+            fileRowViews.append(row)
+        }
+        while fileRowViews.count > summary.files.count {
+            let row = fileRowViews.removeLast()
+            row.removeFromSuperview()
+        }
+
+        for (index, file) in summary.files.enumerated() {
+            fileRowViews[index].configure(file: file, theme: theme)
+        }
+    }
+
+    public func measureHeight(width: CGFloat) -> CGFloat {
+        let headerHeight: CGFloat = 26
+        let dividerHeight: CGFloat = 6
+        let fileRowsHeight: CGFloat = CGFloat(summary.files.count) * 20
+        return 10 + headerHeight + dividerHeight + fileRowsHeight + 8
+    }
+
+    public func applyLayout(width: CGFloat) {
+        let padding: CGFloat = 10
+        let contentWidth = max(50, width - (padding * 2))
+        var currentY: CGFloat = padding
+
+        let titleSize = titleLabel.sizeThatFits(NSSize(width: contentWidth * 0.5, height: 22))
+        titleLabel.frame = NSRect(x: padding, y: currentY + 1, width: titleSize.width, height: 20)
+
+        var rightX = width - padding
+
+        if !summary.isReverted {
+            if summary.totalAdditions > 0 || summary.totalDeletions > 0 {
+                let statsSize = statsLabel.sizeThatFits(NSSize(width: 120, height: 20))
+                let statsWidth = statsSize.width
+                statsLabel.frame = NSRect(x: width - padding - statsWidth, y: currentY + 1, width: statsWidth, height: 20)
+                rightX -= (statsWidth + 10)
+            }
+
+            let reviewWidth: CGFloat = 58
+            rightX -= reviewWidth
+            reviewButton.frame = NSRect(x: rightX, y: currentY, width: reviewWidth, height: 22)
+            rightX -= 6
+
+            let revertWidth: CGFloat = 52
+            rightX -= revertWidth
+            revertButton.frame = NSRect(x: rightX, y: currentY, width: revertWidth, height: 22)
+        } else {
+            let restoreWidth: CGFloat = 52
+            rightX -= restoreWidth
+            restoreButton.frame = NSRect(x: rightX, y: currentY, width: restoreWidth, height: 22)
+        }
+
+        currentY += 26
+
+        divider.frame = NSRect(x: padding, y: currentY, width: contentWidth, height: 1)
+        currentY += 5
+
+        for row in fileRowViews {
+            row.frame = NSRect(x: padding, y: currentY, width: contentWidth, height: 18)
+            row.applyLayout(width: contentWidth)
+            currentY += 20
         }
     }
 }
@@ -3436,9 +3773,21 @@ public final class AgentNativeMessageCell: NSView {
     public var onToggleThought: (() -> Void)?
     public var onToggleTool: (() -> Void)?
     public var onToggleUserExpand: (() -> Void)?
-    public var onReview: ((AgentEditedFilesSummary) -> Void)?
-    public var onRevert: ((AgentEditedFilesSummary) -> Void)?
-    public var onRestore: ((AgentEditedFilesSummary) -> Void)?
+    public var onReview: ((AgentEditedFilesSummary) -> Void)? {
+        didSet {
+            (editedFilesCardView as? AgentNativeEditedFilesCardView)?.onReview = onReview
+        }
+    }
+    public var onRevert: ((AgentEditedFilesSummary) -> Void)? {
+        didSet {
+            (editedFilesCardView as? AgentNativeEditedFilesCardView)?.onRevert = onRevert
+        }
+    }
+    public var onRestore: ((AgentEditedFilesSummary) -> Void)? {
+        didSet {
+            (editedFilesCardView as? AgentNativeEditedFilesCardView)?.onRestore = onRestore
+        }
+    }
     public private(set) var message: AgentMessage
     private var theme: Theme
     private var accentColor: Color
@@ -3779,29 +4128,30 @@ public final class AgentNativeMessageCell: NSView {
 
             // 4. Edited files card
             if let summary = message.editedFilesSummary {
-                let cardView = AgentEditedFilesCard(
-                    summary: summary,
-                    theme: theme,
-                    accentColor: accentColor,
-                    disableAgentColors: toolcallColorMode != .full,
-                    onReview: { [weak self] rev in
-                        self?.onReview?(rev)
-                    },
-                    onRevert: { [weak self] rev in
-                        self?.onRevert?(rev)
-                    },
-                    onRestore: { [weak self] rev in
-                        self?.onRestore?(rev)
-                    }
-                )
-                if let hosting = editedFilesCardView as? NSHostingView<AgentEditedFilesCard> {
-                    hosting.rootView = cardView
+                if let card = editedFilesCardView as? AgentNativeEditedFilesCardView {
+                    card.configure(
+                        summary: summary,
+                        theme: theme,
+                        accentColor: accentColor,
+                        disableAgentColors: toolcallColorMode != .full
+                    )
+                    card.onReview = onReview
+                    card.onRevert = onRevert
+                    card.onRestore = onRestore
                 } else {
                     editedFilesCardView?.removeFromSuperview()
-                    let hosting = NSHostingView(rootView: cardView)
-                    addSubview(hosting)
-                    editedFilesCardView = hosting
-                    pendingEditedFilesCardAppearance = hosting
+                    let card = AgentNativeEditedFilesCardView(
+                        summary: summary,
+                        theme: theme,
+                        accentColor: accentColor,
+                        disableAgentColors: toolcallColorMode != .full
+                    )
+                    card.onReview = onReview
+                    card.onRevert = onRevert
+                    card.onRestore = onRestore
+                    addSubview(card)
+                    editedFilesCardView = card
+                    pendingEditedFilesCardAppearance = card
                 }
             } else {
                 editedFilesCardView?.removeFromSuperview()
@@ -4823,9 +5173,8 @@ public final class AgentNativeMessageCell: NSView {
         if let card = view as? AgentNativeToolCardView {
             return card.measureHeight(width: contentWidth)
         }
-        if let hosting = view as? NSHostingView<AgentEditedFilesCard> {
-            let fit = hosting.fittingSize
-            return max(60, fit.height)
+        if let card = view as? AgentNativeEditedFilesCardView {
+            return card.measureHeight(width: contentWidth)
         }
         if let tv = view as? AgentSelectableTextView {
             return measuredTextHeight(for: tv, attributedString: tv.attributedString(), width: contentWidth)
@@ -4854,7 +5203,7 @@ public final class AgentNativeMessageCell: NSView {
     @discardableResult
     private func applyAssistantViewLayout(_ view: NSView, width: CGFloat, currentY: CGFloat, animated: Bool) -> CGFloat {
         guard !view.isHidden, view.alphaValue > 0.01 else { return 0 }
-        let horizontalPadding: CGFloat = 12
+        let horizontalPadding: CGFloat = 16
         let contentWidth = max(50, width - (horizontalPadding * 2))
         let height = assistantViewHeight(view, contentWidth: contentWidth)
 
@@ -4870,9 +5219,10 @@ public final class AgentNativeMessageCell: NSView {
             let frame = NSRect(x: horizontalPadding, y: currentY, width: contentWidth, height: height)
             if animated { card.animator().frame = frame } else { card.frame = frame }
             card.applyLayout(width: contentWidth, animated: animated)
-        } else if let hosting = view as? NSHostingView<AgentEditedFilesCard> {
+        } else if let card = view as? AgentNativeEditedFilesCardView {
             let frame = NSRect(x: horizontalPadding, y: currentY, width: contentWidth, height: height)
-            if animated { hosting.animator().frame = frame } else { hosting.frame = frame }
+            if animated { card.animator().frame = frame } else { card.frame = frame }
+            card.applyLayout(width: contentWidth)
         } else if let tv = view as? AgentSelectableTextView {
             let frame = NSRect(x: horizontalPadding, y: currentY, width: contentWidth, height: height)
             if animated { tv.animator().frame = frame } else { tv.frame = frame }
@@ -4935,7 +5285,7 @@ public final class AgentNativeMessageCell: NSView {
             return cachedLayoutHeight
         }
 
-        let horizontalPadding: CGFloat = 12
+        let horizontalPadding: CGFloat = 16
         let contentWidth = max(50, width - (horizontalPadding * 2))
         let height: CGFloat
 
@@ -4995,7 +5345,7 @@ public final class AgentNativeMessageCell: NSView {
     }
 
     public func applyLayout(for width: CGFloat, animated: Bool) {
-        let horizontalPadding: CGFloat = 12
+        let horizontalPadding: CGFloat = 16
         let contentWidth = max(50, width - (horizontalPadding * 2))
 
         if message.role == .user {

@@ -192,6 +192,8 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
         let result: (lines: [(line: DiffLine, bufferRow: Int)], additions: Int, deletions: Int)
     }
     private var excerptDiffCache: [UUID: ExcerptDiffCache] = [:]
+    private static let maxExcerptDiffCacheCount = 128
+    private var excerptDiffCacheLRU: [UUID] = []
     private static let hunkRankStride = 256
     /// One UInt32 per 256 hunk lines. Unlike `excerptDiffCache`, this stays tiny
     /// even after every hunk in a mega-diff has been visited.
@@ -206,6 +208,7 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
     public func clear() {
         excerptLocations.removeAll(keepingCapacity: false)
         excerptDiffCache.removeAll(keepingCapacity: false)
+        excerptDiffCacheLRU.removeAll(keepingCapacity: false)
         hunkBufferRowRankCache.removeAll(keepingCapacity: false)
         maxLineChars = 80
     }
@@ -218,10 +221,12 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
         if let invalidatingPaths {
             for excerpt in multiBuffer.excerpts where invalidatingPaths.contains(excerpt.filePath) {
                 excerptDiffCache.removeValue(forKey: excerpt.id)
+                excerptDiffCacheLRU.removeAll(where: { $0 == excerpt.id })
                 hunkBufferRowRankCache.removeValue(forKey: excerpt.id)
             }
         } else {
             excerptDiffCache.removeAll(keepingCapacity: false)
+            excerptDiffCacheLRU.removeAll(keepingCapacity: false)
             hunkBufferRowRankCache.removeAll(keepingCapacity: false)
         }
 
@@ -571,15 +576,20 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
             let clamped = max(0, requestedRange.lowerBound)..<min(totalCount, requestedRange.upperBound)
             guard !clamped.isEmpty else { return [] }
 
+            if let cached = excerptDiffCache[excerpt.id],
+               cached.bufferVersion == buffer.version,
+               cached.bufferRange == excerpt.bufferRange {
+                let cachedClamped = max(0, requestedRange.lowerBound)..<min(cached.result.lines.count, requestedRange.upperBound)
+                guard !cachedClamped.isEmpty else { return [] }
+                return Array(cached.result.lines[cachedClamped])
+            }
+
             // Small zero-copy hunks are materialized as a unit so adjacent
             // deleted/added pairs receive word highlights on the first paint.
             // Large hunks retain viewport-only materialization.
-            let materializedRange: Range<Int>
-            if !hunk.lineSpans.isEmpty && totalCount <= 4_096 {
-                materializedRange = 0..<totalCount
-            } else {
-                materializedRange = clamped
-            }
+            let isFullMaterialization = (!hunk.lineSpans.isEmpty && totalCount <= 4_096) || hunk.lineSpans.isEmpty
+            let materializedRange: Range<Int> = isFullMaterialization ? (0..<totalCount) : clamped
+
             let hunkBufferBaseRow = buffer.isFullFile ? excerpt.bufferRange.lowerBound : 0
             var currentBufferRow = hunkBufferBaseRow
                 + bufferRow(beforeHunkLine: materializedRange.lowerBound, in: hunk)
@@ -614,6 +624,18 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
                     }
                 }
             }
+
+            if isFullMaterialization {
+                setCachedDiff(
+                    for: excerpt.id,
+                    cache: ExcerptDiffCache(
+                        bufferVersion: buffer.version,
+                        bufferRange: excerpt.bufferRange,
+                        result: (lines: mappedLines, additions: hunk.addedLineCount, deletions: hunk.deletedLineCount)
+                    )
+                )
+            }
+
             let requestedStart = clamped.lowerBound - materializedRange.lowerBound
             let requestedEnd = clamped.upperBound - materializedRange.lowerBound
             return Array(mappedLines[requestedStart..<requestedEnd])
@@ -623,6 +645,18 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
         let clamped = max(0, requestedRange.lowerBound)..<min(allLines.count, requestedRange.upperBound)
         guard !clamped.isEmpty else { return [] }
         return Array(allLines[clamped])
+    }
+
+    private func setCachedDiff(for excerptId: UUID, cache: ExcerptDiffCache) {
+        excerptDiffCache[excerptId] = cache
+        if let existingIdx = excerptDiffCacheLRU.firstIndex(of: excerptId) {
+            excerptDiffCacheLRU.remove(at: existingIdx)
+        }
+        excerptDiffCacheLRU.append(excerptId)
+        if excerptDiffCacheLRU.count > Self.maxExcerptDiffCacheCount {
+            let oldest = excerptDiffCacheLRU.removeFirst()
+            excerptDiffCache.removeValue(forKey: oldest)
+        }
     }
 
     private func getCachedDiffLines(for excerptIdx: Int) -> [(line: DiffLine, bufferRow: Int)] {
@@ -649,10 +683,13 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
                 buffer.totalAdditions = sliceResult.additions
                 buffer.totalDeletions = sliceResult.deletions
             }
-            excerptDiffCache[excerpt.id] = ExcerptDiffCache(
-                bufferVersion: buffer.version,
-                bufferRange: excerpt.bufferRange,
-                result: sliceResult
+            setCachedDiff(
+                for: excerpt.id,
+                cache: ExcerptDiffCache(
+                    bufferVersion: buffer.version,
+                    bufferRange: excerpt.bufferRange,
+                    result: sliceResult
+                )
             )
             return sliceResult.lines
         } else {
@@ -664,10 +701,13 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
                 return (line: dLine, bufferRow: r)
             }
             let res = (lines: lines, additions: 0, deletions: 0)
-            excerptDiffCache[excerpt.id] = ExcerptDiffCache(
-                bufferVersion: buffer.version,
-                bufferRange: excerpt.bufferRange,
-                result: res
+            setCachedDiff(
+                for: excerpt.id,
+                cache: ExcerptDiffCache(
+                    bufferVersion: buffer.version,
+                    bufferRange: excerpt.bufferRange,
+                    result: res
+                )
             )
             return lines
         }

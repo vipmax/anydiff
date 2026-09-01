@@ -20,6 +20,11 @@ public final class WordDiffEngine: Sendable {
             return ([], [])
         }
 
+        // Fast path for whitespace-only / empty line differences (Zero Allocations)
+        if isWhitespaceOrEmpty(oldText) && isWhitespaceOrEmpty(newText) {
+            return diffWhitespaceLines(oldText: oldText, newText: newText)
+        }
+
         let oldTokens = tokenize(oldText)
         let newTokens = tokenize(newText)
 
@@ -27,9 +32,19 @@ public final class WordDiffEngine: Sendable {
             return ([], [])
         }
 
-        let lcs = computeLCS(oldTokens, newTokens)
         let totalTokens = oldTokens.count + newTokens.count
-        guard !lcs.isEmpty, totalTokens > 0 else { return ([], []) }
+        guard totalTokens > 0 else { return ([], []) }
+
+        // Early-exit: if the maximum possible LCS cannot reach 60% similarity,
+        // avoid running the O(N x M) DP table computation.
+        let maxPossibleLCS = min(oldTokens.count, newTokens.count)
+        let maxPossibleSimilarity = Double(maxPossibleLCS * 2) / Double(totalTokens)
+        if maxPossibleSimilarity < 0.60 {
+            return ([], [])
+        }
+
+        let lcs = computeLCS(oldTokens, newTokens)
+        guard !lcs.isEmpty else { return ([], []) }
 
         // Similarity check: if shared tokens are less than 60% of total tokens,
         // it's a completely different line — suppress word diff to avoid noise.
@@ -95,6 +110,67 @@ public final class WordDiffEngine: Sendable {
                     }
                 }
             }
+        }
+
+        return (oldDiffs, newDiffs)
+    }
+
+    @inline(__always)
+    private func isWhitespaceOrEmpty(_ text: String) -> Bool {
+        for scalar in text.unicodeScalars {
+            if !scalar.properties.isWhitespace {
+                return false
+            }
+        }
+        return true
+    }
+
+    /// Fast, zero-allocation comparison for lines containing only whitespace and/or empty lines
+    private func diffWhitespaceLines(oldText: String, newText: String) -> (oldDiffRanges: [Range<Int>], newDiffRanges: [Range<Int>]) {
+        let oldScalars = oldText.unicodeScalars
+        let newScalars = newText.unicodeScalars
+
+        var oldIdx = oldScalars.startIndex
+        var newIdx = newScalars.startIndex
+        var prefixLen = 0
+
+        while oldIdx < oldScalars.endIndex && newIdx < newScalars.endIndex && oldScalars[oldIdx] == newScalars[newIdx] {
+            prefixLen += 1
+            oldIdx = oldScalars.index(after: oldIdx)
+            newIdx = newScalars.index(after: newIdx)
+        }
+
+        var oldEnd = oldScalars.endIndex
+        var newEnd = newScalars.endIndex
+        var oldSuffixLen = 0
+        var newSuffixLen = 0
+
+        while oldEnd > oldIdx && newEnd > newIdx {
+            let prevOld = oldScalars.index(before: oldEnd)
+            let prevNew = newScalars.index(before: newEnd)
+            if oldScalars[prevOld] == newScalars[prevNew] {
+                oldEnd = prevOld
+                newEnd = prevNew
+                oldSuffixLen += 1
+                newSuffixLen += 1
+            } else {
+                break
+            }
+        }
+
+        let oldEndOffset = oldText.count - oldSuffixLen
+        let newEndOffset = newText.count - newSuffixLen
+
+        var oldDiffs: [Range<Int>] = []
+        var newDiffs: [Range<Int>] = []
+
+        if prefixLen < oldEndOffset {
+            oldDiffs.reserveCapacity(1)
+            oldDiffs.append(prefixLen..<oldEndOffset)
+        }
+        if prefixLen < newEndOffset {
+            newDiffs.reserveCapacity(1)
+            newDiffs.append(prefixLen..<newEndOffset)
         }
 
         return (oldDiffs, newDiffs)

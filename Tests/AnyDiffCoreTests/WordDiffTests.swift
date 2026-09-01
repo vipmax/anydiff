@@ -133,6 +133,28 @@ final class WordDiffTests: XCTestCase {
         XCTAssertTrue(lines.allSatisfy { $0.wordDiffRanges.isEmpty })
     }
 
+    func testWordDiffWhitespaceAndEmptyLines() {
+        // 1. Empty to spaces
+        let (old1, new1) = WordDiffEngine.shared.diffWords(oldText: "", newText: "    ")
+        XCTAssertEqual(old1, [])
+        XCTAssertEqual(new1, [0..<4])
+
+        // 2. Spaces to empty
+        let (old2, new2) = WordDiffEngine.shared.diffWords(oldText: "    ", newText: "")
+        XCTAssertEqual(old2, [0..<4])
+        XCTAssertEqual(new2, [])
+
+        // 3. Tab to spaces
+        let (old3, new3) = WordDiffEngine.shared.diffWords(oldText: "\t", newText: "    ")
+        XCTAssertEqual(old3, [0..<1])
+        XCTAssertEqual(new3, [0..<4])
+
+        // 4. Added indentation spaces
+        let (old4, new4) = WordDiffEngine.shared.diffWords(oldText: "  ", newText: "    ")
+        XCTAssertEqual(old4, [])
+        XCTAssertEqual(new4, [2..<4])
+    }
+
     func testLiveWordDiffRecalculationOnEdit() {
         let diffSample = """
         --- a/Calculator.swift
@@ -264,4 +286,107 @@ final class WordDiffTests: XCTestCase {
         XCTAssertEqual(result.additions, 3)
         XCTAssertEqual(result.deletions, 2)
     }
+
+    func testWordDiffRenderCacheOperations() {
+        let cache = WordDiffRenderCache()
+
+        // 1. Initial get is empty
+        XCTAssertNil(cache.get(lineIndex: 42))
+
+        // 2. Set and get
+        let ranges = [0..<5, 10..<15]
+        cache.set(lineIndex: 42, wordDiffRanges: ranges)
+        XCTAssertEqual(cache.get(lineIndex: 42), ranges)
+
+        // 3. Collision / slot mapping (42 + 2048 lands on same slot)
+        let otherRanges = [2..<8]
+        cache.set(lineIndex: 42 + WordDiffRenderCache.slotCount, wordDiffRanges: otherRanges)
+        XCTAssertEqual(cache.get(lineIndex: 42 + WordDiffRenderCache.slotCount), otherRanges)
+        // Original lineIndex 42 should now be evicted/overwritten
+        XCTAssertNil(cache.get(lineIndex: 42))
+
+        // 4. Invalidation of single lineIndex
+        cache.set(lineIndex: 100, wordDiffRanges: ranges)
+        XCTAssertEqual(cache.get(lineIndex: 100), ranges)
+        cache.invalidate(lineIndex: 100)
+        XCTAssertNil(cache.get(lineIndex: 100))
+
+        // 5. Invalidation from lineIndex
+        cache.set(lineIndex: 50, wordDiffRanges: ranges)
+        cache.set(lineIndex: 60, wordDiffRanges: ranges)
+        cache.set(lineIndex: 70, wordDiffRanges: ranges)
+        cache.invalidate(from: 60)
+        XCTAssertEqual(cache.get(lineIndex: 50), ranges)
+        XCTAssertNil(cache.get(lineIndex: 60))
+        XCTAssertNil(cache.get(lineIndex: 70))
+
+        // 6. Clear
+        cache.clear()
+        XCTAssertNil(cache.get(lineIndex: 50))
+    }
+
+    func testWordDiffEarlyExitOnLengthDisparity() {
+        // High token length disparity: 44 tokens vs 15 tokens
+        let oldLongLine = "        return FileIcon(systemName: \"curlybraces\", color: NSColor(red: 0.19, green: 0.47, blue: 0.78, alpha: 1.0), languageName: \"TypeScript\")"
+        let newShortLine = "        return FileIcon(svg: Icons.typescript, languageName: \"TypeScript\")"
+
+        let (oldDiffs, newDiffs) = WordDiffEngine.shared.diffWords(oldText: oldLongLine, newText: newShortLine)
+        XCTAssertTrue(oldDiffs.isEmpty)
+        XCTAssertTrue(newDiffs.isEmpty)
+    }
+
+    func testZeroCopyHunkMaterializationCachedAcrossDisplayQueries() throws {
+        let patch = """
+        diff --git a/Icons.swift b/Icons.swift
+        index 1111111..2222222 100644
+        --- a/Icons.swift
+        +++ b/Icons.swift
+        @@ -1,3 +1,3 @@
+        -let swiftIcon = "swift.badge"
+        +let swiftIcon = "swift.fill"
+         let rustIcon = "gearshape"
+        """
+        let data = Data(patch.utf8)
+        let file = try XCTUnwrap(GitDiffParser.shared.parseZeroCopy(data: data).first)
+        let hunk = try XCTUnwrap(file.hunks.first)
+
+        let buffer = Buffer(
+            filePath: "Icons.swift",
+            storage: .makeDiffFlat(data: data, spans: hunk.lineSpans, side: .new),
+            startLineNumber: 1,
+            isLazySlice: true
+        )
+        let mb = MultiBuffer()
+        mb.addBuffer(buffer)
+        let excerpt = Excerpt(
+            bufferId: buffer.id,
+            filePath: "Icons.swift",
+            bufferRange: 0..<2,
+            hunk: hunk
+        )
+        mb.addExcerpt(excerpt)
+
+        let dm = DisplayMap(multiBuffer: mb, reviewManager: ReviewManager())
+
+        // First query: materializes and runs word diff
+        let lines1 = dm.visibleLines(in: 0..<5)
+        let codeItems1 = lines1.compactMap { item -> DisplayCodeLineInfo? in
+            if case .code(let info) = item.line { return info }
+            return nil
+        }
+        XCTAssertFalse(codeItems1.isEmpty)
+        let diffRanges1 = codeItems1.first(where: { $0.diffKind == .added })?.wordDiffRanges
+        XCTAssertNotNil(diffRanges1)
+        XCTAssertFalse(diffRanges1?.isEmpty ?? true)
+
+        // Second query: should hit cache and yield identical results
+        let lines2 = dm.visibleLines(in: 0..<5)
+        let codeItems2 = lines2.compactMap { item -> DisplayCodeLineInfo? in
+            if case .code(let info) = item.line { return info }
+            return nil
+        }
+        let diffRanges2 = codeItems2.first(where: { $0.diffKind == .added })?.wordDiffRanges
+        XCTAssertEqual(diffRanges1, diffRanges2)
+    }
 }
+

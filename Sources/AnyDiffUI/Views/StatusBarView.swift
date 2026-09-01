@@ -88,11 +88,11 @@ public struct StatusBarView: View {
 
             Text("+\(totalAdditions)")
                 .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                .foregroundColor(.green)
+                .foregroundColor(Color(theme.diffAddedGutter))
 
             Text("-\(totalDeletions)")
                 .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                .foregroundColor(.red)
+                .foregroundColor(Color(theme.diffDeletedGutter))
         }
     }
 }
