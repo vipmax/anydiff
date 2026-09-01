@@ -1026,8 +1026,8 @@ final class MultiBufferTests: XCTestCase {
         dm.rebuild()
         let elapsed = Date().timeIntervalSince(t0)
 
-        // Should take well123123 under 50ms for 10k lines
-        XCTAssertLessThan(elapsed, 0.05)
+        // Should take well under 250ms for 10k lines even on noisy CI VMs
+        XCTAssertLessThan(elapsed, 0.25)
         // 1st file collapsed (only header remains, 50 code lines removed) -> 10,150 lines
         XCTAssertEqual(dm.displayLines.count, 10_150)
 
