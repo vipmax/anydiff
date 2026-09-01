@@ -45,13 +45,18 @@ jobs:
             echo "tag=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
           fi
 
-      - name: Create GitHub Release
+      - name: Create or Update GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ steps.get_tag.outputs.tag }}"
-          gh release create "$TAG" \
-            --title "AnyDiff $TAG" \
-            --generate-notes \
-            dist/AnyDiff.dmg \
-            dist/AnyDiff-macOS.zip
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists, updating assets..."
+            gh release upload "$TAG" dist/AnyDiff.dmg dist/AnyDiff-macOS.zip --clobber
+          else
+            gh release create "$TAG" \
+              --title "AnyDiff $TAG" \
+              --generate-notes \
+              dist/AnyDiff.dmg \
+              dist/AnyDiff-macOS.zip
+          fi
