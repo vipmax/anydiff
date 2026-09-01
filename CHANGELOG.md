@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.0] - 2026-09-02
+
+### 🤖 Embedded AI Agent (ACP Protocol)
+- **Agent Client Protocol (JSON-RPC 2.0)**:
+  - Added native embedded side panel (`Cmd + Option + A`) supporting full agent lifecycle over stdio JSON-RPC.
+  - Multi-provider presets: OpenAI / Codex, Anthropic / Claude Code, Google Gemini / Antigravity CLI, and Custom ACP Agent commands.
+  - Offline Mock Mode for rapid UI iteration and testing without external processes.
+- **Multimodal Image Attachments & Zoom Preview**:
+  - Drag-and-drop or clipboard paste (`Cmd + V`) of screenshots into prompts.
+  - Live attachment thumbnails and full-screen zoomable modal view (`AgentZoomableImageView`).
+- **Interactive Tool Call & Diff Jumps**:
+  - Real-time expandable tool call cards for file reads, directory listings, and bash commands.
+  - **Edited Files Card**: live tracking of files modified by the agent with instant jumps to specific file diffs in the multi-buffer editor.
+- **Reasoning & State Management**:
+  - Streaming thinking thoughts and customizable reasoning effort levels (Low / Medium / High).
+  - Context & token usage gauge with live capacity tracking.
+  - Saved chat session history drawer per workspace with thread switching, renaming, and persistence.
+  - Granular client-side permissions for disk writes and terminal command executions.
+
+### 🎨 Rich Vector File Icons (Devicon SVGs)
+- **30+ Devicon Brand Vector Icons**:
+  - High-resolution SVG vector icons for TypeScript, React/TSX, JavaScript, Python, Rust, Go, Swift, Kotlin, Java, C++, C#, Docker, Git, SQL, Markdown, YAML, TOML, GraphQL, Shell, and more.
+  - Zero-dependency AppKit SVG rendering with `NSCache` for 120 FPS scrolling performance.
+
+### ⚡ WordDiff & Display Engine Optimizations
+- Added intra-line word diff render caching (`WordDiffRenderCache`) for instant zero-copy hunk display.
+- Enhanced Cyrillic and international UTF-8 intra-line Myers diff highlighting.
+- Expanded test suite to **176 passing tests**.
+
+---
+
 ## [1.0.1] - 2026-08-18
 
 ### 🚀 Mega-Diff & 1M+ Lines Memory Optimization
