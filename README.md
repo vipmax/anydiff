@@ -51,7 +51,7 @@ Or download directly from [Releases](https://github.com/vipmax/anydiff/releases/
   - Multi-provider support: Codex, Claude Code, Gemini / Antigravity, and Custom ACP agents.
 - **Rich Vector File Icons (Devicon SVGs)**: Crisp, high-resolution vector icons for 30+ major languages and configuration formats (TypeScript, React/TSX, JavaScript, Python, Rust, Go, Swift, Kotlin, Java, C++, C#, Docker, Git, SQL, Markdown, YAML, TOML, etc.) natively rendered via AppKit vector SVGs with 120 FPS caching.
 - **Minimalist macOS Titlebar & Dark Themes**:
-  - Curated themes: `Unified Dark`, `Tokyo Night`, `GitHub Dark`, and `Monokai Pro`.
+  - Curated themes: `Vesper` (Default), `macOS Dark`, `Tokyo Night`, `GitHub Dark`, `Zed Slate Gray`, `Zed Dark`, and `macOS Light`.
   - Tokenized syntax highlighting for Swift, Rust, TypeScript, JavaScript, Python, C++, Go, and JSON.
 
 ---

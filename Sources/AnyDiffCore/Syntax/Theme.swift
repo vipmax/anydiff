@@ -337,9 +337,9 @@ public struct Theme: Identifiable, Sendable {
     )
 
     public static let allThemes: [Theme] = [
+        .vesper,
         .macOSLight,
         .unifiedDark,
-        .vesper,
         .zedGray,
         .zedDark,
         .tokyoNight,

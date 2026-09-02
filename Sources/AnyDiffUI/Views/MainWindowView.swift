@@ -84,7 +84,7 @@ public struct MainWindowView: View {
     @State private var selectedFilePath: String? = nil
     @State private var isWatchModeEnabled: Bool = true
     @State private var folderWatcher: FolderWatcher? = nil
-    @State private var selectedTheme: Theme = .unifiedDark
+    @State private var selectedTheme: Theme = .vesper
     @State private var followsSystemAppearance: Bool = true
     @State private var viewMode: DiffViewMode = .unified
     @State private var contextLines: Int = 3
@@ -123,7 +123,7 @@ public struct MainWindowView: View {
 
     private var activeTheme: Theme {
         if followsSystemAppearance {
-            return systemAppearance.isDark ? .unifiedDark : .macOSLight
+            return systemAppearance.isDark ? .vesper : .macOSLight
         }
         return selectedTheme
     }

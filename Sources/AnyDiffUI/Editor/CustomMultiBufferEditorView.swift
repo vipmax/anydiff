@@ -33,7 +33,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         }
     }
 
-    public var theme: Theme = .zedGray {
+    public var theme: Theme = .vesper {
         didSet {
             // CTLine stores resolved foreground colors, so cached lines must be
             // discarded when the palette changes (including system appearance changes).
