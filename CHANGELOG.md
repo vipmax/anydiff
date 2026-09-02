@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.1] - 2026-09-02
+
+### 🐛 Bug Fixes
+- **Packaging & Gatekeeper**:
+  - Fixed startup crash in release builds caused by missing SwiftPM resource bundle (`AnyDiff_AnyDiffUI.bundle`) in `AnyDiff.app/Contents/Resources`.
+  - Added resilient multi-path bundle resolution with safe fallbacks in `Icons.swift`.
+  - Added macOS Gatekeeper quarantine removal instructions in README.
+
+---
+
 ## [1.1.0] - 2026-09-02
 
 ### 🤖 Embedded AI Agent (ACP Protocol)

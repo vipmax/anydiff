@@ -54,16 +54,51 @@ public enum Icons {
     public static let zig = "zig"
     public static let env = "env"
 
-    /// Loads the raw SVG data for a given icon name from Bundle.module.
+    /// Safely resolves the resource bundle containing icons without triggering SwiftPM fatalError if missing.
+    public static let resourceBundle: Bundle? = {
+        // 1. Inside App Bundle Resources (Contents/Resources/AnyDiff_AnyDiffUI.bundle)
+        if let resourceURL = Bundle.main.resourceURL {
+            let bundleURL = resourceURL.appendingPathComponent("AnyDiff_AnyDiffUI.bundle")
+            if let bundle = Bundle(url: bundleURL) {
+                return bundle
+            }
+        }
+        // 2. Main bundle root (AnyDiff.app/AnyDiff_AnyDiffUI.bundle)
+        let mainBundleRoot = Bundle.main.bundleURL.appendingPathComponent("AnyDiff_AnyDiffUI.bundle")
+        if let bundle = Bundle(url: mainBundleRoot) {
+            return bundle
+        }
+        // 3. Executable directory (for CLI or development binary)
+        if let execDir = Bundle.main.executableURL?.deletingLastPathComponent().appendingPathComponent("AnyDiff_AnyDiffUI.bundle"),
+           let bundle = Bundle(url: execDir) {
+            return bundle
+        }
+        // 4. Directly in Bundle.main resources (if resources were flattened into Resources/)
+        if let resourceURL = Bundle.main.resourceURL,
+           FileManager.default.fileExists(atPath: resourceURL.appendingPathComponent("typescript.svg").path) {
+            return Bundle.main
+        }
+        // 5. Try Bundle.module (works in SPM development & test environment)
+        #if SWIFT_PACKAGE
+        return Bundle.module
+        #else
+        return nil
+        #endif
+    }()
+
+    /// Loads the raw SVG data for a given icon name safely.
     public static func svgData(named name: String) -> Data? {
         guard let url = svgURL(named: name) else { return nil }
         return try? Data(contentsOf: url)
     }
 
-    /// Resolves the file URL for an icon name inside Bundle.module resources.
+    /// Resolves the file URL for an icon name inside resources.
     public static func svgURL(named name: String) -> URL? {
-        return Bundle.module.url(forResource: name, withExtension: "svg", subdirectory: "Icons")
-            ?? Bundle.module.url(forResource: name, withExtension: "svg")
+        if let bundle = resourceBundle {
+            return bundle.url(forResource: name, withExtension: "svg", subdirectory: "Icons")
+                ?? bundle.url(forResource: name, withExtension: "svg")
+        }
+        return nil
     }
 }
 

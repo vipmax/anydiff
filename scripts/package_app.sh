@@ -30,6 +30,15 @@ if [ -f "Resources/AppIcon.icns" ]; then
     cp "Resources/AppIcon.icns" "${RESOURCES_DIR}/AppIcon.icns"
 fi
 
+# Copy SwiftPM resource bundles (e.g., AnyDiff_AnyDiffUI.bundle)
+for bundle_dir in .build/release/*.bundle .build/*-apple-macosx/release/*.bundle; do
+    if [ -d "$bundle_dir" ] && [ ! -d "${RESOURCES_DIR}/$(basename "$bundle_dir")" ]; then
+        bundle_name="$(basename "$bundle_dir")"
+        echo "📦 Copying resource bundle: $bundle_name"
+        cp -R "$bundle_dir" "${RESOURCES_DIR}/$bundle_name"
+    fi
+done
+
 # Create Info.plist
 cat << 'PLIST' > "${CONTENTS_DIR}/Info.plist"
 <?xml version="1.0" encoding="UTF-8"?>
@@ -53,9 +62,9 @@ cat << 'PLIST' > "${CONTENTS_DIR}/Info.plist"
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.1.0</string>
+    <string>1.1.1</string>
     <key>CFBundleVersion</key>
-    <string>3</string>
+    <string>4</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
     <key>NSHighResolutionCapable</key>
