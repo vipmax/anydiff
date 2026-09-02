@@ -262,6 +262,59 @@ final class AgentSessionCoordinatorTests: XCTestCase {
         XCTAssertNil(turnSum)
     }
 
+    func testPreExistingDirtyWorkingTreeDoesNotAttributeToTurn() throws {
+        let tempDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("anydiff-git-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        func runProcess(_ args: [String]) {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+            p.arguments = ["-C", tempDir.path] + args
+            p.standardOutput = FileHandle.nullDevice
+            p.standardError = FileHandle.nullDevice
+            try? p.run()
+            p.waitUntilExit()
+        }
+
+        runProcess(["init"])
+        runProcess(["config", "user.name", "Test"])
+        runProcess(["config", "user.email", "test@example.com"])
+
+        let file1URL = tempDir.appendingPathComponent("existing_file.txt")
+        try "initial content\n".write(to: file1URL, atomically: true, encoding: .utf8)
+        runProcess(["add", "existing_file.txt"])
+        runProcess(["commit", "-m", "Initial commit"])
+
+        // Simulate 10 pre-existing modified files in the working directory before turn starts
+        for i in 1...10 {
+            let fileURL = tempDir.appendingPathComponent("dirty_\(i).txt")
+            try "staged content \(i)\n".write(to: fileURL, atomically: true, encoding: .utf8)
+            runProcess(["add", "dirty_\(i).txt"])
+        }
+
+        // 1. Capture snapshot before turn
+        let snapshot = AgentGitChangesDetector.capturePreTurnSnapshot(workingDirectory: tempDir.path)
+        XCTAssertTrue(snapshot.isGitRepository)
+        XCTAssertNotNil(snapshot.baseCommitHash)
+
+        // 2. Turn 1: Agent does not edit any files (e.g. only runs read-only commands)
+        let (turn1Summary, _) = AgentGitChangesDetector.computeTurnSummary(workingDirectory: tempDir.path, snapshot: snapshot)
+        // MUST BE NIL — pre-existing 10 files should NOT be attributed to the agent!
+        XCTAssertNil(turn1Summary)
+
+        // 3. Turn 2: Agent edits ONLY 1 file (turn_edit.txt)
+        let agentFileURL = tempDir.appendingPathComponent("turn_edit.txt")
+        try "agent line 1\nagent line 2\n".write(to: agentFileURL, atomically: true, encoding: .utf8)
+
+        let (turn2Summary, _) = AgentGitChangesDetector.computeTurnSummary(workingDirectory: tempDir.path, snapshot: snapshot)
+        XCTAssertNotNil(turn2Summary)
+        // MUST ONLY contain turn_edit.txt, NOT the 10 pre-existing dirty files!
+        XCTAssertEqual(turn2Summary?.files.count, 1)
+        XCTAssertEqual(turn2Summary?.files.first?.path, "turn_edit.txt")
+        XCTAssertEqual(turn2Summary?.displayTitle, "Edited 1 file")
+    }
+
     func testToolCallItemCreateEditedFilesSummary() {
         let editTool = ToolCallItem(
             toolName: "replace_file_content",

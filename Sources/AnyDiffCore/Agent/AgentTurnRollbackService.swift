@@ -176,7 +176,9 @@ public enum AgentTurnRollbackService {
     private static func runGit(arguments: [String]) -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        process.arguments = arguments
+        var fullArgs = ["-c", "user.name=AnyDiff", "-c", "user.email=anydiff@local"]
+        fullArgs.append(contentsOf: arguments)
+        process.arguments = fullArgs
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
