@@ -219,6 +219,122 @@ public final class GitDiffParser: Sendable {
     }
 }
 
+/// Unescapes a Git quoted/escaped file path (handling C-style octal \ooo escapes and quotes)
+@inlinable
+public func unescapeGitPath(_ s: Substring) -> String {
+    var raw = s.drop(while: { $0.isWhitespace })
+    while let last = raw.last, last.isWhitespace {
+        raw = raw.dropLast()
+    }
+    guard raw.hasPrefix("\"") && raw.hasSuffix("\"") && raw.count >= 2 else {
+        return raw.hasPrefix("a/") || raw.hasPrefix("b/") ? String(raw.dropFirst(2)) : String(raw)
+    }
+    raw = raw.dropFirst().dropLast()
+    var bytes = [UInt8]()
+    bytes.reserveCapacity(64)
+    var isEscaped = false
+    while !raw.isEmpty {
+        let ch = raw.first!
+        raw = raw.dropFirst()
+        if isEscaped {
+            isEscaped = false
+            if ch == "\\" { bytes.append(UInt8(ascii: "\\")) }
+            else if ch == "\"" { bytes.append(UInt8(ascii: "\"")) }
+            else if ch == "n" { bytes.append(UInt8(ascii: "\n")) }
+            else if ch == "t" { bytes.append(UInt8(ascii: "\t")) }
+            else if ch == "r" { bytes.append(UInt8(ascii: "\r")) }
+            else if let oct1 = ch.wholeNumberValue, oct1 < 8 {
+                var octalVal = oct1
+                if let n1 = raw.first?.wholeNumberValue, n1 < 8 {
+                    raw = raw.dropFirst()
+                    octalVal = (octalVal << 3) | n1
+                    if let n2 = raw.first?.wholeNumberValue, n2 < 8 {
+                        raw = raw.dropFirst()
+                        octalVal = (octalVal << 3) | n2
+                    }
+                }
+                bytes.append(UInt8(octalVal & 0xFF))
+            } else {
+                for u8 in ch.utf8 { bytes.append(u8) }
+            }
+        } else if ch == "\\" {
+            isEscaped = true
+        } else {
+            for u8 in ch.utf8 { bytes.append(u8) }
+        }
+    }
+    let decoded = String(decoding: bytes, as: UTF8.self)
+    return decoded.hasPrefix("a/") || decoded.hasPrefix("b/") ? String(decoded.dropFirst(2)) : decoded
+}
+
+/// Parses source and destination paths from a `diff --git <src> <dst>` header line
+@inlinable
+public func parseGitDiffHeaderPaths(_ line: String) -> (oldPath: String, newPath: String)? {
+    guard line.hasPrefix("diff --git ") else { return nil }
+    var s = line.dropFirst("diff --git ".count)[...]
+
+    func parseNextPath(from s: inout Substring) -> String? {
+        s = s.drop(while: { $0 == " " || $0 == "\t" })
+        guard !s.isEmpty else { return nil }
+
+        if s.first == "\"" {
+            s = s.dropFirst()
+            var bytes = [UInt8]()
+            bytes.reserveCapacity(64)
+            var isEscaped = false
+            while !s.isEmpty {
+                let ch = s.first!
+                s = s.dropFirst()
+                if isEscaped {
+                    isEscaped = false
+                    if ch == "\\" { bytes.append(UInt8(ascii: "\\")) }
+                    else if ch == "\"" { bytes.append(UInt8(ascii: "\"")) }
+                    else if ch == "n" { bytes.append(UInt8(ascii: "\n")) }
+                    else if ch == "t" { bytes.append(UInt8(ascii: "\t")) }
+                    else if ch == "r" { bytes.append(UInt8(ascii: "\r")) }
+                    else if let oct1 = ch.wholeNumberValue, oct1 < 8 {
+                        var octalVal = oct1
+                        if let n1 = s.first?.wholeNumberValue, n1 < 8 {
+                            s = s.dropFirst()
+                            octalVal = (octalVal << 3) | n1
+                            if let n2 = s.first?.wholeNumberValue, n2 < 8 {
+                                s = s.dropFirst()
+                                octalVal = (octalVal << 3) | n2
+                            }
+                        }
+                        bytes.append(UInt8(octalVal & 0xFF))
+                    } else {
+                        for u8 in ch.utf8 { bytes.append(u8) }
+                    }
+                } else if ch == "\\" {
+                    isEscaped = true
+                } else if ch == "\"" {
+                    break
+                } else {
+                    for u8 in ch.utf8 { bytes.append(u8) }
+                }
+            }
+            let rawStr = String(decoding: bytes, as: UTF8.self)
+            return rawStr.hasPrefix("a/") || rawStr.hasPrefix("b/") ? String(rawStr.dropFirst(2)) : rawStr
+        } else {
+            if let spaceIdx = s.firstIndex(of: " ") {
+                let path = String(s[..<spaceIdx])
+                s = s[spaceIdx...]
+                return path.hasPrefix("a/") || path.hasPrefix("b/") ? String(path.dropFirst(2)) : path
+            } else {
+                let path = String(s)
+                s = s[s.endIndex...]
+                return path.hasPrefix("a/") || path.hasPrefix("b/") ? String(path.dropFirst(2)) : path
+            }
+        }
+    }
+
+    guard let oldP = parseNextPath(from: &s), let newP = parseNextPath(from: &s) else {
+        return nil
+    }
+    return (oldP, newP)
+}
+
 /// Streaming incremental parser that emits `FileDiff`s on the fly as lines arrive from network or pipe
 public final class StreamingGitDiffParser {
     private var currentFile: FileDiff?
@@ -262,19 +378,23 @@ public final class StreamingGitDiffParser {
 
         if line.hasPrefix("diff --git ") {
             completedFile = flushFile()
-            let parts = line.components(separatedBy: " ")
-            let oldPath = parts.count > 2 ? String(parts[2].dropFirst(2)) : "old"
-            let newPath = parts.count > 3 ? String(parts[3].dropFirst(2)) : "new"
-            currentFile = FileDiff(oldPath: oldPath, newPath: newPath, status: .modified)
+            if let (oldP, newP) = parseGitDiffHeaderPaths(line) {
+                currentFile = FileDiff(oldPath: oldP, newPath: newP, status: .modified)
+            } else {
+                let parts = line.components(separatedBy: " ")
+                let oldPath = parts.count > 2 ? String(parts[2].dropFirst(2)) : "old"
+                let newPath = parts.count > 3 ? String(parts[3].dropFirst(2)) : "new"
+                currentFile = FileDiff(oldPath: oldPath, newPath: newPath, status: .modified)
+            }
         } else if line.hasPrefix("new file mode") {
             currentFile?.status = .added
         } else if line.hasPrefix("deleted file mode") {
             currentFile?.status = .deleted
         } else if line.hasPrefix("rename from ") {
             currentFile?.status = .renamed
-            currentFile?.oldPath = String(line.dropFirst("rename from ".count))
+            currentFile?.oldPath = unescapeGitPath(line.dropFirst("rename from ".count))
         } else if line.hasPrefix("rename to ") {
-            currentFile?.newPath = String(line.dropFirst("rename to ".count))
+            currentFile?.newPath = unescapeGitPath(line.dropFirst("rename to ".count))
         } else if line.hasPrefix("--- ") {
             if line.hasPrefix("--- /dev/null") {
                 currentFile?.status = .added
@@ -283,8 +403,7 @@ public final class StreamingGitDiffParser {
             if line.hasPrefix("+++ /dev/null") {
                 currentFile?.status = .deleted
             } else if currentFile == nil {
-                let p = String(line.dropFirst(4)).trimmingCharacters(in: .whitespaces)
-                let cleanPath = p.hasPrefix("b/") ? String(p.dropFirst(2)) : p
+                let cleanPath = unescapeGitPath(line.dropFirst(4))
                 currentFile = FileDiff(oldPath: cleanPath, newPath: cleanPath, status: .modified)
             }
         } else if line.hasPrefix("@@ ") {
@@ -476,19 +595,23 @@ public final class ZeroCopyStreamingGitDiffParser {
 
         if line.hasPrefix("diff --git ") {
             completedFile = flushFile()
-            let parts = line.components(separatedBy: " ")
-            let oldPath = parts.count > 2 ? String(parts[2].dropFirst(2)) : "old"
-            let newPath = parts.count > 3 ? String(parts[3].dropFirst(2)) : "new"
-            currentFile = FileDiff(oldPath: oldPath, newPath: newPath, status: .modified)
+            if let (oldP, newP) = parseGitDiffHeaderPaths(line) {
+                currentFile = FileDiff(oldPath: oldP, newPath: newP, status: .modified)
+            } else {
+                let parts = line.components(separatedBy: " ")
+                let oldPath = parts.count > 2 ? String(parts[2].dropFirst(2)) : "old"
+                let newPath = parts.count > 3 ? String(parts[3].dropFirst(2)) : "new"
+                currentFile = FileDiff(oldPath: oldPath, newPath: newPath, status: .modified)
+            }
         } else if line.hasPrefix("new file mode") {
             currentFile?.status = .added
         } else if line.hasPrefix("deleted file mode") {
             currentFile?.status = .deleted
         } else if line.hasPrefix("rename from ") {
             currentFile?.status = .renamed
-            currentFile?.oldPath = String(line.dropFirst("rename from ".count))
+            currentFile?.oldPath = unescapeGitPath(line.dropFirst("rename from ".count))
         } else if line.hasPrefix("rename to ") {
-            currentFile?.newPath = String(line.dropFirst("rename to ".count))
+            currentFile?.newPath = unescapeGitPath(line.dropFirst("rename to ".count))
         } else if line.hasPrefix("--- ") {
             if line.hasPrefix("--- /dev/null") {
                 currentFile?.status = .added
@@ -497,8 +620,7 @@ public final class ZeroCopyStreamingGitDiffParser {
             if line.hasPrefix("+++ /dev/null") {
                 currentFile?.status = .deleted
             } else if currentFile == nil {
-                let p = String(line.dropFirst(4)).trimmingCharacters(in: .whitespaces)
-                let cleanPath = p.hasPrefix("b/") ? String(p.dropFirst(2)) : p
+                let cleanPath = unescapeGitPath(line.dropFirst(4))
                 currentFile = FileDiff(oldPath: cleanPath, newPath: cleanPath, status: .modified)
             }
         } else if line.hasPrefix("@@ ") || line.hasPrefix("@@") {

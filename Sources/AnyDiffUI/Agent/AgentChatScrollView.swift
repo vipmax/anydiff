@@ -1127,34 +1127,49 @@ public enum AgentChatSelectionGranularity {
 
 func expandChatSelectionRange(_ range: NSRange, in text: String, granularity: AgentChatSelectionGranularity) -> NSRange {
     guard !text.isEmpty, granularity != .character else { return range }
-    let ns = text as NSString
-    guard ns.length > 0 else { return range }
+    let u16Count = text.utf16.count
+    guard u16Count > 0 else { return range }
 
-    let start = max(0, min(range.location, ns.length - 1))
-    let end = max(0, min(range.location + range.length, ns.length))
+    let start = max(0, min(range.location, u16Count - 1))
+    let end = max(0, min(range.location + range.length, u16Count))
 
     switch granularity {
     case .character:
         return range
 
     case .word:
-        var wStart = start
-        var wEnd = max(start, end)
-        let nonWord = CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters)
+        let charIdx = text.characterIndex(forUtf16Offset: start)
+        let chars = Array(text)
+        guard !chars.isEmpty else { return range }
 
-        while wStart > 0 {
-            let prev = ns.character(at: wStart - 1)
-            if let s = UnicodeScalar(prev), nonWord.contains(s) { break }
-            wStart -= 1
+        func isWord(_ c: Character) -> Bool {
+            c.isLetter || c.isNumber || c == "_"
         }
-        while wEnd < ns.length {
-            let curr = ns.character(at: wEnd)
-            if let s = UnicodeScalar(curr), nonWord.contains(s) { break }
-            wEnd += 1
+
+        var targetIndex = min(charIdx, chars.count - 1)
+        if targetIndex < 0 { targetIndex = 0 }
+        let ch = chars[targetIndex]
+
+        var wStart = targetIndex
+        var wEnd = targetIndex
+
+        if isWord(ch) {
+            while wStart > 0 && isWord(chars[wStart - 1]) { wStart -= 1 }
+            while wEnd < chars.count && isWord(chars[wEnd]) { wEnd += 1 }
+        } else if ch.isWhitespace {
+            while wStart > 0 && chars[wStart - 1].isWhitespace { wStart -= 1 }
+            while wEnd < chars.count && chars[wEnd].isWhitespace { wEnd += 1 }
+        } else {
+            while wStart > 0 && !isWord(chars[wStart - 1]) && !chars[wStart - 1].isWhitespace { wStart -= 1 }
+            while wEnd < chars.count && !isWord(chars[wEnd]) && !chars[wEnd].isWhitespace { wEnd += 1 }
         }
-        return NSRange(location: wStart, length: max(1, wEnd - wStart))
+
+        let startU16 = text.utf16Offset(forCharacterIndex: wStart)
+        let endU16 = text.utf16Offset(forCharacterIndex: wEnd)
+        return NSRange(location: startU16, length: max(1, endU16 - startU16))
 
     case .paragraph:
+        let ns = text as NSString
         let lineStartRange = ns.lineRange(for: NSRange(location: start, length: 0))
         let targetEnd = max(start, min(end, ns.length - 1))
         let lineEndRange = ns.lineRange(for: NSRange(location: targetEnd, length: 0))
@@ -1165,39 +1180,43 @@ func expandChatSelectionRange(_ range: NSRange, in text: String, granularity: Ag
 }
 
 func findNextWordBoundary(after idx: Int, in text: String) -> Int {
-    let ns = text as NSString
-    guard ns.length > 0 else { return 0 }
-    let nonWord = CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters)
-    var i = max(0, min(idx, ns.length - 1))
-    while i < ns.length {
-        let c = ns.character(at: i)
-        if let s = UnicodeScalar(c), !nonWord.contains(s) { break }
+    guard !text.isEmpty else { return 0 }
+    let charIdx = text.characterIndex(forUtf16Offset: idx)
+    let chars = Array(text)
+    guard charIdx < chars.count else { return text.utf16.count }
+
+    func isWord(_ c: Character) -> Bool {
+        c.isLetter || c.isNumber || c == "_"
+    }
+
+    var i = max(0, charIdx)
+    while i < chars.count && !isWord(chars[i]) {
         i += 1
     }
-    while i < ns.length {
-        let c = ns.character(at: i)
-        if let s = UnicodeScalar(c), nonWord.contains(s) { break }
+    while i < chars.count && isWord(chars[i]) {
         i += 1
     }
-    return min(ns.length, i)
+    return text.utf16Offset(forCharacterIndex: i)
 }
 
 func findPrevWordBoundary(before idx: Int, in text: String) -> Int {
-    let ns = text as NSString
-    guard ns.length > 0 else { return 0 }
-    let nonWord = CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters)
-    var i = max(0, min(idx, ns.length))
-    while i > 0 {
-        let c = ns.character(at: i - 1)
-        if let s = UnicodeScalar(c), !nonWord.contains(s) { break }
+    guard !text.isEmpty && idx > 0 else { return 0 }
+    let charIdx = text.characterIndex(forUtf16Offset: idx)
+    let chars = Array(text)
+    guard !chars.isEmpty else { return 0 }
+
+    func isWord(_ c: Character) -> Bool {
+        c.isLetter || c.isNumber || c == "_"
+    }
+
+    var i = min(charIdx, chars.count)
+    while i > 0 && !isWord(chars[i - 1]) {
         i -= 1
     }
-    while i > 0 {
-        let c = ns.character(at: i - 1)
-        if let s = UnicodeScalar(c), nonWord.contains(s) { break }
+    while i > 0 && isWord(chars[i - 1]) {
         i -= 1
     }
-    return max(0, i)
+    return text.utf16Offset(forCharacterIndex: i)
 }
 
 func findNextParagraphBoundary(after idx: Int, in text: String) -> Int {
@@ -1837,7 +1856,7 @@ public final class AgentNativeChatDocumentView: NSView {
 
     private func pointForCharacterIndex(_ idx: Int, in tv: AgentSelectableTextView) -> NSPoint {
         guard let lm = tv.layoutManager, let tc = tv.textContainer else { return NSPoint(x: 0, y: 10) }
-        let textLen = tv.string.count
+        let textLen = tv.string.utf16.count
         guard textLen > 0 else { return NSPoint(x: 0, y: 10) }
 
         let safeIdx = max(0, min(idx, textLen))

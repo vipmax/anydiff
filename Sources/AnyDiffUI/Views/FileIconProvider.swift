@@ -181,8 +181,10 @@ public final class FileIconProvider: @unchecked Sendable {
             return FileIcon(svg: Icons.toml, languageName: "TOML")
         case "xml", "plist", "config", "ini", "props":
             return FileIcon(systemName: "doc.badge.gearshape.fill", color: NSColor.secondaryLabelColor, languageName: "Config/XML")
-        case "md", "markdown", "mdx", "rst", "txt":
+        case "md", "markdown", "mdx", "rst":
             return FileIcon(svg: Icons.markdown, languageName: "Markdown")
+        case "txt", "text", "log":
+            return FileIcon(systemName: "doc.text.fill", color: NSColor.secondaryLabelColor, languageName: "Plain Text")
         case "sh", "bash", "zsh", "fish", "command":
             return FileIcon(svg: Icons.shell, languageName: "Shell")
         case "sql", "sqlite", "db":

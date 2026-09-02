@@ -38,56 +38,6 @@ public final class SyntaxHighlighter: @unchecked Sendable {
     private let maxEntries = 2000
     private let cacheLock = NSLock()
 
-    private let swiftKeywords: Set<String> = [
-        "func", "class", "struct", "enum", "protocol", "extension", "let", "var", "import",
-        "public", "private", "fileprivate", "internal", "open", "static", "final", "mutating",
-        "return", "if", "else", "guard", "switch", "case", "default", "for", "in", "while",
-        "repeat", "break", "continue", "fallthrough", "try", "catch", "throw", "throws",
-        "rethrows", "async", "await", "actor", "some", "any", "self", "Self", "nil", "true", "false",
-        "where", "init", "deinit", "subscript", "typealias", "associatedtype", "defer", "as", "is"
-    ]
-
-    private let rustKeywords: Set<String> = [
-        "fn", "struct", "enum", "trait", "impl", "let", "mut", "pub", "use", "mod", "crate",
-        "self", "Self", "return", "if", "else", "match", "for", "in", "while", "loop",
-        "break", "continue", "async", "await", "move", "ref", "type", "where", "unsafe",
-        "const", "static", "true", "false", "None", "Some", "Ok", "Err"
-    ]
-
-    private let tsKeywords: Set<String> = [
-        "function", "class", "interface", "type", "const", "let", "var", "import", "export",
-        "from", "default", "return", "if", "else", "switch", "case", "for", "while", "do",
-        "break", "continue", "try", "catch", "finally", "throw", "async", "await", "new",
-        "this", "null", "undefined", "true", "false", "typeof", "instanceof", "as", "is"
-    ]
-
-    private let pythonKeywords: Set<String> = [
-        "def", "class", "import", "from", "as", "return", "if", "elif", "else", "for", "while",
-        "break", "continue", "try", "except", "finally", "raise", "with", "yield", "async", "await",
-        "lambda", "pass", "global", "nonlocal", "assert", "del", "in", "is", "not", "and", "or",
-        "True", "False", "None", "self"
-    ]
-
-    private let goKeywords: Set<String> = [
-        "func", "package", "import", "type", "struct", "interface", "var", "const", "return",
-        "if", "else", "switch", "case", "default", "for", "range", "break", "continue", "fallthrough",
-        "go", "defer", "select", "chan", "map", "nil", "true", "false", "make", "new", "len", "cap", "append"
-    ]
-
-    private let cKeywords: Set<String> = [
-        "int", "char", "float", "double", "void", "bool", "long", "short", "signed", "unsigned",
-        "struct", "union", "enum", "typedef", "sizeof", "static", "const", "extern", "register", "volatile",
-        "if", "else", "switch", "case", "default", "for", "while", "do", "break", "continue", "return",
-        "goto", "auto", "inline", "restrict", "true", "false", "NULL", "nullptr", "class", "namespace",
-        "public", "private", "protected", "template", "typename", "virtual", "override", "final", "new", "delete"
-    ]
-
-    private let shellKeywords: Set<String> = [
-        "if", "then", "else", "elif", "fi", "case", "esac", "for", "while", "until", "do", "done",
-        "in", "function", "select", "time", "return", "exit", "export", "local", "readonly", "set",
-        "unset", "shift", "source", "alias", "unalias", "cd", "echo", "pwd", "true", "false"
-    ]
-
     public init() {}
 
     public func clearCache() {
@@ -128,8 +78,9 @@ public final class SyntaxHighlighter: @unchecked Sendable {
         )
 
         let spans = tokenize(line: line, language: language)
+        let utf16Length = (line as NSString).length
         for span in spans {
-            guard span.range.lowerBound < line.count && span.range.upperBound <= line.count else { continue }
+            guard span.range.lowerBound >= 0 && span.range.upperBound <= utf16Length && span.range.lowerBound < span.range.upperBound else { continue }
             let nsRange = NSRange(location: span.range.lowerBound, length: span.range.count)
             let color = colorForToken(span.tokenType, theme: theme)
             attr.addAttribute(.foregroundColor, value: color, range: nsRange)
@@ -137,8 +88,11 @@ public final class SyntaxHighlighter: @unchecked Sendable {
 
         cacheLock.lock()
         if cacheKeys.count >= maxEntries {
-            let evicted = cacheKeys.removeFirst()
-            cache.removeValue(forKey: evicted)
+            let toRemove = maxEntries / 4 // Batch purge oldest 25% to avoid O(N) array shifts on every line
+            for k in cacheKeys.prefix(toRemove) {
+                cache.removeValue(forKey: k)
+            }
+            cacheKeys.removeFirst(toRemove)
         }
         cacheKeys.append(key)
         cache[key] = attr
@@ -164,105 +118,196 @@ public final class SyntaxHighlighter: @unchecked Sendable {
 
     public func tokenize(line: String, language: String) -> [HighlightSpan] {
         var spans: [HighlightSpan] = []
-        let chars = Array(line)
-        let count = chars.count
-        var i = 0
+        let nsLine = line as NSString
+        let utf16Length = nsLine.length
+        guard utf16Length > 0 else { return [] }
 
-        while i < count {
-            let ch = chars[i]
+        var i = line.startIndex
+        var currentUtf16Offset = 0
+
+        // 1. Fast-skip leading whitespace (0 heap allocations)
+        while i < line.endIndex && (line[i] == " " || line[i] == "\t") {
+            currentUtf16Offset += 1
+            i = line.index(after: i)
+        }
+
+        guard i < line.endIndex else { return [] }
+
+        // 2. Multi-line comment continuation lines (e.g. " * doc text" or " */")
+        if language != "python" && language != "shell" && language != "yaml" && line[i] == "*" {
+            let next = line.index(after: i)
+            if next == line.endIndex || line[next] == " " || line[next] == "\t" || line[next] == "*" {
+                return [HighlightSpan(range: currentUtf16Offset..<utf16Length, tokenType: .comment)]
+            } else if line[next] == "/" {
+                let closeEndOffset = currentUtf16Offset + 2
+                spans.append(HighlightSpan(range: currentUtf16Offset..<closeEndOffset, tokenType: .comment))
+                i = line.index(after: next)
+                currentUtf16Offset = closeEndOffset
+                while i < line.endIndex && (line[i] == " " || line[i] == "\t") {
+                    currentUtf16Offset += 1
+                    i = line.index(after: i)
+                }
+                if i == line.endIndex {
+                    return spans
+                }
+            }
+        }
+
+        while i < line.endIndex {
+            let ch = line[i]
 
             // Line Comments (// or #)
-            if (ch == "/" && i + 1 < count && chars[i + 1] == "/") ||
+            let nextIndex = line.index(after: i)
+            if (ch == "/" && nextIndex < line.endIndex && line[nextIndex] == "/") ||
                ((language == "python" || language == "shell" || language == "yaml") && ch == "#") {
-                spans.append(HighlightSpan(range: i..<count, tokenType: .comment))
+                spans.append(HighlightSpan(range: currentUtf16Offset..<utf16Length, tokenType: .comment))
                 break
+            }
+
+            // Block Comments (/* ... */)
+            if ch == "/" && nextIndex < line.endIndex && line[nextIndex] == "*" {
+                let startOffset = currentUtf16Offset
+                currentUtf16Offset += 2 // "/" and "*"
+                i = line.index(after: nextIndex)
+
+                while i < line.endIndex {
+                    let sc = line[i]
+                    let sn = line.index(after: i)
+                    if sc == "*" && sn < line.endIndex && line[sn] == "/" {
+                        currentUtf16Offset += 2 // "*" and "/"
+                        i = line.index(after: sn)
+                        break
+                    }
+                    currentUtf16Offset += sc.utf16.count
+                    i = line.index(after: i)
+                }
+                spans.append(HighlightSpan(range: startOffset..<currentUtf16Offset, tokenType: .comment))
+                continue
             }
 
             // Strings ("..." or '...' or `...`)
             if ch == "\"" || ch == "'" || ch == "`" {
                 let quote = ch
-                let start = i
-                i += 1
-                while i < count {
-                    if chars[i] == "\\" && i + 1 < count {
-                        i += 2
-                        continue
+                let startOffset = currentUtf16Offset
+                currentUtf16Offset += ch.utf16.count
+                i = line.index(after: i)
+
+                while i < line.endIndex {
+                    let sc = line[i]
+                    if sc == "\\" {
+                        currentUtf16Offset += sc.utf16.count
+                        let next = line.index(after: i)
+                        if next < line.endIndex {
+                            currentUtf16Offset += line[next].utf16.count
+                            i = line.index(after: next)
+                            continue
+                        } else {
+                            i = next
+                            break
+                        }
                     }
-                    if chars[i] == quote {
-                        i += 1
+                    currentUtf16Offset += sc.utf16.count
+                    i = line.index(after: i)
+                    if sc == quote {
                         break
                     }
-                    i += 1
                 }
-                spans.append(HighlightSpan(range: start..<i, tokenType: .string))
+                spans.append(HighlightSpan(range: startOffset..<currentUtf16Offset, tokenType: .string))
                 continue
             }
 
             // Numbers
-            if ch.isNumber || (ch == "." && i + 1 < count && chars[i + 1].isNumber) {
-                let start = i
-                i += 1
-                while i < count && (chars[i].isNumber || chars[i] == "." || chars[i] == "x" || chars[i] == "f" || (chars[i] >= "a" && chars[i] <= "f") || (chars[i] >= "A" && chars[i] <= "F")) {
-                    i += 1
+            if ch.isNumber || (ch == "." && nextIndex < line.endIndex && line[nextIndex].isNumber) {
+                let startOffset = currentUtf16Offset
+                currentUtf16Offset += ch.utf16.count
+                i = nextIndex
+
+                while i < line.endIndex {
+                    let c = line[i]
+                    if c.isNumber || c == "." || c == "x" || c == "X" || c == "f" || c == "F" || (c >= "a" && c <= "f") || (c >= "A" && c <= "F") {
+                        currentUtf16Offset += c.utf16.count
+                        i = line.index(after: i)
+                    } else {
+                        break
+                    }
                 }
-                spans.append(HighlightSpan(range: start..<i, tokenType: .number))
+                spans.append(HighlightSpan(range: startOffset..<currentUtf16Offset, tokenType: .number))
                 continue
             }
 
             // Identifiers / Keywords / Types (including Swift closure shorthands $0, $1, etc.)
             if ch.isLetter || ch == "_" || ch == "$" {
                 let start = i
-                i += 1
-                while i < count && (chars[i].isLetter || chars[i].isNumber || chars[i] == "_" || chars[i] == "$") {
-                    i += 1
+                let startOffset = currentUtf16Offset
+                currentUtf16Offset += ch.utf16.count
+                i = line.index(after: i)
+
+                while i < line.endIndex {
+                    let c = line[i]
+                    if c.isLetter || c.isNumber || c == "_" || c == "$" {
+                        currentUtf16Offset += c.utf16.count
+                        i = line.index(after: i)
+                    } else {
+                        break
+                    }
                 }
-                let word = String(chars[start..<i])
-                let tokenType = classifyWord(word, language: language, nextChar: i < count ? chars[i] : nil)
-                spans.append(HighlightSpan(range: start..<i, tokenType: tokenType))
+                let word = line[start..<i]
+                let nextChar = i < line.endIndex ? line[i] : nil
+                let tokenType = classifyWord(word, language: language, nextChar: nextChar)
+                spans.append(HighlightSpan(range: startOffset..<currentUtf16Offset, tokenType: tokenType))
                 continue
             }
 
             // Operators & Punctuation
-            if "+-*/%=!<>|&^~?".contains(ch) {
-                let start = i
-                i += 1
-                while i < count && "+-*/%=!<>|&^~?".contains(chars[i]) {
-                    i += 1
+            if Self.isOperatorChar(ch) {
+                let startOffset = currentUtf16Offset
+                currentUtf16Offset += ch.utf16.count
+                i = line.index(after: i)
+
+                while i < line.endIndex && Self.isOperatorChar(line[i]) {
+                    currentUtf16Offset += line[i].utf16.count
+                    i = line.index(after: i)
                 }
-                spans.append(HighlightSpan(range: start..<i, tokenType: .operator))
+                spans.append(HighlightSpan(range: startOffset..<currentUtf16Offset, tokenType: .operator))
                 continue
-            } else if ".,;:(){}[]".contains(ch) {
-                spans.append(HighlightSpan(range: i..<(i + 1), tokenType: .punctuation))
-                i += 1
+            } else if Self.isPunctuationChar(ch) {
+                let startOffset = currentUtf16Offset
+                currentUtf16Offset += ch.utf16.count
+                i = line.index(after: i)
+                spans.append(HighlightSpan(range: startOffset..<currentUtf16Offset, tokenType: .punctuation))
                 continue
             }
 
-            i += 1
+            currentUtf16Offset += ch.utf16.count
+            i = line.index(after: i)
         }
 
         return spans
     }
 
-    private func classifyWord(_ word: String, language: String, nextChar: Character?) -> TokenType {
-        let isKeyword: Bool
-        switch language {
-        case "rust":
-            isKeyword = rustKeywords.contains(word)
-        case "typescript", "javascript":
-            isKeyword = tsKeywords.contains(word)
-        case "python":
-            isKeyword = pythonKeywords.contains(word)
-        case "go":
-            isKeyword = goKeywords.contains(word)
-        case "c", "cpp":
-            isKeyword = cKeywords.contains(word)
-        case "shell":
-            isKeyword = shellKeywords.contains(word)
+    @inline(__always)
+    private static func isOperatorChar(_ ch: Character) -> Bool {
+        switch ch {
+        case "+", "-", "*", "/", "%", "=", "!", "<", ">", "|", "&", "^", "~", "?":
+            return true
         default:
-            isKeyword = swiftKeywords.contains(word)
+            return false
         }
+    }
 
-        if isKeyword {
+    @inline(__always)
+    private static func isPunctuationChar(_ ch: Character) -> Bool {
+        switch ch {
+        case ".", ",", ";", ":", "(", ")", "{", "}", "[", "]":
+            return true
+        default:
+            return false
+        }
+    }
+
+    @inline(__always)
+    private func classifyWord(_ word: Substring, language: String, nextChar: Character?) -> TokenType {
+        if Self.isKeyword(word, language: language) {
             return .keyword
         }
 
@@ -275,5 +320,82 @@ public final class SyntaxHighlighter: @unchecked Sendable {
         }
 
         return .plain
+    }
+
+    @inline(__always)
+    private static func isKeyword(_ word: Substring, language: String) -> Bool {
+        switch language {
+        case "rust":
+            switch word {
+            case "fn", "struct", "enum", "trait", "impl", "let", "mut", "pub", "use", "mod", "crate",
+                 "self", "Self", "return", "if", "else", "match", "for", "in", "while", "loop",
+                 "break", "continue", "async", "await", "move", "ref", "type", "where", "unsafe",
+                 "const", "static", "true", "false", "None", "Some", "Ok", "Err":
+                return true
+            default:
+                return false
+            }
+        case "typescript", "javascript", "ts", "js":
+            switch word {
+            case "function", "class", "interface", "type", "const", "let", "var", "import", "export",
+                 "from", "default", "return", "if", "else", "switch", "case", "for", "while", "do",
+                 "break", "continue", "try", "catch", "finally", "throw", "async", "await", "new",
+                 "this", "null", "undefined", "true", "false", "typeof", "instanceof", "as", "is":
+                return true
+            default:
+                return false
+            }
+        case "python", "py":
+            switch word {
+            case "def", "class", "import", "from", "as", "return", "if", "elif", "else", "for", "while",
+                 "break", "continue", "try", "except", "finally", "raise", "with", "yield", "async", "await",
+                 "lambda", "pass", "global", "nonlocal", "assert", "del", "in", "is", "not", "and", "or",
+                 "True", "False", "None", "self":
+                return true
+            default:
+                return false
+            }
+        case "go":
+            switch word {
+            case "func", "package", "import", "type", "struct", "interface", "var", "const", "return",
+                 "if", "else", "switch", "case", "default", "for", "range", "break", "continue", "fallthrough",
+                 "go", "defer", "select", "chan", "map", "nil", "true", "false", "make", "new", "len", "cap", "append":
+                return true
+            default:
+                return false
+            }
+        case "c", "cpp", "cxx", "h", "hpp":
+            switch word {
+            case "int", "char", "float", "double", "void", "bool", "long", "short", "signed", "unsigned",
+                 "struct", "union", "enum", "typedef", "sizeof", "static", "const", "extern", "register", "volatile",
+                 "if", "else", "switch", "case", "default", "for", "while", "do", "break", "continue", "return",
+                 "goto", "auto", "inline", "restrict", "true", "false", "NULL", "nullptr", "class", "namespace",
+                 "public", "private", "protected", "template", "typename", "virtual", "override", "final", "new", "delete":
+                return true
+            default:
+                return false
+            }
+        case "shell", "bash", "zsh", "sh":
+            switch word {
+            case "if", "then", "else", "elif", "fi", "case", "esac", "for", "while", "until", "do", "done",
+                 "in", "function", "select", "time", "return", "exit", "export", "local", "readonly", "set",
+                 "unset", "shift", "source", "alias", "unalias", "cd", "echo", "pwd", "true", "false":
+                return true
+            default:
+                return false
+            }
+        default: // swift
+            switch word {
+            case "func", "class", "struct", "enum", "protocol", "extension", "let", "var", "import",
+                 "public", "private", "fileprivate", "internal", "open", "static", "final", "mutating",
+                 "return", "if", "else", "guard", "switch", "case", "default", "for", "in", "while",
+                 "repeat", "break", "continue", "fallthrough", "try", "catch", "throw", "throws",
+                 "rethrows", "async", "await", "actor", "some", "any", "self", "Self", "nil", "true", "false",
+                 "where", "init", "deinit", "subscript", "typealias", "associatedtype", "defer", "as", "is":
+                return true
+            default:
+                return false
+            }
+        }
     }
 }

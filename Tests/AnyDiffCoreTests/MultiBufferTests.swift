@@ -80,6 +80,418 @@ final class MultiBufferTests: XCTestCase {
         XCTAssertFalse(spans.isEmpty)
     }
 
+    func testSyntaxHighlightingWithEmojisAndCyrillic() {
+        let line = "🚀 ПРИВЕТ МИР! ДОБРО ПОЖАЛОВАТЬ В ANYDIFF!"
+        let spans = SyntaxHighlighter.shared.tokenize(line: line, language: "swift")
+        XCTAssertFalse(spans.isEmpty)
+
+        let ns = line as NSString
+        let extractedWords = spans.compactMap { span -> String? in
+            guard span.tokenType == .type || span.tokenType == .keyword || span.tokenType == .plain else { return nil }
+            return ns.substring(with: NSRange(location: span.range.lowerBound, length: span.range.count))
+        }
+        XCTAssertEqual(extractedWords, ["ПРИВЕТ", "МИР", "ДОБРО", "ПОЖАЛОВАТЬ", "В", "ANYDIFF"])
+
+        let highlighted = SyntaxHighlighter.shared.highlight(line: line, language: "swift", font: .monospacedSystemFont(ofSize: 12, weight: .regular), theme: .vesper)
+        XCTAssertEqual(highlighted.string, line)
+        XCTAssertEqual(highlighted.length, ns.length)
+    }
+
+    func testSyntaxHighlightingTrailingEscapeInString() {
+        let line = "let text = \"unterminated string with trailing escape\\"
+        let spans = SyntaxHighlighter.shared.tokenize(line: line, language: "swift")
+        XCTAssertFalse(spans.isEmpty)
+
+        let stringSpan = spans.first(where: { $0.tokenType == .string })
+        XCTAssertNotNil(stringSpan)
+        let ns = line as NSString
+        XCTAssertEqual(stringSpan?.range.upperBound, ns.length)
+
+        let highlighted = SyntaxHighlighter.shared.highlight(line: line, language: "swift", font: .monospacedSystemFont(ofSize: 12, weight: .regular), theme: .vesper)
+        XCTAssertEqual(highlighted.string, line)
+    }
+
+    func testSyntaxHighlightingBlockAndMultilineComments() {
+        // 1. Single line block comment
+        let line1 = "/* single line comment */ let a = 10"
+        let spans1 = SyntaxHighlighter.shared.tokenize(line: line1, language: "swift")
+        XCTAssertEqual(spans1.first?.tokenType, .comment)
+        XCTAssertEqual(spans1.first?.range, 0..<25)
+
+        // 2. Multi-line comment header
+        let line2 = "/** JSDoc header"
+        let spans2 = SyntaxHighlighter.shared.tokenize(line: line2, language: "swift")
+        XCTAssertEqual(spans2.first?.tokenType, .comment)
+        XCTAssertEqual(spans2.first?.range, 0..<16)
+
+        // 3. Multi-line comment continuation
+        let line3 = " * @param name user name"
+        let spans3 = SyntaxHighlighter.shared.tokenize(line: line3, language: "swift")
+        XCTAssertEqual(spans3.first?.tokenType, .comment)
+        XCTAssertEqual(spans3.first?.range, 1..<24)
+
+        // 4. Multi-line comment closing
+        let line4 = " */ let b = 20"
+        let spans4 = SyntaxHighlighter.shared.tokenize(line: line4, language: "swift")
+        XCTAssertEqual(spans4.first?.tokenType, .comment)
+        XCTAssertEqual(spans4.first?.range, 1..<3)
+        XCTAssertTrue(spans4.contains { $0.tokenType == .keyword })
+
+        // 5. Dereference is not comment
+        let line5 = "    *ptr = 10;"
+        let spans5 = SyntaxHighlighter.shared.tokenize(line: line5, language: "c")
+        XCTAssertFalse(spans5.contains { $0.tokenType == .comment })
+
+        // 6. Inline commented parameter in function signature
+        let line6 = "func process(name: String, /* x: String, */ timeout: Int) -> Bool"
+        let spans6 = SyntaxHighlighter.shared.tokenize(line: line6, language: "swift")
+        let commentSpan = spans6.first(where: { $0.tokenType == .comment })
+        XCTAssertNotNil(commentSpan)
+        let ns6 = line6 as NSString
+        XCTAssertEqual(ns6.substring(with: NSRange(location: commentSpan!.range.lowerBound, length: commentSpan!.range.count)), "/* x: String, */")
+        XCTAssertTrue(spans6.contains(where: { $0.tokenType == .keyword }))
+        XCTAssertTrue(spans6.contains(where: { $0.tokenType == .type }))
+
+        // 7. Unclosed /* comment to end of line
+        let line7 = "let x = 10; /* unclosed comment"
+        let spans7 = SyntaxHighlighter.shared.tokenize(line: line7, language: "swift")
+        let unclosedSpan = spans7.first(where: { $0.tokenType == .comment })
+        XCTAssertNotNil(unclosedSpan)
+        let ns7 = line7 as NSString
+        XCTAssertEqual(unclosedSpan?.range.upperBound, ns7.length)
+        XCTAssertEqual(ns7.substring(with: NSRange(location: unclosedSpan!.range.lowerBound, length: unclosedSpan!.range.count)), "/* unclosed comment")
+    }
+
+    func testSyntaxHighlightingCommentedParametersAcrossLanguages() {
+        let cases: [(lang: String, code: String, commentStr: String, keyword: String)] = [
+            ("swift", "func execute(target: String, /* verbose: Bool, */ retries: Int) -> Void", "/* verbose: Bool, */", "func"),
+            ("typescript", "function connect(host: string, /* port: number, */ timeout: number = 30): void", "/* port: number, */", "function"),
+            ("javascript", "const run = (url, /* opts, */ callback) => {", "/* opts, */", "const"),
+            ("rust", "fn spawn(name: &str, /* priority: u8, */ count: usize) -> Result<(), Error>", "/* priority: u8, */", "fn"),
+            ("go", "func Listen(network string, /* port int, */ address string) error", "/* port int, */", "func"),
+            ("c", "int calculate(int a, /* float factor, */ double b);", "/* float factor, */", "int"),
+            ("cpp", "void process(const std::string& key, /* int flags = 0, */ double timeout)", "/* int flags = 0, */", "void")
+        ]
+
+        let theme = Theme.vesper
+        let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+
+        for c in cases {
+            let spans = SyntaxHighlighter.shared.tokenize(line: c.code, language: c.lang)
+            let ns = c.code as NSString
+
+            // 1. Verify comment span
+            let commentSpan = spans.first { $0.tokenType == .comment }
+            XCTAssertNotNil(commentSpan, "Comment span missing for \(c.lang)")
+            if let cs = commentSpan {
+                let extracted = ns.substring(with: NSRange(location: cs.range.lowerBound, length: cs.range.count))
+                XCTAssertEqual(extracted, c.commentStr, "Comment text mismatch for \(c.lang)")
+            }
+
+            // 2. Verify keyword is recognized
+            let keywordSpan = spans.first { $0.tokenType == .keyword }
+            XCTAssertNotNil(keywordSpan, "Keyword span missing for \(c.lang)")
+            if let ks = keywordSpan {
+                let extracted = ns.substring(with: NSRange(location: ks.range.lowerBound, length: ks.range.count))
+                XCTAssertEqual(extracted, c.keyword, "Keyword text mismatch for \(c.lang)")
+            }
+
+            // 3. Verify highlight() output
+            let attr = SyntaxHighlighter.shared.highlight(line: c.code, language: c.lang, font: font, theme: theme)
+            XCTAssertEqual(attr.string, c.code)
+            XCTAssertEqual(attr.length, ns.length)
+        }
+    }
+
+    func testCharacterIndexAndUTF16OffsetMappingWithEmojis() {
+        let line = "    let greeting = \"🚀  ПРИВЕТ МИР!\""
+        let ns = line as NSString
+
+        // Test every character position round-trips correctly
+        for charIdx in 0...line.count {
+            let u16 = line.utf16Offset(forCharacterIndex: charIdx)
+            let backChar = line.characterIndex(forUtf16Offset: u16)
+            XCTAssertEqual(charIdx, backChar, "Roundtrip failed for charIdx \(charIdx)")
+        }
+
+        // Test CoreText alignment for "ПРИВЕТ"
+        let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        let attr = NSAttributedString(string: line, attributes: [.font: font])
+        let ctLine = CTLineCreateWithAttributedString(attr)
+
+        let privetU16 = ns.range(of: "ПРИВЕТ").location
+        let privetChar = line.characterIndex(forUtf16Offset: privetU16)
+        XCTAssertEqual(privetU16, 24)
+        XCTAssertEqual(privetChar, 23)
+
+        let startX = ctLine.xOffset(forCharacterIndex: privetChar, in: line)
+        let endX = ctLine.xOffset(forCharacterIndex: privetChar + 6, in: line)
+        XCTAssertGreaterThan(endX, startX)
+
+        let clickedChar = ctLine.characterIndex(at: startX + 1.0, in: line)
+        XCTAssertEqual(clickedChar, privetChar)
+
+        // Verify word range at clicked char selects "ПРИВЕТ" perfectly
+        let (wStart, wEnd) = wordRange(in: line, at: clickedChar)
+        XCTAssertEqual(wStart, privetChar)
+        XCTAssertEqual(wEnd, privetChar + 6)
+        let chars = Array(line)
+        XCTAssertEqual(String(chars[wStart..<wEnd]), "ПРИВЕТ")
+    }
+
+    func testStringCharacterIndexAndUTF16OffsetExhaustiveEdgeCases() {
+        let testStrings = [
+            "",
+            "let x = 10",
+            "func test_ascii() -> Bool",
+            "let привет = \"мир\"",
+            "🚀  ПРИВЕТ МИР!",
+            "🛰️ Satellite and 👨‍👩‍👧‍👦 Family",
+            "你好，世界！"
+        ]
+
+        for s in testStrings {
+            // 1. Exact roundtrip for every valid character position
+            for c in 0...s.count {
+                let u16 = s.utf16Offset(forCharacterIndex: c)
+                let back = s.characterIndex(forUtf16Offset: u16)
+                XCTAssertEqual(back, c, "Roundtrip failed for char \(c) in \"\(s)\"")
+            }
+
+            // 2. Out-of-bounds lower clamping
+            XCTAssertEqual(s.utf16Offset(forCharacterIndex: -10), 0)
+            XCTAssertEqual(s.characterIndex(forUtf16Offset: -10), 0)
+
+            // 3. Out-of-bounds upper clamping
+            XCTAssertEqual(s.utf16Offset(forCharacterIndex: 9999), s.utf16.count)
+            XCTAssertEqual(s.characterIndex(forUtf16Offset: 9999), s.count)
+        }
+    }
+
+    func testGlobalScriptsAndInternationalCharacters() {
+        let scripts: [(name: String, line: String, wordToSelect: String)] = [
+            ("Chinese (Simplified)", "let greeting = \"你好，世界！\"", "世界"),
+            ("Chinese (Traditional)", "let message = \"歡迎來到 AnyDiff\"", "歡迎來到"),
+            ("Japanese (Kana/Kanji)", "let text = \"こんにちは、世界！\"", "こんにちは"),
+            ("Korean (Hangul)", "let msg = \"안녕하세요 AnyDiff\"", "안녕하세요"),
+            ("Arabic", "let title = \"مرحبا بالعالم\"", "مرحبا"),
+            ("Hindi (Devanagari)", "let str = \"नमस्ते दुनिया\"", "नमस्ते"),
+            ("German (Umlauts)", "let greeting = \"Schöne Grüße aus München\"", "München"),
+            ("Mixed Emoji + CJK", "let star = \"🌟 星星 🚀 火箭 🛸\"", "星星")
+        ]
+
+        let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+
+        for item in scripts {
+            let ns = item.line as NSString
+            let attr = NSAttributedString(string: item.line, attributes: [.font: font])
+            let ctLine = CTLineCreateWithAttributedString(attr)
+
+            // 1. Check all roundtrips
+            for c in 0...item.line.count {
+                let u16 = item.line.utf16Offset(forCharacterIndex: c)
+                let back = item.line.characterIndex(forUtf16Offset: u16)
+                XCTAssertEqual(back, c, "Failed roundtrip for \(item.name) at char \(c)")
+            }
+
+            // 2. Check word selection
+            let wordU16 = ns.range(of: item.wordToSelect).location
+            XCTAssertNotEqual(wordU16, NSNotFound, "Word \"\(item.wordToSelect)\" not found in \(item.name)")
+            let wordChar = item.line.characterIndex(forUtf16Offset: wordU16)
+            let (wStart, wEnd) = wordRange(in: item.line, at: wordChar)
+            let chars = Array(item.line)
+            let extracted = String(chars[wStart..<wEnd])
+            XCTAssertEqual(extracted, item.wordToSelect, "Word selection mismatch for \(item.name)")
+
+            // 3. Check CoreText selection rect
+            let startX = ctLine.xOffset(forCharacterIndex: wStart, in: item.line)
+            let endX = ctLine.xOffset(forCharacterIndex: wEnd, in: item.line)
+            XCTAssertTrue(endX != startX, "Selection width is 0 for \(item.name)")
+        }
+    }
+
+    func testGitDiffParserQuotedAndEscapedPaths() {
+        let cases = [
+            (
+                header: "diff --git a/Sources/App.swift b/Sources/App.swift",
+                expectedOld: "Sources/App.swift",
+                expectedNew: "Sources/App.swift"
+            ),
+            (
+                header: "diff --git \"a/My Project/My File.swift\" \"b/My Project/My File.swift\"",
+                expectedOld: "My Project/My File.swift",
+                expectedNew: "My Project/My File.swift"
+            ),
+            (
+                header: "diff --git \"a/\\320\\237\\321\\200\\320\\270\\320\\262\\320\\265\\321\\202.swift\" \"b/\\320\\237\\321\\200\\320\\270\\320\\262\\320\\265\\321\\202.swift\"",
+                expectedOld: "Привет.swift",
+                expectedNew: "Привет.swift"
+            ),
+            (
+                header: "diff --git a/file.txt \"b/renamed with spaces.txt\"",
+                expectedOld: "file.txt",
+                expectedNew: "renamed with spaces.txt"
+            )
+        ]
+
+        for c in cases {
+            guard let (oldP, newP) = parseGitDiffHeaderPaths(c.header) else {
+                XCTFail("Failed to parse header: \(c.header)")
+                continue
+            }
+            XCTAssertEqual(oldP, c.expectedOld)
+            XCTAssertEqual(newP, c.expectedNew)
+        }
+
+        // Test streaming parser with complete diff containing quoted Cyrillic path
+        let streamingParser = StreamingGitDiffParser()
+        _ = streamingParser.feed(line: "diff --git \"a/\\320\\237\\321\\200\\320\\270\\320\\262\\320\\265\\321\\202.swift\" \"b/\\320\\237\\321\\200\\320\\270\\320\\262\\320\\265\\321\\202.swift\"")
+        _ = streamingParser.feed(line: "--- \"a/\\320\\237\\321\\200\\320\\270\\320\\262\\320\\265\\321\\202.swift\"")
+        _ = streamingParser.feed(line: "+++ \"b/\\320\\237\\321\\200\\320\\270\\320\\262\\320\\265\\321\\202.swift\"")
+        _ = streamingParser.feed(line: "@@ -1,1 +1,1 @@")
+        _ = streamingParser.feed(line: "-let old = 1")
+        _ = streamingParser.feed(line: "+let new = 2")
+        let file = streamingParser.feed(line: "diff --git a/next.swift b/next.swift")
+        XCTAssertNotNil(file)
+        XCTAssertEqual(file?.displayPath, "Привет.swift")
+    }
+
+    func testInternationalGitDiffFullIntegration() {
+        let testDiff = """
+        diff --git "a/\\320\\237\\321\\200\\320\\270\\320\\262\\320\\265\\321\\202 \\320\\234\\320\\270\\321\\200.swift" "b/\\320\\237\\321\\200\\320\\270\\320\\262\\320\\265\\321\\202 \\320\\234\\320\\270\\321\\200.swift"
+        index 1234567..89abcdef 100644
+        --- "a/\\320\\237\\321\\200\\320\\270\\320\\262\\320\\265\\321\\202 \\320\\234\\320\\270\\321\\200.swift"
+        +++ "b/\\320\\237\\321\\200\\320\\270\\320\\262\\320\\265\\321\\202 \\320\\234\\320\\270\\321\\200.swift"
+        @@ -1,2 +1,2 @@
+        -let x = "старый"
+        +let x = "новый"
+        diff --git "a/\\344\\275\\240\\345\\245\\275\\344\\270\\226\\347\\225\\214.ts" "b/\\344\\275\\240\\345\\245\\275\\344\\270\\226\\347\\225\\214.ts"
+        new file mode 100644
+        --- /dev/null
+        +++ "b/\\344\\275\\240\\345\\245\\275\\344\\270\\226\\347\\225\\214.ts"
+        @@ -0,0 +1,1 @@
+        +export const hello = "世界";
+        diff --git "a/\\346\\235\\261\\344\\272\\254.rs" "b/\\346\\235\\261\\344\\272\\254.rs"
+        deleted file mode 100644
+        --- "a/\\346\\235\\261\\344\\272\\254.rs"
+        +++ /dev/null
+        @@ -1,1 +0,0 @@
+        -fn main() {}
+        diff --git "a/Старое название.txt" "b/Новое название.txt"
+        similarity index 98%
+        rename from "Старое название.txt"
+        rename to "Новое название.txt"
+        --- "a/Старое название.txt"
+        +++ "b/Новое название.txt"
+        @@ -1,1 +1,1 @@
+        -1
+        +2
+        diff --git "a/samples/\\320\\242\\320\\265\\321\\201\\321\\202\\320\\276\\320\\262\\321\\213\\320\\271 \\321\\204\\320\\260\\320\\271\\320\\273 \\321\\201 \\321\\215\\320\\274\\320\\276\\320\\264\\320\\267\\320\\270 \\360\\237\\232\\200.txt" "b/samples/\\320\\242\\320\\265\\321\\201\\321\\202\\320\\276\\320\\262\\321\\213\\320\\271 \\321\\204\\320\\260\\320\\271\\320\\273 \\321\\201 \\321\\215\\320\\274\\320\\276\\320\\264\\320\\267\\320\\270 \\360\\237\\232\\200.txt"
+        new file mode 100644
+        --- /dev/null
+        +++ "b/samples/\\320\\242\\320\\265\\321\\201\\321\\202\\320\\276\\320\\262\\321\\213\\320\\271 \\321\\204\\320\\260\\320\\271\\320\\273 \\321\\201 \\321\\215\\320\\274\\320\\276\\320\\264\\320\\267\\320\\270 \\360\\237\\232\\200.txt"
+        @@ -0,0 +1,1 @@
+        +# Тестовый файл
+        """
+
+        let files = GitDiffParser.shared.parse(diffText: testDiff)
+
+        XCTAssertEqual(files.count, 5)
+        XCTAssertEqual(files[0].displayPath, "Привет Мир.swift")
+        XCTAssertEqual(files[0].status, .modified)
+
+        XCTAssertEqual(files[1].displayPath, "你好世界.ts")
+        XCTAssertEqual(files[1].status, .added)
+
+        XCTAssertEqual(files[2].displayPath, "東京.rs")
+        XCTAssertEqual(files[2].status, .deleted)
+
+        XCTAssertEqual(files[3].oldPath, "Старое название.txt")
+        XCTAssertEqual(files[3].newPath, "Новое название.txt")
+        XCTAssertEqual(files[3].status, .renamed)
+
+        XCTAssertEqual(files[4].displayPath, "samples/Тестовый файл с эмодзи 🚀.txt")
+        XCTAssertEqual(files[4].status, .added)
+    }
+
+    func testWordDiffEngineComplexEmojisAndGraphemes() {
+        let oldLine = "let item = \"🛰️ Satellite\""
+        let newLine = "let item = \"👨‍👩‍👧‍👦 Family\""
+
+        let engine = WordDiffEngine.shared
+        let (oldRanges, newRanges) = engine.diffWords(oldText: oldLine, newText: newLine)
+        XCTAssertFalse(oldRanges.isEmpty)
+        XCTAssertFalse(newRanges.isEmpty)
+
+        let oldTokens = engine.tokenize(oldLine)
+        let newTokens = engine.tokenize(newLine)
+        XCTAssertFalse(oldTokens.isEmpty)
+        XCTAssertFalse(newTokens.isEmpty)
+
+        // Verify "🛰️" and "👨‍👩‍👧‍👦" are single atomic tokens
+        let satelliteToken = oldTokens.first { $0.range.count == "🛰️".utf16.count }
+        XCTAssertNotNil(satelliteToken, "🛰️ should be a single atomic token")
+
+        let familyToken = newTokens.first { $0.range.count == "👨‍👩‍👧‍👦".utf16.count }
+        XCTAssertNotNil(familyToken, "👨‍👩‍👧‍👦 should be a single atomic token")
+    }
+
+    private func isWordChar(_ char: Character) -> Bool {
+        char.isLetter || char.isNumber || char == "_"
+    }
+
+    private func wordRange(in text: String, at index: Int) -> (start: Int, end: Int) {
+        let chars = Array(text)
+        guard !chars.isEmpty else { return (0, 0) }
+        var targetIndex = min(index, chars.count - 1)
+        if targetIndex < 0 { targetIndex = 0 }
+        if targetIndex > 0 && index == chars.count && isWordChar(chars[targetIndex - 1]) {
+            targetIndex = targetIndex - 1
+        } else if targetIndex > 0 && chars[targetIndex].isWhitespace && isWordChar(chars[targetIndex - 1]) {
+            targetIndex = targetIndex - 1
+        }
+        let char = chars[targetIndex]
+        if isWordChar(char) {
+            var start = targetIndex
+            while start > 0 && isWordChar(chars[start - 1]) { start -= 1 }
+            var end = targetIndex
+            while end < chars.count && isWordChar(chars[end]) { end += 1 }
+            return (start, end)
+        }
+        return (targetIndex, targetIndex + 1)
+    }
+
+    func testMultiLineCommentBlockFullSequence() {
+        let commentBlock = [
+            "/**",
+            " * Computes fast checksum for diff hunk",
+            " * @param data Raw binary data",
+            " * @return 64-bit checksum hash",
+            " *************************************/",
+            "public func computeChecksum(data: Data) -> UInt64 {"
+        ]
+
+        let theme = Theme.vesper
+        let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+
+        for (idx, line) in commentBlock.enumerated() {
+            let attr = SyntaxHighlighter.shared.highlight(line: line, language: "swift", font: font, theme: theme)
+            XCTAssertEqual(attr.string, line)
+
+            if idx < 5 {
+                // First 5 lines must contain comment attributes
+                let spans = SyntaxHighlighter.shared.tokenize(line: line, language: "swift")
+                XCTAssertTrue(spans.contains { $0.tokenType == .comment }, "Line \(idx): \"\(line)\" should be recognized as comment")
+            } else {
+                // Line 6 is Swift code: must contain keyword and type, NOT comment
+                let spans = SyntaxHighlighter.shared.tokenize(line: line, language: "swift")
+                XCTAssertFalse(spans.contains { $0.tokenType == .comment })
+                XCTAssertTrue(spans.contains { $0.tokenType == .keyword })
+                XCTAssertTrue(spans.contains { $0.tokenType == .type })
+            }
+        }
+    }
+
     func testDisplayMapDeletedLineDetection() {
         let diffSample = """
         --- a/Test.swift

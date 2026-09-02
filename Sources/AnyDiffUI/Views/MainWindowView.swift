@@ -1695,7 +1695,7 @@ public struct MainWindowView: View {
         guard let output = runGit(arguments: ["-C", directory, "diff", "HEAD", "--name-status", "-M"]) else { return [] }
         var paths = Set<String>()
         for line in output.split(whereSeparator: { $0 == "\n" }) {
-            let fields = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+            let fields = line.split(separator: "\t", omittingEmptySubsequences: false).map { unescapeGitPath($0[...]) }
             guard fields.count >= 3, fields[0].hasPrefix("R") else { continue }
             if fields[1] == path || fields[2] == path {
                 paths.insert(fields[1])
@@ -1833,7 +1833,7 @@ public struct MainWindowView: View {
             args.append(contentsOf: batch)
             if let output = runGit(arguments: args), !output.isEmpty {
                 let ignored = output.components(separatedBy: "\n")
-                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .map { unescapeGitPath($0[...]) }
                     .filter { !$0.isEmpty }
                 result.formUnion(ignored)
             }
@@ -1850,7 +1850,7 @@ public struct MainWindowView: View {
             return []
         }
         let filePaths = output.components(separatedBy: "\n")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .map { unescapeGitPath($0[...]) }
             .filter { !$0.isEmpty && (pathFilter == nil || pathFilter!.contains($0)) }
         var result: [FileDiff] = []
         for relPath in filePaths {

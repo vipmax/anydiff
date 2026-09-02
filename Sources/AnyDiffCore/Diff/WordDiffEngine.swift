@@ -183,43 +183,42 @@ public final class WordDiffEngine: Sendable {
         tokens.reserveCapacity(min(64, text.count / 3 + 1))
 
         @inline(__always)
-        func isWord(_ s: Unicode.Scalar) -> Bool {
-            let v = s.value
-            return (v >= 0x30 && v <= 0x39) || // 0-9
-                   (v >= 0x41 && v <= 0x5A) || // A-Z
-                   (v >= 0x61 && v <= 0x7A) || // a-z
-                   v == 0x5F ||                 // _
-                   s.properties.isAlphabetic ||
-                   s.properties.numericType != nil
+        func isWord(_ c: Character) -> Bool {
+            c.isLetter || c.isNumber || c == "_"
         }
 
-        let scalars = text.unicodeScalars
-        var idx = scalars.startIndex
+        var idx = text.startIndex
         var charOffset = 0
 
-        while idx < scalars.endIndex {
+        while idx < text.endIndex {
             let startChar = charOffset
-            let s = scalars[idx]
+            let ch = text[idx]
             var h: UInt32 = 2166136261
 
-            if s.properties.isWhitespace {
-                while idx < scalars.endIndex && scalars[idx].properties.isWhitespace {
-                    let cur = scalars[idx]
-                    h = (h ^ cur.value) &* 16777619
+            if ch.isWhitespace {
+                while idx < text.endIndex && text[idx].isWhitespace {
+                    let cur = text[idx]
+                    for scalar in cur.unicodeScalars {
+                        h = (h ^ scalar.value) &* 16777619
+                    }
                     charOffset += cur.utf16.count
-                    idx = scalars.index(after: idx)
+                    idx = text.index(after: idx)
                 }
-            } else if isWord(s) {
-                while idx < scalars.endIndex && isWord(scalars[idx]) {
-                    let cur = scalars[idx]
-                    h = (h ^ cur.value) &* 16777619
+            } else if isWord(ch) {
+                while idx < text.endIndex && isWord(text[idx]) {
+                    let cur = text[idx]
+                    for scalar in cur.unicodeScalars {
+                        h = (h ^ scalar.value) &* 16777619
+                    }
                     charOffset += cur.utf16.count
-                    idx = scalars.index(after: idx)
+                    idx = text.index(after: idx)
                 }
             } else {
-                h = (h ^ s.value) &* 16777619
-                charOffset += s.utf16.count
-                idx = scalars.index(after: idx)
+                for scalar in ch.unicodeScalars {
+                    h = (h ^ scalar.value) &* 16777619
+                }
+                charOffset += ch.utf16.count
+                idx = text.index(after: idx)
             }
 
             tokens.append(Token(hash: h, range: startChar..<charOffset))

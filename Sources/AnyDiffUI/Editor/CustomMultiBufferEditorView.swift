@@ -1449,8 +1449,8 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
            info.multiBufferRow >= selRange.lowerBound.row && info.multiBufferRow <= selRange.upperBound.row {
             let startCol = (info.multiBufferRow == selRange.lowerBound.row) ? selRange.lowerBound.column : 0
             let endCol = (info.multiBufferRow == selRange.upperBound.row) ? selRange.upperBound.column : info.text.count
-            let startX = ctLine.xOffset(for: min(info.text.count, max(0, startCol)))
-            let endX = ctLine.xOffset(for: min(info.text.count, max(startCol, endCol)))
+            let startX = ctLine.xOffset(forCharacterIndex: min(info.text.count, max(0, startCol)), in: info.text)
+            let endX = ctLine.xOffset(forCharacterIndex: min(info.text.count, max(startCol, endCol)), in: info.text)
             let selRect = CGRect(x: codeStartX + startX, y: rect.minY, width: max(3, endX - startX), height: rect.height)
             context.setFillColor(theme.selectionBackground.cgColor)
             context.fill(selRect)
@@ -1467,7 +1467,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         // 3. Draw Caret / Cursor if focused on this line
         if isCurrentCursorLine && isCursorVisible {
             let clampedCol = min(info.text.count, max(0, cursorPoint.column))
-            let cursorX = codeStartX + ctLine.xOffset(for: clampedCol)
+            let cursorX = codeStartX + ctLine.xOffset(forCharacterIndex: clampedCol, in: info.text)
             let cursorRect = CGRect(x: cursorX, y: rect.minY + 2, width: 2, height: rect.height - 4)
             context.setFillColor(theme.diffModifiedGutter.cgColor)
             context.fill(cursorRect)
@@ -1812,8 +1812,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                     let text = codeInfo.text
                     let ctLine = getOrCreateCTLine(for: lineIdx, text: text, language: codeInfo.language)
                     let xOffset = max(0, docX - (gutterWidth + 12))
-                    let charIdx = ctLine.characterIndex(at: xOffset)
-                    let col = max(0, min(text.count, charIdx))
+                    let col = ctLine.characterIndex(at: xOffset, in: text)
                     let targetPoint = MultiBufferPoint(row: codeInfo.multiBufferRow, column: col)
 
                     if event.clickCount == 2 {
@@ -1891,8 +1890,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             let text = codeInfo.text
             let ctLine = getOrCreateCTLine(for: lineIdx, text: text, language: codeInfo.language)
             let xOffset = max(0, docX - (gutterWidth + 12))
-            let charIdx = ctLine.characterIndex(at: xOffset)
-            let col = max(0, min(text.count, charIdx))
+            let col = ctLine.characterIndex(at: xOffset, in: text)
             let targetRow = codeInfo.multiBufferRow
 
             switch activeSelectionGranularity {
