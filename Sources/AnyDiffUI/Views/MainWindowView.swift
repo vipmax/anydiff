@@ -1492,7 +1492,7 @@ public struct MainWindowView: View {
 
         let resolvedURL = URL(fileURLWithPath: directoryPath).resolvingSymlinksInPath()
         let watcher = FolderWatcher(url: resolvedURL, latency: 0.25) { events in
-            DispatchQueue.global(qos: .userInitiated).async {
+            DispatchQueue.main.async {
                 self.handleFolderWatcherEvents(events)
             }
         }

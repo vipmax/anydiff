@@ -1,6 +1,6 @@
 import Foundation
 import AppKit
-@preconcurrency import CoreText
+import CoreText
 
 /// A single slot in `LineRenderCache` mapping a sequential `displayLineIndex` to its cached `CTLine`.
 /// Tagged with `lineIndex` to detect slot collisions in the direct-mapped ring buffer in 1 CPU cycle.
