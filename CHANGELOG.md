@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.0] - 2026-09-03
+
+### 🔍 Full-Text Project Search & Streaming MultiBuffer
+- **High-Performance Search Engine (`ProjectSearchEngine`)**:
+  - Full-text search across entire repository with regex (`.*`), match whole word (`\b`), case sensitivity (`Aa`), and glob include/exclude filters.
+  - Automatic filtering of binary files (null byte scan) and files over size threshold.
+  - Multi-encoding fallback support (UTF-8, Latin-1 / ISO-8859).
+- **Streaming Delivery & Context Clustering**:
+  - Progressive batch streaming delivering initial search matches immediately without waiting for full directory scan.
+  - Intelligent context clustering with configurable padding lines merging nearby matches into single excerpts.
+  - $O(1)$ lazy MultiBuffer slicing and in-memory match recalculation during live typing.
+- **Native Search Bar UI & Navigation**:
+  - AppKit/SwiftUI `ProjectSearchBarView` with keyboard navigation: `Cmd + F` (find in project), `Cmd + Shift + F` (find with prefilled selection), `Cmd + G` (next match), `Cmd + Shift + G` (previous match), `Esc` (dismiss).
+  - Search hit counter, active match pulsing, and instant match jump navigation.
+  - Integrated into the main macOS application menu.
+
+### 🌐 Unicode & Internationalization
+- Full international path, Cyrillic, and multi-scalar emoji selection support across virtualized editor.
+
+### 🧪 Tests
+- Expanded test suite to **208 passing unit & integration tests**.
+
+---
+
 ## [1.1.1] - 2026-09-02
 
 ### 🐛 Bug Fixes

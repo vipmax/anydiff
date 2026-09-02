@@ -7,7 +7,7 @@ High-performance native macOS MultiBuffer Diff editor for lightning-fast code re
 ![macOS](https://img.shields.io/badge/macOS-14.0%2B-blue?style=flat-square&logo=apple)
 ![Swift](https://img.shields.io/badge/Swift-6.0-orange?style=flat-square&logo=swift)
 ![Build](https://img.shields.io/badge/build-passing-brightgreen?style=flat-square)
-![Tests](https://img.shields.io/badge/tests-170%2B%20passing-brightgreen?style=flat-square)
+![Tests](https://img.shields.io/badge/tests-200%2B%20passing-brightgreen?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 
 Install via Homebrew:
@@ -22,7 +22,7 @@ If macOS Gatekeeper prevents opening after installation:
 xattr -cr /Applications/AnyDiff.app
 ```
 
-Or download directly from [Releases](https://github.com/vipmax/anydiff/releases/latest) ([.dmg](https://github.com/vipmax/anydiff/releases/download/v1.1.1/AnyDiff.dmg) / [.zip](https://github.com/vipmax/anydiff/releases/download/v1.1.1/AnyDiff-macOS.zip)).
+Or download directly from [Releases](https://github.com/vipmax/anydiff/releases/latest) ([.dmg](https://github.com/vipmax/anydiff/releases/download/v1.2.0/AnyDiff.dmg) / [.zip](https://github.com/vipmax/anydiff/releases/download/v1.2.0/AnyDiff-macOS.zip)).
 
 ---
 
@@ -46,6 +46,11 @@ Or download directly from [Releases](https://github.com/vipmax/anydiff/releases/
   - Supports opening ordinary local files as well as Git diffs.
   - Native support for GitHub Pull Requests, commit URLs, and compare links (`gh pr`, `https://github.com/.../pull/123`, `https://diffs.hub/...`).
   - Paste raw `.diff` / `.patch` files directly from the clipboard (`Cmd + Shift + V`).
+- **Full-Text Project Search & Streaming MultiBuffer**:
+  - Blazing-fast repo-wide search powered by `ProjectSearchEngine` with regex (`.*`), whole-word (`\b`), case sensitivity, and glob filters.
+  - Progressive batch streaming delivering initial search matches immediately without waiting for full directory scan.
+  - Interactive search bar (`Cmd + F`, `Cmd + Shift + F`) with match counter, pulsing active match highlighting, and cyclic navigation (`Cmd + G`, `Cmd + Shift + G`).
+  - Context clustering with configurable padding lines and live in-memory match recalculation during active editing.
 - **Embedded AI Agent (ACP Protocol)**:
   - Native side panel for explaining diffs, reviewing code changes, generating commit messages, and running commands via JSON-RPC 2.0.
   - Multi-provider support: Codex, Claude Code, Gemini / Antigravity, and Custom ACP agents.
@@ -72,6 +77,10 @@ Or download directly from [Releases](https://github.com/vipmax/anydiff/releases/
 | **Cmd + O** | Open Git repository folder |
 | **Cmd + R** | Reload diff from current repository |
 | **Cmd + S** | Save modified buffers to disk |
+| **Cmd + F** | Find in project |
+| **Cmd + Shift + F** | Find in project (prefill with selected text) |
+| **Cmd + G** | Find next search match |
+| **Cmd + Shift + G** | Find previous search match |
 | **Cmd + Shift + V** | Paste Git diff / PR URL from clipboard |
 | **Cmd + Z** | Undo last edit |
 | **Cmd + Shift + Z** | Redo edit |
