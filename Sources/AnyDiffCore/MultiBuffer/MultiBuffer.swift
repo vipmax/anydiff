@@ -942,4 +942,26 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
         }
         version &+= 1
     }
+
+    // MARK: - Selection Text Extraction
+
+    public var selectionRange: Range<MultiBufferPoint>? = nil
+
+    /// Returns the currently selected text across excerpts in the MultiBuffer
+    public func getSelectionText() -> String? {
+        guard let range = selectionRange, !range.isEmpty else { return nil }
+        var lines: [String] = []
+        for r in range.lowerBound.row...range.upperBound.row {
+            let lineStr = line(at: r)
+            let start = (r == range.lowerBound.row) ? range.lowerBound.column : 0
+            let end = (r == range.upperBound.row) ? range.upperBound.column : lineStr.count
+            let clampedStart = max(0, min(lineStr.count, start))
+            let clampedEnd = max(clampedStart, min(lineStr.count, end))
+            let startIndex = lineStr.index(lineStr.startIndex, offsetBy: clampedStart)
+            let endIndex = lineStr.index(lineStr.startIndex, offsetBy: clampedEnd)
+            lines.append(String(lineStr[startIndex..<endIndex]))
+        }
+        let result = lines.joined(separator: "\n")
+        return result.isEmpty ? nil : result
+    }
 }

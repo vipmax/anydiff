@@ -8,15 +8,18 @@ public protocol CustomMultiBufferEditorDelegate: AnyObject {
     func editorDidChangeCursor(location: ExcerptLocation?, point: MultiBufferPoint)
     func editorDidRequestAddComment(filePath: String, lineNumber: Int)
     func editorDidScroll()
+    func editorDidChangeContent()
 }
 
 public extension CustomMultiBufferEditorDelegate {
     func editorDidScroll() {}
+    func editorDidChangeContent() {}
 }
 
 /// A high-performance, virtualized MultiBuffer Code Reviewer & Editor View built with CoreText
 public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUserInterfaceValidations {
     public weak var delegate: CustomMultiBufferEditorDelegate?
+    public var onContentEdited: (() -> Void)? = nil
     private var displayMapCancellables = Set<AnyCancellable>()
 
     public var displayMap: DisplayMap? {
@@ -80,6 +83,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
     private static let gutterFont = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
     private static let headerTitleFont = NSFont.systemFont(ofSize: 12, weight: .semibold)
+    private static let headerDirectoryFont = NSFont.systemFont(ofSize: 12, weight: .regular)
     private static let badgeFont = NSFont.monospacedSystemFont(ofSize: 10, weight: .bold)
 
     // Layout Metrics
@@ -112,15 +116,78 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     public var cursorPoint: MultiBufferPoint = .zero {
         didSet {
             resetCursorBlink()
+            let sel = normalizedSelectionRange()
+            displayMap?.selectionRange = sel
+            displayMap?.multiBuffer.selectionRange = sel
             notifyCursorChange()
             ensureCursorVisible()
             needsDisplay = true
         }
     }
-    public var selectionAnchor: MultiBufferPoint? = nil
+    public var selectionAnchor: MultiBufferPoint? = nil {
+        didSet {
+            let sel = normalizedSelectionRange()
+            displayMap?.selectionRange = sel
+            displayMap?.multiBuffer.selectionRange = sel
+        }
+    }
     public var hasSelection: Bool {
         guard let anchor = selectionAnchor else { return false }
         return anchor != cursorPoint
+    }
+
+    // Search Matches & Highlighting (Project Search)
+    public var searchMatches: [ProjectSearchMatch] = [] {
+        didSet {
+            rebuildSearchMatchIndex()
+            needsDisplay = true
+        }
+    }
+    public var activeMatchIndex: Int? = nil {
+        didSet {
+            if activeMatchIndex != oldValue && activeMatchIndex != nil {
+                triggerActiveMatchPulse()
+            }
+            needsDisplay = true
+        }
+    }
+    private var activeMatchPulseStartTime: CFAbsoluteTime = 0
+    private var activeMatchPulseTimer: Timer? = nil
+
+    private func triggerActiveMatchPulse() {
+        activeMatchPulseStartTime = CFAbsoluteTimeGetCurrent()
+        activeMatchPulseTimer?.invalidate()
+        activeMatchPulseTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] timer in
+            guard let self = self else {
+                timer.invalidate()
+                return
+            }
+            let elapsed = CFAbsoluteTimeGetCurrent() - self.activeMatchPulseStartTime
+            if elapsed >= 0.45 {
+                timer.invalidate()
+                self.activeMatchPulseTimer = nil
+            }
+            self.needsDisplay = true
+        }
+    }
+
+    private struct SearchFileLineKey: Hashable {
+        let filePath: String
+        let lineNumber: Int
+    }
+    private var searchMatchesByFileLine: [SearchFileLineKey: [ProjectSearchMatch]] = [:]
+    private var activeMatchId: UUID? {
+        guard let idx = activeMatchIndex, idx >= 0, idx < searchMatches.count else { return nil }
+        return searchMatches[idx].id
+    }
+
+    private func rebuildSearchMatchIndex() {
+        var index: [SearchFileLineKey: [ProjectSearchMatch]] = [:]
+        for match in searchMatches {
+            let key = SearchFileLineKey(filePath: match.filePath, lineNumber: match.lineNumber)
+            index[key, default: []].append(match)
+        }
+        self.searchMatchesByFileLine = index
     }
 
     private var activeSelectionGranularity: SelectionGranularity = .character
@@ -194,6 +261,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         cursorTimer?.invalidate()
         scrollbarFadeTimer?.invalidate()
         fadeAnimationTimer?.invalidate()
+        activeMatchPulseTimer?.invalidate()
     }
 
     private func showScrollbarsWithAutohide(for axis: ScrollAxis) {
@@ -495,7 +563,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         self.trackingArea = area
     }
 
-    // Zed-style Axis Lock & Ongoing Scroll Filter
+    // Axis Lock & Ongoing Scroll Filter
     private var scrollLockAxis: ScrollAxis? = nil
     private var lastScrollEventTime: Date = .distantPast
 
@@ -513,7 +581,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         let absY = abs(dy)
 
         if isNewGesture || scrollLockAxis == nil {
-            // Determine dominant direction at start of gesture (Zed style)
+            // Determine dominant direction at start of gesture
             if absY >= absX {
                 scrollLockAxis = .vertical
             } else {
@@ -837,7 +905,13 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     }
 
     public func clampCursorToValidBounds() {
-        guard let dm = displayMap, dm.codeLineCount > 0 else { return }
+        guard let dm = displayMap, dm.codeLineCount > 0 else {
+            if cursorPoint != .zero {
+                cursorPoint = .zero
+            }
+            selectionAnchor = nil
+            return
+        }
         let minRow = dm.minCodeRow
         let maxRow = dm.maxCodeRow
 
@@ -913,6 +987,40 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         }
     }
 
+    public func scrollToTop() {
+        scrollOffsetY = 0
+        scrollOffsetX = 0
+        showScrollbarsWithAutohide(for: .vertical)
+        needsDisplay = true
+    }
+
+    public func scrollToSearchMatch(at index: Int) {
+        guard index >= 0, index < searchMatches.count else { return }
+        let match = searchMatches[index]
+        self.activeMatchIndex = index
+
+        guard let displayMap = displayMap else {
+            needsDisplay = true
+            return
+        }
+
+        let mbRow = displayMap.codeRow(forFilePath: match.filePath, lineNumber: match.lineNumber) ?? match.multiBufferRow
+        guard let row = mbRow else {
+            needsDisplay = true
+            return
+        }
+
+        if let displayLineIdx = displayMap.displayLineIndex(forMultiBufferRow: row) {
+            let targetY = CGFloat(displayLineIdx) * lineHeight
+            let viewportHeight = bounds.height
+            let centeredY = max(0, targetY - (viewportHeight / 2) + (lineHeight / 2))
+            let maxScrollY = max(0, totalDocumentHeight - bounds.height)
+            scrollOffsetY = min(maxScrollY, centeredY)
+            showScrollbarsWithAutohide(for: .vertical)
+        }
+        needsDisplay = true
+    }
+
     @objc private func handleFocusFileNotification(_ notification: Notification) {
         guard let path = notification.object as? String else { return }
         scrollToFilePath(path)
@@ -940,6 +1048,11 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         guard let dm = displayMap else { return }
         let loc = dm.excerptLocation(for: cursorPoint)
         delegate?.editorDidChangeCursor(location: loc, point: cursorPoint)
+    }
+
+    private func notifyContentChange() {
+        delegate?.editorDidChangeContent()
+        onContentEdited?()
     }
 
     // MARK: - Virtualized Rendering Engine
@@ -1299,12 +1412,25 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             titleColor = theme.foreground
         }
 
-        let pathAttr: [NSAttributedString.Key: Any] = [
+        let fileName = (info.filePath as NSString).lastPathComponent
+        let dir = (info.filePath as NSString).deletingLastPathComponent
+
+        let titleAttrString = NSMutableAttributedString()
+        let fileNameAttr: [NSAttributedString.Key: Any] = [
             .font: Self.headerTitleFont,
             .foregroundColor: titleColor
         ]
-        let pathStr = NSAttributedString(string: info.filePath, attributes: pathAttr)
-        let ctLine = CTLineCreateWithAttributedString(pathStr)
+        titleAttrString.append(NSAttributedString(string: fileName, attributes: fileNameAttr))
+
+        if !dir.isEmpty && dir != "." {
+            let dirAttr: [NSAttributedString.Key: Any] = [
+                .font: Self.headerDirectoryFont,
+                .foregroundColor: theme.gutterForeground
+            ]
+            titleAttrString.append(NSAttributedString(string: "  " + dir, attributes: dirAttr))
+        }
+
+        let ctLine = CTLineCreateWithAttributedString(titleAttrString)
         let titleWidth = CGFloat(CTLineGetTypographicBounds(ctLine, nil, nil, nil))
         let titleStartX: CGFloat = iconX + iconSize + 6
         let titleEndX = titleStartX + titleWidth
@@ -1444,6 +1570,80 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             }
         }
 
+        // Search Match Highlight Rectangles
+        let lineNum = info.newLineNumber ?? info.oldLineNumber
+        let filePath = (displayMap != nil && info.excerptIndex < (displayMap?.multiBuffer.excerpts.count ?? 0))
+            ? displayMap?.multiBuffer.excerpts[info.excerptIndex].filePath
+            : nil
+
+        let rowMatches: [ProjectSearchMatch]?
+        if let lineNum = lineNum, let path = filePath {
+            rowMatches = searchMatchesByFileLine[SearchFileLineKey(filePath: path, lineNumber: lineNum)]
+        } else {
+            rowMatches = nil
+        }
+
+        if let matches = rowMatches, !matches.isEmpty {
+            let activeId = activeMatchId
+            let elapsed = CFAbsoluteTimeGetCurrent() - activeMatchPulseStartTime
+            let isPulsing = elapsed < 0.45
+            let pulseProgress = isPulsing ? max(0.0, min(1.0, elapsed / 0.45)) : 1.0
+            // Smooth ease-out curve for the flash pulse
+            let pulseIntensity = CGFloat(pow(1.0 - pulseProgress, 2.0))
+
+            for match in matches {
+                let isActive = (match.id == activeId)
+                let bgColor: NSColor
+                if isActive {
+                    // Bright vibrant blue highlight for active match
+                    bgColor = NSColor(calibratedRed: 0.18, green: 0.52, blue: 0.98, alpha: 0.72)
+                } else {
+                    // Amber/orange highlight for other matches
+                    bgColor = NSColor(calibratedRed: 0.92, green: 0.58, blue: 0.18, alpha: 0.42)
+                }
+                context.setFillColor(bgColor.cgColor)
+
+                let startX = ctLine.xOffset(forCharacterIndex: min(info.text.count, max(0, match.columnRange.lowerBound)), in: info.text)
+                let endX = ctLine.xOffset(forCharacterIndex: min(info.text.count, max(match.columnRange.lowerBound, match.columnRange.upperBound)), in: info.text)
+                let matchRect = CGRect(
+                    x: codeStartX + startX - 1,
+                    y: rect.minY + 2,
+                    width: max(4, endX - startX) + 2,
+                    height: rect.height - 4
+                )
+                let rounded = CGPath(roundedRect: matchRect, cornerWidth: 3, cornerHeight: 3, transform: nil)
+                context.addPath(rounded)
+                context.fillPath()
+
+                if isActive {
+                    // Crisp outline around active match
+                    context.setStrokeColor(NSColor(calibratedRed: 0.45, green: 0.78, blue: 1.0, alpha: 0.95).cgColor)
+                    context.setLineWidth(1.2)
+                    context.addPath(rounded)
+                    context.strokePath()
+
+                    // Flash Pulse animation ring & soft glow
+                    if isPulsing && pulseIntensity > 0.01 {
+                        let expandX = 5.0 * pulseIntensity
+                        let expandY = 3.0 * pulseIntensity
+                        let pulseRect = matchRect.insetBy(dx: -expandX, dy: -expandY)
+                        let pulsePath = CGPath(roundedRect: pulseRect, cornerWidth: 4.5, cornerHeight: 4.5, transform: nil)
+
+                        // Soft halo fill
+                        context.setFillColor(NSColor(calibratedRed: 0.25, green: 0.65, blue: 1.0, alpha: 0.38 * pulseIntensity).cgColor)
+                        context.addPath(pulsePath)
+                        context.fillPath()
+
+                        // Expanding luminous ring
+                        context.setStrokeColor(NSColor(calibratedRed: 0.65, green: 0.88, blue: 1.0, alpha: 0.90 * pulseIntensity).cgColor)
+                        context.setLineWidth(1.5 + (1.5 * pulseIntensity))
+                        context.addPath(pulsePath)
+                        context.strokePath()
+                    }
+                }
+            }
+        }
+
         // Text Selection Rectangles
         if hasSelection, let selRange = normalizedSelectionRange(),
            info.multiBufferRow >= selRange.lowerBound.row && info.multiBufferRow <= selRange.upperBound.row {
@@ -1499,13 +1699,13 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             context.fill(CGRect(x: 0, y: rect.minY, width: 3, height: rect.height))
         }
 
-        // Expand Excerpt Button (Zed Style) on the left
+        // Expand Excerpt Button on the left
         if let expandInfo = info.expandInfo {
             let btnRect = CGRect(x: 4, y: rect.minY + (rect.height - 16) / 2, width: 16, height: 16)
             drawExpandButton(expandInfo: expandInfo, in: btnRect, isHovered: hoveredGutterLineIndex == lineIdx, context: context)
         }
 
-        // Single Unified Line Number Column (Zed Style)
+        // Single Unified Line Number Column
         let lineNum = (info.diffKind == .deleted) ? info.oldLineNumber : (info.newLineNumber ?? info.oldLineNumber ?? (info.bufferRow + 1))
         if let num = lineNum {
             let color: NSColor
@@ -2034,7 +2234,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     public override func keyDown(with event: NSEvent) {
         guard let displayMap = displayMap else { return }
 
-        // Shift + Enter (Expand Excerpt around current cursor location, matching Zed shortcut)
+        // Shift + Enter (Expand Excerpt around current cursor location)
         if event.keyCode == 36 && event.modifierFlags.contains(.shift) {
             let cursorRow = cursorPoint.row
             let currentScreenY = (yOffset(for: cursorRow) ?? 0) - scrollOffsetY
@@ -2538,12 +2738,16 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         let buf = startLoc.buffer
         let oldStart = min(startLoc.point, endLoc.point)
         let oldEnd = max(startLoc.point, endLoc.point)
-        let oldExactText = (oldStart < oldEnd) ? buf.text(in: oldStart..<oldEnd) : ""
+        let clampedStart = buf.clamp(point: oldStart)
+        let clampedEnd = buf.clamp(point: oldEnd)
+        let safeOldStart = min(clampedStart, clampedEnd)
+        let safeOldEnd = max(clampedStart, clampedEnd)
+        let oldExactText = (safeOldStart < safeOldEnd) ? buf.text(in: safeOldStart..<safeOldEnd) : ""
         let cursorBefore = cursorPoint
         let anchorBefore = selectionAnchor
 
-        let newBufRange = buf.replace(start: oldStart, end: oldEnd, with: text)
-        let lineDelta = (newBufRange.upperBound.row - oldEnd.row)
+        let newBufRange = buf.replace(start: safeOldStart, end: safeOldEnd, with: text)
+        let lineDelta = (newBufRange.upperBound.row - safeOldEnd.row)
         updateExcerptsAfterEdit(bufferId: buf.id, excerptIndex: startLoc.excerptIndex, lineDelta: lineDelta)
         if preservesAddedLineHunkShape && lineDelta == 0 {
             mb.refreshStableHunkPresentation(for: buf.id)
@@ -2551,8 +2755,8 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
         let edit = TextEdit(
             bufferId: buf.id,
-            range: oldStart..<newBufRange.upperBound,
-            oldRange: oldStart..<oldEnd,
+            range: newBufRange,
+            oldRange: safeOldStart..<safeOldEnd,
             oldText: oldExactText,
             newText: text
         )
@@ -2611,6 +2815,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         ensureCursorVisible()
         resetCursorBlink()
         needsDisplay = true
+        notifyContentChange()
     }
 
     public override func deleteBackward(_ sender: Any?) {
@@ -2649,9 +2854,13 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         }
 
         let buf = loc.buffer
-        let bPt = loc.point
         let cursorBefore = cursorPoint
         let anchorBefore = selectionAnchor
+
+        // Clamp column to buffer's line length to handle external edits that shortened the line
+        let maxCol = buf.lineLength(at: loc.point.row)
+        let safeCol = max(0, min(maxCol, loc.point.column))
+        let bPt = BufferPoint(row: loc.point.row, column: safeCol)
 
         if bPt.column > 0 {
             let start = BufferPoint(row: bPt.row, column: bPt.column - 1)
@@ -2661,7 +2870,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             updateExcerptsAfterEdit(bufferId: buf.id, excerptIndex: loc.excerptIndex, lineDelta: lineDelta)
             let edit = TextEdit(
                 bufferId: buf.id,
-                range: start..<newRange.upperBound,
+                range: newRange,
                 oldRange: start..<bPt,
                 oldText: oldExact,
                 newText: ""
@@ -2708,6 +2917,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             ensureCursorVisible()
             resetCursorBlink()
             needsDisplay = true
+            notifyContentChange()
         } else if bPt.row > 0 {
             let prevLen = buf.lineLength(at: bPt.row - 1)
             let start = BufferPoint(row: bPt.row - 1, column: prevLen)
@@ -2717,7 +2927,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             updateExcerptsAfterEdit(bufferId: buf.id, excerptIndex: loc.excerptIndex, lineDelta: lineDelta)
             let edit = TextEdit(
                 bufferId: buf.id,
-                range: start..<newRange.upperBound,
+                range: newRange,
                 oldRange: start..<bPt,
                 oldText: oldExact,
                 newText: ""
@@ -2764,6 +2974,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             ensureCursorVisible()
             resetCursorBlink()
             needsDisplay = true
+            notifyContentChange()
         }
     }
 
@@ -2803,8 +3014,9 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         }
 
         let buf = loc.buffer
-        let bPt = loc.point
-        let lineLen = buf.lineLength(at: bPt.row)
+        let lineLen = buf.lineLength(at: loc.point.row)
+        let safeCol = max(0, min(lineLen, loc.point.column))
+        let bPt = BufferPoint(row: loc.point.row, column: safeCol)
         let cursorBefore = cursorPoint
         let anchorBefore = selectionAnchor
 
@@ -2816,7 +3028,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             updateExcerptsAfterEdit(bufferId: buf.id, excerptIndex: loc.excerptIndex, lineDelta: lineDelta)
             let edit = TextEdit(
                 bufferId: buf.id,
-                range: bPt..<newRange.upperBound,
+                range: newRange,
                 oldRange: bPt..<end,
                 oldText: oldExact,
                 newText: ""
@@ -2863,6 +3075,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             ensureCursorVisible()
             resetCursorBlink()
             needsDisplay = true
+            notifyContentChange()
         } else if bPt.row < buf.lineCount - 1 {
             let end = BufferPoint(row: bPt.row + 1, column: 0)
             let oldExact = buf.text(in: bPt..<end)
@@ -2871,7 +3084,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             updateExcerptsAfterEdit(bufferId: buf.id, excerptIndex: loc.excerptIndex, lineDelta: lineDelta)
             let edit = TextEdit(
                 bufferId: buf.id,
-                range: bPt..<newRange.upperBound,
+                range: newRange,
                 oldRange: bPt..<end,
                 oldText: oldExact,
                 newText: ""
@@ -2918,6 +3131,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             ensureCursorVisible()
             resetCursorBlink()
             needsDisplay = true
+            notifyContentChange()
         }
     }
 
@@ -2978,6 +3192,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                 anchor: transaction.anchorBefore,
                 fallback: transaction.selectionBefore
             )
+            notifyContentChange()
         }
     }
 
@@ -3004,6 +3219,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                 anchor: transaction.anchorAfter,
                 fallback: transaction.selectionAfter
             )
+            notifyContentChange()
         }
     }
 
@@ -3038,20 +3254,9 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     }
 
     @objc @IBAction public func copy(_ sender: Any?) {
-        guard let dm = displayMap, let sel = normalizedSelectionRange() else { return }
-        var copiedLines: [String] = []
-        for r in sel.lowerBound.row...sel.upperBound.row {
-            guard let line = dm.lineText(at: r) else { continue }
-            let start = (r == sel.lowerBound.row) ? sel.lowerBound.column : 0
-            let end = (r == sel.upperBound.row) ? sel.upperBound.column : line.count
-            let clampedStart = max(0, min(line.count, start))
-            let clampedEnd = max(clampedStart, min(line.count, end))
-            let startIndex = line.index(line.startIndex, offsetBy: clampedStart)
-            let endIndex = line.index(line.startIndex, offsetBy: clampedEnd)
-            copiedLines.append(String(line[startIndex..<endIndex]))
-        }
+        guard let dm = displayMap, let text = dm.getSelectionText() else { return }
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(copiedLines.joined(separator: "\n"), forType: .string)
+        NSPasteboard.general.setString(text, forType: .string)
     }
 
     @objc @IBAction public func cut(_ sender: Any?) {

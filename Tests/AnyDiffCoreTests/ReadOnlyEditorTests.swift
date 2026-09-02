@@ -532,4 +532,43 @@ final class ReadOnlyEditorTests: XCTestCase {
         XCTAssertEqual(codeAnchor?.lineNumber, 1)
         XCTAssertFalse(codeAnchor?.isHeader == true)
     }
+
+    func testDeleteBackwardWithCursorBeyondShortenedLineDoesNotCrash() {
+        let multiBuffer = MultiBuffer()
+        multiBuffer.setContentMode(.text)
+        let initialText = "hello test"
+        let buffer = Buffer(filePath: "Test.swift", text: initialText)
+        multiBuffer.addBuffer(buffer)
+        let excerpt = Excerpt(
+            bufferId: buffer.id,
+            filePath: "Test.swift",
+            bufferRange: 0..<1
+        )
+        multiBuffer.setExcerpts([excerpt])
+
+        let displayMap = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
+        displayMap.rebuild()
+
+        let editor = CustomMultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        editor.isEditable = true
+
+        // Place cursor at the end: "hello test|" (col 10)
+        editor.cursorPoint = MultiBufferPoint(row: 0, column: 10)
+
+        // Simulate external edit that truncated the line to "hello"
+        _ = buffer.replace(start: BufferPoint(row: 0, column: 5), end: BufferPoint(row: 0, column: 10), with: "")
+        // In the editor, cursor was still at column 10 before backspace
+        // This used to crash with Fatal error: Range requires lowerBound <= upperBound
+        editor.deleteBackward(nil)
+
+        // Should successfully delete the last character 'o' without crashing
+        XCTAssertEqual(buffer.text(), "hell")
+
+        // Also test deleteForward when cursor is past line length
+        editor.cursorPoint = MultiBufferPoint(row: 0, column: 20)
+        editor.deleteForward(nil)
+        // Should not crash
+        XCTAssertEqual(buffer.text(), "hell")
+    }
 }
+

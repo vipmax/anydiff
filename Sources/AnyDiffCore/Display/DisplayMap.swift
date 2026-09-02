@@ -246,7 +246,7 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
             let topHidden: Int
             if isFirstExcerptOfFile && excerpt.fileStatus != .deleted {
                 let raw = buffer.startLineNumber > 1 ? (buffer.startLineNumber - 1 + excerpt.bufferRange.lowerBound) : excerpt.bufferRange.lowerBound
-                topHidden = (raw >= 3) ? raw : 0
+                topHidden = max(0, raw)
             } else {
                 topHidden = 0
             }
@@ -264,13 +264,13 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
                     let currentEnd = buffer.startLineNumber + excerpt.bufferRange.upperBound
                     raw = max(0, nextStart - currentEnd)
                 }
-                bottomHidden = (raw >= 3) ? raw : 0
+                bottomHidden = max(0, raw)
                 nextExcerptIndex = excerptIdx + 1
             } else if excerpt.fileStatus != .deleted {
                 let totalLines = buffer.diskFileLineCount ?? (buffer.startLineNumber - 1 + buffer.lineCount)
                 let currentEnd = (buffer.startLineNumber - 1) + excerpt.bufferRange.upperBound
                 let raw = max(0, totalLines - currentEnd)
-                bottomHidden = (raw >= 3) ? raw : 0
+                bottomHidden = max(0, raw)
                 nextExcerptIndex = nil
             } else {
                 bottomHidden = 0
@@ -1164,5 +1164,28 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
             }
         }
         return nil
+    }
+
+    // MARK: - Selection Text Extraction
+
+    public var selectionRange: Range<MultiBufferPoint>? = nil
+
+    /// Returns the currently selected text in the display map
+    public func getSelectionText(for range: Range<MultiBufferPoint>? = nil) -> String? {
+        let sel = range ?? selectionRange
+        guard let sel, !sel.isEmpty else { return nil }
+        var copiedLines: [String] = []
+        for r in sel.lowerBound.row...sel.upperBound.row {
+            guard let line = lineText(at: r) else { continue }
+            let start = (r == sel.lowerBound.row) ? sel.lowerBound.column : 0
+            let end = (r == sel.upperBound.row) ? sel.upperBound.column : line.count
+            let clampedStart = max(0, min(line.count, start))
+            let clampedEnd = max(clampedStart, min(line.count, end))
+            let startIndex = line.index(line.startIndex, offsetBy: clampedStart)
+            let endIndex = line.index(line.startIndex, offsetBy: clampedEnd)
+            copiedLines.append(String(line[startIndex..<endIndex]))
+        }
+        let result = copiedLines.joined(separator: "\n")
+        return result.isEmpty ? nil : result
     }
 }

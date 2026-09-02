@@ -79,7 +79,6 @@ final class MultiBufferTests: XCTestCase {
         let spans = SyntaxHighlighter.shared.tokenize(line: line, language: "swift")
         XCTAssertFalse(spans.isEmpty)
     }
-
     func testSyntaxHighlightingWithEmojisAndCyrillic() {
         let line = "🚀 ПРИВЕТ МИР! ДОБРО ПОЖАЛОВАТЬ В ANYDIFF!"
         let spans = SyntaxHighlighter.shared.tokenize(line: line, language: "swift")
@@ -2130,5 +2129,47 @@ final class MultiBufferTests: XCTestCase {
         cache.invalidate(from: 10)
         XCTAssertNil(cache.get(lineIndex: 10))
         XCTAssertNil(cache.get(lineIndex: 12))
+    }
+
+    func testGetSelectionText() {
+        let buffer = Buffer(filePath: "test.txt", text: "Hello World\nSecond Line\nThird Line")
+        let mb = MultiBuffer()
+        mb.addBuffer(buffer)
+        mb.addExcerpt(Excerpt(
+            bufferId: buffer.id,
+            filePath: "test.txt",
+            fileStatus: .modified,
+            bufferRange: 0..<3
+        ))
+
+        // No selection
+        XCTAssertNil(mb.getSelectionText())
+
+        // Single line selection "World"
+        mb.selectionRange = MultiBufferPoint(row: 0, column: 6)..<MultiBufferPoint(row: 0, column: 11)
+        XCTAssertEqual(mb.getSelectionText(), "World")
+
+        // Multi-line selection
+        mb.selectionRange = MultiBufferPoint(row: 0, column: 6)..<MultiBufferPoint(row: 1, column: 6)
+        XCTAssertEqual(mb.getSelectionText(), "World\nSecond")
+    }
+
+    func testDisplayMapGetSelectionText() {
+        let buffer = Buffer(filePath: "test.txt", text: "guard let self = self else {\n    timer.invalidate()\n    return\n}")
+        let mb = MultiBuffer()
+        mb.addBuffer(buffer)
+        mb.addExcerpt(Excerpt(
+            bufferId: buffer.id,
+            filePath: "test.txt",
+            fileStatus: .modified,
+            bufferRange: 0..<4
+        ))
+
+        let dm = DisplayMap(multiBuffer: mb, reviewManager: ReviewManager())
+        dm.rebuild()
+
+        // Selection on line 1: "    timer.invalidate()" -> "timer" at columns 4..<9
+        dm.selectionRange = MultiBufferPoint(row: 1, column: 4)..<MultiBufferPoint(row: 1, column: 9)
+        XCTAssertEqual(dm.getSelectionText(), "timer")
     }
 }

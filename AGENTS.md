@@ -34,6 +34,8 @@ Use `swift test --filter AnyDiffCoreTests.SomeTest` to target one test; `just cl
 
 Follow existing Swift style: four-space indentation, clear type-driven names, and explicit access control where useful. Use `UpperCamelCase` for types and `lowerCamelCase` for methods, properties, and locals. Name XCTest methods `test...` descriptively. Group files by feature and keep UI code out of core modules. No formatter or linter is configured; preserve surrounding formatting and build after mechanical edits.
 
+Follow a zero-alloc / low-allocation principle: minimize memory allocations and avoid unnecessary copying across all layers. In performance-sensitive paths (diffing, patch parsing, virtualized rendering, MultiBuffer indexing, and hot loops), prefer zero-copy operations, slice existing buffers (`Substring`, `ArraySlice`, contiguous memory views), reuse allocations where practical, and avoid creating disposable intermediate collections or boxing values.
+
 ## Testing Guidelines
 
 Tests use XCTest. Add regression coverage for parser, diff, editing, watcher, and UI changes in the matching test file. Run `just test` during iteration and `just test-all` before performance-related changes. Network-dependent GitHub tests are skipped unless their environment flag is enabled. No coverage threshold is configured.

@@ -35,6 +35,23 @@ public struct MainWindowView: View {
     @State private var preparedReviewSummary: AgentEditedFilesSummary? = nil
     @State private var toolcallColorMode = AgentDisplayPreferences.toolcallColorMode
 
+    @StateObject private var searchMultiBuffer = MultiBuffer()
+    @StateObject private var searchDisplayMap: DisplayMap
+    @State private var isProjectSearchActive: Bool = false
+    @State private var isProjectSearchHovered: Bool = false
+    @State private var searchQuery = ProjectSearchQuery()
+    @State private var searchMatches: [ProjectSearchMatch] = []
+    @State private var activeMatchIndex: Int? = nil
+    @State private var searchMatchScrollRequest: SearchMatchScrollRequest? = nil
+    @State private var searchScrollRequestId: UInt64 = 0
+    @State private var searchViewStateResetToken: UInt64 = 0
+    @State private var isSearching: Bool = false
+    @State private var searchTask: Task<Void, Never>? = nil
+    @State private var searchDebounceWorkItem: DispatchWorkItem? = nil
+    @State private var searchFocusToken: UInt64 = 0
+    @State private var isSearchTruncated: Bool = false
+    @State private var hasExecutedSearch: Bool = false
+
     @StateObject private var systemAppearance = SystemAppearanceObserver()
     @StateObject private var agentCoordinator = AgentSessionCoordinator()
     @State private var isAgentSessionsPresented: Bool = false
@@ -54,11 +71,21 @@ public struct MainWindowView: View {
     }
 
     private var activeMultiBuffer: MultiBuffer {
-        isReviewActive ? reviewMultiBuffer : multiBuffer
+        if isProjectSearchActive {
+            return searchMultiBuffer
+        } else if isReviewActive {
+            return reviewMultiBuffer
+        }
+        return multiBuffer
     }
 
     private var activeDisplayMap: DisplayMap {
-        isReviewActive ? reviewDisplayMap : displayMap
+        if isProjectSearchActive {
+            return searchDisplayMap
+        } else if isReviewActive {
+            return reviewDisplayMap
+        }
+        return displayMap
     }
 
     private var activeFileDiffs: [FileDiff] {
@@ -114,11 +141,16 @@ public struct MainWindowView: View {
         let rmb = MultiBuffer()
         let rdm = DisplayMap(multiBuffer: rmb, reviewManager: rm)
 
+        let smb = MultiBuffer()
+        let sdm = DisplayMap(multiBuffer: smb, reviewManager: rm)
+
         self._multiBuffer = StateObject(wrappedValue: mb)
         self._reviewManager = StateObject(wrappedValue: rm)
         self._displayMap = StateObject(wrappedValue: dm)
         self._reviewMultiBuffer = StateObject(wrappedValue: rmb)
         self._reviewDisplayMap = StateObject(wrappedValue: rdm)
+        self._searchMultiBuffer = StateObject(wrappedValue: smb)
+        self._searchDisplayMap = StateObject(wrappedValue: sdm)
     }
 
     private var activeTheme: Theme {
@@ -297,6 +329,26 @@ public struct MainWindowView: View {
                 }
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffFindInProject"))) { _ in
+            withAnimation(.easeInOut(duration: 0.16)) {
+                openProjectSearch()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffFindNext"))) { _ in
+            selectNextSearchMatch()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffFindPrevious"))) { _ in
+            selectPreviousSearchMatch()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffZoomIn"))) { _ in
+            fontSize = min(28, fontSize + 1)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffZoomOut"))) { _ in
+            fontSize = max(9, fontSize - 1)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffResetZoom"))) { _ in
+            fontSize = 13
+        }
     }
 
     @ViewBuilder
@@ -320,16 +372,51 @@ public struct MainWindowView: View {
 
     @ViewBuilder
     private var editorColumnView: some View {
-        Group {
-            // Keep the editor host mounted while the first review diff is
-            // loading. `reviewFileDiffs` starts empty, and replacing the host
-            // with the empty state would destroy its UI coordinator and the
-            // main editor snapshot before the first review can be closed.
-            if activeFileDiffs.isEmpty && !isReviewActive {
-                emptyStateDetailView
-            } else {
-                editorDetailView
+        VStack(spacing: 0) {
+            if isProjectSearchActive {
+                ProjectSearchBarView(
+                    query: $searchQuery,
+                    totalMatchesCount: searchMatches.count,
+                    activeMatchIndex: activeMatchIndex,
+                    isSearching: isSearching,
+                    isTruncated: isSearchTruncated,
+                    hasExecutedSearch: hasExecutedSearch,
+                    theme: activeTheme,
+                    focusToken: searchFocusToken,
+                    onSearch: {
+                        triggerDebouncedSearch(delay: 0)
+                    },
+                    onQueryChanged: {
+                        triggerDebouncedSearch(delay: 0)
+                    },
+                    onNextMatch: {
+                        selectNextSearchMatch()
+                    },
+                    onPrevMatch: {
+                        selectPreviousSearchMatch()
+                    },
+                    onClose: {
+                        withAnimation(.easeInOut(duration: 0.16)) {
+                            closeProjectSearch()
+                        }
+                    }
+                )
+                .transition(.move(edge: .top).combined(with: .opacity))
             }
+
+            ZStack {
+                editorDetailView
+
+                if activeFileDiffs.isEmpty && !isReviewActive && !isProjectSearchActive {
+                    emptyStateDetailView
+                } else if isProjectSearchActive && hasExecutedSearch && searchMatches.isEmpty && !isSearching && !searchQuery.isEmpty {
+                    searchEmptyStateView
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .onChange(of: searchQuery.query) { _ in
+            hasExecutedSearch = false
         }
         .toolbar {
             ToolbarItem(placement: .navigation) {
@@ -628,7 +715,10 @@ public struct MainWindowView: View {
             fontSize: fontSize,
             isEditable: (!isReviewActive && comparisonTarget == .workingTree),
             selectedFilePath: selectedFilePath,
-            viewStateResetToken: isReviewActive ? reviewViewStateResetToken : nil,
+            viewStateResetToken: isReviewActive ? reviewViewStateResetToken : (isProjectSearchActive ? searchViewStateResetToken : nil),
+            searchMatches: isProjectSearchActive ? searchMatches : [],
+            activeMatchIndex: isProjectSearchActive ? activeMatchIndex : nil,
+            searchMatchScrollRequest: isProjectSearchActive ? searchMatchScrollRequest : nil,
             onCursorChange: { location, _ in
                 if let path = location?.filePath, self.selectedFilePath != path {
                     self.selectedFilePath = path
@@ -636,6 +726,11 @@ public struct MainWindowView: View {
             },
             onAddCommentRequest: { path, line in
                 commentTarget = (filePath: path, lineNumber: line)
+            },
+            onContentEdited: {
+                if isProjectSearchActive {
+                    handleSearchContentEdited()
+                }
             }
         )
         .clipped()
@@ -664,17 +759,81 @@ public struct MainWindowView: View {
                     )
                 }
 
-                if isReviewActive {
-                    reviewReadOnlyBadge
-                } else if comparisonTarget != .workingTree {
-                    readOnlyBadge
+                if isProjectSearchActive {
+                    globalSearchBadge
+                } else {
+                    searchToolbarButton
+
+                    if isReviewActive {
+                        reviewReadOnlyBadge
+                    } else if comparisonTarget != .workingTree {
+                        readOnlyBadge
+                    }
                 }
             }
         }
         .animation(nil, value: isReviewActive)
+        .animation(nil, value: isProjectSearchActive)
         .padding(.leading, 8)
         .padding(.trailing, 8)
         .padding(.vertical, 3)
+    }
+
+    @ViewBuilder
+    private var searchToolbarButton: some View {
+        Button(action: {
+            withAnimation(.easeInOut(duration: 0.16)) {
+                toggleProjectSearch()
+            }
+        }) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(.secondary)
+        }
+        .buttonStyle(ToolbarHoverButtonStyle())
+        .help("Find in Project (Cmd+Shift+F)")
+    }
+
+    @ViewBuilder
+    private var globalSearchBadge: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(.accentColor)
+
+            Text("Global Search")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(.primary)
+
+            Image(systemName: "xmark")
+                .font(.system(size: 8.5, weight: .bold))
+                .foregroundColor(isProjectSearchHovered ? .primary : .secondary.opacity(0.8))
+                .frame(width: 16, height: 16)
+                .background(
+                    RoundedRectangle(cornerRadius: 3, style: .continuous)
+                        .fill(isProjectSearchHovered ? Color.secondary.opacity(0.16) : Color.clear)
+                )
+                .contentShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+                .help("Exit Search (Esc)")
+                .accessibilityLabel("Exit Search")
+                .accessibilityAddTraits(.isButton)
+                .onTapGesture {
+                    withAnimation(.easeInOut(duration: 0.16)) {
+                        closeProjectSearch()
+                    }
+                }
+                .onHover { isProjectSearchHovered = $0 }
+        }
+        .padding(.leading, 7)
+        .padding(.trailing, 6)
+        .padding(.vertical, 3.5)
+        .background(Color.accentColor.opacity(0.12))
+        .cornerRadius(5)
+        .overlay(
+            RoundedRectangle(cornerRadius: 5)
+                .stroke(Color.accentColor.opacity(0.25), lineWidth: 0.5)
+        )
+        .fixedSize()
     }
 
     @ViewBuilder
@@ -818,12 +977,30 @@ public struct MainWindowView: View {
                 .keyboardShortcut("u", modifiers: .command)
             Button(action: { openInBrowser() }) {}
                 .keyboardShortcut("b", modifiers: [.command, .shift])
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.16)) {
+                    toggleProjectSearch()
+                }
+            }) {}
+                .keyboardShortcut("f", modifiers: [.command, .shift])
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.16)) {
+                    openProjectSearch()
+                }
+            }) {}
+                .keyboardShortcut("f", modifiers: .command)
+            Button(action: { selectNextSearchMatch() }) {}
+                .keyboardShortcut("g", modifiers: .command)
+            Button(action: { selectPreviousSearchMatch() }) {}
+                .keyboardShortcut("g", modifiers: [.command, .shift])
             Button(action: { fontSize = max(9, fontSize - 1) }) {}
                 .keyboardShortcut("-", modifiers: .command)
             Button(action: { fontSize = min(28, fontSize + 1) }) {}
                 .keyboardShortcut("+", modifiers: .command)
             Button(action: { fontSize = min(28, fontSize + 1) }) {}
                 .keyboardShortcut("=", modifiers: .command)
+            Button(action: { fontSize = 13 }) {}
+                .keyboardShortcut("0", modifiers: .command)
             Button(action: {
                 withAnimation(.easeInOut(duration: 0.2)) {
                     agentCoordinator.togglePanel()
@@ -831,7 +1008,11 @@ public struct MainWindowView: View {
             }) {}
                 .keyboardShortcut("a", modifiers: [.command, .option])
             Button(action: {
-                if agentCoordinator.activeReviewSummary != nil {
+                if isProjectSearchActive {
+                    withAnimation(.easeInOut(duration: 0.16)) {
+                        closeProjectSearch()
+                    }
+                } else if agentCoordinator.activeReviewSummary != nil {
                     endReview()
                 }
             }) {}
@@ -840,7 +1021,216 @@ public struct MainWindowView: View {
         .opacity(0)
     }
 
+    // MARK: - Project Search Engine Integration
+
+    @ViewBuilder
+    private var searchEmptyStateView: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "text.magnifyingglass")
+                .font(.system(size: 34, weight: .light))
+                .foregroundColor(Color(activeTheme.gutterForeground).opacity(0.8))
+
+            Text("No Matches Found")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundColor(Color(activeTheme.foreground))
+
+            Text("No results matching \"\(searchQuery.query)\" in \(currentFolderName.isEmpty ? "project" : "\"\(currentFolderName)\"").")
+                .font(.system(size: 12))
+                .foregroundColor(Color(activeTheme.gutterForeground))
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(activeTheme.background))
+    }
+
+    private func toggleProjectSearch() {
+        if isProjectSearchActive {
+            closeProjectSearch()
+        } else {
+            openProjectSearch()
+        }
+    }
+
+    private func openProjectSearch() {
+        searchFocusToken &+= 1
+
+        if let selectedText = activeDisplayMap.getSelectionText()?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !selectedText.isEmpty {
+            searchQuery.query = selectedText
+            isProjectSearchActive = true
+            triggerDebouncedSearch(delay: 0)
+        } else {
+            isProjectSearchActive = true
+        }
+    }
+
+    private func requestScrollToMatch(at index: Int) {
+        searchScrollRequestId &+= 1
+        searchMatchScrollRequest = SearchMatchScrollRequest(id: searchScrollRequestId, matchIndex: index)
+    }
+
+    private func closeProjectSearch(clearResults: Bool = false) {
+        isProjectSearchActive = false
+        isSearching = false
+        searchTask?.cancel()
+        searchTask = nil
+        searchDebounceWorkItem?.cancel()
+        searchDebounceWorkItem = nil
+        if clearResults {
+            searchMultiBuffer.clear()
+            searchDisplayMap.rebuild()
+            searchMatches = []
+            activeMatchIndex = nil
+            searchMatchScrollRequest = nil
+            isSearchTruncated = false
+            hasExecutedSearch = false
+            searchViewStateResetToken &+= 1
+        }
+    }
+
+    private func resetProjectSearch() {
+        closeProjectSearch(clearResults: true)
+        searchQuery = ProjectSearchQuery()
+        hasExecutedSearch = false
+    }
+
+    private func handleSearchContentEdited() {
+        let updatedMatches = ProjectSearchEngine.shared.recalculateMatches(
+            query: searchQuery,
+            in: searchMultiBuffer
+        )
+        searchMatches = updatedMatches
+        if let activeIdx = activeMatchIndex {
+            if activeIdx >= updatedMatches.count {
+                activeMatchIndex = updatedMatches.isEmpty ? nil : (updatedMatches.count - 1)
+            }
+        } else if !updatedMatches.isEmpty {
+            activeMatchIndex = 0
+        }
+    }
+
+    private func triggerDebouncedSearch(delay: Double = 0.15) {
+        searchDebounceWorkItem?.cancel()
+        searchTask?.cancel()
+
+        guard !searchQuery.isEmpty else {
+            searchMultiBuffer.clear()
+            searchDisplayMap.rebuild()
+            searchMatches = []
+            activeMatchIndex = nil
+            searchMatchScrollRequest = nil
+            isSearching = false
+            isSearchTruncated = false
+            hasExecutedSearch = false
+            searchViewStateResetToken &+= 1
+            return
+        }
+
+        // Clear stale search results and reset scroll position immediately
+        searchMultiBuffer.clear()
+        searchDisplayMap.rebuild()
+        searchMatches = []
+        activeMatchIndex = nil
+        searchMatchScrollRequest = nil
+        isSearchTruncated = false
+        hasExecutedSearch = false
+        searchViewStateResetToken &+= 1
+
+        let dir = effectiveWorkingDirectory
+        let currentQuery = searchQuery
+        isSearching = true
+
+        let workItem = DispatchWorkItem { [self] in
+            searchTask = Task { @MainActor in
+                guard !Task.isCancelled else { return }
+
+                searchMultiBuffer.baseDirectory = dir
+                searchMultiBuffer.setContentMode(.text)
+
+                let backgroundTask = Task.detached(priority: .userInitiated) {
+                    await ProjectSearchEngine.shared.searchStreaming(
+                        query: currentQuery,
+                        in: dir,
+                        onBatch: { batch in
+                            Task { @MainActor in
+                                guard !Task.isCancelled else { return }
+
+                                if !batch.newBuffers.isEmpty {
+                                    for buf in batch.newBuffers {
+                                        self.searchMultiBuffer.addBuffer(buf)
+                                    }
+                                    for excerpt in batch.newExcerpts {
+                                        self.searchMultiBuffer.addExcerpt(excerpt)
+                                    }
+                                    self.searchMatches.append(contentsOf: batch.newMatches)
+                                    self.searchDisplayMap.rebuild()
+
+                                    if self.activeMatchIndex == nil && !self.searchMatches.isEmpty {
+                                        self.activeMatchIndex = 0
+                                        self.requestScrollToMatch(at: 0)
+                                    }
+                                }
+
+                                if batch.isTruncated {
+                                    self.isSearchTruncated = true
+                                }
+
+                                if batch.isFinished {
+                                    self.isSearching = false
+                                    self.hasExecutedSearch = true
+                                }
+                            }
+                        },
+                        isCancelled: {
+                            Task.isCancelled
+                        }
+                    )
+                }
+
+                _ = await withTaskCancellationHandler {
+                    if Task.isCancelled {
+                        backgroundTask.cancel()
+                    }
+                    return await backgroundTask.value
+                } onCancel: {
+                    backgroundTask.cancel()
+                }
+            }
+        }
+
+        searchDebounceWorkItem = workItem
+        if delay > 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+        } else {
+            DispatchQueue.main.async(execute: workItem)
+        }
+    }
+
+    private func selectNextSearchMatch() {
+        guard !searchMatches.isEmpty else { return }
+        let nextIndex: Int
+        if let current = activeMatchIndex {
+            nextIndex = (current + 1) % searchMatches.count
+        } else {
+            nextIndex = 0
+        }
+        activeMatchIndex = nextIndex
+        requestScrollToMatch(at: nextIndex)
+    }
+
+    private func selectPreviousSearchMatch() {
+        guard !searchMatches.isEmpty else { return }
+        let prevIndex: Int
+        if let current = activeMatchIndex {
+            prevIndex = (current - 1 + searchMatches.count) % searchMatches.count
+        } else {
+            prevIndex = searchMatches.count - 1
+        }
+        activeMatchIndex = prevIndex
+        requestScrollToMatch(at: prevIndex)
+    }
+
     private func loadReviewDiff(for summary: AgentEditedFilesSummary) {
+        closeProjectSearch()
         let currentDir = effectiveWorkingDirectory
         let isGit = isGitRepository(at: currentDir)
 
@@ -1127,6 +1517,7 @@ public struct MainWindowView: View {
         displayMap.clear()
         fileDiffs = []
         selectedFilePath = nil
+        resetProjectSearch()
 
         self.remoteTarget = reference
         self.comparisonTarget = .remote(reference)
@@ -1403,6 +1794,9 @@ public struct MainWindowView: View {
         loadGeneration &+= 1
         let generation = loadGeneration
         isReloading = true
+        if multiBuffer.baseDirectory != currentDir {
+            resetProjectSearch()
+        }
         multiBuffer.baseDirectory = currentDir
         let folderName = (currentDir as NSString).lastPathComponent
         self.currentFolderName = folderName
@@ -1476,6 +1870,7 @@ public struct MainWindowView: View {
         repoStatus = .notGitRepository
         selectedFilePath = nil
         multiBuffer.baseDirectory = nil
+        resetProjectSearch()
         loadDiff(files: [])
 
         DispatchQueue.main.async {
@@ -1571,9 +1966,13 @@ public struct MainWindowView: View {
 
             // FSEvents does not identify the writer. Ignore AnyDiff's own
             // save notification only while the disk text still matches our
-            // materialized buffer; a Zed edit immediately after autosave must
+            // materialized buffer; an edit immediately after autosave must
             // remain eligible for an external undo transaction.
             if multiBuffer.shouldIgnoreSelfSavedEvent(
+                filePath: relative,
+                diskPath: resolvedEventPath,
+                threshold: 3.0
+            ) || searchMultiBuffer.shouldIgnoreSelfSavedEvent(
                 filePath: relative,
                 diskPath: resolvedEventPath,
                 threshold: 3.0
@@ -1581,7 +1980,7 @@ public struct MainWindowView: View {
                 continue
             }
 
-            // Skip files currently being typed in by the user.
+            // Skip files currently being typed in by the user in main diff.
             if multiBuffer.isFileDirty(filePath: relative) {
                 continue
             }
@@ -1677,13 +2076,32 @@ public struct MainWindowView: View {
                 }
                 guard !safePaths.isEmpty else { return }
 
+                var searchPathsToInvalidate: Set<String> = []
                 for path in safePaths {
                     let diff = result.files.first { $0.displayPath == path }
                     self.applyWatchedFile(path: path, diff: diff, rawData: result.data)
+                    if self.applyWatchedFileToSearch(path: path) {
+                        searchPathsToInvalidate.insert(path)
+                    }
                 }
                 self.displayMap.rebuild(invalidatingPaths: safePaths)
                 self.displayMap.markContentLoaded()
                 self.updateWatchedFileDiffs(result.files, safePaths: safePaths)
+                if !searchPathsToInvalidate.isEmpty {
+                    let updatedMatches = ProjectSearchEngine.shared.recalculateMatches(
+                        query: self.searchQuery,
+                        in: self.searchMultiBuffer
+                    )
+                    self.searchMatches = updatedMatches
+                    if let activeIdx = self.activeMatchIndex {
+                        if updatedMatches.isEmpty {
+                            self.activeMatchIndex = nil
+                        } else if activeIdx >= updatedMatches.count {
+                            self.activeMatchIndex = updatedMatches.count - 1
+                        }
+                    }
+                    self.searchDisplayMap.rebuild(invalidatingPaths: searchPathsToInvalidate)
+                }
             }
         }
     }
@@ -1919,6 +2337,32 @@ public struct MainWindowView: View {
             buffers: Array(rebuilt.buffers.values),
             excerpts: newExcerpts
         )
+    }
+
+    @discardableResult
+    private func applyWatchedFileToSearch(path: String) -> Bool {
+        guard hasExecutedSearch, !searchQuery.isEmpty else { return false }
+        guard !searchMultiBuffer.isFileDirty(filePath: path) else { return false }
+        guard let fullPath = externalFilePath(for: path) else { return false }
+
+        let wasInSearch = searchMultiBuffer.excerpts.contains { $0.filePath == path }
+        let (newBuffers, newExcerpts) = ProjectSearchEngine.shared.rescanFile(
+            filePath: path,
+            fullDiskPath: fullPath,
+            query: searchQuery
+        )
+
+        // If it was not in search before and still has no matches, do nothing
+        if !wasInSearch && newBuffers.isEmpty {
+            return false
+        }
+
+        searchMultiBuffer.replaceFile(
+            filePath: path,
+            buffers: newBuffers,
+            excerpts: newExcerpts
+        )
+        return true
     }
 
     private func externalFilePath(for relativePath: String) -> String? {

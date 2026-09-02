@@ -513,6 +513,161 @@ final class CustomMultiBufferEditorUITests: XCTestCase {
         XCTAssertEqual(editor.cursorPoint, cursorAfterEdit)
     }
 
+    func testEditorUIMultiLinePasteReplacesSelectionWithUndoRedo() {
+        let fixture = makeEditor(text: "func alpha() {\n    let a = 1\n    let b = 2\n    return a + b\n}")
+        let editor = fixture.editor
+        editor.isEditable = true
+
+        // Select lines 1 and 2 completely: "    let a = 1\n    let b = 2\n"
+        let selectionAnchor = MultiBufferPoint(row: 1, column: 0)
+        let selectionCursor = MultiBufferPoint(row: 3, column: 0)
+        editor.selectionAnchor = selectionAnchor
+        editor.cursorPoint = selectionCursor
+        XCTAssertTrue(editor.hasSelection)
+
+        let pastedText = "    let x = 10\n    let y = 20\n    let z = 30\n"
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(pastedText, forType: .string)
+
+        editor.paste(nil)
+
+        let expectedText = "func alpha() {\n    let x = 10\n    let y = 20\n    let z = 30\n    return a + b\n}"
+        XCTAssertEqual(fixture.buffer.text(), expectedText)
+        XCTAssertFalse(editor.hasSelection)
+
+        // Undo must restore the original text and exact selection range
+        editor.undo(nil)
+        XCTAssertEqual(fixture.buffer.text(), "func alpha() {\n    let a = 1\n    let b = 2\n    return a + b\n}")
+        XCTAssertTrue(editor.hasSelection)
+        XCTAssertEqual(editor.selectionAnchor, selectionAnchor)
+        XCTAssertEqual(editor.cursorPoint, selectionCursor)
+
+        // Redo re-applies the multi-line paste
+        editor.redo(nil)
+        XCTAssertEqual(fixture.buffer.text(), expectedText)
+        XCTAssertFalse(editor.hasSelection)
+    }
+
+    func testEditorUIMultiLineCutCopiesToPasteboardAndDeletesSelection() {
+        let originalText = "func test() {\n    print(1)\n    print(2)\n    print(3)\n}"
+        let fixture = makeEditor(text: originalText)
+        let editor = fixture.editor
+        editor.isEditable = true
+
+        // Select rows 1 and 2 ("print(1)\n    print(2)\n    ")
+        let selectionAnchor = MultiBufferPoint(row: 1, column: 4)
+        let selectionCursor = MultiBufferPoint(row: 3, column: 4)
+        editor.selectionAnchor = selectionAnchor
+        editor.cursorPoint = selectionCursor
+
+        editor.cut(nil)
+
+        let cutContent = NSPasteboard.general.string(forType: .string)
+        XCTAssertEqual(cutContent, "print(1)\n    print(2)\n    ")
+        XCTAssertEqual(fixture.buffer.text(), "func test() {\n    print(3)\n}")
+        XCTAssertFalse(editor.hasSelection)
+
+        // Undo restores both the cut text and the original selection
+        editor.undo(nil)
+        XCTAssertEqual(fixture.buffer.text(), originalText)
+        XCTAssertTrue(editor.hasSelection)
+        XCTAssertEqual(editor.selectionAnchor, selectionAnchor)
+        XCTAssertEqual(editor.cursorPoint, selectionCursor)
+    }
+
+    func testEditorUIMultiLinePasteAtCursorExpandsBufferAndShiftsSubsequentFiles() {
+        let multiBuffer = MultiBuffer()
+        let buf1 = Buffer(filePath: "/tmp/FileA.swift", text: "line A1\nline A2\nline A3")
+        let buf2 = Buffer(filePath: "/tmp/FileB.swift", text: "line B1\nline B2")
+        multiBuffer.addBuffer(buf1)
+        multiBuffer.addBuffer(buf2)
+        multiBuffer.setExcerpts([
+            Excerpt(bufferId: buf1.id, filePath: "/tmp/FileA.swift", bufferRange: 0..<3, isFileStart: true),
+            Excerpt(bufferId: buf2.id, filePath: "/tmp/FileB.swift", bufferRange: 0..<2, isFileStart: true)
+        ])
+        let dm = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
+        let editor = CustomMultiBufferEditorView(displayMap: dm, theme: .unifiedDark)
+        editor.isEditable = true
+        editor.invalidateLayout()
+
+        // Place cursor in File A, line 2, end of line
+        editor.cursorPoint = MultiBufferPoint(row: 1, column: 7)
+
+        let insertedText = "\nline A2.1\nline A2.2"
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(insertedText, forType: .string)
+        editor.paste(nil)
+
+        // Verify File A grew by 2 lines
+        XCTAssertEqual(buf1.text(), "line A1\nline A2\nline A2.1\nline A2.2\nline A3")
+        XCTAssertEqual(buf1.lineCount, 5)
+
+        // Verify File B remained intact
+        XCTAssertEqual(buf2.text(), "line B1\nline B2")
+        XCTAssertEqual(buf2.lineCount, 2)
+
+        // Check that visual coordinates for File B shifted down by 2 code rows
+        let fileBStartLoc = dm.visualPoint(for: buf2.id, bufferPoint: BufferPoint(row: 0, column: 0))
+        XCTAssertEqual(fileBStartLoc?.row, 5, "File B code row must shift from row 3 to row 5 after 2 lines added to File A")
+
+        // Undo must shrink File A and shift File B back
+        editor.undo(nil)
+        XCTAssertEqual(buf1.text(), "line A1\nline A2\nline A3")
+        let fileBStartLocAfterUndo = dm.visualPoint(for: buf2.id, bufferPoint: BufferPoint(row: 0, column: 0))
+        XCTAssertEqual(fileBStartLocAfterUndo?.row, 3, "File B code row must shift back to row 3 after undo")
+    }
+
+    func testEditorUIMultiLineSelectionReplacementWithSingleCharacter() {
+        let fixture = makeEditor(text: "line 1\nline 2\nline 3\nline 4")
+        let editor = fixture.editor
+        editor.isEditable = true
+
+        // Select from middle of line 1 to middle of line 3
+        editor.selectionAnchor = MultiBufferPoint(row: 0, column: 4)
+        editor.cursorPoint = MultiBufferPoint(row: 2, column: 4)
+
+        // Type single character 'Z'
+        editor.insertText("Z", replacementRange: NSRange(location: NSNotFound, length: 0))
+
+        XCTAssertEqual(fixture.buffer.text(), "lineZ 3\nline 4")
+        XCTAssertEqual(fixture.buffer.lineCount, 2)
+        XCTAssertFalse(editor.hasSelection)
+
+        // Undo restores the 4-line text and selection
+        editor.undo(nil)
+        XCTAssertEqual(fixture.buffer.text(), "line 1\nline 2\nline 3\nline 4")
+        XCTAssertTrue(editor.hasSelection)
+        XCTAssertEqual(editor.selectionAnchor, MultiBufferPoint(row: 0, column: 4))
+        XCTAssertEqual(editor.cursorPoint, MultiBufferPoint(row: 2, column: 4))
+    }
+
+    func testEditorUICopyPasteRoundTripPreservesIndentation() {
+        let indentedCode = "    let x = 1\n\tlet y = 2\n        let z = 3"
+        let fixture = makeEditor(text: indentedCode)
+        let editor = fixture.editor
+        editor.isEditable = true
+
+        editor.selectAll(nil)
+        editor.copy(nil)
+
+        let copied = NSPasteboard.general.string(forType: .string)
+        XCTAssertEqual(copied, indentedCode)
+
+        // Move cursor to end and insert a newline, then paste
+        editor.selectionAnchor = nil
+        editor.cursorPoint = MultiBufferPoint(row: 2, column: 17)
+        editor.insertText("\n", replacementRange: NSRange(location: NSNotFound, length: 0))
+        editor.paste(nil)
+
+        XCTAssertEqual(fixture.buffer.text(), indentedCode + "\n" + indentedCode)
+
+        // Undo reverses the paste and newline
+        editor.undo(nil)
+        XCTAssertEqual(fixture.buffer.text(), indentedCode + "\n")
+        editor.undo(nil)
+        XCTAssertEqual(fixture.buffer.text(), indentedCode)
+    }
+
     func testEditorUIExternalChangeIsUndoneBeforeLocalEdit() {
         let fixture = makeEditor(text: "one\ntwo\nthree")
         let editor = fixture.editor

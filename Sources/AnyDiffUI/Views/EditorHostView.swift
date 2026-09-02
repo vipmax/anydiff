@@ -2,6 +2,16 @@ import SwiftUI
 import AppKit
 import AnyDiffCore
 
+public struct SearchMatchScrollRequest: Equatable {
+    public let id: UInt64
+    public let matchIndex: Int
+
+    public init(id: UInt64, matchIndex: Int) {
+        self.id = id
+        self.matchIndex = matchIndex
+    }
+}
+
 public struct EditorHostView: NSViewRepresentable {
     public var displayMap: DisplayMap
     public var theme: Theme
@@ -9,8 +19,12 @@ public struct EditorHostView: NSViewRepresentable {
     public var isEditable: Bool
     public var selectedFilePath: String?
     public var viewStateResetToken: UInt64?
+    public var searchMatches: [ProjectSearchMatch]
+    public var activeMatchIndex: Int?
+    public var searchMatchScrollRequest: SearchMatchScrollRequest?
     public var onCursorChange: (ExcerptLocation?, MultiBufferPoint) -> Void
     public var onAddCommentRequest: (String, Int) -> Void
+    public var onContentEdited: (() -> Void)?
 
     public init(
         displayMap: DisplayMap,
@@ -19,8 +33,12 @@ public struct EditorHostView: NSViewRepresentable {
         isEditable: Bool = true,
         selectedFilePath: String? = nil,
         viewStateResetToken: UInt64? = nil,
+        searchMatches: [ProjectSearchMatch] = [],
+        activeMatchIndex: Int? = nil,
+        searchMatchScrollRequest: SearchMatchScrollRequest? = nil,
         onCursorChange: @escaping (ExcerptLocation?, MultiBufferPoint) -> Void,
-        onAddCommentRequest: @escaping (String, Int) -> Void
+        onAddCommentRequest: @escaping (String, Int) -> Void,
+        onContentEdited: (() -> Void)? = nil
     ) {
         self.displayMap = displayMap
         self.theme = theme
@@ -28,8 +46,12 @@ public struct EditorHostView: NSViewRepresentable {
         self.isEditable = isEditable
         self.selectedFilePath = selectedFilePath
         self.viewStateResetToken = viewStateResetToken
+        self.searchMatches = searchMatches
+        self.activeMatchIndex = activeMatchIndex
+        self.searchMatchScrollRequest = searchMatchScrollRequest
         self.onCursorChange = onCursorChange
         self.onAddCommentRequest = onAddCommentRequest
+        self.onContentEdited = onContentEdited
     }
 
     public func makeCoordinator() -> Coordinator {
@@ -49,7 +71,10 @@ public struct EditorHostView: NSViewRepresentable {
             // The DisplayMap may already contain loaded content when SwiftUI
             // creates this view, so there may be no revision transition to
             // trigger the initial cursor/focus setup.
-            editorView.resetCursorToFirstVisibleLine()
+            let firstResponder = editorView.window?.firstResponder
+            let isAnotherControlFocused = firstResponder != nil && firstResponder !== editorView
+            let shouldFocus = !isAnotherControlFocused
+            editorView.resetCursorToFirstVisibleLine(shouldFocus: shouldFocus)
             if let path = selectedFilePath {
                 context.coordinator.lastScrolledFilePaths[displayMapID] = path
                 editorView.scrollToFilePath(path)
@@ -68,6 +93,8 @@ public struct EditorHostView: NSViewRepresentable {
             context.coordinator.viewStates.removeValue(forKey: displayMapID)
             context.coordinator.lastScrolledFilePaths.removeValue(forKey: displayMapID)
             context.coordinator.lastViewStateResetTokens[displayMapID] = resetToken
+            context.coordinator.lastScrolledMatchRequestId = nil
+            editorView.scrollToTop()
         }
         let mapChanged = editorView.displayMap !== displayMap
         if mapChanged {
@@ -111,6 +138,25 @@ public struct EditorHostView: NSViewRepresentable {
             editorView.isEditable = isEditable
         }
 
+        if editorView.searchMatches != searchMatches {
+            editorView.searchMatches = searchMatches
+        }
+        if editorView.activeMatchIndex != activeMatchIndex {
+            editorView.activeMatchIndex = activeMatchIndex
+        }
+
+        if let scrollReq = searchMatchScrollRequest {
+            if scrollReq.id != context.coordinator.lastScrolledMatchRequestId {
+                context.coordinator.lastScrolledMatchRequestId = scrollReq.id
+                DispatchQueue.main.async {
+                    editorView.scrollToSearchMatch(at: scrollReq.matchIndex)
+                    context.coordinator.saveCurrentViewState()
+                }
+            }
+        } else {
+            context.coordinator.lastScrolledMatchRequestId = nil
+        }
+
         if !mapChanged, !revisionChanged,
            let path = selectedFilePath,
            path != context.coordinator.lastScrolledFilePaths[displayMapID] {
@@ -129,6 +175,7 @@ public struct EditorHostView: NSViewRepresentable {
         weak var editorView: CustomMultiBufferEditorView?
         var activeDisplayMapID: ObjectIdentifier?
         var isSwitchingDisplayMap = false
+        var lastScrolledMatchRequestId: UInt64? = nil
         var viewStates: [ObjectIdentifier: EditorViewState] = [:]
         var lastScrolledFilePaths: [ObjectIdentifier: String] = [:]
         var lastLoadRevisions: [ObjectIdentifier: UInt64] = [:]
@@ -156,6 +203,12 @@ public struct EditorHostView: NSViewRepresentable {
         public func editorDidScroll() {
             guard !isSwitchingDisplayMap else { return }
             saveCurrentViewState()
+        }
+
+        public func editorDidChangeContent() {
+            guard !isSwitchingDisplayMap else { return }
+            saveCurrentViewState()
+            parent.onContentEdited?()
         }
 
         var currentViewState: EditorViewState? {

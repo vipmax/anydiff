@@ -6,10 +6,24 @@ extension AppDelegate {
     func setupMainMenu() {
         let mainMenu = NSMenu()
 
-        // App Menu (Standard Application metadata & quit)
+        // App Menu (Standard Application metadata, hide & quit)
         let appMenuItem = NSMenuItem()
         let appMenu = NSMenu()
         appMenu.addItem(NSMenuItem(title: "About AnyDiff", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: ""))
+        appMenu.addItem(NSMenuItem.separator())
+
+        let servicesMenuItem = NSMenuItem(title: "Services", action: nil, keyEquivalent: "")
+        let servicesMenu = NSMenu(title: "Services")
+        servicesMenuItem.submenu = servicesMenu
+        appMenu.addItem(servicesMenuItem)
+        NSApplication.shared.servicesMenu = servicesMenu
+
+        appMenu.addItem(NSMenuItem.separator())
+        appMenu.addItem(NSMenuItem(title: "Hide AnyDiff", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h"))
+        let hideOthersItem = NSMenuItem(title: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
+        hideOthersItem.keyEquivalentModifierMask = [.command, .option]
+        appMenu.addItem(hideOthersItem)
+        appMenu.addItem(NSMenuItem(title: "Show All", action: #selector(NSApplication.unhideAllApplications(_:)), keyEquivalent: ""))
         appMenu.addItem(NSMenuItem.separator())
         appMenu.addItem(NSMenuItem(title: "Quit AnyDiff", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         appMenuItem.submenu = appMenu
@@ -48,13 +62,27 @@ extension AppDelegate {
         editMenu.addItem(copyDiffItem)
         editMenu.addItem(NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v"))
         editMenu.addItem(NSMenuItem(title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
+        editMenu.addItem(NSMenuItem.separator())
+        let findItem = NSMenuItem(title: "Find...", action: #selector(findInProjectAction(_:)), keyEquivalent: "f")
+        findItem.keyEquivalentModifierMask = [.command]
+        editMenu.addItem(findItem)
+        let findInProjectItem = NSMenuItem(title: "Find in Project...", action: #selector(findInProjectAction(_:)), keyEquivalent: "F")
+        findInProjectItem.keyEquivalentModifierMask = [.command, .shift]
+        editMenu.addItem(findInProjectItem)
+        let findNextItem = NSMenuItem(title: "Find Next", action: #selector(findNextAction(_:)), keyEquivalent: "g")
+        editMenu.addItem(findNextItem)
+        let findPrevItem = NSMenuItem(title: "Find Previous", action: #selector(findPreviousAction(_:)), keyEquivalent: "G")
+        findPrevItem.keyEquivalentModifierMask = [.command, .shift]
+        editMenu.addItem(findPrevItem)
         editMenuItem.submenu = editMenu
         mainMenu.addItem(editMenuItem)
 
         // View Menu
         let viewMenuItem = NSMenuItem()
         let viewMenu = NSMenu(title: "View")
-        viewMenu.addItem(NSMenuItem(title: "Toggle Full Screen", action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f"))
+        let fullScreenItem = NSMenuItem(title: "Toggle Full Screen", action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f")
+        fullScreenItem.keyEquivalentModifierMask = [.control, .command]
+        viewMenu.addItem(fullScreenItem)
         viewMenu.addItem(NSMenuItem.separator())
         viewMenu.addItem(NSMenuItem(title: "Zoom In", action: #selector(zoomInAction(_:)), keyEquivalent: "+"))
         viewMenu.addItem(NSMenuItem(title: "Zoom Out", action: #selector(zoomOutAction(_:)), keyEquivalent: "-"))
@@ -105,6 +133,17 @@ extension AppDelegate {
 
         viewMenuItem.submenu = viewMenu
         mainMenu.addItem(viewMenuItem)
+
+        // Window Menu
+        let windowMenuItem = NSMenuItem()
+        let windowMenu = NSMenu(title: "Window")
+        windowMenu.addItem(NSMenuItem(title: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m"))
+        windowMenu.addItem(NSMenuItem(title: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: ""))
+        windowMenu.addItem(NSMenuItem.separator())
+        windowMenu.addItem(NSMenuItem(title: "Bring All to Front", action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: ""))
+        windowMenuItem.submenu = windowMenu
+        mainMenu.addItem(windowMenuItem)
+        NSApplication.shared.windowsMenu = windowMenu
 
         NSApplication.shared.mainMenu = mainMenu
     }
@@ -173,8 +212,20 @@ extension AppDelegate {
 
     @objc func selectToolcallColorModeAction(_ sender: NSMenuItem) {
         guard let rawValue = sender.representedObject as? String,
-              let mode = ToolcallColorMode(rawValue: rawValue) else { return }
+            let mode = ToolcallColorMode(rawValue: rawValue) else { return }
         UserDefaults.standard.set(mode.rawValue, forKey: AgentDisplayPreferences.toolcallColorModeKey)
         NotificationCenter.default.post(name: AgentDisplayPreferences.didChangeNotification, object: nil)
+    }
+
+    @objc func findInProjectAction(_ sender: Any?) {
+        NotificationCenter.default.post(name: Notification.Name("anyDiffFindInProject"), object: nil)
+    }
+
+    @objc func findNextAction(_ sender: Any?) {
+        NotificationCenter.default.post(name: Notification.Name("anyDiffFindNext"), object: nil)
+    }
+
+    @objc func findPreviousAction(_ sender: Any?) {
+        NotificationCenter.default.post(name: Notification.Name("anyDiffFindPrevious"), object: nil)
     }
 }
