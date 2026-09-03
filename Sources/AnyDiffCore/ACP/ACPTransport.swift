@@ -73,8 +73,15 @@ public final class ACPTransport: @unchecked Sendable {
         proc.environment = mergedEnv
 
         // Launch shell command via login shell to evaluate environment & PATH correctly
+        let trimmedCmd = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        let finalCmd: String
+        if trimmedCmd.contains(" ") && !trimmedCmd.hasPrefix("\"") && !trimmedCmd.hasPrefix("'") && FileManager.default.fileExists(atPath: trimmedCmd) {
+            finalCmd = "\"\(trimmedCmd)\""
+        } else {
+            finalCmd = trimmedCmd
+        }
         proc.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        proc.arguments = ["-l", "-c", command]
+        proc.arguments = ["-l", "-c", finalCmd]
 
         proc.terminationHandler = { [weak self] p in
             guard let self = self else { return }

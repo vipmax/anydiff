@@ -13,6 +13,9 @@ public struct AgentStartScreenView: View {
     @State private var customIcon: String = "terminal"
     @State private var selectedColorName: String = "teal"
     @State private var viewingSessionsPreset: AgentPreset? = nil
+    @State private var isViewingRegistry: Bool = false
+    @State private var isRegistryHovered: Bool = false
+    @State private var isAddCustomHovered: Bool = false
 
     private let availableColors = ["white", "black", "gray", "green", "blue", "purple", "orange", "teal", "cyan", "pink", "red"]
 
@@ -27,7 +30,18 @@ public struct AgentStartScreenView: View {
     }
 
     public var body: some View {
-        if let preset = viewingSessionsPreset {
+        if isViewingRegistry {
+            ACPRegistryView(
+                coordinator: coordinator,
+                theme: theme,
+                workingDirectory: workingDirectory,
+                onBack: {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        isViewingRegistry = false
+                    }
+                }
+            )
+        } else if let preset = viewingSessionsPreset {
             AgentSavedSessionsView(
                 preset: preset,
                 coordinator: coordinator,
@@ -112,11 +126,14 @@ public struct AgentStartScreenView: View {
                                     },
                                     onDelete: preset.isCustom ? {
                                         withAnimation(.easeInOut(duration: 0.15)) {
-                                            coordinator.deleteCustomPreset(id: preset.id)
+                                            coordinator.uninstallRegistryAgent(id: preset.id)
                                         }
                                     } : nil
                                 )
                             }
+
+                            // Browse ACP Registry Button
+                            browseRegistryButton
 
                             // Add Custom Agent Form / Button
                             if isAddingCustom {
@@ -195,17 +212,24 @@ public struct AgentStartScreenView: View {
             HStack(spacing: 12) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .stroke(Color(theme.gutterForeground).opacity(0.4), style: StrokeStyle(lineWidth: 1, dash: [3]))
+                        .stroke(
+                            isAddCustomHovered ? Color.accentColor.opacity(0.7) : Color(theme.gutterForeground).opacity(0.4),
+                            style: StrokeStyle(lineWidth: 1, dash: [3])
+                        )
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(isAddCustomHovered ? Color.accentColor.opacity(0.12) : Color.clear)
+                        )
                         .frame(width: 34, height: 34)
                     Image(systemName: "plus")
                         .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(Color(theme.gutterForeground))
+                        .foregroundColor(isAddCustomHovered ? .accentColor : Color(theme.gutterForeground))
                 }
 
                 VStack(alignment: .center, spacing: 2) {
                     Text("Add Custom Agent")
                         .font(.system(size: 12.5, weight: .semibold))
-                        .foregroundColor(Color(theme.foreground))
+                        .foregroundColor(isAddCustomHovered ? Color.accentColor : Color(theme.foreground))
                         .multilineTextAlignment(.center)
 
                     Text("Run any ACP-compatible command or local server")
@@ -218,11 +242,86 @@ public struct AgentStartScreenView: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(Color(theme.foreground).opacity(0.03))
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color(theme.foreground).opacity(isAddCustomHovered ? 0.07 : 0.035))
             )
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .animation(.easeOut(duration: 0.14), value: isAddCustomHovered)
         }
         .buttonStyle(.plain)
+        .onHover { isAddCustomHovered = $0 }
+    }
+
+    @ViewBuilder
+    private var browseRegistryButton: some View {
+        Button(action: {
+            withAnimation(.easeInOut(duration: 0.18)) {
+                isViewingRegistry = true
+            }
+        }) {
+            HStack(spacing: 12) {
+                // Globe icon container exactly matching AgentCardButton dimensions (40x40)
+                ZStack {
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(Color.accentColor.opacity(isRegistryHovered ? 0.18 : 0.10))
+                        .frame(width: 40, height: 40)
+                    Image(systemName: "globe")
+                        .font(.system(size: 20, weight: .medium))
+                        .foregroundColor(.accentColor)
+                }
+
+                // Centered text stack matching AgentCardButton
+                VStack(alignment: .center, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text("Browse ACP Registry")
+                            .font(.system(size: 14.5, weight: .semibold))
+                            .foregroundColor(isRegistryHovered ? Color.accentColor : Color(theme.foreground))
+                            .lineLimit(1)
+
+                        Text("Online")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(.accentColor)
+                            .fixedSize(horizontal: true, vertical: false)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(
+                                Capsule()
+                                    .fill(Color.accentColor.opacity(0.14))
+                            )
+                    }
+                    .frame(maxWidth: .infinity, alignment: .center)
+
+                    Text("Explore, install, and run certified ACP agents")
+                        .font(.system(size: 11))
+                        .foregroundColor(Color(theme.gutterForeground).opacity(0.82))
+                        .lineLimit(1)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity)
+                }
+                .frame(maxWidth: .infinity, alignment: .center)
+
+                Spacer(minLength: 4)
+
+                // Right arrow matching AgentCardButton
+                HStack(spacing: 6) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(Color.accentColor.opacity(isRegistryHovered ? 1.0 : 0.45))
+                        .offset(x: isRegistryHovered ? 2 : 0)
+                        .animation(.easeOut(duration: 0.15), value: isRegistryHovered)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 12)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color(theme.foreground).opacity(isRegistryHovered ? 0.07 : 0.035))
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .animation(.easeOut(duration: 0.14), value: isRegistryHovered)
+        }
+        .buttonStyle(.plain)
+        .onHover { isRegistryHovered = $0 }
     }
 
     @ViewBuilder
@@ -510,20 +609,8 @@ private struct AgentCardButton: View {
 
             Spacer(minLength: 4)
 
-            // Right arrow / Delete action
+            // Right arrow
             HStack(spacing: 6) {
-                if let onDelete = onDelete, isHovered {
-                    Button(action: onDelete) {
-                        Image(systemName: "trash")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(.red.opacity(0.85))
-                            .frame(width: 24, height: 24)
-                            .background(Circle().fill(Color.red.opacity(0.12)))
-                    }
-                    .buttonStyle(.plain)
-                    .help("Delete custom agent")
-                }
-
                 Image(systemName: "chevron.right")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundColor(Color(theme.gutterForeground).opacity(isHovered ? 1.0 : 0.45))
@@ -540,6 +627,13 @@ private struct AgentCardButton: View {
         .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .onTapGesture {
             onSelect()
+        }
+        .contextMenu {
+            if let onDelete = onDelete {
+                Button(role: .destructive, action: onDelete) {
+                    Label("Delete Agent", systemImage: "trash")
+                }
+            }
         }
         .animation(.easeOut(duration: 0.14), value: isHovered)
         .onHover { hovering in

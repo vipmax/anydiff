@@ -32,9 +32,11 @@ public enum AgentBrandIcons {
         default:
             svg = nil
         }
-        guard let svgString = svg, let data = svgString.data(using: .utf8) else {
+        guard let svgString = svg, let data = svgString.data(using: .utf8),
+              let image = NSImage(data: data) else {
             return nil
         }
-        return NSImage(data: data)
+        image.isTemplate = true
+        return image
     }
 }

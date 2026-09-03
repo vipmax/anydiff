@@ -63,7 +63,7 @@ struct JSONRPCAnyIDResponse<T: Codable & Sendable>: Codable, Sendable {
     }
 }
 
-public struct JSONRPCError: Codable, Sendable, Error {
+public struct JSONRPCError: Codable, Sendable, Error, LocalizedError, CustomNSError {
     public let code: Int
     public let message: String
     public let data: String?
@@ -73,6 +73,16 @@ public struct JSONRPCError: Codable, Sendable, Error {
         self.message = message
         self.data = data
     }
+
+    public var errorDescription: String? {
+        if let data = data, !data.isEmpty {
+            return "\(message): \(data)"
+        }
+        return message
+    }
+
+    public static var errorDomain: String { "JSONRPCError" }
+    public var errorCode: Int { code }
 }
 
 /// JSON-RPC request identifiers may be numbers or strings. Client-originated
@@ -220,7 +230,7 @@ public struct ACPSessionListParams: Codable, Sendable {
     }
 }
 
-public struct ACPSavedSessionItem: Codable, Sendable, Identifiable {
+public struct ACPSavedSessionItem: Codable, Sendable, Identifiable, Equatable {
     public var id: String { sessionId }
     public let sessionId: String
     public let cwd: String?
@@ -284,21 +294,57 @@ public struct ACPSavedSessionItem: Codable, Sendable, Identifiable {
         return "Session \(shortId)"
     }
 
-    public var formattedDate: String {
-        guard let updatedAt, !updatedAt.isEmpty else { return "" }
-        let isoFormatter = ISO8601DateFormatter()
-        isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        var date = isoFormatter.date(from: updatedAt)
-        if date == nil {
-            isoFormatter.formatOptions = [.withInternetDateTime]
-            date = isoFormatter.date(from: updatedAt)
+    public var parsedDate: Date? {
+        guard let updatedAt, !updatedAt.isEmpty else { return nil }
+        if let d = ACPSavedSessionFormatters.isoWithFractional.date(from: updatedAt) {
+            return d
         }
-        guard let date else { return updatedAt }
-        let displayFormatter = DateFormatter()
-        displayFormatter.dateStyle = .medium
-        displayFormatter.timeStyle = .short
-        return displayFormatter.string(from: date)
+        return ACPSavedSessionFormatters.isoStandard.date(from: updatedAt)
     }
+
+    public var relativeTime: String {
+        guard let date = parsedDate else { return "" }
+        return ACPSavedSessionFormatters.relative.localizedString(for: date, relativeTo: Date())
+    }
+
+    public var formattedDate: String {
+        guard let date = parsedDate else { return updatedAt ?? "" }
+        let fullDate = ACPSavedSessionFormatters.display.string(from: date)
+        let rel = ACPSavedSessionFormatters.relative.localizedString(for: date, relativeTo: Date())
+        if !rel.isEmpty {
+            return "\(rel) · \(fullDate)"
+        }
+        return fullDate
+    }
+}
+
+private enum ACPSavedSessionFormatters {
+    static let isoWithFractional: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
+    static let isoStandard: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
+
+    static let relative: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.locale = Locale(identifier: "en_US")
+        f.unitsStyle = .full
+        f.dateTimeStyle = .numeric
+        return f
+    }()
+
+    static let display: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        f.timeStyle = .short
+        return f
+    }()
 }
 
 public struct ACPSessionListResult: Codable, Sendable {

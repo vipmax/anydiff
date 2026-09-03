@@ -43,6 +43,7 @@ public final class ACPClient: ACPTransportDelegate, @unchecked Sendable {
     private var pendingRequests: [Int: (Result<Data, JSONRPCError>) -> Void] = [:]
     private var activeTerminals: [String: ACPTerminalRunner] = [:]
     private let terminalsLock = NSLock()
+    private var lastStderr: String = ""
 
     public private(set) var workingDirectory: String = ""
     public private(set) var activeSessionId: String? = nil
@@ -295,22 +296,37 @@ public final class ACPClient: ACPTransportDelegate, @unchecked Sendable {
 
     public func transport(_ transport: ACPTransport, didLogStderr text: String) {
         ACPLogger.log("--- STDERR: \(text)")
+        stateQueue.sync {
+            lastStderr += text
+            if lastStderr.count > 500 {
+                lastStderr = String(lastStderr.suffix(500))
+            }
+        }
         delegate?.client(self, didLog: text)
     }
 
     public func transport(_ transport: ACPTransport, didTerminateWith exitCode: Int32) {
         ACPLogger.log("--- TERMINATED: exitCode=\(exitCode)")
-        let pending = stateQueue.sync { () -> [Int: (Result<Data, JSONRPCError>) -> Void] in
+        let (pending, stderrText) = stateQueue.sync { () -> ([Int: (Result<Data, JSONRPCError>) -> Void], String) in
             let copy = pendingRequests
             pendingRequests.removeAll()
-            return copy
+            let err = lastStderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            lastStderr = ""
+            return (copy, err)
+        }
+
+        let failureMsg: String
+        if !stderrText.isEmpty {
+            failureMsg = "Agent process exited with code \(exitCode): \(stderrText)"
+        } else {
+            failureMsg = "Agent process exited with code \(exitCode)"
         }
 
         for (_, completion) in pending {
-            completion(.failure(JSONRPCError(code: -1, message: "Agent process exited with code \(exitCode)")))
+            completion(.failure(JSONRPCError(code: -1, message: failureMsg)))
         }
 
-        let message = exitCode == 0 ? "Process terminated cleanly" : "Process exited with code \(exitCode)"
+        let message = exitCode == 0 ? "Process terminated cleanly" : failureMsg
         delegate?.client(self, didDisconnectWith: message)
     }
 

@@ -48,6 +48,7 @@ public final class AgentIconLoader: ObservableObject {
                 DispatchQueue.main.async { completion(nil) }
                 return
             }
+            image.isTemplate = true
             self.cache.setObject(image, forKey: key as NSString)
             DispatchQueue.main.async { completion(image) }
         }.resume()

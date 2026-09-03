@@ -19,11 +19,12 @@ public struct AgentPreset: Identifiable, Equatable, Sendable, Codable {
     }
 
     public var effectiveCommand: String {
+        let trimmedCmd = command.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedArgs = arguments.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmedArgs.isEmpty {
-            return command
+            return trimmedCmd
         }
-        return "\(command) \(trimmedArgs)"
+        return "\(trimmedCmd) \(trimmedArgs)"
     }
 
     public init(
@@ -88,9 +89,9 @@ public struct AgentPreset: Identifiable, Equatable, Sendable, Codable {
         summary: "Offline interactive demo & test mode",
         isMock: true
     )
-    public static let defaultPresets: [AgentPreset] = [.codex, .agy, .claude, .mock]
+    public static let defaultPresets: [AgentPreset] = [.mock]
     #else
-    public static let defaultPresets: [AgentPreset] = [.codex, .agy, .claude]
+    public static let defaultPresets: [AgentPreset] = []
     #endif
     public static var allPresets: [AgentPreset] { defaultPresets }
 
@@ -182,7 +183,12 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
     private var cancellables = Set<AnyCancellable>()
 
     public init(isMockAgent: Bool? = nil, autoCreateSession: Bool = false) {
-        let savedPresetId = UserDefaults.standard.string(forKey: "anydiff_selected_agent_preset") ?? "codex"
+        #if DEBUG
+        let defaultId = "mock"
+        #else
+        let defaultId = ""
+        #endif
+        let savedPresetId = UserDefaults.standard.string(forKey: "anydiff_selected_agent_preset") ?? defaultId
         self.selectedPresetId = savedPresetId
         self.customPresets = Self.loadCustomPresets()
 
@@ -195,7 +201,7 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
 
         if autoCreateSession {
             #if DEBUG
-            let initialPreset = mock ? AgentPreset.mock : (allPresets.first(where: { $0.id == savedPresetId && !$0.isMock }) ?? .codex)
+            let initialPreset = mock ? AgentPreset.mock : (allPresets.first(where: { $0.id == savedPresetId && !$0.isMock }) ?? (allPresets.first(where: { !$0.isMock }) ?? AgentPreset(id: "live", name: "Agent", command: "")))
             let initialManager: AgentSessionManager
             if mock {
                 initialManager = MockAgentSessionManager()
@@ -206,7 +212,7 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
                 initialManager = acp
             }
             #else
-            let initialPreset = allPresets.first(where: { $0.id == savedPresetId && !$0.isMock }) ?? .codex
+            let initialPreset = allPresets.first(where: { $0.id == savedPresetId && !$0.isMock }) ?? (allPresets.first(where: { !$0.isMock }) ?? AgentPreset(id: "live", name: "Agent", command: ""))
             let acp = ACPAgentSessionManager()
             acp.agentCommand = initialPreset.effectiveCommand
             acp.agentTitle = initialPreset.name
@@ -262,9 +268,9 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
     @discardableResult
     public func createNewSession(workingDirectory: String, preset: AgentPreset? = nil) -> AgentSessionItem {
         #if DEBUG
-        let fallbackPreset = isMockAgent ? AgentPreset.mock : AgentPreset.codex
+        let fallbackPreset = isMockAgent ? AgentPreset.mock : (allPresets.first(where: { !$0.isMock }) ?? AgentPreset(id: "live", name: "Agent", command: ""))
         #else
-        let fallbackPreset = AgentPreset.codex
+        let fallbackPreset = allPresets.first(where: { !$0.isMock }) ?? AgentPreset(id: "live", name: "Agent", command: "")
         #endif
         let chosenPreset = preset ?? (allPresets.first(where: { $0.id == selectedPresetId }) ?? fallbackPreset)
         let isMock = chosenPreset.isMock
@@ -380,16 +386,20 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
     #if DEBUG
     public func toggleMockMode(workingDirectory: String) {
         let nextMock = !isMockAgent
-        let nextPreset: AgentPreset = nextMock ? .mock : .codex
+        let nextPreset: AgentPreset = nextMock ? .mock : (allPresets.first(where: { !$0.isMock }) ?? .mock)
         selectPreset(nextPreset, workingDirectory: workingDirectory)
     }
     #endif
 
-    public func fetchSavedSessions(for preset: AgentPreset, workingDirectory: String) async throws -> [ACPSavedSessionItem] {
+    public func fetchSavedSessions(
+        for preset: AgentPreset,
+        workingDirectory: String,
+        onPage: (@Sendable @MainActor ([ACPSavedSessionItem]) -> Void)? = nil
+    ) async throws -> [ACPSavedSessionItem] {
         let resolvedWorkingDirectory = normalizedWorkingDirectory(workingDirectory)
         #if DEBUG
         if preset.isMock {
-            return [
+            let mockItems = [
                 ACPSavedSessionItem(
                     sessionId: "mock_ses_001",
                     cwd: resolvedWorkingDirectory,
@@ -409,6 +419,10 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
                     updatedAt: "2026-08-23T18:00:00Z"
                 )
             ]
+            if let onPage {
+                await onPage(mockItems)
+            }
+            return mockItems
         }
         #endif
 
@@ -422,11 +436,15 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
         var seenCursors = Set<String>()
 
         repeat {
+            try Task.checkCancellation()
             let page = try await client.listSessionsPage(
                 cwd: resolvedWorkingDirectory,
                 cursor: cursor
             )
             sessions.append(contentsOf: page.sessions)
+            if let onPage, !page.sessions.isEmpty {
+                await onPage(page.sessions)
+            }
 
             guard let nextCursor = page.nextCursor,
                   !nextCursor.isEmpty,
@@ -556,8 +574,28 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
     public func deleteCustomPreset(id: String) {
         customPresets.removeAll(where: { $0.id == id })
         if selectedPresetId == id {
-            selectedPresetId = "codex"
+            selectedPresetId = allPresets.first?.id ?? ""
         }
+    }
+
+    // MARK: - Registry Agents Management
+
+    public func isAgentInstalled(id: String) -> Bool {
+        allPresets.contains(where: { $0.id == id })
+    }
+
+    @discardableResult
+    public func installRegistryAgent(_ entry: ACPRegistryAgentEntry, binaryPath: String? = nil) -> AgentPreset {
+        deleteCustomPreset(id: entry.id)
+        let preset = entry.toAgentPreset(binaryInstalledPath: binaryPath)
+        customPresets.append(preset)
+        return preset
+    }
+
+    public func uninstallRegistryAgent(id: String) {
+        deleteCustomPreset(id: id)
+        ACPRegistryBinaryDownloader.removeAgent(agentId: id)
+        objectWillChange.send()
     }
 
     private func saveCustomPresets() {

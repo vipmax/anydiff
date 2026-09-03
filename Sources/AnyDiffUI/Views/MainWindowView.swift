@@ -449,6 +449,7 @@ public struct MainWindowView: View {
                         currentSelectedFile: selectedFilePath,
                         fileDiffsSummary: currentDiffSummary,
                         agentAccentColor: activeSession.preset.color,
+                        agentIcon: activeSession.preset.iconName,
                         toolcallColorMode: toolcallColorMode,
                         onReview: { summary in
                             beginReview(summary: summary)

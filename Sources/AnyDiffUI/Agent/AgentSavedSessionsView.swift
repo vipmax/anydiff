@@ -12,11 +12,17 @@ public struct AgentSavedSessionsView: View {
 
     @State private var sessions: [ACPSavedSessionItem] = []
     @State private var isLoading: Bool = true
+    @State private var isStreamingMore: Bool = false
     @State private var errorMessage: String? = nil
+    @State private var isSearchVisible: Bool = false
     @State private var searchQuery: String = ""
+    @FocusState private var isSearchFocused: Bool
     @State private var loadingSessionId: String? = nil
     @State private var isBackHovered: Bool = false
     @State private var isStartNewHovered: Bool = false
+    @State private var isSearchBtnHovered: Bool = false
+    @State private var isRefreshBtnHovered: Bool = false
+    @State private var loadTask: Task<Void, Never>? = nil
 
     public init(
         preset: AgentPreset,
@@ -54,17 +60,23 @@ public struct AgentSavedSessionsView: View {
         VStack(spacing: 0) {
             // Header bar
             headerBar
-                .padding(.horizontal, 16)
-                .padding(.top, 14)
-                .padding(.bottom, 10)
+                .padding(.horizontal, 14)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
 
             Divider()
                 .background(Color(theme.excerptHeaderBorder).opacity(0.6))
 
-            // Search / Filter Bar
-            searchAndControlBar
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
+            // Search / Filter Bar (Collapsible)
+            if isSearchVisible {
+                searchBarView
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+
+                Divider()
+                    .background(Color(theme.excerptHeaderBorder).opacity(0.4))
+            }
 
             // Content Area
             ZStack {
@@ -88,152 +100,198 @@ public struct AgentSavedSessionsView: View {
         .onAppear {
             loadSessions()
         }
+        .onDisappear {
+            loadTask?.cancel()
+            loadTask = nil
+        }
     }
 
     // MARK: - Header Bar
 
     private var headerBar: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 8) {
             Button(action: onBack) {
-                HStack(spacing: 5) {
+                HStack(spacing: 4) {
                     Image(systemName: "chevron.left")
-                        .font(.system(size: 11, weight: .bold))
-                    Text("Agents")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text("Back")
                         .font(.system(size: 12, weight: .medium))
-                        .fixedSize(horizontal: true, vertical: false)
                 }
-                .foregroundColor(Color(theme.foreground))
-                .padding(.horizontal, 8)
+                .foregroundColor(isBackHovered ? Color(theme.foreground) : Color(theme.gutterForeground))
+                .padding(.horizontal, 7)
                 .padding(.vertical, 4)
                 .background(
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(Color(theme.foreground).opacity(isBackHovered ? 0.09 : 0))
+                        .fill(Color(theme.foreground).opacity(isBackHovered ? 0.08 : 0))
                 )
             }
             .buttonStyle(.plain)
+            .layoutPriority(2)
             .onHover { isBackHovered = $0 }
-            .animation(.easeOut(duration: 0.12), value: isBackHovered)
+
+            Spacer(minLength: 4)
 
             // Agent Badge & Name
-            HStack(spacing: 8) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(presetColor.opacity(0.18))
-                        .frame(width: 22, height: 22)
-                    AgentIconView(icon: preset.iconName, tintColor: presetColor, size: 12)
+            HStack(spacing: 7) {
+                AgentIconView(icon: preset.iconName, tintColor: presetColor, size: 16)
+                    .fixedSize()
+
+                ViewThatFits(in: .horizontal) {
+                    Text("\(preset.name) Sessions")
+                        .lineLimit(1)
+                    Text(preset.name)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
                 }
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(Color(theme.foreground))
 
-                Text("\(preset.name) Sessions")
-                    .font(.system(size: 13, weight: .bold))
-                    .foregroundColor(Color(theme.foreground))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .layoutPriority(1)
+                if !sessions.isEmpty {
+                    HStack(spacing: 4) {
+                        Text("\(sessions.count)")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(Color(theme.gutterForeground))
+                            .lineLimit(1)
+
+                        if isStreamingMore {
+                            ProgressView()
+                                .scaleEffect(0.45)
+                                .frame(width: 10, height: 10)
+                        }
+                    }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(
+                        Capsule()
+                            .fill(Color(theme.foreground).opacity(0.06))
+                    )
+                    .fixedSize()
+                }
             }
+            .layoutPriority(1)
 
-            Spacer()
+            Spacer(minLength: 4)
 
-            // Start New Session Button
-            Button(action: onStartNew) {
-                HStack(spacing: 5) {
+            // Action Buttons: [+] [🔍] [↻]
+            HStack(spacing: 6) {
+                // 1. Start New Session (+)
+                Button(action: onStartNew) {
                     Image(systemName: "plus")
-                        .font(.system(size: 10, weight: .bold))
-                    Text("Start New")
-                        .font(.system(size: 11.5, weight: .semibold))
-                        .fixedSize(horizontal: true, vertical: false)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(isStartNewHovered ? Color(theme.foreground) : Color(theme.gutterForeground))
+                        .frame(width: 24, height: 24)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(Color(theme.foreground).opacity(isStartNewHovered ? 0.08 : 0))
+                        )
                 }
-                .foregroundColor(presetColor)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(presetColor.opacity(isStartNewHovered ? 0.14 : 0))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .stroke(presetColor.opacity(isStartNewHovered ? 0.4 : 0), lineWidth: 1)
-                )
+                .buttonStyle(.plain)
+                .help("Start New Session")
+                .onHover { isStartNewHovered = $0 }
+
+                // 2. Search Icon Button
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        isSearchVisible.toggle()
+                        if isSearchVisible {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                                isSearchFocused = true
+                            }
+                        } else {
+                            searchQuery = ""
+                            isSearchFocused = false
+                        }
+                    }
+                }) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(isSearchVisible ? presetColor : (isSearchBtnHovered ? Color(theme.foreground) : Color(theme.gutterForeground)))
+                        .frame(width: 24, height: 24)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(isSearchVisible ? presetColor.opacity(0.12) : Color(theme.foreground).opacity(isSearchBtnHovered ? 0.08 : 0))
+                        )
+                }
+                .buttonStyle(.plain)
+                .help(isSearchVisible ? "Hide search" : "Search sessions")
+                .onHover { isSearchBtnHovered = $0 }
+
+                // 3. Refresh Icon Button
+                Button(action: { loadSessions() }) {
+                    ZStack {
+                        if isLoading && sessions.isEmpty {
+                            ProgressView()
+                                .controlSize(.small)
+                                .scaleEffect(0.68)
+                        } else {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(isRefreshBtnHovered ? Color(theme.foreground) : Color(theme.gutterForeground))
+                        }
+                    }
+                    .frame(width: 24, height: 24)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(Color(theme.foreground).opacity(isRefreshBtnHovered && !isLoading ? 0.08 : 0))
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(isLoading)
+                .help(isLoading ? "Fetching saved sessions..." : "Refresh saved sessions")
+                .onHover { isRefreshBtnHovered = $0 }
             }
-            .buttonStyle(.plain)
-            .onHover { isStartNewHovered = $0 }
-            .animation(.easeOut(duration: 0.12), value: isStartNewHovered)
+            .layoutPriority(2)
         }
     }
 
-    // MARK: - Search & Controls
+    // MARK: - Collapsible Search Bar
 
-    private var searchAndControlBar: some View {
-        HStack(spacing: 8) {
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 11))
-                    .foregroundColor(Color(theme.gutterForeground))
+    private var searchBarView: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 11))
+                .foregroundColor(Color(theme.gutterForeground))
 
-                TextField("Filter sessions by title or ID...", text: $searchQuery)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 11.5))
-                    .foregroundColor(Color(theme.foreground))
+            TextField("Filter sessions by title or ID...", text: $searchQuery)
+                .textFieldStyle(.plain)
+                .font(.system(size: 11.5))
+                .foregroundColor(Color(theme.foreground))
+                .focused($isSearchFocused)
 
-                if !searchQuery.isEmpty {
-                    Button(action: { searchQuery = "" }) {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 11))
-                            .foregroundColor(Color(theme.gutterForeground))
-                    }
-                    .buttonStyle(.plain)
+            if !searchQuery.isEmpty {
+                Button(action: { searchQuery = "" }) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 11))
+                        .foregroundColor(Color(theme.gutterForeground))
                 }
+                .buttonStyle(.plain)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(Color(theme.foreground).opacity(0.04))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .stroke(Color(theme.excerptHeaderBorder).opacity(0.6), lineWidth: 1)
-            )
-
-            Button(action: { loadSessions() }) {
-                Image(systemName: "arrow.clockwise")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(Color(theme.gutterForeground))
-                    .padding(6)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(Color(theme.foreground).opacity(0.04))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .stroke(Color(theme.excerptHeaderBorder).opacity(0.6), lineWidth: 1)
-                    )
-            }
-            .buttonStyle(.plain)
-            .help("Refresh saved sessions")
         }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Color(theme.foreground).opacity(0.04))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .stroke(Color(theme.excerptHeaderBorder).opacity(0.6), lineWidth: 1)
+        )
     }
 
     // MARK: - Virtualized Session List
 
     private var virtualizedSessionList: some View {
-        ScrollView(.vertical, showsIndicators: true) {
-            LazyVStack(spacing: 8) {
-                ForEach(filteredSessions) { item in
-                    SavedSessionCardRow(
-                        item: item,
-                        preset: preset,
-                        presetColor: presetColor,
-                        theme: theme,
-                        isLoading: loadingSessionId == item.sessionId,
-                        onSelect: {
-                            resumeSession(item)
-                        }
-                    )
-                }
+        VirtualizedSavedSessionsListView(
+            sessions: filteredSessions,
+            preset: preset,
+            theme: theme,
+            loadingSessionId: loadingSessionId,
+            onSelect: { item in
+                resumeSession(item)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-        }
+        )
+        .padding(.vertical, 8)
     }
 
     // MARK: - Loading & Error States
@@ -344,20 +402,36 @@ public struct AgentSavedSessionsView: View {
     // MARK: - Actions
 
     private func loadSessions() {
+        loadTask?.cancel()
         isLoading = true
+        isStreamingMore = false
         errorMessage = nil
-        Task {
+        sessions = []
+
+        loadTask = Task { @MainActor in
             do {
-                let list = try await coordinator.fetchSavedSessions(for: preset, workingDirectory: workingDirectory)
-                await MainActor.run {
+                var receivedAny = false
+                let list = try await coordinator.fetchSavedSessions(
+                    for: preset,
+                    workingDirectory: workingDirectory
+                ) { newBatch in
+                    guard !Task.isCancelled else { return }
+                    self.sessions.append(contentsOf: newBatch)
+                    self.isLoading = false
+                    self.isStreamingMore = true
+                    receivedAny = true
+                }
+                guard !Task.isCancelled else { return }
+                if !receivedAny {
                     self.sessions = list
-                    self.isLoading = false
                 }
+                self.isLoading = false
+                self.isStreamingMore = false
             } catch {
-                await MainActor.run {
-                    self.errorMessage = error.localizedDescription
-                    self.isLoading = false
-                }
+                guard !Task.isCancelled else { return }
+                self.errorMessage = error.localizedDescription
+                self.isLoading = false
+                self.isStreamingMore = false
             }
         }
     }
@@ -382,140 +456,3 @@ public struct AgentSavedSessionsView: View {
     }
 }
 
-// MARK: - Saved Session Card Row
-
-private struct SavedSessionCardRow: View {
-    let item: ACPSavedSessionItem
-    let preset: AgentPreset
-    let presetColor: Color
-    let theme: Theme
-    let isLoading: Bool
-    let onSelect: () -> Void
-
-    @State private var isHovered: Bool = false
-
-    private var shortSessionId: String {
-        item.shortId
-    }
-
-    private var isGenericSessionTitle: Bool {
-        let t = item.displayTitle.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let idLower = item.sessionId.lowercased()
-        let shortId = item.shortId.lowercased()
-        return t == "session \(shortId)" || t == "session \(idLower)" || t == shortId || t == idLower || (t.hasPrefix("session ") && t.count <= 18)
-    }
-
-    var body: some View {
-        Button(action: onSelect) {
-            HStack(spacing: 12) {
-                // Status / Agent Icon indicator
-                ZStack {
-                    Circle()
-                        .fill(presetColor.opacity(isHovered ? 0.25 : 0.14))
-                        .frame(width: 32, height: 32)
-                    Circle()
-                        .stroke(presetColor.opacity(isHovered ? 0.6 : 0.25), lineWidth: 1)
-                        .frame(width: 32, height: 32)
-
-                    if isLoading {
-                        ProgressView()
-                            .scaleEffect(0.6)
-                    } else {
-                        Image(systemName: "clock.arrow.circlepath")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundColor(presetColor)
-                    }
-                }
-                .fixedSize()
-
-                // Info: Title, ID & Date
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 6) {
-                        Text(item.displayTitle)
-                            .font(.system(size: 12.5, weight: .semibold))
-                            .foregroundColor(Color(theme.foreground))
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                            .layoutPriority(1)
-
-                        if !isGenericSessionTitle {
-                            Text(shortSessionId)
-                                .font(.system(size: 9.5, weight: .regular, design: .monospaced))
-                                .foregroundColor(Color(theme.gutterForeground).opacity(0.8))
-                                .lineLimit(1)
-                                .fixedSize(horizontal: true, vertical: false)
-                                .padding(.horizontal, 4)
-                                .padding(.vertical, 1.5)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                        .fill(Color(theme.foreground).opacity(0.05))
-                                )
-                        }
-                    }
-
-                    HStack(spacing: 8) {
-                        if !item.formattedDate.isEmpty {
-                            HStack(spacing: 3) {
-                                Image(systemName: "calendar")
-                                    .font(.system(size: 9))
-                                Text(item.formattedDate)
-                                    .font(.system(size: 10))
-                                    .lineLimit(1)
-                                    .fixedSize(horizontal: true, vertical: false)
-                            }
-                            .foregroundColor(Color(theme.gutterForeground))
-                        }
-
-                        if let cwd = item.cwd, !cwd.isEmpty {
-                            let lastComponent = (cwd as NSString).lastPathComponent
-                            HStack(spacing: 3) {
-                                Image(systemName: "folder")
-                                    .font(.system(size: 9))
-                                Text(lastComponent)
-                                    .font(.system(size: 10))
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-                            .foregroundColor(Color(theme.gutterForeground).opacity(0.7))
-                        }
-                    }
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .layoutPriority(1)
-
-                Spacer(minLength: 0)
-
-                // The whole card is the resume action. Keep only a compact
-                // affordance so the session title and metadata get the space.
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundColor(presetColor.opacity(isHovered ? 1.0 : 0.7))
-                    .frame(width: 14, height: 20)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color(theme.foreground).opacity(isHovered ? 0.07 : 0.03))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(
-                        isHovered ? presetColor.opacity(0.4) : Color(theme.excerptHeaderBorder).opacity(0.55),
-                        lineWidth: 1
-                    )
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .animation(.easeOut(duration: 0.12), value: isHovered)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Resume \(item.displayTitle)")
-        .accessibilityHint("Opens this saved session")
-        .onHover { hovering in
-            isHovered = hovering
-        }
-    }
-}

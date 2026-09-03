@@ -9,6 +9,7 @@ public struct AgentPanelView: View {
     public var currentSelectedFile: String?
     public var fileDiffsSummary: String?
     public var agentAccentColor: Color
+    public var agentIcon: String
     public var toolcallColorMode: ToolcallColorMode
     public var onReview: ((AgentEditedFilesSummary) -> Void)?
     public var onPreviewImages: (([AgentImageAttachment], Int, Bool) -> Void)?
@@ -31,6 +32,7 @@ public struct AgentPanelView: View {
         currentSelectedFile: String? = nil,
         fileDiffsSummary: String? = nil,
         agentAccentColor: Color = .accentColor,
+        agentIcon: String = "sparkles",
         toolcallColorMode: ToolcallColorMode = AgentDisplayPreferences.toolcallColorMode,
         onReview: ((AgentEditedFilesSummary) -> Void)? = nil,
         onPreviewImages: (([AgentImageAttachment], Int, Bool) -> Void)? = nil
@@ -41,6 +43,7 @@ public struct AgentPanelView: View {
         self.currentSelectedFile = currentSelectedFile
         self.fileDiffsSummary = fileDiffsSummary
         self.agentAccentColor = agentAccentColor
+        self.agentIcon = agentIcon
         self.toolcallColorMode = toolcallColorMode
         self.onReview = onReview
         self.onPreviewImages = onPreviewImages
@@ -247,17 +250,7 @@ public struct AgentPanelView: View {
             Spacer()
 
             VStack(spacing: 18) {
-                ZStack {
-                    Circle()
-                        .fill(agentAccentColor.opacity(0.12))
-                        .frame(width: 64, height: 64)
-                    Circle()
-                        .stroke(agentAccentColor.opacity(0.18), lineWidth: 1)
-                        .frame(width: 64, height: 64)
-                    Image(systemName: "sparkles")
-                        .font(.system(size: 28, weight: .medium))
-                        .foregroundColor(agentAccentColor)
-                }
+                AgentIconView(icon: agentIcon, tintColor: agentAccentColor, size: 40)
 
                 VStack(spacing: 7) {
                     Text(agentManager.agentTitle.isEmpty ? "Ask Agent" : "Ask \(agentManager.agentTitle)")
