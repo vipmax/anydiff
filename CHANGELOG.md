@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.0] - 2026-09-03
+
+### 🤖 ACP Agent Registry & Virtualized Agent Views
+- **ACP Registry Integration (`ACPRegistryService`)**:
+  - Direct integration with the official ACP Agent Registry to browse, discover, install, and manage certified ACP agents.
+  - Automatic architecture-aware binary downloader (`ACPRegistryBinaryDownloader`) with progress reporting and caching.
+  - Support for pre-packaged binary agents, local CLI tools, and npx/uvx/docker commands.
+- **Virtualized Session & Agent Browsing**:
+  - `VirtualizedSavedSessionsListView` with smooth 120 FPS virtualization for hundreds of past sessions.
+  - Streaming pagination support in `AgentSessionCoordinator` delivering session items progressively.
+  - Instant session resumption, relative timestamps, working directory badging, and search filtering.
+  - `VirtualizedAgentRegistryListView` with category filtering, search, and one-click install/uninstall.
+- **Redesigned Agent Start Screen**:
+  - Modernized card layouts with responsive hover interactions, custom command input, and contextual management.
+  - Dynamic brand icons and accent colors matching the selected agent preset across toolbar and panels.
+
+### 🧪 Tests & Quality
+- Expanded automated test suite to **213 passing unit & integration tests** including registry parsing, caching, and downloading tests.
+
+---
+
 ## [1.2.0] - 2026-09-03
 
 ### 🔍 Full-Text Project Search & Streaming MultiBuffer

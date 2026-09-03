@@ -7,7 +7,7 @@ High-performance native macOS MultiBuffer Diff editor for lightning-fast code re
 ![macOS](https://img.shields.io/badge/macOS-14.0%2B-blue?style=flat-square&logo=apple)
 ![Swift](https://img.shields.io/badge/Swift-6.0-orange?style=flat-square&logo=swift)
 ![Build](https://img.shields.io/badge/build-passing-brightgreen?style=flat-square)
-![Tests](https://img.shields.io/badge/tests-200%2B%20passing-brightgreen?style=flat-square)
+![Tests](https://img.shields.io/badge/tests-210%2B%20passing-brightgreen?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 
 Install via Homebrew:
@@ -22,7 +22,7 @@ If macOS Gatekeeper prevents opening after installation:
 xattr -cr /Applications/AnyDiff.app
 ```
 
-Or download directly from [Releases](https://github.com/vipmax/anydiff/releases/latest) ([.dmg](https://github.com/vipmax/anydiff/releases/download/v1.2.0/AnyDiff.dmg) / [.zip](https://github.com/vipmax/anydiff/releases/download/v1.2.0/AnyDiff-macOS.zip)).
+Or download directly from [Releases](https://github.com/vipmax/anydiff/releases/latest) ([.dmg](https://github.com/vipmax/anydiff/releases/download/v1.3.0/AnyDiff.dmg) / [.zip](https://github.com/vipmax/anydiff/releases/download/v1.3.0/AnyDiff-macOS.zip)).
 
 ---
 
@@ -51,8 +51,10 @@ Or download directly from [Releases](https://github.com/vipmax/anydiff/releases/
   - Progressive batch streaming delivering initial search matches immediately without waiting for full directory scan.
   - Interactive search bar (`Cmd + F`, `Cmd + Shift + F`) with match counter, pulsing active match highlighting, and cyclic navigation (`Cmd + G`, `Cmd + Shift + G`).
   - Context clustering with configurable padding lines and live in-memory match recalculation during active editing.
-- **Embedded AI Agent (ACP Protocol)**:
+- **Embedded AI Agent & ACP Registry Browser**:
   - Native side panel for explaining diffs, reviewing code changes, generating commit messages, and running commands via JSON-RPC 2.0.
+  - Built-in ACP Registry browser to explore, one-click install, download, and configure certified ACP agents directly in AnyDiff.
+  - High-performance virtualized session browser and agent list supporting hundreds of saved sessions with instant resumption.
   - Multi-provider support: Codex, Claude Code, Gemini / Antigravity, and Custom ACP agents.
 - **Rich Vector File Icons (Devicon SVGs)**: Crisp, high-resolution vector icons for 30+ major languages and configuration formats (TypeScript, React/TSX, JavaScript, Python, Rust, Go, Swift, Kotlin, Java, C++, C#, Docker, Git, SQL, Markdown, YAML, TOML, etc.) natively rendered via AppKit vector SVGs with 120 FPS caching.
 - **Minimalist macOS Titlebar & Dark Themes**:
