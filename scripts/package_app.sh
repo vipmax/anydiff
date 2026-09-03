@@ -90,9 +90,22 @@ codesign --force --deep --sign - "${APP_BUNDLE}"
 echo "🗜️ [4/5] Creating ZIP archive with maximum compression..."
 (cd "${DIST_DIR}" && zip -9 -r -q -y "AnyDiff-macOS.zip" "AnyDiff.app")
 
-# Create DMG with maximum compression
-echo "💿 [5/5] Creating DMG disk image with maximum compression..."
-hdiutil create -volname "AnyDiff" -srcfolder "${APP_BUNDLE}" -ov -format UDZO -imagekey zlib-level=9 "${DIST_DIR}/AnyDiff.dmg" > /dev/null
+# Create DMG with maximum compression and standard Applications drop-link
+echo "💿 [5/5] Creating DMG disk image with Applications drop-link..."
+DMG_STAGING="${DIST_DIR}/dmg_staging"
+rm -rf "${DMG_STAGING}"
+mkdir -p "${DMG_STAGING}"
+cp -R "${APP_BUNDLE}" "${DMG_STAGING}/AnyDiff.app"
+ln -s /Applications "${DMG_STAGING}/Applications"
+
+hdiutil create \
+    -volname "AnyDiff" \
+    -srcfolder "${DMG_STAGING}" \
+    -ov -format UDZO \
+    -imagekey zlib-level=9 \
+    "${DIST_DIR}/AnyDiff.dmg" > /dev/null
+
+rm -rf "${DMG_STAGING}"
 
 echo "\n✨ Build and packaging complete! Distribution files ready in dist/:"
 ls -lh "${DIST_DIR}"
