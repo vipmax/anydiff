@@ -7,7 +7,7 @@ High-performance native macOS MultiBuffer Diff editor for lightning-fast code re
 ![macOS](https://img.shields.io/badge/macOS-14.0%2B-blue?style=flat-square&logo=apple)
 ![Swift](https://img.shields.io/badge/Swift-6.0-orange?style=flat-square&logo=swift)
 ![Build](https://img.shields.io/badge/build-passing-brightgreen?style=flat-square)
-![Tests](https://img.shields.io/badge/tests-210%2B%20passing-brightgreen?style=flat-square)
+![Tests](https://img.shields.io/badge/tests-240%2B%20passing-brightgreen?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 
 Install via Homebrew:
@@ -22,17 +22,21 @@ If macOS Gatekeeper prevents opening after installation:
 xattr -cr /Applications/AnyDiff.app
 ```
 
-Or download directly from [Releases](https://github.com/vipmax/anydiff/releases/latest) ([.dmg](https://github.com/vipmax/anydiff/releases/download/v1.3.0/AnyDiff.dmg) / [.zip](https://github.com/vipmax/anydiff/releases/download/v1.3.0/AnyDiff-macOS.zip)).
+Or download directly from [Releases](https://github.com/vipmax/anydiff/releases/latest) ([.dmg](https://github.com/vipmax/anydiff/releases/download/v1.4.0/AnyDiff.dmg) / [.zip](https://github.com/vipmax/anydiff/releases/download/v1.4.0/AnyDiff-macOS.zip)).
 
 ---
 
 ## 🚀 Key Features
 
+- **Side-by-Side (Split Diff) & Unified Layouts**:
+  - Seamlessly toggle between classic Unified diff and 2-column Side-by-Side diff (`Cmd + D`) with animated transitions.
+  - Dedicated `SplitDiffEngine` aligning modifications with automatic spacer rows.
+  - Independent column cursor navigation, text selection, and clipboard copying.
 - **MultiBuffer Architecture**: Concatenates code excerpts and diff hunks from multiple files into a single continuous virtual document with unified scrolling and instant two-way coordinate mapping (`MultiBufferPoint <-> (BufferId, BufferPoint)`).
 - **Safe In-Place Diff Editing**:
   - Green added (`.added`) and context (`.unchanged`) lines can be edited directly in real time.
   - Red deleted lines (`.deleted`) are protected against accidental modifications with system audio feedback.
-  - Real-time disk persistence (`Cmd + S`) and debounced auto-saving.
+  - Sub-microsecond zero-alloc disk persistence (`Cmd + S`) with Darwin `stat()` snapshotting and debounced auto-saving.
 - **Sticky File Headers & Collapsing**:
   - Pinned file headers stick to the top as you scroll through lengthy diffs with subtle elevation drop shadows and smooth push-away physics.
   - Interactive file collapsing/expanding directly from the sticky or inline headers with robust `filePath` targeting.
@@ -79,6 +83,7 @@ Or download directly from [Releases](https://github.com/vipmax/anydiff/releases/
 | **Cmd + O** | Open Git repository folder |
 | **Cmd + R** | Reload diff from current repository |
 | **Cmd + S** | Save modified buffers to disk |
+| **Cmd + D** | Toggle Side-by-Side (Split) vs Unified diff layout |
 | **Cmd + F** | Find in project |
 | **Cmd + Shift + F** | Find in project (prefill with selected text) |
 | **Cmd + G** | Find next search match |
@@ -90,7 +95,8 @@ Or download directly from [Releases](https://github.com/vipmax/anydiff/releases/
 | **Cmd + C** | Copy selected text |
 | **Cmd + V** | Paste text |
 | **Option + Click** | Expand all hidden context lines |
-| **Cmd + Option + A** | Toggle the Codex Agent panel |
+| **Cmd + Ctrl + S** | Toggle Left Panel (File Sidebar) |
+| **Cmd + Option + A** | Toggle Right Panel (ACP AI Agent) |
 
 ---
 

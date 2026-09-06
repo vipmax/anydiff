@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.4.0] - 2026-09-06
+
+### 🔀 Side-by-Side (Split Diff) Layout Mode
+- **Two-Column Virtualized Editor**:
+  - Full side-by-side split diff viewing mode with independent left (original/deleted) and right (modified/added) column rendering.
+  - Dedicated `SplitDiffEngine` performing line pairing, deletion/addition block alignment, and synthetic spacer row insertions.
+  - Independent column text selection, cursor positioning, and clipboard copying.
+  - Smooth layout toggling via `Cmd + D`, custom toolbar button with animated pill transitions, and the `View -> Diff Layout` menu.
+  - State persistence across sessions (`DiffLayoutMode` in `@AppStorage`) with cursor and scroll anchor preservation.
+
+### ⚡ Patience Anchor Myers Diff & Lazy Word Diffs
+- **Divide-and-Conquer Myers Algorithm**:
+  - Integrated Patience diff technique via `computeMyersDiffWithAnchors`: searches for unique matching anchor lines to partition the diff space before running Myers.
+  - Drastically reduces diff calculation time and eliminates visual noise on large multi-line refactors.
+- **Lazy Slice-Based Word Diffing**:
+  - Intra-line character and word highlighting is now evaluated lazily only for the active visible slice rather than the entire document ahead of time.
+
+### 💾 Sub-Microsecond Zero-Alloc Disk Sync (`FileDiskState`)
+- **Fast POSIX `stat()` Snapshotting**:
+  - Direct Darwin `stat()` query checking nanosecond-precision `mtime` and file size without intermediate memory allocations or reading file text into memory.
+  - Differentiates AnyDiff self-saves from external modifications (e.g., git checkouts or other editors) in ~1 microsecond.
+  - Tuned autosave debounce delay to 600 ms for optimal responsiveness during intensive typing.
+
+### 🎛️ UI & Agent Panel Refinements
+- **Panel Visibility Persistence & Shortcuts**:
+  - Persist toggle state for Left (File Tree / Sidebar, `Cmd + Ctrl + S`) and Right (AI Agent, `Cmd + Option + A`) panels.
+  - Fixed duplicate user message echoes during active ACP streaming sessions.
+
+### 🧪 Tests & Quality
+- Expanded automated test suite to **243 passing unit & integration tests**, including tests for `SplitDiffEngine`, `DisplayMapSplit`, and split-mode selection navigation.
+
+---
+
 ## [1.3.0] - 2026-09-03
 
 ### 🤖 ACP Agent Registry & Virtualized Agent Views
