@@ -84,6 +84,13 @@ extension AppDelegate {
         fullScreenItem.keyEquivalentModifierMask = [.control, .command]
         viewMenu.addItem(fullScreenItem)
         viewMenu.addItem(NSMenuItem.separator())
+        let toggleLeftPanelItem = NSMenuItem(title: "Toggle Left Panel", action: #selector(toggleLeftPanelAction(_:)), keyEquivalent: "s")
+        toggleLeftPanelItem.keyEquivalentModifierMask = [.command, .control]
+        viewMenu.addItem(toggleLeftPanelItem)
+        let toggleRightPanelItem = NSMenuItem(title: "Toggle Right Panel", action: #selector(toggleRightPanelAction(_:)), keyEquivalent: "a")
+        toggleRightPanelItem.keyEquivalentModifierMask = [.command, .option]
+        viewMenu.addItem(toggleRightPanelItem)
+        viewMenu.addItem(NSMenuItem.separator())
         viewMenu.addItem(NSMenuItem(title: "Zoom In", action: #selector(zoomInAction(_:)), keyEquivalent: "+"))
         viewMenu.addItem(NSMenuItem(title: "Zoom Out", action: #selector(zoomOutAction(_:)), keyEquivalent: "-"))
         viewMenu.addItem(NSMenuItem(title: "Actual Size (Reset Zoom)", action: #selector(resetZoomAction(_:)), keyEquivalent: "0"))
@@ -91,8 +98,7 @@ extension AppDelegate {
         let agentMenuItem = NSMenuItem(title: "Agent", action: nil, keyEquivalent: "")
         let agentMenu = NSMenu(title: "Agent")
         agentMenu.delegate = self
-        let agentItem = NSMenuItem(title: "Toggle Agent Panel", action: #selector(toggleAgentPanelAction(_:)), keyEquivalent: "a")
-        agentItem.keyEquivalentModifierMask = [.command, .option]
+        let agentItem = NSMenuItem(title: "Toggle Right Panel", action: #selector(toggleRightPanelAction(_:)), keyEquivalent: "")
         agentMenu.addItem(agentItem)
         agentMenu.addItem(NSMenuItem.separator())
         let colorsMenuItem = NSMenuItem(title: "Toolcall Colors", action: nil, keyEquivalent: "")
@@ -131,6 +137,26 @@ extension AppDelegate {
         themeMenuItem.submenu = themeMenu
         viewMenu.addItem(themeMenuItem)
 
+        // Diff Layout Submenu
+        let layoutMenuItem = NSMenuItem(title: "Diff Layout", action: nil, keyEquivalent: "")
+        let layoutMenu = NSMenu(title: "Diff Layout")
+        layoutMenu.delegate = self
+
+        let unifiedItem = NSMenuItem(title: "Unified", action: #selector(selectDiffLayoutAction(_:)), keyEquivalent: "")
+        unifiedItem.representedObject = DiffLayoutMode.unified.rawValue
+        layoutMenu.addItem(unifiedItem)
+
+        let splitItem = NSMenuItem(title: "Side-by-Side (Split)", action: #selector(selectDiffLayoutAction(_:)), keyEquivalent: "")
+        splitItem.representedObject = DiffLayoutMode.sideBySide.rawValue
+        layoutMenu.addItem(splitItem)
+
+        layoutMenuItem.submenu = layoutMenu
+        viewMenu.addItem(layoutMenuItem)
+
+        let toggleLayoutItem = NSMenuItem(title: "Toggle Side-by-Side Diff", action: #selector(toggleDiffLayoutAction(_:)), keyEquivalent: "d")
+        toggleLayoutItem.keyEquivalentModifierMask = [.command]
+        viewMenu.addItem(toggleLayoutItem)
+
         viewMenuItem.submenu = viewMenu
         mainMenu.addItem(viewMenuItem)
 
@@ -161,7 +187,35 @@ extension AppDelegate {
             for item in menu.items {
                 item.state = (item.representedObject as? String) == selectedMode ? .on : .off
             }
+        } else if menu.title == "Diff Layout" {
+            let currentLayout = UserDefaults.standard.string(forKey: "preferredDiffLayoutMode") ?? DiffLayoutMode.unified.rawValue
+            for item in menu.items {
+                if let id = item.representedObject as? String {
+                    item.state = (id == currentLayout) ? .on : .off
+                }
+            }
         }
+    }
+
+    @objc func selectDiffLayoutAction(_ sender: NSMenuItem) {
+        guard let mode = sender.representedObject as? String else { return }
+        UserDefaults.standard.set(mode, forKey: "preferredDiffLayoutMode")
+        NotificationCenter.default.post(
+            name: Notification.Name("anyDiffSetDiffLayout"),
+            object: nil,
+            userInfo: ["mode": mode]
+        )
+    }
+
+    @objc func toggleDiffLayoutAction(_ sender: NSMenuItem) {
+        let currentLayout = UserDefaults.standard.string(forKey: "preferredDiffLayoutMode") ?? DiffLayoutMode.unified.rawValue
+        let newLayout = (currentLayout == DiffLayoutMode.unified.rawValue) ? DiffLayoutMode.sideBySide.rawValue : DiffLayoutMode.unified.rawValue
+        UserDefaults.standard.set(newLayout, forKey: "preferredDiffLayoutMode")
+        NotificationCenter.default.post(
+            name: Notification.Name("anyDiffSetDiffLayout"),
+            object: nil,
+            userInfo: ["mode": newLayout]
+        )
     }
 
     @objc func selectThemeAction(_ sender: NSMenuItem) {
@@ -206,8 +260,20 @@ extension AppDelegate {
         NotificationCenter.default.post(name: Notification.Name("anyDiffResetZoom"), object: nil)
     }
 
+    @objc func toggleLeftPanelAction(_ sender: Any?) {
+        NotificationCenter.default.post(name: Notification.Name("anyDiffToggleLeftPanel"), object: nil)
+    }
+
+    @objc func toggleRightPanelAction(_ sender: Any?) {
+        NotificationCenter.default.post(name: Notification.Name("anyDiffToggleRightPanel"), object: nil)
+    }
+
+    @objc func toggleSidebarAction(_ sender: Any?) {
+        toggleLeftPanelAction(sender)
+    }
+
     @objc func toggleAgentPanelAction(_ sender: Any?) {
-        NotificationCenter.default.post(name: Notification.Name("anyDiffToggleAgent"), object: nil)
+        toggleRightPanelAction(sender)
     }
 
     @objc func selectToolcallColorModeAction(_ sender: NSMenuItem) {

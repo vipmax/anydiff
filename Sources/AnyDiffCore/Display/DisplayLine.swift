@@ -81,6 +81,38 @@ public struct DisplayCodeLineInfo: Sendable, Equatable {
     }
 }
 
+/// Presentation layout for the diff view (Unified stacked lines vs. Side-by-Side dual columns)
+public enum DiffLayoutMode: String, CaseIterable, Sendable, Codable {
+    case unified = "Unified"
+    case sideBySide = "Split"
+}
+
+public struct DisplaySplitCodeLineInfo: Sendable, Equatable {
+    public var excerptIndex: Int
+    public var displayLineIndex: Int
+    public var left: SplitDiffCell
+    public var right: SplitDiffCell
+    public var language: String
+    public var expandInfo: ExpandInfo?
+
+    public init(
+        excerptIndex: Int,
+        displayLineIndex: Int = 0,
+        left: SplitDiffCell,
+        right: SplitDiffCell,
+        language: String,
+        expandInfo: ExpandInfo? = nil
+    ) {
+        self.excerptIndex = excerptIndex
+        self.displayLineIndex = displayLineIndex
+        self.left = left
+        self.right = right
+        self.language = language
+        self.expandInfo = expandInfo
+    }
+}
+
+
 public struct DisplayFoldGapInfo: Sendable, Equatable {
     public var excerptIndex: Int
     public var nextExcerptIndex: Int?
@@ -115,16 +147,28 @@ public struct DisplayCommentInfo: Sendable, Equatable {
 public enum DisplayLine: Sendable, Equatable {
     case excerptHeader(ExcerptHeaderInfo)
     case code(DisplayCodeLineInfo)
+    case splitCode(DisplaySplitCodeLineInfo)
     case foldGap(DisplayFoldGapInfo)
     case inlineComment(DisplayCommentInfo)
 
     public var isCode: Bool {
-        if case .code = self { return true }
-        return false
+
+        switch self {
+        case .code, .splitCode:
+            return true
+        default:
+            return false
+        }
     }
 
     public var multiBufferRow: MultiBufferRow? {
-        if case .code(let info) = self { return info.multiBufferRow }
-        return nil
+        switch self {
+        case .code(let info):
+            return info.multiBufferRow
+        case .splitCode(let info):
+            return info.right.multiBufferRow ?? info.left.multiBufferRow
+        default:
+            return nil
+        }
     }
 }

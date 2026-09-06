@@ -1811,6 +1811,82 @@ final class MultiBufferTests: XCTestCase {
         XCTAssertFalse(mb.shouldIgnoreSelfSavedEvent(filePath: filePath, diskPath: filePath))
     }
 
+    func testSelfSaveIgnoredWhenFileIsDirtyWithInFlightEdits() throws {
+        let filePath = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("anydiff-self-dirty-\(UUID().uuidString).txt")
+        defer { try? FileManager.default.removeItem(atPath: filePath) }
+
+        let buffer = Buffer(filePath: filePath, text: "local\n")
+        buffer.isFullFile = true
+        buffer.fullDiskPath = filePath
+        let mb = MultiBuffer()
+        mb.addBuffer(buffer)
+        try "local\n".write(toFile: filePath, atomically: true, encoding: .utf8)
+        mb.recordSelfSave(for: filePath)
+
+        // User continues typing in AnyDiff, mutating memory without saving to disk yet
+        buffer.insert(text: "123", at: BufferPoint(row: 0, column: 5))
+        XCTAssertTrue(buffer.isDirty)
+        XCTAssertTrue(mb.isFileDirty(filePath: filePath))
+        XCTAssertNotEqual(buffer.text(), "local\n")
+
+        // FSEvent arriving from the previous autosave must still be ignored because
+        // the buffer has in-flight unsaved edits in AnyDiff.
+        XCTAssertTrue(mb.shouldIgnoreSelfSavedEvent(filePath: filePath, diskPath: filePath))
+    }
+
+    func testRecordSelfEditDoesNotPollDiskStatOrBlock() {
+        let mb = MultiBuffer()
+        let nonExistentPath = "/path/to/non/existent/file.swift"
+        var editFired = false
+        mb.onEdit = { editFired = true }
+        let initialVersion = mb.version
+        mb.recordSelfEdit(for: nonExistentPath)
+        XCTAssertEqual(mb.version, initialVersion &+ 1)
+        XCTAssertTrue(editFired)
+    }
+
+    func testFileDiskStateStatCapturesMtimeAndSize() throws {
+        let filePath = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("anydiff-stat-test-\(UUID().uuidString).txt")
+        defer { try? FileManager.default.removeItem(atPath: filePath) }
+
+        try "test-content".write(toFile: filePath, atomically: true, encoding: .utf8)
+        let stat = FileDiskState.query(path: filePath)
+        XCTAssertNotNil(stat)
+        XCTAssertEqual(stat?.size, 12)
+        XCTAssertGreaterThan(stat?.mtimeSec ?? 0, 0)
+    }
+
+    func testMetadataMatchIgnoresSelfSavedEventFastPath() throws {
+        let filePath = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("anydiff-meta-match-\(UUID().uuidString).txt")
+        defer { try? FileManager.default.removeItem(atPath: filePath) }
+
+        let buffer = Buffer(filePath: filePath, text: "initial text\n")
+        buffer.isFullFile = true
+        buffer.fullDiskPath = filePath
+        let mb = MultiBuffer()
+        mb.addBuffer(buffer)
+
+        // Save through buffer API which captures FileDiskState
+        try buffer.saveToFile()
+        XCTAssertNotNil(buffer.savedDiskState)
+
+        // Record save in multibuffer with the captured disk state
+        mb.recordSelfSave(for: filePath, diskState: buffer.savedDiskState)
+
+        // Watcher event arrives: disk state matches savedDiskState exactly
+        XCTAssertTrue(mb.shouldIgnoreSelfSavedEvent(filePath: filePath, diskPath: filePath))
+
+        // When external editor modifies the file, mtime and/or size changes
+        Thread.sleep(forTimeInterval: 0.05)
+        try "modified by external tool\n".write(toFile: filePath, atomically: true, encoding: .utf8)
+
+        // Metadata check sees changed mtime/size, so event is allowed through to reload
+        XCTAssertFalse(mb.shouldIgnoreSelfSavedEvent(filePath: filePath, diskPath: filePath))
+    }
+
     func testReplacingOneFilePreservesUnchangedBufferAndExcerptIdentity() {
         let mb = MultiBuffer()
         let oldA = Buffer(filePath: "FileA.swift", text: "old A")
@@ -2171,5 +2247,42 @@ final class MultiBufferTests: XCTestCase {
         // Selection on line 1: "    timer.invalidate()" -> "timer" at columns 4..<9
         dm.selectionRange = MultiBufferPoint(row: 1, column: 4)..<MultiBufferPoint(row: 1, column: 9)
         XCTAssertEqual(dm.getSelectionText(), "timer")
+    }
+
+    func testUsesOriginalHunkFastPathWithEditableLineCount() {
+        let hunk = DiffHunk(
+            oldRange: 1..<6,
+            newRange: 1..<7,
+            header: "@@ -1,5 +1,6 @@",
+            lines: [
+                DiffLine(kind: .unchanged, text: "line 1"),
+                DiffLine(kind: .deleted, text: "old line 2"),
+                DiffLine(kind: .added, text: "new line 2"),
+                DiffLine(kind: .added, text: "new line 3"),
+                DiffLine(kind: .unchanged, text: "line 4")
+            ]
+        )
+        XCTAssertEqual(hunk.editableLineCount, 4)
+
+        let buffer = Buffer(filePath: "test.txt", text: "line 1\nnew line 2\nnew line 3\nline 4")
+        buffer.isFullFile = true
+        let mb = MultiBuffer()
+        mb.addBuffer(buffer)
+
+        var excerpt = Excerpt(
+            bufferId: buffer.id,
+            filePath: "test.txt",
+            fileStatus: .modified,
+            bufferRange: 0..<4,
+            hunk: hunk
+        )
+        let dm = DisplayMap(multiBuffer: mb, reviewManager: ReviewManager())
+
+        // When bufferRange count matches editableLineCount (4), usesOriginalHunk returns true
+        XCTAssertTrue(dm.usesOriginalHunk(excerpt: excerpt, buffer: buffer))
+
+        // When bufferRange count differs from editableLineCount, usesOriginalHunk returns false
+        excerpt.bufferRange = 0..<3
+        XCTAssertFalse(dm.usesOriginalHunk(excerpt: excerpt, buffer: buffer))
     }
 }

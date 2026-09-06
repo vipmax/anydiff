@@ -12,6 +12,21 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
     public let multiBuffer: MultiBuffer
     public let reviewManager: ReviewManager
     public var viewMode: DiffViewMode = .unified
+    @Published public var layoutMode: DiffLayoutMode = .unified {
+        didSet {
+            if layoutMode != oldValue {
+                excerptSplitCache.removeAll(keepingCapacity: true)
+                rebuild()
+            }
+        }
+    }
+
+    /// Effective presentation mode. Buffers with plain text content (e.g. Project Search)
+    /// always render in Unified (vertical) mode because side-by-side split is only applicable to diffs.
+    public var effectiveLayoutMode: DiffLayoutMode {
+        guard multiBuffer.contentMode == .diff else { return .unified }
+        return layoutMode
+    }
 
     public private(set) var maxLineChars: Int = 80
 
@@ -180,6 +195,21 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
             for item in items {
                 if case .code(let info) = item.line {
                     all.append(info)
+                } else if case .splitCode(let sInfo) = item.line {
+                    let cell = sInfo.right.isSpacer ? sInfo.left : sInfo.right
+                    all.append(DisplayCodeLineInfo(
+                        excerptIndex: sInfo.excerptIndex,
+                        multiBufferRow: item.multiBufferRow ?? 0,
+                        bufferRow: cell.bufferRow ?? 0,
+                        displayLineIndex: sInfo.displayLineIndex,
+                        oldLineNumber: sInfo.left.lineNumber,
+                        newLineNumber: sInfo.right.lineNumber,
+                        diffKind: cell.diffKind,
+                        text: cell.text,
+                        language: sInfo.language,
+                        wordDiffRanges: cell.wordDiffRanges,
+                        expandInfo: sInfo.expandInfo
+                    ))
                 }
             }
         }
@@ -194,6 +224,14 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
     private var excerptDiffCache: [UUID: ExcerptDiffCache] = [:]
     private static let maxExcerptDiffCacheCount = 128
     private var excerptDiffCacheLRU: [UUID] = []
+
+    private struct ExcerptSplitCache {
+        let bufferVersion: Int
+        let bufferRange: Range<Int>
+        let rows: [SplitDiffRow]
+    }
+    private var excerptSplitCache: [UUID: ExcerptSplitCache] = [:]
+
     private static let hunkRankStride = 256
     /// One UInt32 per 256 hunk lines. Unlike `excerptDiffCache`, this stays tiny
     /// even after every hunk in a mega-diff has been visited.
@@ -209,6 +247,7 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
         excerptLocations.removeAll(keepingCapacity: false)
         excerptDiffCache.removeAll(keepingCapacity: false)
         excerptDiffCacheLRU.removeAll(keepingCapacity: false)
+        excerptSplitCache.removeAll(keepingCapacity: false)
         hunkBufferRowRankCache.removeAll(keepingCapacity: false)
         maxLineChars = 80
     }
@@ -222,11 +261,13 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
             for excerpt in multiBuffer.excerpts where invalidatingPaths.contains(excerpt.filePath) {
                 excerptDiffCache.removeValue(forKey: excerpt.id)
                 excerptDiffCacheLRU.removeAll(where: { $0 == excerpt.id })
+                excerptSplitCache.removeValue(forKey: excerpt.id)
                 hunkBufferRowRankCache.removeValue(forKey: excerpt.id)
             }
         } else {
             excerptDiffCache.removeAll(keepingCapacity: false)
             excerptDiffCacheLRU.removeAll(keepingCapacity: false)
+            excerptSplitCache.removeAll(keepingCapacity: false)
             hunkBufferRowRankCache.removeAll(keepingCapacity: false)
         }
 
@@ -237,11 +278,14 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
 
         excerptLocations.reserveCapacity(totalExcerpts)
 
+        var prevFilePath: String? = nil
         for (excerptIdx, excerpt) in multiBuffer.excerpts.enumerated() {
             guard let buffer = multiBuffer.buffer(for: excerpt.bufferId) else { continue }
 
-            let isFirstExcerptOfFile = excerpt.isFileStart || (excerptIdx == 0) || (excerptIdx > 0 && multiBuffer.excerpts[excerptIdx - 1].filePath != excerpt.filePath)
-            let isLastExcerptOfFile = (excerptIdx == totalExcerpts - 1) || (excerptIdx < totalExcerpts - 1 && multiBuffer.excerpts[excerptIdx + 1].filePath != excerpt.filePath)
+            let isFirstExcerptOfFile = excerpt.isFileStart || (excerptIdx == 0) || (prevFilePath != excerpt.filePath)
+            prevFilePath = excerpt.filePath
+            let nextExcerpt = (excerptIdx + 1 < totalExcerpts) ? multiBuffer.excerpts[excerptIdx + 1] : nil
+            let isLastExcerptOfFile = (nextExcerpt == nil) || (nextExcerpt!.filePath != excerpt.filePath)
 
             let topHidden: Int
             if isFirstExcerptOfFile && excerpt.fileStatus != .deleted {
@@ -253,8 +297,7 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
 
             let bottomHidden: Int
             let nextExcerptIndex: Int?
-            if !isLastExcerptOfFile {
-                let nextExcerpt = multiBuffer.excerpts[excerptIdx + 1]
+            if !isLastExcerptOfFile, let nextExcerpt {
                 let nextBuf = multiBuffer.buffer(for: nextExcerpt.bufferId)
                 let raw: Int
                 if nextExcerpt.bufferId == excerpt.bufferId {
@@ -292,6 +335,12 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
             let codeCount: Int
             if excerpt.isCollapsed {
                 codeCount = 0
+            } else if effectiveLayoutMode == .sideBySide {
+                let splitRows = getCachedSplitRows(for: excerptIdx)
+                codeCount = splitRows.count
+                for row in splitRows {
+                    calculatedMaxChars = max(calculatedMaxChars, row.left.text.count, row.right.text.count)
+                }
             } else if multiBuffer.contentMode == .diff,
                       let hunk = excerpt.hunk,
                       usesOriginalHunk(excerpt: excerpt, buffer: buffer) {
@@ -343,10 +392,17 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
             rebuild()
             return nil
         }
-        let excerpt = multiBuffer.excerpts[excerptIdx]
+        var excerpt = multiBuffer.excerpts[excerptIdx]
         guard let buffer = multiBuffer.buffer(for: excerpt.bufferId) else {
             rebuild()
             return nil
+        }
+
+        // Automatically refresh stable hunk in-place if only characters in added lines changed
+        if buffer.isFullFile && excerpt.stableHunkBufferVersion != buffer.version {
+            if multiBuffer.refreshStableHunkPresentation(for: buffer.id) {
+                excerpt = multiBuffer.excerpts[excerptIdx]
+            }
         }
 
         let oldLoc = excerptLocations[excerptIdx]
@@ -356,11 +412,34 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
 
         // 1. Invalidate only this excerpt's cache entry
         excerptDiffCache.removeValue(forKey: excerpt.id)
+        excerptSplitCache.removeValue(forKey: excerpt.id)
 
         // 2. Recompute codeCount for this excerpt ONLY
         let newCodeCount: Int
         if excerpt.isCollapsed {
             newCodeCount = 0
+        } else if effectiveLayoutMode == .sideBySide {
+            let splitRows = getCachedSplitRows(for: excerptIdx)
+            newCodeCount = splitRows.count
+            for row in splitRows {
+                maxLineChars = max(maxLineChars, row.left.text.count, row.right.text.count)
+            }
+            if buffer.isFullFile {
+                let diffLines = getCachedDiffLines(for: excerptIdx)
+                let addedCount = diffLines.reduce(into: 0) { count, item in
+                    if item.line.kind != .deleted { count += 1 }
+                }
+                if addedCount == excerpt.bufferRange.count {
+                    let oldHunk = excerpt.hunk
+                    let newHunk = DiffHunk(
+                        oldRange: oldHunk?.oldRange ?? (1..<1),
+                        newRange: (excerpt.bufferRange.lowerBound + 1)..<(excerpt.bufferRange.upperBound + 1),
+                        header: oldHunk?.header ?? "",
+                        lines: diffLines.map(\.line)
+                    )
+                    multiBuffer.updateExcerptHunk(at: excerptIdx, hunk: newHunk, stableVersion: buffer.version)
+                }
+            }
         } else if multiBuffer.contentMode == .diff,
                   let hunk = excerpt.hunk,
                   usesOriginalHunk(excerpt: excerpt, buffer: buffer) {
@@ -375,6 +454,21 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
             let diffLines = getCachedDiffLines(for: excerptIdx)
             newCodeCount = diffLines.count
             for item in diffLines { maxLineChars = max(maxLineChars, item.line.text.count) }
+            if buffer.isFullFile {
+                let addedCount = diffLines.reduce(into: 0) { count, item in
+                    if item.line.kind != .deleted { count += 1 }
+                }
+                if addedCount == excerpt.bufferRange.count {
+                    let oldHunk = excerpt.hunk
+                    let newHunk = DiffHunk(
+                        oldRange: oldHunk?.oldRange ?? (1..<1),
+                        newRange: (excerpt.bufferRange.lowerBound + 1)..<(excerpt.bufferRange.upperBound + 1),
+                        header: oldHunk?.header ?? "",
+                        lines: diffLines.map(\.line)
+                    )
+                    multiBuffer.updateExcerptHunk(at: excerptIdx, hunk: newHunk, stableVersion: buffer.version)
+                }
+            }
         }
 
         // 3. Recompute total display line count for this excerpt ONLY
@@ -487,53 +581,107 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
                 let endCodeIdx = min(loc.codeLineCount, requestedDisplayRange.upperBound - codeStartDisplayIdx)
 
                 if startCodeIdx < endCodeIdx {
-                    let diffLines = getDiffLines(for: excerptIdx, in: startCodeIdx..<endCodeIdx)
                     let canExpandUp = (loc.topHidden > 0 || buffer.startLineNumber > 1 || excerpt.bufferRange.lowerBound > 0)
                     let canExpandDown = loc.hasBottomGap
                     let totalDiffLines = loc.codeLineCount
 
-                    for (sliceOffset, item) in diffLines.enumerated() {
-                        let idx = startCodeIdx + sliceOffset
-                        let dLine = item.line
-                        let bRow = item.bufferRow
-                        let lineDisplayIdx = codeStartDisplayIdx + idx
-                        let lineMBRow = loc.codeRange.lowerBound + idx
+                    if effectiveLayoutMode == .sideBySide {
+                        let splitRows = getCachedSplitRows(for: excerptIdx)
+                        let clampedUpper = min(splitRows.count, endCodeIdx)
+                        let clampedLower = min(clampedUpper, startCodeIdx)
 
-                        var expandInfo: ExpandInfo? = nil
-                        if totalDiffLines == 1 {
-                            if canExpandUp && canExpandDown {
-                                expandInfo = ExpandInfo(direction: .upAndDown, excerptIndex: excerptIdx)
-                            } else if canExpandUp {
+                        for idx in clampedLower..<clampedUpper {
+                            let splitRow = splitRows[idx]
+                            let lineDisplayIdx = codeStartDisplayIdx + idx
+                            let lineMBRow = loc.codeRange.lowerBound + idx
+
+                            var expandInfo: ExpandInfo? = nil
+                            if totalDiffLines == 1 {
+                                if canExpandUp && canExpandDown {
+                                    expandInfo = ExpandInfo(direction: .upAndDown, excerptIndex: excerptIdx)
+                                } else if canExpandUp {
+                                    expandInfo = ExpandInfo(direction: .up, excerptIndex: excerptIdx)
+                                } else if canExpandDown {
+                                    expandInfo = ExpandInfo(direction: .down, excerptIndex: excerptIdx)
+                                }
+                            } else if idx == 0 && canExpandUp {
                                 expandInfo = ExpandInfo(direction: .up, excerptIndex: excerptIdx)
-                            } else if canExpandDown {
+                            } else if idx == totalDiffLines - 1 && canExpandDown {
                                 expandInfo = ExpandInfo(direction: .down, excerptIndex: excerptIdx)
                             }
-                        } else if idx == 0 && canExpandUp {
-                            expandInfo = ExpandInfo(direction: .up, excerptIndex: excerptIdx)
-                        } else if idx == totalDiffLines - 1 && canExpandDown {
-                            expandInfo = ExpandInfo(direction: .down, excerptIndex: excerptIdx)
+
+                            var left = splitRow.left
+                            var right = splitRow.right
+                            if !left.isSpacer {
+                                left.multiBufferRow = lineMBRow
+                            }
+                            if !right.isSpacer {
+                                right.multiBufferRow = lineMBRow
+                            }
+
+                            let splitInfo = DisplaySplitCodeLineInfo(
+                                excerptIndex: excerptIdx,
+                                displayLineIndex: lineDisplayIdx,
+                                left: left,
+                                right: right,
+                                language: buffer.language,
+                                expandInfo: expandInfo
+                            )
+                            items.append(VisibleLineItem(displayLineIndex: lineDisplayIdx, multiBufferRow: lineMBRow, line: .splitCode(splitInfo)))
+
+                            if reviewManager.hasComments {
+                                let lineForComment = right.lineNumber ?? left.lineNumber ?? 1
+                                let matchedComments = reviewManager.comments(for: excerpt.filePath, lineNumber: lineForComment)
+                                for comment in matchedComments {
+                                    items.append(VisibleLineItem(displayLineIndex: lineDisplayIdx, multiBufferRow: lineMBRow, line: .inlineComment(DisplayCommentInfo(comment: comment, excerptIndex: excerptIdx, lineNumber: lineForComment))))
+                                }
+                            }
                         }
+                    } else {
+                        let diffLines = getDiffLines(for: excerptIdx, in: startCodeIdx..<endCodeIdx)
+                        for (sliceOffset, item) in diffLines.enumerated() {
+                            let idx = startCodeIdx + sliceOffset
+                            let dLine = item.line
+                            let bRow = item.bufferRow
+                            let lineDisplayIdx = codeStartDisplayIdx + idx
+                            let lineMBRow = loc.codeRange.lowerBound + idx
 
-                        let codeInfo = DisplayCodeLineInfo(
-                            excerptIndex: excerptIdx,
-                            multiBufferRow: lineMBRow,
-                            bufferRow: bRow,
-                            displayLineIndex: lineDisplayIdx,
-                            oldLineNumber: dLine.oldLineNumber,
-                            newLineNumber: dLine.newLineNumber,
-                            diffKind: dLine.kind,
-                            text: dLine.text,
-                            language: buffer.language,
-                            wordDiffRanges: dLine.wordDiffRanges,
-                            expandInfo: expandInfo
-                        )
-                        items.append(VisibleLineItem(displayLineIndex: lineDisplayIdx, multiBufferRow: lineMBRow, line: .code(codeInfo)))
+                            var expandInfo: ExpandInfo? = nil
+                            if totalDiffLines == 1 {
+                                if canExpandUp && canExpandDown {
+                                    expandInfo = ExpandInfo(direction: .upAndDown, excerptIndex: excerptIdx)
+                                } else if canExpandUp {
+                                    expandInfo = ExpandInfo(direction: .up, excerptIndex: excerptIdx)
+                                } else if canExpandDown {
+                                    expandInfo = ExpandInfo(direction: .down, excerptIndex: excerptIdx)
+                                }
+                            } else if idx == 0 && canExpandUp {
+                                expandInfo = ExpandInfo(direction: .up, excerptIndex: excerptIdx)
+                            } else if idx == totalDiffLines - 1 && canExpandDown {
+                                expandInfo = ExpandInfo(direction: .down, excerptIndex: excerptIdx)
+                            }
 
-                        if reviewManager.hasComments {
-                            let lineForComment = dLine.newLineNumber ?? dLine.oldLineNumber ?? (bRow + 1)
-                            let matchedComments = reviewManager.comments(for: excerpt.filePath, lineNumber: lineForComment)
-                            for comment in matchedComments {
-                                items.append(VisibleLineItem(displayLineIndex: lineDisplayIdx, multiBufferRow: lineMBRow, line: .inlineComment(DisplayCommentInfo(comment: comment, excerptIndex: excerptIdx, lineNumber: lineForComment))))
+                            let codeInfo = DisplayCodeLineInfo(
+                                excerptIndex: excerptIdx,
+                                multiBufferRow: lineMBRow,
+                                bufferRow: bRow,
+                                displayLineIndex: lineDisplayIdx,
+                                oldLineNumber: dLine.oldLineNumber,
+                                newLineNumber: dLine.newLineNumber,
+                                diffKind: dLine.kind,
+                                text: dLine.text,
+                                language: buffer.language,
+                                wordDiffRanges: dLine.wordDiffRanges,
+                                expandInfo: expandInfo
+                            )
+                            items.append(VisibleLineItem(displayLineIndex: lineDisplayIdx, multiBufferRow: lineMBRow, line: .code(codeInfo)))
+
+                            if reviewManager.hasComments {
+                                let lineForComment = dLine.newLineNumber ?? dLine.oldLineNumber ?? (bRow + 1)
+                                let matchedComments = reviewManager.comments(for: excerpt.filePath, lineNumber: lineForComment)
+                                for comment in matchedComments {
+                                    items.append(VisibleLineItem(displayLineIndex: lineDisplayIdx, multiBufferRow: lineMBRow, line: .inlineComment(DisplayCommentInfo(comment: comment, excerptIndex: excerptIdx, lineNumber: lineForComment))))
+                                }
                             }
                         }
                     }
@@ -713,6 +861,43 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
         }
     }
 
+    private func getCachedSplitRows(for excerptIdx: Int) -> [SplitDiffRow] {
+        guard excerptIdx >= 0 && excerptIdx < multiBuffer.excerpts.count else { return [] }
+        let excerpt = multiBuffer.excerpts[excerptIdx]
+        guard let buffer = multiBuffer.buffer(for: excerpt.bufferId) else { return [] }
+
+        if let cached = excerptSplitCache[excerpt.id],
+           cached.bufferVersion == buffer.version,
+           cached.bufferRange == excerpt.bufferRange {
+            return cached.rows
+        }
+
+        let diffLines: [(line: DiffLine, bufferRow: Int)]
+        if multiBuffer.contentMode == .diff,
+           let hunk = excerpt.hunk,
+           usesOriginalHunk(excerpt: excerpt, buffer: buffer) {
+            let totalCount = !hunk.lineSpans.isEmpty ? hunk.lineSpans.count : hunk.lines.count
+            diffLines = getDiffLines(for: excerptIdx, in: 0..<totalCount)
+        } else {
+            diffLines = getCachedDiffLines(for: excerptIdx)
+        }
+
+        let splitRows = SplitDiffEngine.shared.align(diffLines: diffLines)
+        setCachedSplit(
+            for: excerpt.id,
+            cache: ExcerptSplitCache(
+                bufferVersion: buffer.version,
+                bufferRange: excerpt.bufferRange,
+                rows: splitRows
+            )
+        )
+        return splitRows
+    }
+
+    private func setCachedSplit(for excerptId: UUID, cache: ExcerptSplitCache) {
+        excerptSplitCache[excerptId] = cache
+    }
+
     private func bufferRow(beforeHunkLine lineIndex: Int, in hunk: DiffHunk) -> Int {
         guard lineIndex > 0 else { return 0 }
         let checkpoints = hunkBufferRowRankCheckpoints(for: hunk)
@@ -756,22 +941,36 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
         return checkpoints
     }
 
-    private func usesOriginalHunk(excerpt: Excerpt, buffer: Buffer) -> Bool {
+    func usesOriginalHunk(excerpt: Excerpt, buffer: Buffer) -> Bool {
         guard multiBuffer.contentMode == .diff else { return false }
         guard let hunk = excerpt.hunk else { return false }
         if buffer.version == 0 {
             if excerpt.fileStatus == .deleted {
                 return excerpt.bufferRange.isEmpty
             }
+            if buffer.isFullFile {
+                return hunk.editableLineCount == excerpt.bufferRange.count
+            }
             return excerpt.bufferRange == 0..<buffer.lineCount
         }
-        guard excerpt.stableHunkBufferVersion == buffer.version,
-              hunk.lineSpans.isEmpty,
+        guard hunk.lineSpans.isEmpty,
               excerpt.fileStatus != .deleted else { return false }
-        let editableCount = hunk.lines.reduce(into: 0) { count, line in
-            if line.kind != .deleted { count += 1 }
+        if excerpt.stableHunkBufferVersion == buffer.version {
+            return hunk.editableLineCount == excerpt.bufferRange.count
         }
-        return editableCount == excerpt.bufferRange.count
+
+        // Buffer version changed, but this specific excerpt may not have been modified at all!
+        // Check if all non-deleted lines in this hunk still match the current buffer lines.
+        guard excerpt.bufferRange.lowerBound >= 0,
+              excerpt.bufferRange.upperBound <= buffer.lineCount else { return false }
+        var bRow = excerpt.bufferRange.lowerBound
+        for line in hunk.lines where line.kind != .deleted {
+            if buffer.line(at: bRow) != line.text {
+                return false
+            }
+            bRow += 1
+        }
+        return bRow == excerpt.bufferRange.upperBound
     }
 
     // MARK: - Lookups & Coordinate Mapping Helpers (Binary Search O(log N))
@@ -825,22 +1024,10 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
         let loc = excerptLocations[locIdx]
         let offset = codeRow - loc.codeRange.lowerBound
         guard offset >= 0 && offset < loc.codeLineCount else { return nil }
+        guard let buffer = multiBuffer.buffer(for: excerpt.bufferId) else { return nil }
 
-        let lineNumber: Int
-        if let hunk = excerpt.hunk, !hunk.lineSpans.isEmpty, offset < hunk.lineSpans.count {
-            let span = hunk.lineSpans[offset]
-            lineNumber = Int(span.newLineNumber > 0 ? span.newLineNumber : (span.oldLineNumber > 0 ? span.oldLineNumber : 1))
-        } else if let hunk = excerpt.hunk, !hunk.lines.isEmpty, offset < hunk.lines.count {
-            let line = hunk.lines[offset]
-            lineNumber = line.newLineNumber ?? line.oldLineNumber ?? 1
-        } else if let cached = excerptDiffCache[excerpt.id], offset < cached.result.lines.count {
-            let line = cached.result.lines[offset].line
-            lineNumber = line.newLineNumber ?? line.oldLineNumber ?? (multiBuffer.buffer(for: excerpt.bufferId)?.startLineNumber ?? 1)
-        } else {
-            let base = multiBuffer.buffer(for: excerpt.bufferId)?.startLineNumber ?? 1
-            lineNumber = base + offset
-        }
-        return (excerpt.filePath, lineNumber)
+        let lineNum = lineNumber(forExcerptOffset: offset, inExcerptAt: locIdx, buffer: buffer, excerpt: excerpt)
+        return (excerpt.filePath, lineNum)
     }
 
     /// Fast O(log N) scroll anchor resolution for display line index without materializing diff lines.
@@ -856,25 +1043,51 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
 
         let codeStart = loc.displayRange.lowerBound + (loc.hasHeader ? 1 : 0) + (loc.hasTopGap ? 1 : 0)
         let offset = lineIdx - codeStart
-        if offset >= 0 && offset < loc.codeLineCount {
-            let lineNumber: Int
-            if let hunk = excerpt.hunk, !hunk.lineSpans.isEmpty, offset < hunk.lineSpans.count {
-                let span = hunk.lineSpans[offset]
-                lineNumber = Int(span.newLineNumber > 0 ? span.newLineNumber : (span.oldLineNumber > 0 ? span.oldLineNumber : 1))
-            } else if let hunk = excerpt.hunk, !hunk.lines.isEmpty, offset < hunk.lines.count {
-                let line = hunk.lines[offset]
-                lineNumber = line.newLineNumber ?? line.oldLineNumber ?? 1
-            } else if let cached = excerptDiffCache[excerpt.id], offset < cached.result.lines.count {
-                let line = cached.result.lines[offset].line
-                lineNumber = line.newLineNumber ?? line.oldLineNumber ?? (multiBuffer.buffer(for: excerpt.bufferId)?.startLineNumber ?? 1)
-            } else {
-                let base = multiBuffer.buffer(for: excerpt.bufferId)?.startLineNumber ?? 1
-                lineNumber = base + offset
-            }
-            return (excerpt.filePath, lineNumber, false)
+        guard offset >= 0 && offset < loc.codeLineCount else { return (excerpt.filePath, nil, false) }
+        guard let buffer = multiBuffer.buffer(for: excerpt.bufferId) else { return (excerpt.filePath, nil, false) }
+
+        let lineNum = lineNumber(forExcerptOffset: offset, inExcerptAt: locIdx, buffer: buffer, excerpt: excerpt)
+        return (excerpt.filePath, lineNum, false)
+    }
+
+    private func lineNumber(
+        forExcerptOffset offset: Int,
+        inExcerptAt excerptIdx: Int,
+        buffer: Buffer,
+        excerpt: Excerpt
+    ) -> Int {
+        let fallbackLineNumber = buffer.startLineNumber + offset
+
+        // 1. Split mode (side-by-side)
+        if effectiveLayoutMode == .sideBySide {
+            let splitRows = getCachedSplitRows(for: excerptIdx)
+            guard offset < splitRows.count else { return fallbackLineNumber }
+            let row = splitRows[offset]
+            return row.right.lineNumber ?? row.left.lineNumber ?? fallbackLineNumber
         }
 
-        return (excerpt.filePath, nil, false)
+        // 2. Unchanged original git hunk
+        if let hunk = excerpt.hunk, usesOriginalHunk(excerpt: excerpt, buffer: buffer) {
+            if !hunk.lineSpans.isEmpty && offset < hunk.lineSpans.count {
+                let span = hunk.lineSpans[offset]
+                let num = span.newLineNumber > 0 ? span.newLineNumber : span.oldLineNumber
+                return num > 0 ? Int(num) : 1
+            }
+            if !hunk.lines.isEmpty && offset < hunk.lines.count {
+                let line = hunk.lines[offset]
+                return line.newLineNumber ?? line.oldLineNumber ?? 1
+            }
+            return 1
+        }
+
+        // 3. Diff lines from cache or computed slice
+        let diffLines = getCachedDiffLines(for: excerptIdx)
+        if offset < diffLines.count {
+            let line = diffLines[offset].line
+            return line.newLineNumber ?? line.oldLineNumber ?? fallbackLineNumber
+        }
+
+        return fallbackLineNumber
     }
 
     public func codeInfo(for multiBufferRow: MultiBufferRow) -> DisplayCodeLineInfo? {
@@ -887,6 +1100,37 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
         let items = generateVisibleLineItems(for: loc, requestedDisplayRange: targetDisplayIdx..<(targetDisplayIdx + 1))
         for item in items {
             if case .code(let info) = item.line {
+                return info
+            } else if case .splitCode(let sInfo) = item.line {
+                let cell = sInfo.right.isSpacer ? sInfo.left : sInfo.right
+                return DisplayCodeLineInfo(
+                    excerptIndex: sInfo.excerptIndex,
+                    multiBufferRow: multiBufferRow,
+                    bufferRow: cell.bufferRow ?? 0,
+                    displayLineIndex: sInfo.displayLineIndex,
+                    oldLineNumber: sInfo.left.lineNumber,
+                    newLineNumber: sInfo.right.lineNumber,
+                    diffKind: cell.diffKind,
+                    text: cell.text,
+                    language: sInfo.language,
+                    wordDiffRanges: cell.wordDiffRanges,
+                    expandInfo: sInfo.expandInfo
+                )
+            }
+        }
+        return nil
+    }
+
+    public func splitCodeInfo(for multiBufferRow: MultiBufferRow) -> DisplaySplitCodeLineInfo? {
+        guard let locIdx = excerptIndex(forCodeRow: multiBufferRow) else { return nil }
+        let loc = excerptLocations[locIdx]
+        let offset = multiBufferRow - loc.codeRange.lowerBound
+        guard offset >= 0 && offset < loc.codeLineCount else { return nil }
+
+        let targetDisplayIdx = loc.displayRange.lowerBound + (loc.hasHeader ? 1 : 0) + (loc.hasTopGap ? 1 : 0) + offset
+        let items = generateVisibleLineItems(for: loc, requestedDisplayRange: targetDisplayIdx..<(targetDisplayIdx + 1))
+        for item in items {
+            if case .splitCode(let info) = item.line {
                 return info
             }
         }
@@ -998,6 +1242,10 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
 
     /// Finds the code row in DisplayMap closest to the given file path and line number
     public func codeRow(forFilePath filePath: String, lineNumber: Int) -> MultiBufferRow? {
+        codeRow(forFilePath: filePath, lineNumber: lineNumber, isOldSide: false)
+    }
+
+    public func codeRow(forFilePath filePath: String, lineNumber: Int, isOldSide: Bool) -> MultiBufferRow? {
         guard !multiBuffer.excerpts.isEmpty else { return nil }
 
         var bestRow: MultiBufferRow? = nil
@@ -1009,18 +1257,50 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
             let excerpt = multiBuffer.excerpts[loc.excerptIndex]
             guard excerpt.filePath == filePath else { continue }
 
+            if effectiveLayoutMode == .sideBySide {
+                let splitRows = getCachedSplitRows(for: loc.excerptIndex)
+                for (offset, sRow) in splitRows.enumerated() {
+                    let row = loc.codeRange.lowerBound + offset
+                    if isOldSide {
+                        if sRow.left.lineNumber == lineNumber && !sRow.left.isSpacer {
+                            return row
+                        }
+                    } else {
+                        if sRow.right.lineNumber == lineNumber && !sRow.right.isSpacer {
+                            return row
+                        }
+                    }
+                    if sRow.left.lineNumber == lineNumber && exactOldRow == nil {
+                        exactOldRow = row
+                    }
+                    let lineNum = (isOldSide ? sRow.left.lineNumber : sRow.right.lineNumber)
+                        ?? sRow.right.lineNumber
+                        ?? sRow.left.lineNumber
+                        ?? 0
+                    let diff = abs(lineNum - lineNumber)
+                    if diff < minDiff {
+                        minDiff = diff
+                        bestRow = row
+                    }
+                }
+                continue
+            }
+
             for row in loc.codeRange {
                 if let info = codeInfo(for: row) {
-                    // A replacement has both an old/deleted and a new/added
-                    // line with the same number. Cursor/viewport restoration
-                    // must target the editable new side.
-                    if info.newLineNumber == lineNumber && info.diffKind != .deleted {
-                        return row
+                    if isOldSide {
+                        if info.oldLineNumber == lineNumber && info.diffKind == .deleted {
+                            return row
+                        }
+                    } else {
+                        if info.newLineNumber == lineNumber && info.diffKind != .deleted {
+                            return row
+                        }
                     }
                     if info.oldLineNumber == lineNumber && exactOldRow == nil {
                         exactOldRow = row
                     }
-                    let lineNum = info.newLineNumber ?? info.oldLineNumber ?? 0
+                    let lineNum = (isOldSide ? info.oldLineNumber : info.newLineNumber) ?? info.newLineNumber ?? info.oldLineNumber ?? 0
                     let diff = abs(lineNum - lineNumber)
                     if diff < minDiff {
                         minDiff = diff
@@ -1088,10 +1368,21 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
         guard offset >= 0 && offset < loc.codeLineCount else { return nil }
         guard let buffer = multiBuffer.buffer(for: excerpt.bufferId) else { return nil }
 
+        if effectiveLayoutMode == .sideBySide {
+            let splitRows = getCachedSplitRows(for: locIdx)
+            if offset < splitRows.count {
+                let row = splitRows[offset]
+                let cell = row.right.isSpacer ? row.left : row.right
+                let bRow = cell.bufferRow ?? 0
+                return (bRow, cell.diffKind == .deleted)
+            }
+            return nil
+        }
+
         if multiBuffer.contentMode == .diff,
-           let hunk = excerpt.hunk,
-           usesOriginalHunk(excerpt: excerpt, buffer: buffer) {
-            let bRow = bufferRow(beforeHunkLine: offset, in: hunk)
+           let hunk = excerpt.hunk {
+            let baseRow = buffer.isFullFile ? excerpt.bufferRange.lowerBound : 0
+            let bRow = baseRow + bufferRow(beforeHunkLine: offset, in: hunk)
             let isDel: Bool
             if !hunk.lineSpans.isEmpty && offset < hunk.lineSpans.count {
                 isDel = hunk.lineSpans[offset].kind == .deleted
@@ -1101,6 +1392,9 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
                 isDel = false
             }
             return (bRow, isDel)
+        } else if let cached = excerptDiffCache[excerpt.id], offset < cached.result.lines.count {
+            let item = cached.result.lines[offset]
+            return (item.bufferRow, item.line.kind == .deleted)
         } else {
             let diffLines = getCachedDiffLines(for: locIdx)
             if offset < diffLines.count {
@@ -1124,8 +1418,15 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
     /// Translates (BufferId, BufferPoint) to visual MultiBufferPoint (targeting non-deleted code line)
     public func visualPoint(for bufferId: BufferId, bufferPoint: BufferPoint) -> MultiBufferPoint? {
         for (exIdx, loc) in excerptLocations.enumerated() {
-            guard exIdx < multiBuffer.excerpts.count, multiBuffer.excerpts[exIdx].bufferId == bufferId else { continue }
-            guard loc.codeLineCount > 0 else { continue }
+            guard exIdx < multiBuffer.excerpts.count else { continue }
+            let excerpt = multiBuffer.excerpts[exIdx]
+            guard excerpt.bufferId == bufferId, loc.codeLineCount > 0 else { continue }
+
+            if !excerpt.bufferRange.isEmpty {
+                let lower = excerpt.bufferRange.lowerBound
+                let upper = excerpt.bufferRange.upperBound
+                guard bufferPoint.row >= lower && bufferPoint.row <= upper else { continue }
+            }
 
             let start = loc.codeRange.lowerBound
             let end = loc.codeRange.upperBound - 1

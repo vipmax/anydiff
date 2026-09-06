@@ -142,7 +142,17 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
             UserDefaults.standard.set(isMockAgent, forKey: "anydiff_agent_is_mock")
         }
     }
-    @Published public var isPanelOpen: Bool = true
+    public static let isRightPanelOpenKey = "anydiff_is_right_panel_open"
+    public static var isPanelOpenKey: String { isRightPanelOpenKey }
+    @Published public var isPanelOpen: Bool {
+        didSet {
+            UserDefaults.standard.set(isPanelOpen, forKey: Self.isRightPanelOpenKey)
+        }
+    }
+    public var isRightPanelOpen: Bool {
+        get { isPanelOpen }
+        set { isPanelOpen = newValue }
+    }
     @Published public var showStartScreen: Bool = false
     @Published public var activeReviewSummary: AgentEditedFilesSummary? = nil
 
@@ -198,6 +208,7 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
         let mock = false
         #endif
         self.isMockAgent = mock
+        self.isPanelOpen = UserDefaults.standard.object(forKey: Self.isRightPanelOpenKey) as? Bool ?? true
 
         if autoCreateSession {
             #if DEBUG

@@ -246,4 +246,33 @@ index 1111111..2222222 100644
         XCTAssertEqual(file.displayPath, "Sources/NewName.swift")
         XCTAssertEqual(file.hunks.count, 1)
     }
+
+    func testDiffLineKindFastEquality() {
+        XCTAssertEqual(DiffLineKind.unchanged, DiffLineKind.unchanged)
+        XCTAssertEqual(DiffLineKind.added, DiffLineKind.added)
+        XCTAssertEqual(DiffLineKind.deleted, DiffLineKind.deleted)
+        XCTAssertEqual(DiffLineKind.header, DiffLineKind.header)
+
+        XCTAssertNotEqual(DiffLineKind.unchanged, DiffLineKind.added)
+        XCTAssertNotEqual(DiffLineKind.deleted, DiffLineKind.header)
+    }
+
+    func testDiffHunkEditableLineCount() {
+        let hunk = DiffHunk(
+            oldRange: 1..<5,
+            newRange: 1..<6,
+            header: "@@ -1,4 +1,5 @@",
+            lines: [
+                DiffLine(kind: .unchanged, text: "line 1"),
+                DiffLine(kind: .deleted, text: "old line 2"),
+                DiffLine(kind: .added, text: "new line 2"),
+                DiffLine(kind: .added, text: "new line 3"),
+                DiffLine(kind: .unchanged, text: "line 4")
+            ]
+        )
+        // 5 total lines - 1 deleted = 4 editable lines (unchanged + added)
+        XCTAssertEqual(hunk.deletedLineCount, 1)
+        XCTAssertEqual(hunk.addedLineCount, 2)
+        XCTAssertEqual(hunk.editableLineCount, 4)
+    }
 }

@@ -118,6 +118,159 @@ final class ReadOnlyEditorTests: XCTestCase {
         XCTAssertTrue(restoredEditor.hasSelection)
     }
 
+    func testToggleDiffLayoutModePreservesCursorAndScrollAnchor() {
+        let multiBuffer = MultiBuffer()
+        let newText = "line 1\nnew line 2\nline 3\nline 4\nline 5"
+        let buffer = Buffer(filePath: "Test.swift", text: newText)
+        multiBuffer.addBuffer(buffer)
+
+        let hunk = DiffHunk(
+            oldRange: 1..<5,
+            newRange: 1..<5,
+            header: "@@ -1,4 +1,4 @@",
+            lines: [
+                DiffLine(kind: .unchanged, text: "line 1", oldLineNumber: 1, newLineNumber: 1),
+                DiffLine(kind: .deleted, text: "deleted line 2", oldLineNumber: 2, newLineNumber: nil),
+                DiffLine(kind: .added, text: "new line 2", oldLineNumber: nil, newLineNumber: 2),
+                DiffLine(kind: .unchanged, text: "line 3", oldLineNumber: 3, newLineNumber: 3),
+                DiffLine(kind: .unchanged, text: "line 4", oldLineNumber: 4, newLineNumber: 4),
+                DiffLine(kind: .unchanged, text: "line 5", oldLineNumber: 5, newLineNumber: 5)
+            ]
+        )
+        let excerpt = Excerpt(
+            bufferId: buffer.id,
+            filePath: "Test.swift",
+            bufferRange: 0..<5,
+            hunk: hunk,
+            stableHunkBufferVersion: buffer.version
+        )
+        multiBuffer.setExcerpts([excerpt])
+
+        let displayMap = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
+        displayMap.layoutMode = .unified
+        displayMap.rebuild()
+
+        let editor = CustomMultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        editor.frame = CGRect(x: 0, y: 0, width: 800, height: 600)
+        editor.invalidateLayout()
+
+        // 1. Cursor on unchanged line 4 (row 4 in unified mode: line 1, del 2, add 2, line 3, line 4)
+        editor.cursorPoint = MultiBufferPoint(row: 4, column: 2)
+        let unifiedState = editor.captureViewState()
+
+        // Switch to split mode
+        displayMap.layoutMode = .sideBySide
+        displayMap.rebuild()
+        editor.restoreViewState(unifiedState, shouldFocus: false)
+
+        // In split mode: row 0: line 1, row 1: del 2 | add 2, row 2: line 3, row 3: line 4
+        XCTAssertEqual(editor.cursorPoint.row, 3, "In split mode, line 4 should be at row 3")
+        XCTAssertEqual(editor.splitActiveColumn, .right, "Unchanged line should be in right column")
+
+        // Switch back to unified mode
+        let splitState = editor.captureViewState()
+        displayMap.layoutMode = .unified
+        displayMap.rebuild()
+        editor.restoreViewState(splitState, shouldFocus: false)
+
+        XCTAssertEqual(editor.cursorPoint.row, 4, "In unified mode, line 4 should be back at row 4")
+
+        // 2. Cursor on deleted line 2 (row 1 in unified mode)
+        editor.cursorPoint = MultiBufferPoint(row: 1, column: 3)
+        let delUnifiedState = editor.captureViewState()
+
+        displayMap.layoutMode = .sideBySide
+        displayMap.rebuild()
+        editor.restoreViewState(delUnifiedState, shouldFocus: false)
+
+        XCTAssertEqual(editor.cursorPoint.row, 1, "In split mode, deleted line 2 should be at row 1")
+        XCTAssertEqual(editor.splitActiveColumn, .left, "Deleted line should activate left column in split mode")
+
+        // Switch back to unified from left column
+        let delSplitState = editor.captureViewState()
+        displayMap.layoutMode = .unified
+        displayMap.rebuild()
+        editor.restoreViewState(delSplitState, shouldFocus: false)
+
+        XCTAssertEqual(editor.cursorPoint.row, 1, "Deleted line should restore to row 1 in unified mode")
+    }
+
+    func testGutterWidthAndCodeAlignmentConsistentAcrossLayoutModes() {
+        let multiBuffer = MultiBuffer()
+        let newText = "alpha\nbeta\ngamma"
+        let buffer = Buffer(filePath: "test.swift", text: newText)
+        multiBuffer.addBuffer(buffer)
+
+        let hunk = DiffHunk(
+            oldRange: 1..<4,
+            newRange: 1..<4,
+            header: "@@ -1,3 +1,3 @@",
+            lines: [
+                DiffLine(kind: .unchanged, text: "alpha", oldLineNumber: 1, newLineNumber: 1),
+                DiffLine(kind: .unchanged, text: "beta", oldLineNumber: 2, newLineNumber: 2),
+                DiffLine(kind: .unchanged, text: "gamma", oldLineNumber: 3, newLineNumber: 3)
+            ]
+        )
+        let excerpt = Excerpt(
+            bufferId: buffer.id,
+            filePath: "test.swift",
+            bufferRange: 0..<3,
+            hunk: hunk,
+            stableHunkBufferVersion: buffer.version
+        )
+        multiBuffer.setExcerpts([excerpt])
+
+        let displayMap = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
+        displayMap.layoutMode = .unified
+        displayMap.rebuild()
+
+        let editor = CustomMultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        editor.frame = CGRect(x: 0, y: 0, width: 800, height: 600)
+        editor.invalidateLayout()
+
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.contentView = editor
+        window.makeKeyAndOrderFront(nil)
+
+        // 1. Unified mode: click right at first character of code (gutterWidth + 13)
+        let row0Y = editor.yOffset(forDisplayLineIndex: 1)
+        let clickX = editor.gutterWidth + 13
+        let unifiedEvent = NSEvent.mouseEvent(
+            with: .leftMouseDown,
+            location: editor.convert(CGPoint(x: clickX, y: row0Y + 5), to: nil),
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 1,
+            pressure: 1.0
+        )!
+        editor.mouseDown(with: unifiedEvent)
+        XCTAssertEqual(editor.cursorPoint.column, 0, "First code character should be at column 0 in unified mode")
+
+        // 2. Switch to Split mode: gutter width and code start must be identical
+        displayMap.layoutMode = .sideBySide
+        displayMap.rebuild()
+        editor.invalidateLayout()
+
+        let splitRow0Y = editor.yOffset(forDisplayLineIndex: 1)
+        let splitEvent = NSEvent.mouseEvent(
+            with: .leftMouseDown,
+            location: editor.convert(CGPoint(x: clickX, y: splitRow0Y + 5), to: nil),
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 1,
+            pressure: 1.0
+        )!
+        editor.mouseDown(with: splitEvent)
+        XCTAssertEqual(editor.splitActiveColumn, .left, "Click should land on left column")
+        XCTAssertEqual(editor.cursorPoint.column, 0, "First code character should be at column 0 in split mode at the exact same X coordinate")
+    }
+
     func testIgnoreEditsPreservesSelectionWhileBlockingMutations() {
         let multiBuffer = MultiBuffer()
         let initialText = "line 1\nline 2\nline 3"
@@ -370,6 +523,84 @@ final class ReadOnlyEditorTests: XCTestCase {
         XCTAssertTrue(visibleLines.contains { $0.newLineNumber == 48 && $0.text.contains("Build Release") })
     }
 
+    func testCursorJumpOnTypingInExpandedExcerpt() {
+        let repoRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let fileURL = repoRoot.appendingPathComponent("Sources/AnyDiffUI/Editor/CustomMultiBufferEditorView.swift")
+        guard (try? String(contentsOf: fileURL, encoding: .utf8)) != nil else { return }
+
+        // Parse git diff to get hunks
+        let p2 = Process()
+        p2.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        p2.arguments = ["diff", "HEAD", "--", "Sources/AnyDiffUI/Editor/CustomMultiBufferEditorView.swift"]
+        p2.currentDirectoryURL = repoRoot
+        let pipe2 = Pipe()
+        p2.standardOutput = pipe2
+        try? p2.run()
+        let diffData = pipe2.fileHandleForReading.readDataToEndOfFile()
+        p2.waitUntilExit()
+
+        let parsed = GitDiffParser.shared.parseZeroCopy(data: diffData)
+        guard let file = parsed.first else { return }
+
+        let mb = MultiBuffer()
+        mb.baseDirectory = repoRoot.path
+        for hunk in file.hunks {
+            let buf = Buffer(
+                filePath: file.displayPath,
+                storage: .makeDiffFlat(data: diffData, spans: hunk.lineSpans, side: .new),
+                startLineNumber: hunk.newRange.lowerBound,
+                isLazySlice: true
+            )
+            mb.addBuffer(buf)
+            let ex = Excerpt(
+                bufferId: buf.id,
+                filePath: file.displayPath,
+                bufferRange: 0..<buf.lineCount,
+                hunk: hunk
+            )
+            mb.addExcerpt(ex)
+        }
+
+        // Find excerpt around line 2680
+        guard let hunkIdx = mb.excerpts.firstIndex(where: { $0.hunk?.oldRange.contains(2680) == true || $0.hunk?.newRange.contains(2680) == true }) else {
+            XCTFail("Could not find hunk containing 2680")
+            return
+        }
+
+        // Expand excerpt down by 20 lines so line 2692 is included
+        mb.expandExcerpt(at: hunkIdx, up: 0, down: 20)
+
+        let dm = DisplayMap(multiBuffer: mb, reviewManager: ReviewManager())
+        dm.rebuild()
+
+        let buf = mb.buffer(for: mb.excerpts[hunkIdx].bufferId)!
+        XCTAssertTrue(buf.isFullFile)
+
+        // Find visual row of line 2692 (row 2691 in 0-based buffer)
+        guard let visualPtBefore = dm.visualPoint(for: buf.id, bufferPoint: BufferPoint(row: 2691, column: 0)) else {
+            XCTFail("Could not find visualPoint before edit")
+            return
+        }
+
+        let codeInfoBefore = dm.codeInfo(for: visualPtBefore.row)
+        XCTAssertEqual(codeInfoBefore?.newLineNumber, 2692)
+
+        // Type "123" into buffer at row 2691
+        _ = buf.replace(start: BufferPoint(row: 2691, column: 4), end: BufferPoint(row: 2691, column: 4), with: "123")
+
+        let targetExcerptIdx = codeInfoBefore!.excerptIndex
+        let deltas = dm.rebuildExcerpt(at: targetExcerptIdx)
+        XCTAssertNotNil(deltas)
+
+        guard let visualPtAfter = dm.visualPoint(for: buf.id, bufferPoint: BufferPoint(row: 2691, column: 7)) else {
+            XCTFail("Could not find visualPoint after edit")
+            return
+        }
+
+        let codeInfoAfter = dm.codeInfo(for: visualPtAfter.row)
+        XCTAssertEqual(codeInfoAfter?.newLineNumber, 2692, "Cursor must stay on line 2692, not jump to line \(codeInfoAfter?.newLineNumber ?? -1)!")
+    }
+
     func testComparisonTargetEditabilityRules() {
         let workingTree = ComparisonTarget.workingTree
         let isWorkingTreeEditable = (workingTree == .workingTree)
@@ -570,5 +801,324 @@ final class ReadOnlyEditorTests: XCTestCase {
         // Should not crash
         XCTAssertEqual(buffer.text(), "hell")
     }
-}
 
+    func testSplitModeLeftColumnSelectionAndCopying() {
+        let multiBuffer = MultiBuffer()
+        let newText = "line 1\nnew line\nline 3"
+        let buffer = Buffer(filePath: "Test.swift", text: newText)
+        multiBuffer.addBuffer(buffer)
+
+        let hunk = DiffHunk(
+            oldRange: 1..<4,
+            newRange: 1..<4,
+            header: "@@ -1,3 +1,3 @@",
+            lines: [
+                DiffLine(kind: .unchanged, text: "line 1", oldLineNumber: 1, newLineNumber: 1),
+                DiffLine(kind: .deleted, text: "old line", oldLineNumber: 2, newLineNumber: nil),
+                DiffLine(kind: .added, text: "new line", oldLineNumber: nil, newLineNumber: 2),
+                DiffLine(kind: .unchanged, text: "line 3", oldLineNumber: 3, newLineNumber: 3)
+            ]
+        )
+        let excerpt = Excerpt(
+            bufferId: buffer.id,
+            filePath: "Test.swift",
+            bufferRange: 0..<3,
+            hunk: hunk,
+            stableHunkBufferVersion: buffer.version
+        )
+        multiBuffer.setExcerpts([excerpt])
+
+        let displayMap = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
+        displayMap.layoutMode = .sideBySide
+        displayMap.rebuild()
+
+        let editor = CustomMultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        editor.frame = CGRect(x: 0, y: 0, width: 800, height: 600)
+        editor.splitRatio = 0.5
+        editor.invalidateLayout()
+
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.contentView = editor
+        window.makeKeyAndOrderFront(nil)
+
+        XCTAssertEqual(editor.splitActiveColumn, .right)
+
+        // In split mode, line 0 is header, line 1 is line 1, line 2 is old line / new line
+        // Click in left column code rect
+        let row2Y = editor.yOffset(forDisplayLineIndex: 2)
+        let viewPoint = CGPoint(x: 150, y: row2Y + 5)
+        let windowPoint = editor.convert(viewPoint, to: nil)
+        let event = NSEvent.mouseEvent(
+            with: .leftMouseDown,
+            location: windowPoint,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 1,
+            pressure: 1.0
+        )!
+
+        editor.mouseDown(with: event)
+        XCTAssertEqual(editor.splitActiveColumn, .left)
+
+        // Verify editing in left column is blocked
+        editor.insertText("X", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertEqual(buffer.text(), newText, "Buffer must not change when typing in left column of split view")
+
+        // Select "old" in "old line" (row 1 in code rows)
+        editor.selectionAnchor = MultiBufferPoint(row: 1, column: 0)
+        editor.cursorPoint = MultiBufferPoint(row: 1, column: 3)
+
+        editor.copy(nil)
+        let pasted = NSPasteboard.general.string(forType: .string)
+        XCTAssertEqual(pasted, "old", "Copy in left split column should extract text from old/deleted line")
+
+        // Click in right column code rect
+        let rightViewPoint = CGPoint(x: 550, y: row2Y + 5)
+        let rightWindowPoint = editor.convert(rightViewPoint, to: nil)
+        let rightEvent = NSEvent.mouseEvent(
+            with: .leftMouseDown,
+            location: rightWindowPoint,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 1,
+            pressure: 1.0
+        )!
+        editor.mouseDown(with: rightEvent)
+        XCTAssertEqual(editor.splitActiveColumn, .right)
+
+        // Verify copy in right column extracts from new line
+        editor.selectionAnchor = MultiBufferPoint(row: 1, column: 0)
+        editor.cursorPoint = MultiBufferPoint(row: 1, column: 3)
+        editor.copy(nil)
+        let pastedRight = NSPasteboard.general.string(forType: .string)
+        XCTAssertEqual(pastedRight, "new", "Copy in right split column should extract text from new/added line")
+    }
+
+    func testInsertNewlineInSplitModePreservesCursorPosition() {
+        let multiBuffer = MultiBuffer()
+        multiBuffer.setContentMode(.diff)
+
+        let hunk = DiffHunk(
+            oldRange: 120..<130,
+            newRange: 150..<165,
+            header: "@@ -120,10 +150,15 @@",
+            lines: [
+                DiffLine(kind: .deleted, text: "del 1", oldLineNumber: 122, newLineNumber: nil),
+                DiffLine(kind: .deleted, text: "del 2", oldLineNumber: 123, newLineNumber: nil),
+                DiffLine(kind: .added, text: "add 1", oldLineNumber: nil, newLineNumber: 155),
+                DiffLine(kind: .added, text: "add 2", oldLineNumber: nil, newLineNumber: 156),
+                DiffLine(kind: .added, text: "add 3", oldLineNumber: nil, newLineNumber: 157),
+                DiffLine(kind: .added, text: "add 4", oldLineNumber: nil, newLineNumber: 158),
+                DiffLine(kind: .added, text: "add 5", oldLineNumber: nil, newLineNumber: 159),
+                DiffLine(kind: .added, text: "add 6", oldLineNumber: nil, newLineNumber: 160),
+                DiffLine(kind: .added, text: "add 7", oldLineNumber: nil, newLineNumber: 161),
+                DiffLine(kind: .unchanged, text: "    }", oldLineNumber: 124, newLineNumber: 162),
+                DiffLine(kind: .unchanged, text: "", oldLineNumber: 125, newLineNumber: 163),
+            ]
+        )
+
+        let initialText = "add 1\nadd 2\nadd 3\nadd 4\nadd 5\nadd 6\nadd 7\n    }\n"
+        let buffer = Buffer(filePath: "DisplayLine.swift", text: initialText)
+        buffer.isFullFile = true
+        buffer.startLineNumber = 155
+        multiBuffer.addBuffer(buffer)
+        multiBuffer.addExcerpt(Excerpt(
+            bufferId: buffer.id,
+            filePath: "DisplayLine.swift",
+            fileStatus: .modified,
+            bufferRange: 0..<9,
+            hunk: hunk,
+            stableHunkBufferVersion: buffer.version
+        ))
+
+        let displayMap = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
+        displayMap.layoutMode = .sideBySide
+        displayMap.rebuild()
+
+        let editor = CustomMultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        editor.isEditable = true
+
+        // Place cursor on line 163 (row 8)
+        editor.cursorPoint = MultiBufferPoint(row: 8, column: 0)
+
+        // Press Enter
+        editor.insertNewline(nil)
+
+        // After Enter, cursor should be on the newly inserted line (row 9, column 0)
+        XCTAssertEqual(editor.cursorPoint.row, 9, "Cursor should move to row 9 after inserting newline")
+        XCTAssertEqual(editor.cursorPoint.column, 0)
+
+        // Capture view state
+        let state = editor.captureViewState()
+        XCTAssertEqual(state.cursorAnchor?.lineNumber, 164, "Cursor anchor must capture new line number 164, not 162")
+
+        // Restore view state
+        editor.restoreViewState(state, shouldFocus: false)
+        XCTAssertEqual(editor.cursorPoint.row, 9, "Cursor should remain on row 9 after restoring view state")
+    }
+
+    func testTypingAndDeletingCharactersMaintainsFastStableHunkPresentation() {
+        let multiBuffer = MultiBuffer()
+        multiBuffer.setContentMode(.diff)
+
+        let initialText = "line 1\nline 2\nline 3\n"
+        let buffer = Buffer(filePath: "File.swift", text: initialText)
+        buffer.isFullFile = true
+        buffer.startLineNumber = 1
+        multiBuffer.addBuffer(buffer)
+
+        let hunk = DiffHunk(
+            oldRange: 1..<3,
+            newRange: 1..<4,
+            header: "@@ -1,2 +1,3 @@",
+            lines: [
+                DiffLine(kind: .unchanged, text: "line 1", oldLineNumber: 1, newLineNumber: 1),
+                DiffLine(kind: .added, text: "line 2", oldLineNumber: nil, newLineNumber: 2),
+                DiffLine(kind: .unchanged, text: "line 3", oldLineNumber: 2, newLineNumber: 3),
+            ]
+        )
+
+        multiBuffer.addExcerpt(Excerpt(
+            bufferId: buffer.id,
+            filePath: "File.swift",
+            fileStatus: .modified,
+            bufferRange: 0..<3,
+            hunk: hunk,
+            stableHunkBufferVersion: buffer.version
+        ))
+
+        let displayMap = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
+        displayMap.rebuild()
+
+        let editor = CustomMultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        editor.isEditable = true
+
+        // Position cursor at row 1 (the added line "line 2"), end of line (col 6)
+        // Note: header is at display row 0, so code row 1 is display code row 1
+        guard let visualPt = displayMap.visualPoint(for: buffer.id, bufferPoint: BufferPoint(row: 1, column: 6)) else {
+            XCTFail("Could not get visual point")
+            return
+        }
+        editor.cursorPoint = visualPt
+
+        // 1. Type "999"
+        editor.insertText("9", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertEqual(multiBuffer.excerpts[0].stableHunkBufferVersion, buffer.version, "Typing into added line must keep stableHunkBufferVersion up to date")
+        XCTAssertEqual(buffer.line(at: 1), "line 29")
+
+        editor.insertText("9", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertEqual(multiBuffer.excerpts[0].stableHunkBufferVersion, buffer.version)
+        XCTAssertEqual(buffer.line(at: 1), "line 299")
+
+        // 2. Backspace
+        editor.deleteBackward(nil)
+        XCTAssertEqual(multiBuffer.excerpts[0].stableHunkBufferVersion, buffer.version, "deleteBackward must keep stableHunkBufferVersion up to date for fast deletion")
+        XCTAssertEqual(buffer.line(at: 1), "line 29")
+
+        editor.deleteBackward(nil)
+        XCTAssertEqual(multiBuffer.excerpts[0].stableHunkBufferVersion, buffer.version, "Subsequent deleteBackward must remain on fast path")
+        XCTAssertEqual(buffer.line(at: 1), "line 2")
+    }
+
+    func testTypeAndImmediatelyDeleteCharacterOnLargeFile() {
+        let repoRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let fileURL = repoRoot.appendingPathComponent("Sources/AnyDiffUI/Editor/CustomMultiBufferEditorView.swift")
+        guard let currentText = try? String(contentsOf: fileURL, encoding: .utf8) else { return }
+
+        let multiBuffer = MultiBuffer()
+        multiBuffer.setContentMode(.diff)
+
+        let buffer = Buffer(filePath: fileURL.path, text: currentText)
+        buffer.isFullFile = true
+        buffer.startLineNumber = 1
+        multiBuffer.addBuffer(buffer)
+
+        let lines = currentText.components(separatedBy: "\n")
+        let testRow = 2691 // Line 2692 (0-indexed 2691)
+        let hunkLines = (2680..<2705).map { r in
+            DiffLine(kind: .unchanged, text: lines[r], oldLineNumber: r + 1, newLineNumber: r + 1)
+        }
+        let hunk = DiffHunk(
+            oldRange: 2681..<2706,
+            newRange: 2681..<2706,
+            header: "@@ -2681,25 +2681,25 @@",
+            lines: hunkLines
+        )
+        multiBuffer.addExcerpt(Excerpt(
+            bufferId: buffer.id,
+            filePath: fileURL.path,
+            fileStatus: .modified,
+            bufferRange: 2680..<2705,
+            hunk: hunk,
+            stableHunkBufferVersion: buffer.version
+        ))
+
+        // Also add a sibling excerpt to ensure editing excerpt 0 does not invalidate sibling excerpt 1
+        let siblingLines = (100..<120).map { r in
+            DiffLine(kind: .unchanged, text: lines[r], oldLineNumber: r + 1, newLineNumber: r + 1)
+        }
+        let siblingHunk = DiffHunk(
+            oldRange: 101..<121,
+            newRange: 101..<121,
+            header: "@@ -101,20 +101,20 @@",
+            lines: siblingLines
+        )
+        multiBuffer.addExcerpt(Excerpt(
+            bufferId: buffer.id,
+            filePath: fileURL.path,
+            fileStatus: .modified,
+            bufferRange: 100..<120,
+            hunk: siblingHunk,
+            stableHunkBufferVersion: buffer.version
+        ))
+
+        let displayMap = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
+        displayMap.rebuild()
+
+        let editor = CustomMultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        editor.isEditable = true
+
+        guard let visualPt = displayMap.visualPoint(for: buffer.id, bufferPoint: BufferPoint(row: testRow, column: 4)) else {
+            XCTFail("Could not get visual point")
+            return
+        }
+        editor.cursorPoint = visualPt
+
+        // Measure typing 1 char on unchanged line (now executes in-place in microseconds!)
+        let t0 = CFAbsoluteTimeGetCurrent()
+        editor.insertText("X", replacementRange: NSRange(location: NSNotFound, length: 0))
+        let tInsert = CFAbsoluteTimeGetCurrent() - t0
+
+        // After insert on unchanged line:
+        // Excerpt 0 must have split the line into .deleted (original) and .added ("X" inserted) in-place
+        XCTAssertEqual(multiBuffer.excerpts[0].stableHunkBufferVersion, buffer.version, "In-place split on unchanged line must keep stable version")
+        let hunk0AfterInsert = multiBuffer.excerpts[0].hunk!
+        XCTAssertTrue(hunk0AfterInsert.lines.contains { $0.kind == .deleted }, "Hunk must have deleted line for original")
+        XCTAssertTrue(hunk0AfterInsert.lines.contains { $0.kind == .added }, "Hunk must have added line for edited")
+
+        // Sibling excerpt 1 must remain on fast path (stable and uninvalidated)
+        XCTAssertTrue(displayMap.usesOriginalHunk(excerpt: multiBuffer.excerpts[1], buffer: buffer), "Sibling excerpt must remain valid on fast path")
+
+        // Measure deleting that 1 char (merges back to unchanged in-place!)
+        let t1 = CFAbsoluteTimeGetCurrent()
+        editor.deleteBackward(nil)
+        let tDelete = CFAbsoluteTimeGetCurrent() - t1
+
+        // After deleteBackward: line must merge back to .unchanged in-place
+        XCTAssertEqual(multiBuffer.excerpts[0].stableHunkBufferVersion, buffer.version, "In-place merge on delete must keep stable version")
+        let hunk0AfterDelete = multiBuffer.excerpts[0].hunk!
+        XCTAssertFalse(hunk0AfterDelete.lines.contains { $0.kind == .deleted }, "Merged line must no longer have deleted line")
+        XCTAssertFalse(hunk0AfterDelete.lines.contains { $0.kind == .added }, "Merged line must no longer have added line")
+        XCTAssertEqual(hunk0AfterDelete.lines.count, 25, "Hunk must be exactly 25 unchanged lines again")
+
+        // Both must be blazing fast (under 16ms budget)
+        XCTAssertLessThan(tInsert, 0.02, "Insert on unchanged line took \(tInsert)s")
+        XCTAssertLessThan(tDelete, 0.02, "Immediate delete took \(tDelete)s")
+    }
+}

@@ -58,15 +58,18 @@ public struct EditorCursorAnchor: Sendable, Equatable {
     public let filePath: String
     public let lineNumber: Int
     public let column: Int
+    public let isOldSide: Bool
 
     public init(
         filePath: String,
         lineNumber: Int,
-        column: Int
+        column: Int,
+        isOldSide: Bool = false
     ) {
         self.filePath = filePath
         self.lineNumber = lineNumber
         self.column = column
+        self.isOldSide = isOldSide
     }
 }
 

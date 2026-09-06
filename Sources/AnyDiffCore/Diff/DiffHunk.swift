@@ -6,6 +6,16 @@ public enum DiffLineKind: String, Codable, Sendable {
     case added = "+"
     case deleted = "-"
     case header = "@"
+
+    @inlinable
+    public static func == (lhs: DiffLineKind, rhs: DiffLineKind) -> Bool {
+        switch (lhs, rhs) {
+        case (.unchanged, .unchanged), (.added, .added), (.deleted, .deleted), (.header, .header):
+            return true
+        default:
+            return false
+        }
+    }
 }
 
 /// A single line in a diff hunk
@@ -49,6 +59,12 @@ public struct DiffHunk: Identifiable, Sendable, Equatable {
     public var status: DiffHunkStatus
     public var addedLineCount: Int
     public var deletedLineCount: Int
+
+    @inlinable
+    public var editableLineCount: Int {
+        let total = !lineSpans.isEmpty ? lineSpans.count : lines.count
+        return max(0, total - deletedLineCount)
+    }
 
     public init(
         oldRange: Range<Int>,

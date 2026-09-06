@@ -313,4 +313,36 @@ final class AgentSessionManagerTests: XCTestCase {
         XCTAssertEqual(manager.messages[0].images[0].filename, "img1.png")
         XCTAssertEqual(manager.messages[0].images[1].filename, "img2.png")
     }
+
+    func testUserMessageEchoDoesNotDuplicateDuringActiveStream() {
+        let manager = ACPAgentSessionManager()
+        let tempDir = NSTemporaryDirectory()
+
+        manager.sendPrompt("hey bro", workingDirectory: tempDir)
+        XCTAssertEqual(manager.messages.count, 2)
+        XCTAssertEqual(manager.messages[0].role, .user)
+        XCTAssertEqual(manager.messages[0].content, "hey bro")
+        XCTAssertEqual(manager.messages[1].role, .assistant)
+        XCTAssertTrue(manager.messages[1].isStreaming)
+
+        // Agent echoes the user prompt back via session/update notification (e.g. OpenCode/SourceCraft)
+        let echoUpdate = ACPSessionUpdateContent(
+            type: "user_message_chunk",
+            content: "hey bro",
+            delta: "hey bro"
+        )
+        let client = ACPClient()
+        manager.client(client, didReceiveUpdate: echoUpdate, sessionId: "sess-1")
+
+        let exp = expectation(description: "UI updates on Main thread")
+        DispatchQueue.main.async {
+            // Must still have only 2 messages: 1 user + 1 assistant
+            XCTAssertEqual(manager.messages.count, 2)
+            XCTAssertEqual(manager.messages[0].role, .user)
+            XCTAssertEqual(manager.messages[0].content, "hey bro")
+            XCTAssertEqual(manager.messages[1].role, .assistant)
+            exp.fulfill()
+        }
+        wait(for: [exp], timeout: 1.0)
+    }
 }

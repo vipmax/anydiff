@@ -75,6 +75,12 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
         version &+= 1
     }
 
+    public func updateExcerptHunk(at index: ExcerptIndex, hunk: DiffHunk, stableVersion: Int?) {
+        guard index >= 0 && index < excerpts.count else { return }
+        excerpts[index].hunk = hunk
+        excerpts[index].stableHunkBufferVersion = stableVersion
+    }
+
     public func clear() {
         buffers.removeAll()
         excerpts.removeAll()
@@ -231,8 +237,8 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
         // Immediately record edit activity on this file
         recordSelfEdit(for: buf.filePath)
 
-        // Schedule 200ms debounced auto-save to disk
-        scheduleDebouncedSave(delayMs: 200)
+        // Schedule debounced auto-save to disk
+        scheduleDebouncedSave(delayMs: Self.autoSaveDebounceMs)
 
         let newEndMBRow = multiBufferRow(excerptIndex: startLoc.excerptIndex, bufferRow: newBufRange.upperBound.row) ?? range.lowerBound.row
         let newEndPoint = MultiBufferPoint(row: newEndMBRow, column: newBufRange.upperBound.column)
@@ -406,10 +412,11 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
 
     public var baseDirectory: String?
     public var onEdit: (() -> Void)?
-    public static let autoSaveDebounceMs: Int = 200
+    public static let autoSaveDebounceMs: Int = 600
     private var saveDebounceWorkItem: DispatchWorkItem?
     private let saveLock = NSLock()
     private var lastSavedTimestamps: [String: Date] = [:]
+    private var lastSavedDiskStates: [String: FileDiskState] = [:]
 
     public var isDirty: Bool {
         buffers.values.contains { $0.isDirty }
@@ -441,25 +448,45 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
     /// Records edit activity immediately upon keystroke.
     public func recordSelfEdit(for filePath: String) {
         version &+= 1
-        recordSelfSave(for: filePath)
         onEdit?()
     }
 
-    /// Records that a file was saved by AnyDiff directly.
-    public func recordSelfSave(for filePath: String) {
+    /// Records that a file was saved by AnyDiff directly, optionally caching its disk metadata.
+    public func recordSelfSave(for filePath: String, diskState: FileDiskState? = nil) {
         saveLock.lock()
         defer { saveLock.unlock() }
         let now = Date()
         lastSavedTimestamps[filePath] = now
         let normalized = (filePath as NSString).standardizingPath
         lastSavedTimestamps[normalized] = now
+        var state = diskState
         if let base = baseDirectory {
             let full = (base as NSString).appendingPathComponent(filePath)
-            lastSavedTimestamps[(full as NSString).standardizingPath] = now
-            lastSavedTimestamps[URL(fileURLWithPath: full).resolvingSymlinksInPath().path] = now
+            let fullNorm = (full as NSString).standardizingPath
+            let fullResolved = URL(fileURLWithPath: full).resolvingSymlinksInPath().path
+            lastSavedTimestamps[fullNorm] = now
+            lastSavedTimestamps[fullResolved] = now
+            if state == nil {
+                state = FileDiskState.query(path: fullResolved) ?? FileDiskState.query(path: full)
+            }
+            if let s = state {
+                lastSavedDiskStates[fullNorm] = s
+                lastSavedDiskStates[fullResolved] = s
+            }
         }
         if (filePath as NSString).isAbsolutePath {
-            lastSavedTimestamps[URL(fileURLWithPath: filePath).resolvingSymlinksInPath().path] = now
+            let resolved = URL(fileURLWithPath: filePath).resolvingSymlinksInPath().path
+            lastSavedTimestamps[resolved] = now
+            if state == nil {
+                state = FileDiskState.query(path: resolved) ?? FileDiskState.query(path: filePath)
+            }
+            if let s = state {
+                lastSavedDiskStates[resolved] = s
+            }
+        }
+        if let s = state {
+            lastSavedDiskStates[filePath] = s
+            lastSavedDiskStates[normalized] = s
         }
     }
 
@@ -535,15 +562,47 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
 
     /// Returns whether a recent AnyDiff save event can safely be ignored.
     ///
-    /// FSEvents does not identify the process that wrote a file. Comparing the
-    /// current on-disk text with the materialized buffer lets us distinguish
-    /// AnyDiff's own save notification from a real edit made by another
-    /// editor immediately afterwards.
+    /// 1. If buffer has active dirty edits in memory, always ignore (never clobber user typing).
+    /// 2. Fast POSIX stat metadata check: if current mtime + size matches what AnyDiff saved, ignore immediately without file I/O.
+    /// 3. Fallback to recent save timestamp or content comparison if metadata is unavailable.
     public func shouldIgnoreSelfSavedEvent(
         filePath: String,
         diskPath: String,
         threshold: TimeInterval = 3.0
     ) -> Bool {
+        // Step 1: If the buffer has active dirty edits in memory, this is an ongoing
+        // self-edit session in AnyDiff. Never disrupt it with disk reload events.
+        if isFileDirty(filePath: filePath) || isFileDirty(filePath: diskPath) {
+            return true
+        }
+
+        let canonicalDiskPath = canonicalSavedPath(diskPath)
+
+        // Step 2: Fast metadata comparison using zero-allocation POSIX stat.
+        // If the file on disk has the exact same mtime (nanosecond precision) and size
+        // as what AnyDiff recorded during save, this event is 100% our own save.
+        if let currentStat = FileDiskState.query(path: diskPath) {
+            saveLock.lock()
+            let savedState = lastSavedDiskStates[canonicalDiskPath]
+                ?? lastSavedDiskStates[diskPath]
+                ?? lastSavedDiskStates[filePath]
+            saveLock.unlock()
+
+            if let savedState = savedState, currentStat == savedState {
+                return true
+            }
+
+            // Also check buffer.savedDiskState directly if full-file buffer exists
+            if let fullBuffer = buffers.values.first(where: { buffer in
+                guard buffer.isFullFile, !buffer.isLazySlice else { return false }
+                if buffer.filePath == filePath { return true }
+                guard let fullDiskPath = buffer.fullDiskPath else { return false }
+                return canonicalSavedPath(fullDiskPath) == canonicalDiskPath
+            }), let bufSavedState = fullBuffer.savedDiskState, currentStat == bufSavedState {
+                return true
+            }
+        }
+
         let recentlySaved = isSelfSavedRecentlyExact(filePath: diskPath, threshold: threshold)
             || isSelfSavedRecently(filePath: filePath, threshold: threshold)
         guard recentlySaved else { return false }
@@ -552,7 +611,6 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
             return true
         }
 
-        let canonicalDiskPath = canonicalSavedPath(diskPath)
         guard let fullBuffer = buffers.values.first(where: { buffer in
             guard buffer.isFullFile, !buffer.isLazySlice else { return false }
             if buffer.filePath == filePath { return true }
@@ -577,14 +635,11 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
         } else {
             expanded = path
         }
-        return URL(fileURLWithPath: expanded).standardizedFileURL.path
+        return URL(fileURLWithPath: expanded).resolvingSymlinksInPath().path
     }
 
-    /// Debounces saving all dirty buffers to disk with a 200ms delay to avoid CPU/LSP thrashing
-    public func scheduleDebouncedSave(delayMs: Int = 200) {
-        for buf in buffers.values where buf.isDirty {
-            recordSelfSave(for: buf.filePath)
-        }
+    /// Debounces saving all dirty buffers to disk with a delay to avoid CPU/LSP thrashing
+    public func scheduleDebouncedSave(delayMs: Int = autoSaveDebounceMs) {
         saveDebounceWorkItem?.cancel()
         let item = DispatchWorkItem { [weak self] in
             do {
@@ -614,10 +669,14 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
         for (filePath, fileBuffers) in grouped {
             // Sort in reverse order (bottom to top) so that line additions/deletions in earlier hunks do not affect later hunk offsets
             let sortedBuffers = fileBuffers.sorted { $0.startLineNumber > $1.startLineNumber }
+            var capturedState: FileDiskState? = nil
             for buffer in sortedBuffers {
                 try buffer.saveToFile(baseDirectory: baseDirectory)
+                if let state = buffer.savedDiskState {
+                    capturedState = state
+                }
             }
-            recordSelfSave(for: filePath)
+            recordSelfSave(for: filePath, diskState: capturedState)
             savedFiles.insert(filePath)
         }
         return Array(savedFiles)
@@ -654,21 +713,15 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
 
         for (hunk, sourceStorage) in sortedHunks {
             let startRow = max(0, min(baseline.count, hunk.newRange.lowerBound - 1))
-            let newCount: Int
+            let newCount = hunk.editableLineCount
             let oldHunkLines: [String]
 
             if !hunk.lineSpans.isEmpty {
-                newCount = hunk.lineSpans.reduce(into: 0) { count, span in
-                    if span.kind != .deleted { count += 1 }
-                }
                 oldHunkLines = hunk.lineSpans.compactMap { span in
                     guard span.kind != .added else { return nil }
                     return sourceStorage.text(for: span) ?? ""
                 }
             } else {
-                newCount = hunk.lines.reduce(into: 0) { count, line in
-                    if line.kind != .deleted { count += 1 }
-                }
                 oldHunkLines = hunk.lines.compactMap { line in
                     line.kind != .added ? line.text : nil
                 }
@@ -704,9 +757,9 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
 
         // Re-point all excerpts for this file to targetBuf with full-file ranges
         for (idx, ex) in fileExcerpts {
-            var updated = ex
+            var updated = excerpts[idx]
             let startLine: Int
-            if let h = ex.hunk {
+            if let h = updated.hunk {
                 startLine = h.newRange.lowerBound
             } else if ex.bufferId == targetBuf.id {
                 startLine = oldTargetStartLine
@@ -732,6 +785,10 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
         // Promote the target buffer to full file
         targetBuf.promoteToFullFile(diskLines: diskLines, baselineDiskLines: baseline)
 
+        for (idx, _) in fileExcerpts {
+            excerpts[idx].stableHunkBufferVersion = targetBuf.version
+        }
+
         return targetBuf
     }
 
@@ -750,27 +807,88 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
 
         for index in indices {
             let excerpt = excerpts[index]
-            guard var hunk = excerpt.hunk, hunk.lineSpans.isEmpty else { return false }
-            let editableCount = hunk.lines.reduce(into: 0) { count, line in
-                if line.kind != .deleted { count += 1 }
+            guard var hunk = excerpt.hunk else { return false }
+            if !hunk.lineSpans.isEmpty {
+                hunk.lines = hunk.lineSpans.map { span in
+                    DiffLine(
+                        kind: span.kind,
+                        text: buffer.storage.text(for: span) ?? "",
+                        oldLineNumber: span.oldLineNumber > 0 ? Int(span.oldLineNumber) : nil,
+                        newLineNumber: span.newLineNumber > 0 ? Int(span.newLineNumber) : nil
+                    )
+                }
+                LineDiffEngine.shared.refreshWordDiffs(in: &hunk.lines)
+                hunk.lineSpans.removeAll(keepingCapacity: false)
             }
+            let editableCount = hunk.editableLineCount
             guard editableCount == excerpt.bufferRange.count,
                   excerpt.bufferRange.lowerBound >= 0,
                   excerpt.bufferRange.upperBound <= buffer.lineCount else { return false }
 
             var bufferRow = excerpt.bufferRange.lowerBound
-            for lineIndex in hunk.lines.indices where hunk.lines[lineIndex].kind != .deleted {
-                let currentText = buffer.line(at: bufferRow) ?? ""
-                // Editing context creates a new change and therefore requires a
-                // fresh line diff. Existing added lines may safely retain shape.
-                if hunk.lines[lineIndex].kind == .unchanged,
-                   hunk.lines[lineIndex].text != currentText {
-                    return false
+            var lineIndex = 0
+            while lineIndex < hunk.lines.count {
+                guard hunk.lines[lineIndex].kind != .deleted else {
+                    lineIndex += 1
+                    continue
                 }
-                hunk.lines[lineIndex].text = currentText
-                hunk.lines[lineIndex].newLineNumber = bufferRow + 1
+                let currentText = buffer.line(at: bufferRow) ?? ""
+                if hunk.lines[lineIndex].kind == .unchanged {
+                    if hunk.lines[lineIndex].text != currentText {
+                        // An unchanged line was edited. Turn it into a deleted (baseline)
+                        // line and an added (edited) line in-place.
+                        let oldLine = hunk.lines[lineIndex]
+                        let delLine = DiffLine(
+                            kind: .deleted,
+                            text: oldLine.text,
+                            oldLineNumber: oldLine.oldLineNumber,
+                            newLineNumber: nil
+                        )
+                        let addLine = DiffLine(
+                            kind: .added,
+                            text: currentText,
+                            oldLineNumber: nil,
+                            newLineNumber: bufferRow + 1
+                        )
+                        hunk.lines[lineIndex] = delLine
+                        hunk.lines.insert(addLine, at: lineIndex + 1)
+                        lineIndex += 1 // Skip past the newly inserted added line
+                    }
+                } else if hunk.lines[lineIndex].kind == .added {
+                    hunk.lines[lineIndex].text = currentText
+                    hunk.lines[lineIndex].newLineNumber = bufferRow + 1
+                }
                 bufferRow += 1
+                lineIndex += 1
             }
+
+            // If an added line was edited back to match its predecessor deleted line,
+            // merge them back into a single .unchanged line.
+            var i = 0
+            while i < (hunk.lines.count - 1) {
+                if hunk.lines[i].kind == .deleted && hunk.lines[i + 1].kind == .added {
+                    if hunk.lines[i].text == hunk.lines[i + 1].text {
+                        let oldNum = hunk.lines[i].oldLineNumber
+                        let newNum = hunk.lines[i + 1].newLineNumber
+                        let text = hunk.lines[i].text
+                        hunk.lines[i] = DiffLine(
+                            kind: .unchanged,
+                            text: text,
+                            oldLineNumber: oldNum,
+                            newLineNumber: newNum
+                        )
+                        hunk.lines.remove(at: i + 1)
+                        continue
+                    }
+                }
+                i += 1
+            }
+
+            let newEditableCount = hunk.lines.reduce(into: 0) { count, line in
+                if line.kind != .deleted { count += 1 }
+            }
+            guard newEditableCount == excerpt.bufferRange.count else { return false }
+
             LineDiffEngine.shared.refreshWordDiffs(in: &hunk.lines)
             refreshed.append((index, hunk))
         }
@@ -806,19 +924,68 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
         var addedUp = 0
         var addedDown = 0
 
+        if var hunk = excerpt.hunk, hunk.lines.isEmpty, !hunk.lineSpans.isEmpty, let b = buffers[excerpt.bufferId] {
+            hunk.lines = hunk.lineSpans.map { span in
+                DiffLine(
+                    kind: span.kind,
+                    text: b.storage.text(for: span) ?? "",
+                    oldLineNumber: span.oldLineNumber > 0 ? Int(span.oldLineNumber) : nil,
+                    newLineNumber: span.newLineNumber > 0 ? Int(span.newLineNumber) : nil
+                )
+            }
+            LineDiffEngine.shared.refreshWordDiffs(in: &hunk.lines)
+            hunk.lineSpans.removeAll(keepingCapacity: false)
+            excerpt.hunk = hunk
+        }
+
         if up > 0 {
             let oldLower = excerpt.bufferRange.lowerBound
             let newLower = max(0, oldLower - up)
             addedUp = oldLower - newLower
             excerpt.bufferRange = newLower..<excerpt.bufferRange.upperBound
+
+            if addedUp > 0, var hunk = excerpt.hunk {
+                var upLines: [DiffLine] = []
+                upLines.reserveCapacity(addedUp)
+                for r in newLower..<oldLower {
+                    let text = buf.line(at: r) ?? ""
+                    let newNum = r + 1
+                    let offsetFromOldHunk = hunk.newRange.lowerBound - (r + 1)
+                    let oldNum = max(1, hunk.oldRange.lowerBound - offsetFromOldHunk)
+                    upLines.append(DiffLine(kind: .unchanged, text: text, oldLineNumber: oldNum, newLineNumber: newNum))
+                }
+                hunk.lines = upLines + hunk.lines
+                hunk.newRange = (newLower + 1)..<hunk.newRange.upperBound
+                hunk.oldRange = max(1, hunk.oldRange.lowerBound - addedUp)..<hunk.oldRange.upperBound
+                hunk.lineSpans.removeAll(keepingCapacity: false)
+                excerpt.hunk = hunk
+            }
         }
         if down > 0 {
             let oldUpper = excerpt.bufferRange.upperBound
             let newUpper = min(buf.lineCount, oldUpper + down)
             addedDown = newUpper - oldUpper
             excerpt.bufferRange = excerpt.bufferRange.lowerBound..<newUpper
+
+            if addedDown > 0, var hunk = excerpt.hunk {
+                var downLines: [DiffLine] = []
+                downLines.reserveCapacity(addedDown)
+                for r in oldUpper..<newUpper {
+                    let text = buf.line(at: r) ?? ""
+                    let newNum = r + 1
+                    let offsetFromHunkEnd = (r + 1) - hunk.newRange.upperBound
+                    let oldNum = max(1, hunk.oldRange.upperBound + offsetFromHunkEnd)
+                    downLines.append(DiffLine(kind: .unchanged, text: text, oldLineNumber: oldNum, newLineNumber: newNum))
+                }
+                hunk.lines = hunk.lines + downLines
+                hunk.newRange = hunk.newRange.lowerBound..<(newUpper + 1)
+                hunk.oldRange = hunk.oldRange.lowerBound..<(hunk.oldRange.upperBound + addedDown)
+                hunk.lineSpans.removeAll(keepingCapacity: false)
+                excerpt.hunk = hunk
+            }
         }
 
+        excerpt.stableHunkBufferVersion = buf.version
         excerpts[index] = excerpt
         mergeAdjacentExcerpts()
         version &+= 1
@@ -854,7 +1021,25 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
                         var updatedLast = last
                         let combinedUpper = max(last.bufferRange.upperBound, excerpt.bufferRange.upperBound)
                         updatedLast.bufferRange = last.bufferRange.lowerBound..<combinedUpper
-                        if last.hunk != nil || excerpt.hunk != nil {
+                        if let h1 = last.hunk, let h2 = excerpt.hunk, let b = buffers[last.bufferId] {
+                            var bridgeLines: [DiffLine] = []
+                            if gap > 0 {
+                                for r in last.bufferRange.upperBound..<excerpt.bufferRange.lowerBound {
+                                    let text = b.line(at: r) ?? ""
+                                    let newNum = r + 1
+                                    let offsetFromH1End = (r + 1) - h1.newRange.upperBound
+                                    let oldNum = max(1, h1.oldRange.upperBound + offsetFromH1End)
+                                    bridgeLines.append(DiffLine(kind: .unchanged, text: text, oldLineNumber: oldNum, newLineNumber: newNum))
+                                }
+                            }
+                            var mergedHunk = h1
+                            mergedHunk.lines = h1.lines + bridgeLines + h2.lines
+                            mergedHunk.newRange = h1.newRange.lowerBound..<h2.newRange.upperBound
+                            mergedHunk.oldRange = h1.oldRange.lowerBound..<h2.oldRange.upperBound
+                            mergedHunk.lineSpans.removeAll(keepingCapacity: false)
+                            updatedLast.hunk = mergedHunk
+                            updatedLast.stableHunkBufferVersion = b.version
+                        } else if last.hunk != nil || excerpt.hunk != nil {
                             updatedLast.hunk = nil
                         }
                         merged[merged.count - 1] = updatedLast

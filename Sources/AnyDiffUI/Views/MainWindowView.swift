@@ -114,10 +114,15 @@ public struct MainWindowView: View {
     @State private var selectedTheme: Theme = .vesper
     @State private var followsSystemAppearance: Bool = true
     @State private var viewMode: DiffViewMode = .unified
+    @AppStorage("preferredDiffLayoutMode") private var preferredDiffLayoutMode: String = DiffLayoutMode.unified.rawValue
     @State private var contextLines: Int = 3
     @State private var fontSize: CGFloat = 13
 
-    @State private var columnVisibility: NavigationSplitViewVisibility = .doubleColumn
+    private static let isLeftPanelOpenKey = "anydiff_is_left_panel_open"
+    @State private var columnVisibility: NavigationSplitViewVisibility = {
+        let isOpen = UserDefaults.standard.object(forKey: isLeftPanelOpenKey) as? Bool ?? true
+        return isOpen ? .all : .doubleColumn
+    }()
     @State private var commentTarget: (filePath: String, lineNumber: Int)? = nil
     @State private var currentFolderName: String = ""
     @State private var showOpenSourcePopover: Bool = false
@@ -144,6 +149,11 @@ public struct MainWindowView: View {
         let smb = MultiBuffer()
         let sdm = DisplayMap(multiBuffer: smb, reviewManager: rm)
 
+        let initialLayout = (UserDefaults.standard.string(forKey: "preferredDiffLayoutMode").flatMap(DiffLayoutMode.init)) ?? .unified
+        dm.layoutMode = initialLayout
+        rdm.layoutMode = .unified
+        sdm.layoutMode = .unified
+
         self._multiBuffer = StateObject(wrappedValue: mb)
         self._reviewManager = StateObject(wrappedValue: rm)
         self._displayMap = StateObject(wrappedValue: dm)
@@ -151,6 +161,44 @@ public struct MainWindowView: View {
         self._reviewDisplayMap = StateObject(wrappedValue: rdm)
         self._searchMultiBuffer = StateObject(wrappedValue: smb)
         self._searchDisplayMap = StateObject(wrappedValue: sdm)
+    }
+
+    private var diffLayoutMode: DiffLayoutMode {
+        if isReviewActive {
+            return reviewDisplayMap.layoutMode
+        }
+        return DiffLayoutMode(rawValue: preferredDiffLayoutMode) ?? .unified
+    }
+
+    private func setDiffLayoutMode(_ mode: DiffLayoutMode) {
+        if isReviewActive {
+            reviewDisplayMap.layoutMode = mode
+            return
+        }
+        preferredDiffLayoutMode = mode.rawValue
+        displayMap.layoutMode = mode
+        searchDisplayMap.layoutMode = .unified
+    }
+
+    private func toggleDiffLayoutMode() {
+        if isReviewActive {
+            let nextMode: DiffLayoutMode = (reviewDisplayMap.layoutMode == .unified ? .sideBySide : .unified)
+            reviewDisplayMap.layoutMode = nextMode
+        } else {
+            setDiffLayoutMode(diffLayoutMode == .unified ? .sideBySide : .unified)
+        }
+    }
+
+    private func toggleLeftPanel() {
+        if columnVisibility == .all {
+            columnVisibility = .doubleColumn
+        } else {
+            columnVisibility = .all
+        }
+    }
+
+    private func toggleRightPanel() {
+        agentCoordinator.togglePanel()
     }
 
     private var activeTheme: Theme {
@@ -174,6 +222,10 @@ public struct MainWindowView: View {
             editorColumnView
         } detail: {
             agentColumnView
+        }
+        .onChange(of: columnVisibility) { newVisibility in
+            let isOpen = (newVisibility == .all)
+            UserDefaults.standard.set(isOpen, forKey: Self.isLeftPanelOpenKey)
         }
         .preferredColorScheme(activeTheme.isDark ? .dark : .light)
         .environment(\.colorScheme, activeTheme.isDark ? .dark : .light)
@@ -248,6 +300,7 @@ public struct MainWindowView: View {
                 if preparedReviewSummary == summary {
                     preparedReviewSummary = nil
                 } else {
+                    reviewDisplayMap.layoutMode = .unified
                     loadReviewDiff(for: summary)
                 }
             } else {
@@ -314,9 +367,24 @@ public struct MainWindowView: View {
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffToggleWatchMode"))) { _ in
             isWatchModeEnabled.toggle()
         }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffToggleLeftPanel"))) { _ in
+            withAnimation(.easeInOut(duration: 0.2)) {
+                toggleLeftPanel()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffToggleRightPanel"))) { _ in
+            withAnimation(.easeInOut(duration: 0.2)) {
+                toggleRightPanel()
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffToggleAgent"))) { _ in
             withAnimation(.easeInOut(duration: 0.2)) {
-                agentCoordinator.togglePanel()
+                toggleRightPanel()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffToggleSidebar"))) { _ in
+            withAnimation(.easeInOut(duration: 0.2)) {
+                toggleLeftPanel()
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffSelectTheme"))) { notif in
@@ -324,8 +392,15 @@ public struct MainWindowView: View {
                 if themeId == "system" {
                     followsSystemAppearance = true
                 } else if let t = Theme.allThemes.first(where: { $0.id == themeId }) {
-                    selectedTheme = t
                     followsSystemAppearance = false
+                    selectedTheme = t
+                }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffSetDiffLayout"))) { notif in
+            if let modeStr = notif.userInfo?["mode"] as? String, let m = DiffLayoutMode(rawValue: modeStr) {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    setDiffLayoutMode(m)
                 }
             }
         }
@@ -764,6 +839,7 @@ public struct MainWindowView: View {
                     globalSearchBadge
                 } else {
                     searchToolbarButton
+                    diffLayoutToolbarButton
 
                     if isReviewActive {
                         reviewReadOnlyBadge
@@ -778,6 +854,19 @@ public struct MainWindowView: View {
         .padding(.leading, 8)
         .padding(.trailing, 8)
         .padding(.vertical, 3)
+    }
+
+    @ViewBuilder
+    private var diffLayoutToolbarButton: some View {
+        Button(action: {
+            withAnimation(.easeInOut(duration: 0.16)) {
+                toggleDiffLayoutMode()
+            }
+        }) {
+            DiffLayoutToggleIcon(mode: diffLayoutMode)
+        }
+        .buttonStyle(ToolbarHoverButtonStyle())
+        .help(diffLayoutMode == .unified ? "Switch to Side-by-Side Diff (⌘D)" : "Switch to Unified Diff (⌘D)")
     }
 
     @ViewBuilder
@@ -968,6 +1057,12 @@ public struct MainWindowView: View {
     @ViewBuilder
     private var hiddenKeyboardShortcuts: some View {
         Group {
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    toggleDiffLayoutMode()
+                }
+            }) {}
+                .keyboardShortcut("d", modifiers: .command)
             Button(action: { reloadCurrentDiff() }) {}
                 .keyboardShortcut("r", modifiers: .command)
             Button(action: { handleOpenShortcut() }) {}
@@ -1299,6 +1394,7 @@ public struct MainWindowView: View {
     private func beginReview(summary: AgentEditedFilesSummary) {
         reviewViewStateResetToken &+= 1
         clearReviewDiff()
+        reviewDisplayMap.layoutMode = .unified
         loadReviewDiff(for: summary)
         preparedReviewSummary = summary
         agentCoordinator.startReview(summary: summary)
@@ -1956,7 +2052,11 @@ public struct MainWindowView: View {
             let resolvedEventPath = eventURL.path
 
             // Ignore directory metadata and the repository root itself.
-            if resolvedEventPath == resolvedCurrentDir || (event.isDirectory && !event.isFile) {
+            if resolvedEventPath == resolvedCurrentDir || event.isDirectory {
+                continue
+            }
+            var isDir: ObjCBool = false
+            if FileManager.default.fileExists(atPath: resolvedEventPath, isDirectory: &isDir) && isDir.boolValue {
                 continue
             }
 
@@ -1964,6 +2064,11 @@ public struct MainWindowView: View {
             guard resolvedEventPath.hasPrefix(prefix) else { continue }
             let relative = String(resolvedEventPath.dropFirst(prefix.count))
             guard !relative.isEmpty else { continue }
+
+            // Skip files currently being typed in by the user in main diff or search.
+            if multiBuffer.isFileDirty(filePath: relative) || searchMultiBuffer.isFileDirty(filePath: relative) {
+                continue
+            }
 
             // FSEvents does not identify the writer. Ignore AnyDiff's own
             // save notification only while the disk text still matches our
@@ -1978,11 +2083,6 @@ public struct MainWindowView: View {
                 diskPath: resolvedEventPath,
                 threshold: 3.0
             ) {
-                continue
-            }
-
-            // Skip files currently being typed in by the user in main diff.
-            if multiBuffer.isFileDirty(filePath: relative) {
                 continue
             }
 
@@ -2086,7 +2186,6 @@ public struct MainWindowView: View {
                     }
                 }
                 self.displayMap.rebuild(invalidatingPaths: safePaths)
-                self.displayMap.markContentLoaded()
                 self.updateWatchedFileDiffs(result.files, safePaths: safePaths)
                 if !searchPathsToInvalidate.isEmpty {
                     let updatedMatches = ProjectSearchEngine.shared.recalculateMatches(
@@ -2303,13 +2402,21 @@ public struct MainWindowView: View {
     /// `MultiBuffer.replaceFile` keeps every unrelated buffer/excerpt intact.
     private func applyWatchedFile(path: String, diff: FileDiff?, rawData: Data?) {
         if let fullPath = externalFilePath(for: path),
-           let externalText = try? String(contentsOfFile: fullPath, encoding: .utf8),
-           multiBuffer.applyExternalTextUpdate(
-               filePath: path,
-               newText: externalText,
-               updateBaseline: multiBuffer.contentMode == .text
-           ) {
-            return
+           let externalText = try? String(contentsOfFile: fullPath, encoding: .utf8) {
+            if let existingBuffer = multiBuffer.buffers.values.first(where: {
+                $0.filePath == path && $0.isFullFile && !$0.isLazySlice
+            }), existingBuffer.text() == externalText {
+                // File on disk already matches in-memory buffer text exactly; nothing to update.
+                return
+            }
+
+            if multiBuffer.applyExternalTextUpdate(
+                filePath: path,
+                newText: externalText,
+                updateBaseline: multiBuffer.contentMode == .text
+            ) {
+                return
+            }
         }
 
         let collapsed = multiBuffer.excerpts
@@ -2712,5 +2819,42 @@ public struct AgentToolbarActionButtonStyle: ButtonStyle {
             )
             .onHover { isHovered = $0 }
             .animation(.easeOut(duration: 0.16), value: isHovered)
+    }
+}
+
+private struct DiffLayoutToggleIcon: View {
+    let mode: DiffLayoutMode
+
+    var body: some View {
+        ZStack {
+            if mode == .unified {
+                // Unified mode: Two horizontal stacked pills (solid top, outlined bottom)
+                VStack(spacing: 2.5) {
+                    RoundedRectangle(cornerRadius: 1.8)
+                        .fill(Color.secondary)
+                        .frame(width: 13, height: 4.5)
+
+                    RoundedRectangle(cornerRadius: 1.8)
+                        .stroke(Color.secondary.opacity(0.6), lineWidth: 1.2)
+                        .frame(width: 13, height: 4.5)
+                }
+                .frame(width: 16, height: 16)
+                .transition(.scale(scale: 0.85).combined(with: .opacity))
+            } else {
+                // Split mode: Two vertical side-by-side pills (outlined left, solid right)
+                HStack(spacing: 2.5) {
+                    RoundedRectangle(cornerRadius: 1.8)
+                        .stroke(Color.secondary.opacity(0.6), lineWidth: 1.2)
+                        .frame(width: 4.5, height: 13)
+
+                    RoundedRectangle(cornerRadius: 1.8)
+                        .fill(Color.secondary)
+                        .frame(width: 4.5, height: 13)
+                }
+                .frame(width: 16, height: 16)
+                .transition(.scale(scale: 0.85).combined(with: .opacity))
+            }
+        }
+        .animation(.easeInOut(duration: 0.16), value: mode)
     }
 }

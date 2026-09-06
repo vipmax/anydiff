@@ -388,5 +388,153 @@ final class WordDiffTests: XCTestCase {
         let diffRanges2 = codeItems2.first(where: { $0.diffKind == .added })?.wordDiffRanges
         XCTAssertEqual(diffRanges1, diffRanges2)
     }
+
+    func testDiffLinesForSliceWithLargeDiffExceeding400Edits() {
+        var oldLines: [String] = []
+        var newLines: [String] = []
+
+        for i in 0..<100 {
+            oldLines.append("func testFunction\(i)() {")
+            newLines.append("func testFunction\(i)() {")
+
+            for j in 0..<5 {
+                oldLines.append("    let oldVar\(j) = \(j)")
+                newLines.append("    let newVar\(j) = \(j) + 1")
+            }
+
+            oldLines.append("}")
+            newLines.append("}")
+        }
+
+        // Total changes: 100 * 5 = 500 deletions and 500 additions
+        let slice = LineDiffEngine.shared.diffLinesForSlice(
+            oldLines: oldLines,
+            newLines: newLines,
+            targetRange: 345..<355
+        )
+
+        XCTAssertEqual(slice.deletions, 500)
+        XCTAssertEqual(slice.additions, 500)
+        let unchanged = slice.lines.filter { $0.line.kind == .unchanged }
+        XCTAssertFalse(unchanged.isEmpty, "Unchanged anchor lines must remain unchanged, not wiped out")
+    }
+
+    func testRebuildExcerptInMultiHunkBufferWithOver400EditsKeepsStatsStable() {
+        var oldLines: [String] = []
+        var newLines: [String] = []
+
+        for i in 0..<100 {
+            oldLines.append("func block\(i)() {")
+            newLines.append("func block\(i)() {")
+            for j in 0..<5 {
+                oldLines.append("    let oldItem\(j) = \(j)")
+                newLines.append("    let newItem\(j) = \(j) * 2")
+            }
+            oldLines.append("}")
+            newLines.append("}")
+        }
+
+        let mb = MultiBuffer()
+        let buf = Buffer(filePath: "BigFile.swift", lines: newLines, baselineLines: oldLines)
+        buf.isFullFile = true
+        mb.addBuffer(buf)
+
+        // Add an excerpt for block 50 (rows 350..<357)
+        let exc = Excerpt(bufferId: buf.id, filePath: "BigFile.swift", bufferRange: 350..<357)
+        mb.addExcerpt(exc)
+
+        let dm = DisplayMap(multiBuffer: mb, reviewManager: ReviewManager())
+        dm.rebuild()
+
+        // Before edit, additions and deletions should be 500
+        XCTAssertEqual(buf.totalAdditions, 500)
+        XCTAssertEqual(buf.totalDeletions, 500)
+
+        // Insert a newline into buf at row 353
+        _ = buf.replace(start: BufferPoint(row: 353, column: 0), end: BufferPoint(row: 353, column: 0), with: "\n")
+        let deltas = dm.rebuildExcerpt(at: 0)
+        XCTAssertNotNil(deltas)
+
+        // Stats should increase by 1 addition (501), NEVER explode to total line count
+        XCTAssertEqual(buf.totalAdditions, 501)
+        XCTAssertEqual(buf.totalDeletions, 500)
+    }
+
+    func testPerformanceOnCustomMultiBufferEditorView() {
+        let repoRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let fileURL = repoRoot.appendingPathComponent("Sources/AnyDiffUI/Editor/CustomMultiBufferEditorView.swift")
+        guard let currentText = try? String(contentsOf: fileURL, encoding: .utf8) else { return }
+        let newLines = currentText.components(separatedBy: "\n")
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = ["show", "HEAD:Sources/AnyDiffUI/Editor/CustomMultiBufferEditorView.swift"]
+        process.currentDirectoryURL = repoRoot
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        try? process.run()
+        let oldData = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard let oldText = String(data: oldData, encoding: .utf8) else { return }
+        let oldLines = oldText.components(separatedBy: "\n")
+
+        let t0 = CFAbsoluteTimeGetCurrent()
+        let slice = LineDiffEngine.shared.diffLinesForSlice(
+            oldLines: oldLines,
+            newLines: newLines,
+            targetRange: 2680..<2705
+        )
+        let t1 = CFAbsoluteTimeGetCurrent()
+        XCTAssertLessThan(t1 - t0, 0.25, "Scoped slice diff should execute in under 250ms")
+        XCTAssertFalse(slice.lines.isEmpty)
+    }
+
+    func testPromoteBufferAndDiffPerformance() {
+        let repoRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        p.arguments = ["diff", "HEAD", "--", "Sources/AnyDiffUI/Editor/CustomMultiBufferEditorView.swift"]
+        p.currentDirectoryURL = repoRoot
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        try? p.run()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+
+        let parsed = GitDiffParser.shared.parseZeroCopy(data: data)
+        guard let file = parsed.first else { return }
+
+        let mb = MultiBuffer()
+        mb.baseDirectory = repoRoot.path
+        for hunk in file.hunks {
+            let buf = Buffer(
+                filePath: file.displayPath,
+                storage: .makeDiffFlat(data: data, spans: hunk.lineSpans, side: .new),
+                startLineNumber: hunk.newRange.lowerBound,
+                isLazySlice: true
+            )
+            mb.addBuffer(buf)
+            let ex = Excerpt(
+                bufferId: buf.id,
+                filePath: file.displayPath,
+                bufferRange: 0..<buf.lineCount,
+                hunk: hunk
+            )
+            mb.addExcerpt(ex)
+        }
+
+        let firstBufId = mb.excerpts[0].bufferId
+        guard let pBuf = mb.promoteBufferToFullFile(for: firstBufId) else { return }
+
+        let t0 = CFAbsoluteTimeGetCurrent()
+        let slice = LineDiffEngine.shared.diffLinesForSlice(
+            oldLines: pBuf.baselineLines,
+            newLines: pBuf.lines,
+            targetRange: 2680..<2705
+        )
+        let t1 = CFAbsoluteTimeGetCurrent()
+        XCTAssertLessThan(t1 - t0, 0.25, "Promoted buffer diff should execute in under 250ms")
+        XCTAssertFalse(slice.lines.isEmpty)
+    }
 }
 

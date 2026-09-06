@@ -49,6 +49,28 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     /// Direct-mapped CoreText line cache owned per editor instance (lock-free)
     public let lineCache = LineRenderCache()
 
+    /// Ratio of code space allocated to the left (old) column in side-by-side mode (0.15 ... 0.85)
+    public var splitRatio: CGFloat = {
+        let saved = UserDefaults.standard.double(forKey: "anyDiffSplitRatio")
+        return (saved >= 0.15 && saved <= 0.85) ? CGFloat(saved) : 0.5
+    }() {
+        didSet {
+            UserDefaults.standard.set(Double(splitRatio), forKey: "anyDiffSplitRatio")
+            updateViewportMetrics()
+            needsDisplay = true
+            window?.invalidateCursorRects(for: self)
+        }
+    }
+
+    public enum SplitActiveColumn: Sendable, Equatable {
+        case left
+        case right
+    }
+
+    public private(set) var splitActiveColumn: SplitActiveColumn = .right
+    private var isDraggingDivider: Bool = false
+    private var lastLayoutMode: DiffLayoutMode? = nil
+
     /// Adjusts the scrollbar thumb for enough contrast in both appearances.
     private var scrollbarThumbBaseColor: NSColor {
         if theme.isDark {
@@ -78,7 +100,23 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     }
 
     private var editingEnabled: Bool {
-        isEditable && !ignoreEdits
+        isEditable && !ignoreEdits && !(displayMap?.effectiveLayoutMode == .sideBySide && splitActiveColumn == .left)
+    }
+
+    private func activeLineLength(at row: MultiBufferRow) -> Int {
+        guard let dm = displayMap else { return 0 }
+        if dm.effectiveLayoutMode == .sideBySide && splitActiveColumn == .left {
+            return dm.splitCodeInfo(for: row)?.left.text.count ?? dm.lineLength(at: row)
+        }
+        return dm.lineLength(at: row)
+    }
+
+    private func activeLineText(at row: MultiBufferRow) -> String? {
+        guard let dm = displayMap else { return nil }
+        if dm.effectiveLayoutMode == .sideBySide && splitActiveColumn == .left {
+            return dm.splitCodeInfo(for: row)?.left.text ?? dm.lineText(at: row)
+        }
+        return dm.lineText(at: row)
     }
 
     private static let gutterFont = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
@@ -91,6 +129,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     public private(set) var fontAscent: CGFloat = 14
     public private(set) var fontDescent: CGFloat = 4
     public private(set) var gutterWidth: CGFloat = 58
+    private static let codeLeftPadding: CGFloat = 12
     public private(set) var excerptHeaderHeight: CGFloat = 34
     public private(set) var foldGapHeight: CGFloat = 20
     public private(set) var commentHeight: CGFloat = 64
@@ -336,13 +375,21 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     }
 
     private func editorCursorAnchor(for point: MultiBufferPoint, in dm: DisplayMap) -> EditorCursorAnchor? {
+        if dm.effectiveLayoutMode == .sideBySide && splitActiveColumn == .left,
+           let split = dm.splitCodeInfo(for: point.row),
+           let oldLine = split.left.lineNumber {
+            let excerpt = dm.multiBuffer.excerpts[split.excerptIndex]
+            return EditorCursorAnchor(filePath: excerpt.filePath, lineNumber: oldLine, column: point.column, isOldSide: true)
+        }
         guard let loc = dm.fastSourceLocation(forCodeRow: point.row) else {
             return nil
         }
+        let isDel = dm.isDeleted(multiBufferRow: point.row)
         return EditorCursorAnchor(
             filePath: loc.filePath,
             lineNumber: loc.lineNumber,
-            column: point.column
+            column: point.column,
+            isOldSide: isDel
         )
     }
 
@@ -358,15 +405,29 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
         // 1. Restore Cursor Anchor
         var restoredCursor = false
-        if let cAnchor = state.cursorAnchor, let mbRow = dm.codeRow(forFilePath: cAnchor.filePath, lineNumber: cAnchor.lineNumber) {
-            let maxCol = dm.lineLength(at: mbRow)
+        if let cAnchor = state.cursorAnchor,
+           let mbRow = dm.codeRow(forFilePath: cAnchor.filePath, lineNumber: cAnchor.lineNumber, isOldSide: cAnchor.isOldSide) {
+            if dm.effectiveLayoutMode == .sideBySide {
+                if let split = dm.splitCodeInfo(for: mbRow) {
+                    if split.right.isSpacer {
+                        splitActiveColumn = .left
+                    } else if split.left.isSpacer {
+                        splitActiveColumn = .right
+                    } else {
+                        splitActiveColumn = cAnchor.isOldSide ? .left : .right
+                    }
+                } else {
+                    splitActiveColumn = cAnchor.isOldSide ? .left : .right
+                }
+            }
+            let maxCol = activeLineLength(at: mbRow)
             let clampedCol = max(0, min(maxCol, cAnchor.column))
             let restoredCursorPoint = MultiBufferPoint(row: mbRow, column: clampedCol)
 
             var restoredAnchor: MultiBufferPoint? = nil
             if let sAnchor = state.selectionAnchor,
-               let selectionRow = dm.codeRow(forFilePath: sAnchor.filePath, lineNumber: sAnchor.lineNumber) {
-                let selectionMaxCol = dm.lineLength(at: selectionRow)
+               let selectionRow = dm.codeRow(forFilePath: sAnchor.filePath, lineNumber: sAnchor.lineNumber, isOldSide: sAnchor.isOldSide) {
+                let selectionMaxCol = activeLineLength(at: selectionRow)
                 let candidateAnchor = MultiBufferPoint(
                     row: selectionRow,
                     column: max(0, min(selectionMaxCol, sAnchor.column))
@@ -408,10 +469,17 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         // available and we had to fall back to the selected file or first line.
         self.scrollOffsetX = max(0, state.scrollOffsetX)
 
+        if restoredCursor {
+            ensureCursorVisible()
+        }
+
         needsDisplay = true
         if shouldFocus {
             focusAfterLoadIfPossible()
         }
+        let loc = dm.excerptLocation(for: cursorPoint)
+        delegate?.editorDidChangeCursor(location: loc, point: cursorPoint)
+        delegate?.editorDidScroll()
     }
 
     public func focus() {
@@ -462,14 +530,15 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     }
 
     private func horizontalScrollbarGeometry() -> (thumb: CGRect, hit: CGRect)? {
-        let trackWidth = bounds.width - gutterWidth - 10
+        let leftMargin = (displayMap?.effectiveLayoutMode == .sideBySide) ? 0 : gutterWidth
+        let trackWidth = bounds.width - leftMargin - 10
         guard totalDocumentWidth > bounds.width, trackWidth > 0, bounds.height > 0 else { return nil }
 
         let maxScrollX = totalDocumentWidth - bounds.width
         let thumbWidth = min(trackWidth, max(40, (trackWidth / totalDocumentWidth) * trackWidth))
         let travel = max(0, trackWidth - thumbWidth)
         let progress = maxScrollX > 0 ? scrollOffsetX / maxScrollX : 0
-        let thumbX = gutterWidth + progress * travel
+        let thumbX = leftMargin + progress * travel
         let thumb = CGRect(x: thumbX, y: bounds.height - 8, width: thumbWidth, height: 6)
         let hit = thumb.insetBy(dx: -2, dy: -6).intersection(bounds)
         return (thumb, hit)
@@ -514,7 +583,8 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         case .horizontal:
             guard let geometry = horizontalScrollbarGeometry() else { return }
             let maxScrollX = max(0, totalDocumentWidth - bounds.width)
-            let trackWidth = max(0, bounds.width - gutterWidth - 10)
+            let leftMargin = (displayMap?.effectiveLayoutMode == .sideBySide) ? 0 : gutterWidth
+            let trackWidth = max(0, bounds.width - leftMargin - 10)
             let travel = max(0, trackWidth - geometry.thumb.width)
             guard travel > 0 else { return }
             let delta = point.x - scrollbarDragStartMousePosition
@@ -618,11 +688,21 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     public override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
         updateViewportMetrics()
+        window?.invalidateCursorRects(for: self)
     }
 
     private func updateViewportMetrics() {
         totalDocumentHeight = contentTotalHeight
-        totalDocumentWidth = max(bounds.width, contentNeededWidth)
+
+        if displayMap?.effectiveLayoutMode == .sideBySide {
+            let geom = splitGeometry(atY: 0, height: bounds.height)
+            let minColWidth = max(50, min(geom.leftCodeRect.width, geom.rightCodeRect.width))
+            let codeNeededWidth = CGFloat(displayMap?.maxLineChars ?? 0) * cachedCharWidth + 30
+            let codeOverflow = max(0, codeNeededWidth - minColWidth)
+            totalDocumentWidth = bounds.width + codeOverflow
+        } else {
+            totalDocumentWidth = max(bounds.width, contentNeededWidth)
+        }
 
         let maxScrollY = max(0, totalDocumentHeight - bounds.height)
         let maxScrollX = max(0, totalDocumentWidth - bounds.width)
@@ -633,8 +713,12 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     }
 
     public func syncLayoutIfNeeded() {
-        let expectedCount = displayMap?.excerptLocations.count ?? 0
-        if excerptLayouts.count != expectedCount {
+        guard let dm = displayMap else { return }
+        let expectedCount = dm.excerptLocations.count
+        let lastUpperBound = excerptLayouts.last?.displayRange.upperBound ?? 0
+        if excerptLayouts.count != expectedCount ||
+           dm.displayLineCount != lastUpperBound ||
+           lastLayoutMode != dm.effectiveLayoutMode {
             invalidateLayout()
         }
     }
@@ -735,6 +819,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     public func invalidateLayout() {
         SyntaxHighlighter.shared.clearCache()
         lineCache.clear()
+        lastLayoutMode = displayMap?.effectiveLayoutMode
         guard let displayMap = displayMap else {
             contentTotalHeight = 0
             contentNeededWidth = 0
@@ -822,6 +907,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
         updateViewportMetrics()
         clampCursorToValidBounds()
+        window?.invalidateCursorRects(for: self)
         needsDisplay = true
     }
 
@@ -842,7 +928,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         let neededWidth = gutterWidth + CGFloat(dm.maxLineChars) * cachedCharWidth + 20
         if neededWidth > contentNeededWidth {
             self.contentNeededWidth = neededWidth
-            self.totalDocumentWidth = max(bounds.width, neededWidth)
+            updateViewportMetrics()
         }
 
         let loc = dm.excerptLocations[excerptIdx]
@@ -929,7 +1015,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                 row = minRow
             }
         }
-        let maxCol = dm.lineLength(at: row)
+        let maxCol = activeLineLength(at: row)
         let col = max(0, min(cursorPoint.column, maxCol))
         let clamped = MultiBufferPoint(row: row, column: col)
 
@@ -949,7 +1035,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                     anchorRow = minRow
                 }
             }
-            let anchorMaxCol = dm.lineLength(at: anchorRow)
+            let anchorMaxCol = activeLineLength(at: anchorRow)
             let anchorCol = max(0, min(anchor.column, anchorMaxCol))
             let candidateAnchor = MultiBufferPoint(row: anchorRow, column: anchorCol)
             if candidateAnchor != clamped {
@@ -1124,20 +1210,29 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         // 2. Pass 1: Draw Code Lines (content that scrolls horizontally under gutter)
         for item in visibleItems {
             let lineIdx = item.displayLineIndex
-            if case .code(var info) = item.line {
-                let lineMinY = yOffset(forDisplayLineIndex: lineIdx)
-                let height = lineHeight(forDisplayLineIndex: lineIdx)
-                let screenLineFrame = CGRect(
-                    x: -scrollOffsetX,
-                    y: lineMinY - scrollOffsetY,
-                    width: lineWidth,
-                    height: height
-                )
+            let lineMinY = yOffset(forDisplayLineIndex: lineIdx)
+            let height = lineHeight(forDisplayLineIndex: lineIdx)
+            let screenLineFrame = CGRect(
+                x: -scrollOffsetX,
+                y: lineMinY - scrollOffsetY,
+                width: lineWidth,
+                height: height
+            )
+
+            switch item.line {
+            case .code(var info):
                 if let mbRow = item.multiBufferRow {
                     info.multiBufferRow = mbRow
                 }
                 info.displayLineIndex = lineIdx
                 drawCodeLine(info: info, lineIdx: lineIdx, in: screenLineFrame, context: context)
+
+            case .splitCode(var sInfo):
+                sInfo.displayLineIndex = lineIdx
+                drawSplitCodeLine(info: sInfo, lineIdx: lineIdx, in: CGRect(x: 0, y: lineMinY - scrollOffsetY, width: bounds.width, height: height), context: context)
+
+            default:
+                break
             }
         }
 
@@ -1162,6 +1257,9 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                 context.setFillColor(theme.background.cgColor)
                 context.fill(gutterRect)
                 drawGutter(for: info, lineIdx: lineIdx, in: gutterRect, context: context)
+
+            case .splitCode(let sInfo):
+                drawSplitGuttersAndDivider(for: sInfo, lineIdx: lineIdx, in: CGRect(x: 0, y: screenY, width: bounds.width, height: height), context: context)
 
             case .foldGap(let info):
                 let gapFrame = CGRect(x: 0, y: screenY, width: bounds.width, height: height)
@@ -1547,7 +1645,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         }
 
         // 2. Syntax Highlighting & Word Diff Highlighting
-        let codeStartX = rect.minX + gutterWidth + 12
+        let codeStartX = rect.minX + gutterWidth + Self.codeLeftPadding
         let ctLine = getOrCreateCTLine(for: lineIdx, text: info.text, language: info.language)
 
         // Word Diff Highlight Rectangles
@@ -1671,6 +1769,279 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             let cursorRect = CGRect(x: cursorX, y: rect.minY + 2, width: 2, height: rect.height - 4)
             context.setFillColor(theme.diffModifiedGutter.cgColor)
             context.fill(cursorRect)
+        }
+    }
+
+    // MARK: - Side-by-Side (Split Diff) Rendering
+
+    private struct SplitGeometry {
+        let boundsWidth: CGFloat
+        let gutterWidth: CGFloat
+        let dividerWidth: CGFloat
+        let columnWidth: CGFloat
+        let leftGutterRect: CGRect
+        let leftCodeRect: CGRect
+        let dividerRect: CGRect
+        let rightGutterRect: CGRect
+        let rightCodeRect: CGRect
+    }
+
+    private func splitGeometry(atY screenY: CGFloat, height: CGFloat) -> SplitGeometry {
+        let gWidth: CGFloat = gutterWidth
+        let dWidth: CGFloat = 1
+        let availableWidth = max(bounds.width, 400)
+        let totalGutterSpace = (gWidth * 2) + dWidth
+        let totalCodeSpace = max(200, availableWidth - totalGutterSpace)
+        let leftCodeWidth = max(80, min(totalCodeSpace - 80, round(totalCodeSpace * splitRatio)))
+
+        let leftGutter = CGRect(x: 0, y: screenY, width: gWidth, height: height)
+        let leftCode = CGRect(x: gWidth, y: screenY, width: leftCodeWidth, height: height)
+        let divider = CGRect(x: gWidth + leftCodeWidth, y: screenY, width: dWidth, height: height)
+        let rightGutter = CGRect(x: gWidth + leftCodeWidth + dWidth, y: screenY, width: gWidth, height: height)
+        let rightCodeX = gWidth + leftCodeWidth + dWidth + gWidth
+        let rightColWidth = max(80, availableWidth - rightCodeX)
+        let rightCode = CGRect(x: rightCodeX, y: screenY, width: rightColWidth, height: height)
+
+        return SplitGeometry(
+            boundsWidth: availableWidth,
+            gutterWidth: gWidth,
+            dividerWidth: dWidth,
+            columnWidth: leftCodeWidth,
+            leftGutterRect: leftGutter,
+            leftCodeRect: leftCode,
+            dividerRect: divider,
+            rightGutterRect: rightGutter,
+            rightCodeRect: rightCode
+        )
+    }
+
+    private func drawSplitCodeLine(info: DisplaySplitCodeLineInfo, lineIdx: Int, in rect: CGRect, context: CGContext) {
+        let geom = splitGeometry(atY: rect.minY, height: rect.height)
+        let isLeftActive = (splitActiveColumn == .left)
+        let leftRow = info.left.multiBufferRow ?? info.right.multiBufferRow
+        let rightRow = info.right.multiBufferRow ?? info.left.multiBufferRow
+        let isLeftCursorLine = window?.firstResponder === self && isLeftActive && leftRow == cursorPoint.row
+        let isRightCursorLine = window?.firstResponder === self && !isLeftActive && rightRow == cursorPoint.row
+
+        // 1. Draw Left Column (Old)
+        if info.left.isSpacer {
+            drawSpacerHatch(in: geom.leftCodeRect, context: context)
+        } else {
+            if info.left.diffKind == .deleted {
+                context.setFillColor(theme.diffDeletedBackground.cgColor)
+                context.fill(geom.leftCodeRect)
+            } else if isLeftCursorLine {
+                context.setFillColor(theme.currentLineBackground.cgColor)
+                context.fill(geom.leftCodeRect)
+            }
+
+            context.saveGState()
+            context.clip(to: geom.leftCodeRect)
+
+            let leftStartX = geom.leftCodeRect.minX + Self.codeLeftPadding - scrollOffsetX
+            let ctLine = getOrCreateCTLine(for: lineIdx * 2, text: info.left.text, language: info.language)
+
+            // Word diff highlights on left
+            if !info.left.wordDiffRanges.isEmpty {
+                context.setFillColor(theme.diffDeletedWordHighlight.cgColor)
+                for range in info.left.wordDiffRanges {
+                    let sX = ctLine.xOffset(for: range.lowerBound)
+                    let eX = ctLine.xOffset(for: range.upperBound)
+                    let wRect = CGRect(x: leftStartX + sX - 2, y: rect.minY + 2, width: max(4, eX - sX) + 4, height: rect.height - 4)
+                    let p = CGPath(roundedRect: wRect, cornerWidth: 3, cornerHeight: 3, transform: nil)
+                    context.addPath(p)
+                    context.fillPath()
+                }
+            }
+
+            // Text Selection Rectangles on left
+            if isLeftActive, hasSelection, let selRange = normalizedSelectionRange(),
+               let mbRow = leftRow,
+               mbRow >= selRange.lowerBound.row && mbRow <= selRange.upperBound.row {
+                let startCol = (mbRow == selRange.lowerBound.row) ? selRange.lowerBound.column : 0
+                let endCol = (mbRow == selRange.upperBound.row) ? selRange.upperBound.column : info.left.text.count
+                if startCol < endCol {
+                    let sX = ctLine.xOffset(for: startCol)
+                    let eX = ctLine.xOffset(for: endCol)
+                    context.setFillColor(theme.selectionBackground.cgColor)
+                    let selRect = CGRect(x: leftStartX + sX, y: rect.minY, width: max(3, eX - sX), height: rect.height)
+                    context.fill(selRect)
+                }
+            }
+
+            // Draw Caret / Cursor if focused on left column
+            if isLeftCursorLine && isCursorVisible {
+                let clampedCol = min(info.left.text.count, max(0, cursorPoint.column))
+                let cursorX = leftStartX + ctLine.xOffset(forCharacterIndex: clampedCol, in: info.left.text)
+                let cursorRect = CGRect(x: cursorX, y: rect.minY + 2, width: 2, height: rect.height - 4)
+                context.setFillColor(theme.diffModifiedGutter.cgColor)
+                context.fill(cursorRect)
+            }
+
+            context.textMatrix = .identity
+            context.translateBy(x: leftStartX, y: rect.minY + fontAscent + 2)
+            context.scaleBy(x: 1.0, y: -1.0)
+            CTLineDraw(ctLine, context)
+            context.restoreGState()
+        }
+
+        // 2. Draw Right Column (New / Modified)
+        if info.right.isSpacer {
+            drawSpacerHatch(in: geom.rightCodeRect, context: context)
+        } else {
+            if info.right.diffKind == .added {
+                context.setFillColor(theme.diffAddedBackground.cgColor)
+                context.fill(geom.rightCodeRect)
+            } else if isRightCursorLine {
+                context.setFillColor(theme.currentLineBackground.cgColor)
+                context.fill(geom.rightCodeRect)
+            }
+
+            context.saveGState()
+            context.clip(to: geom.rightCodeRect)
+
+            let rightStartX = geom.rightCodeRect.minX + Self.codeLeftPadding - scrollOffsetX
+            let ctLine = getOrCreateCTLine(for: (lineIdx * 2) + 1, text: info.right.text, language: info.language)
+
+            // Word diff highlights on right
+            if !info.right.wordDiffRanges.isEmpty {
+                context.setFillColor(theme.diffAddedWordHighlight.cgColor)
+                for range in info.right.wordDiffRanges {
+                    let sX = ctLine.xOffset(for: range.lowerBound)
+                    let eX = ctLine.xOffset(for: range.upperBound)
+                    let wRect = CGRect(x: rightStartX + sX - 2, y: rect.minY + 2, width: max(4, eX - sX) + 4, height: rect.height - 4)
+                    let p = CGPath(roundedRect: wRect, cornerWidth: 3, cornerHeight: 3, transform: nil)
+                    context.addPath(p)
+                    context.fillPath()
+                }
+            }
+
+            // Text Selection Rectangles on right
+            if !isLeftActive, hasSelection, let selRange = normalizedSelectionRange(),
+               let mbRow = rightRow,
+               mbRow >= selRange.lowerBound.row && mbRow <= selRange.upperBound.row {
+                let startCol = (mbRow == selRange.lowerBound.row) ? selRange.lowerBound.column : 0
+                let endCol = (mbRow == selRange.upperBound.row) ? selRange.upperBound.column : info.right.text.count
+                if startCol < endCol {
+                    let sX = ctLine.xOffset(for: startCol)
+                    let eX = ctLine.xOffset(for: endCol)
+                    context.setFillColor(theme.selectionBackground.cgColor)
+                    let selRect = CGRect(x: rightStartX + sX, y: rect.minY, width: max(3, eX - sX), height: rect.height)
+                    context.fill(selRect)
+                }
+            }
+
+            // Draw Caret / Cursor if focused on right column
+            if isRightCursorLine && isCursorVisible {
+                let clampedCol = min(info.right.text.count, max(0, cursorPoint.column))
+                let cursorX = rightStartX + ctLine.xOffset(forCharacterIndex: clampedCol, in: info.right.text)
+                let cursorRect = CGRect(x: cursorX, y: rect.minY + 2, width: 2, height: rect.height - 4)
+                context.setFillColor(theme.diffModifiedGutter.cgColor)
+                context.fill(cursorRect)
+            }
+
+            context.textMatrix = .identity
+            context.translateBy(x: rightStartX, y: rect.minY + fontAscent + 2)
+            context.scaleBy(x: 1.0, y: -1.0)
+            CTLineDraw(ctLine, context)
+            context.restoreGState()
+        }
+    }
+
+    private func drawSpacerHatch(in rect: CGRect, context: CGContext) {
+        context.saveGState()
+        context.clip(to: rect)
+        context.setFillColor(theme.currentLineBackground.withAlphaComponent(0.18).cgColor)
+        context.fill(rect)
+
+        context.setStrokeColor(theme.excerptHeaderBorder.withAlphaComponent(0.40).cgColor)
+        context.setLineWidth(1.0)
+        let spacing: CGFloat = 10
+        var startX = rect.minX - rect.height
+        while startX < rect.maxX {
+            context.move(to: CGPoint(x: startX, y: rect.maxY))
+            context.addLine(to: CGPoint(x: startX + rect.height, y: rect.minY))
+            startX += spacing
+        }
+        context.strokePath()
+        context.restoreGState()
+    }
+
+    private func drawSplitGuttersAndDivider(for info: DisplaySplitCodeLineInfo, lineIdx: Int, in rect: CGRect, context: CGContext) {
+        let geom = splitGeometry(atY: rect.minY, height: rect.height)
+
+        // 1. Center Divider (1px normal hairline, 2px accented when dragging)
+        if isDraggingDivider {
+            context.setFillColor(NSColor.controlAccentColor.cgColor)
+            context.fill(CGRect(x: geom.dividerRect.minX - 0.5, y: rect.minY, width: 2, height: rect.height))
+        } else {
+            context.setFillColor(theme.excerptHeaderBorder.cgColor)
+            context.fill(geom.dividerRect)
+        }
+
+        // 2. Left Gutter
+        context.setFillColor(theme.background.cgColor)
+        context.fill(geom.leftGutterRect)
+
+        if info.left.diffKind == .deleted && !info.left.isSpacer {
+            context.setFillColor(theme.diffDeletedBackground.cgColor)
+            context.fill(geom.leftGutterRect)
+            context.setFillColor(theme.diffDeletedGutter.cgColor)
+            context.fill(CGRect(x: 0, y: rect.minY, width: 3, height: rect.height))
+        }
+
+        if let expandInfo = info.expandInfo {
+            let btnRect = CGRect(x: 4, y: rect.minY + (rect.height - 16) / 2, width: 16, height: 16)
+            drawExpandButton(expandInfo: expandInfo, in: btnRect, isHovered: hoveredGutterLineIndex == lineIdx, context: context)
+        }
+
+        if let num = info.left.lineNumber, !info.left.isSpacer {
+            let color = (info.left.diffKind == .deleted) ? theme.diffDeletedGutter : theme.gutterForeground
+            let str = NSAttributedString(string: "\(num)", attributes: [
+                .font: Self.gutterFont,
+                .foregroundColor: color
+            ])
+            let line = CTLineCreateWithAttributedString(str)
+            var ascent: CGFloat = 0, descent: CGFloat = 0, leading: CGFloat = 0
+            let numWidth = CGFloat(CTLineGetTypographicBounds(line, &ascent, &descent, &leading))
+            let numX = geom.leftGutterRect.maxX - numWidth - 8
+
+            context.saveGState()
+            context.textMatrix = .identity
+            context.translateBy(x: numX, y: rect.minY + fontAscent + 2)
+            context.scaleBy(x: 1.0, y: -1.0)
+            CTLineDraw(line, context)
+            context.restoreGState()
+        }
+
+        // 3. Right Gutter
+        context.setFillColor(theme.background.cgColor)
+        context.fill(geom.rightGutterRect)
+
+        if info.right.diffKind == .added && !info.right.isSpacer {
+            context.setFillColor(theme.diffAddedBackground.cgColor)
+            context.fill(geom.rightGutterRect)
+            context.setFillColor(theme.diffAddedGutter.cgColor)
+            context.fill(CGRect(x: geom.rightGutterRect.minX, y: rect.minY, width: 3, height: rect.height))
+        }
+
+        if let num = info.right.lineNumber, !info.right.isSpacer {
+            let color = (info.right.diffKind == .added) ? theme.diffAddedGutter : theme.gutterForeground
+            let str = NSAttributedString(string: "\(num)", attributes: [
+                .font: Self.gutterFont,
+                .foregroundColor: color
+            ])
+            let line = CTLineCreateWithAttributedString(str)
+            var ascent: CGFloat = 0, descent: CGFloat = 0, leading: CGFloat = 0
+            let numWidth = CGFloat(CTLineGetTypographicBounds(line, &ascent, &descent, &leading))
+            let numX = geom.rightGutterRect.maxX - numWidth - 8
+
+            context.saveGState()
+            context.textMatrix = .identity
+            context.translateBy(x: numX, y: rect.minY + fontAscent + 2)
+            context.scaleBy(x: 1.0, y: -1.0)
+            CTLineDraw(line, context)
+            context.restoreGState()
         }
     }
 
@@ -1887,6 +2258,22 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             return
         }
 
+        // Side-by-side divider dragging & double-click reset
+        if displayMap?.effectiveLayoutMode == .sideBySide {
+            let geom = splitGeometry(atY: 0, height: bounds.height)
+            let dividerHitRect = CGRect(x: geom.dividerRect.midX - 5, y: 0, width: 10, height: bounds.height)
+            if dividerHitRect.contains(screenPoint) {
+                if event.clickCount == 2 {
+                    splitRatio = 0.5
+                    return
+                }
+                isDraggingDivider = true
+                NSCursor.resizeLeftRight.push()
+                needsDisplay = true
+                return
+            }
+        }
+
         let docY = screenPoint.y + scrollOffsetY
         let docX = screenPoint.x + scrollOffsetX
         let isShift = event.modifierFlags.contains(.shift)
@@ -1923,13 +2310,22 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                 var anchorScreenY: CGFloat = 0
 
                 if gap.isTopGap {
-                    if lineIdx + 1 < totalLines, let nextLine = displayMap.displayLine(at: lineIdx + 1), case .code(let c) = nextLine {
-                        if c.excerptIndex >= 0 && c.excerptIndex < displayMap.multiBuffer.excerpts.count {
-                            let exc = displayMap.multiBuffer.excerpts[c.excerptIndex]
-                            let lineNum = c.newLineNumber ?? c.oldLineNumber ?? ((displayMap.multiBuffer.buffer(for: exc.bufferId)?.startLineNumber ?? 1) + c.bufferRow)
-                            anchor = .line(filePath: exc.filePath, lineNumber: lineNum)
+                    if lineIdx + 1 < totalLines, let nextLine = displayMap.displayLine(at: lineIdx + 1) {
+                        if case .code(let c) = nextLine {
+                            if c.excerptIndex >= 0 && c.excerptIndex < displayMap.multiBuffer.excerpts.count {
+                                let exc = displayMap.multiBuffer.excerpts[c.excerptIndex]
+                                let lineNum = c.newLineNumber ?? c.oldLineNumber ?? ((displayMap.multiBuffer.buffer(for: exc.bufferId)?.startLineNumber ?? 1) + c.bufferRow)
+                                anchor = .line(filePath: exc.filePath, lineNumber: lineNum)
+                            }
+                            anchorScreenY = yOffset(forDisplayLineIndex: lineIdx + 1) - scrollOffsetY
+                        } else if case .splitCode(let sc) = nextLine {
+                            if sc.excerptIndex >= 0 && sc.excerptIndex < displayMap.multiBuffer.excerpts.count {
+                                let exc = displayMap.multiBuffer.excerpts[sc.excerptIndex]
+                                let lineNum = sc.right.lineNumber ?? sc.left.lineNumber ?? 1
+                                anchor = .line(filePath: exc.filePath, lineNumber: lineNum)
+                            }
+                            anchorScreenY = yOffset(forDisplayLineIndex: lineIdx + 1) - scrollOffsetY
                         }
-                        anchorScreenY = yOffset(forDisplayLineIndex: lineIdx + 1) - scrollOffsetY
                     }
                 } else {
                     if lineIdx > 0, let prevLine = displayMap.displayLine(at: lineIdx - 1) {
@@ -1941,6 +2337,13 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                             if c.excerptIndex >= 0 && c.excerptIndex < displayMap.multiBuffer.excerpts.count {
                                 let exc = displayMap.multiBuffer.excerpts[c.excerptIndex]
                                 let lineNum = c.newLineNumber ?? c.oldLineNumber ?? ((displayMap.multiBuffer.buffer(for: exc.bufferId)?.startLineNumber ?? 1) + c.bufferRow)
+                                anchor = .line(filePath: exc.filePath, lineNumber: lineNum)
+                            }
+                            anchorScreenY = yOffset(forDisplayLineIndex: lineIdx - 1) - scrollOffsetY
+                        case .splitCode(let sc):
+                            if sc.excerptIndex >= 0 && sc.excerptIndex < displayMap.multiBuffer.excerpts.count {
+                                let exc = displayMap.multiBuffer.excerpts[sc.excerptIndex]
+                                let lineNum = sc.right.lineNumber ?? sc.left.lineNumber ?? 1
                                 anchor = .line(filePath: exc.filePath, lineNumber: lineNum)
                             }
                             anchorScreenY = yOffset(forDisplayLineIndex: lineIdx - 1) - scrollOffsetY
@@ -2011,7 +2414,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                     isDraggingSelection = true
                     let text = codeInfo.text
                     let ctLine = getOrCreateCTLine(for: lineIdx, text: text, language: codeInfo.language)
-                    let xOffset = max(0, docX - (gutterWidth + 12))
+                    let xOffset = max(0, docX - (gutterWidth + Self.codeLeftPadding))
                     let col = ctLine.characterIndex(at: xOffset, in: text)
                     let targetPoint = MultiBufferPoint(row: codeInfo.multiBufferRow, column: col)
 
@@ -2024,6 +2427,104 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                         activeSelectionGranularity = .line(initialRow: codeInfo.multiBufferRow)
                         selectionAnchor = MultiBufferPoint(row: codeInfo.multiBufferRow, column: 0)
                         cursorPoint = MultiBufferPoint(row: codeInfo.multiBufferRow, column: text.count)
+                    } else {
+                        activeSelectionGranularity = .character
+                        if isShift {
+                            if selectionAnchor == nil {
+                                selectionAnchor = cursorPoint
+                            }
+                        } else {
+                            selectionAnchor = nil
+                        }
+                        cursorPoint = targetPoint
+                    }
+                    needsDisplay = true
+                    return
+                }
+            case .splitCode(let splitInfo):
+                let geom = splitGeometry(atY: lineMinY - scrollOffsetY, height: height)
+                if screenPoint.x <= 28, let exp = splitInfo.expandInfo {
+                    let isFullExpand = event.modifierFlags.contains(.shift) || event.modifierFlags.contains(.option)
+                    let lineScreenY = lineMinY - scrollOffsetY
+                    selectionAnchor = cursorPoint
+                    var anchor: ScrollAnchor? = nil
+                    if splitInfo.excerptIndex >= 0 && splitInfo.excerptIndex < displayMap.multiBuffer.excerpts.count {
+                        let exc = displayMap.multiBuffer.excerpts[splitInfo.excerptIndex]
+                        let lineNum = splitInfo.right.lineNumber ?? splitInfo.left.lineNumber ?? 1
+                        anchor = .line(filePath: exc.filePath, lineNumber: lineNum)
+                    }
+                    preserveCursorAndSelection {
+                        if isFullExpand {
+                            displayMap.multiBuffer.expandExcerptAll(at: exp.excerptIndex)
+                        } else {
+                            switch exp.direction {
+                            case .up:
+                                displayMap.multiBuffer.expandExcerpt(at: exp.excerptIndex, up: 5, down: 0)
+                            case .down:
+                                displayMap.multiBuffer.expandExcerpt(at: exp.excerptIndex, up: 0, down: 5)
+                            case .upAndDown:
+                                let relY = screenPoint.y - lineScreenY
+                                if relY < height / 2 {
+                                    displayMap.multiBuffer.expandExcerpt(at: exp.excerptIndex, up: 5, down: 0)
+                                } else {
+                                    displayMap.multiBuffer.expandExcerpt(at: exp.excerptIndex, up: 0, down: 5)
+                                }
+                            }
+                        }
+                    }
+                    preserveScreenPosition(ofAnchor: anchor, originalScreenY: lineScreenY)
+                    return
+                } else if screenPoint.x < geom.dividerRect.minX,
+                          let leftRow = splitInfo.left.multiBufferRow ?? splitInfo.right.multiBufferRow {
+                    splitActiveColumn = .left
+                    isDraggingSelection = true
+                    let text = splitInfo.left.text
+                    let ctLine = getOrCreateCTLine(for: lineIdx * 2, text: text, language: splitInfo.language)
+                    let xOffset = max(0, screenPoint.x + scrollOffsetX - geom.leftCodeRect.minX - Self.codeLeftPadding)
+                    let col = ctLine.characterIndex(at: xOffset, in: text)
+                    let targetPoint = MultiBufferPoint(row: leftRow, column: col)
+
+                    if event.clickCount == 2 {
+                        let (wordStart, wordEnd) = wordRange(in: text, at: col)
+                        activeSelectionGranularity = .word(initialStart: wordStart, initialEnd: wordEnd, initialRow: leftRow)
+                        selectionAnchor = MultiBufferPoint(row: leftRow, column: wordStart)
+                        cursorPoint = MultiBufferPoint(row: leftRow, column: wordEnd)
+                    } else if event.clickCount >= 3 {
+                        activeSelectionGranularity = .line(initialRow: leftRow)
+                        selectionAnchor = MultiBufferPoint(row: leftRow, column: 0)
+                        cursorPoint = MultiBufferPoint(row: leftRow, column: text.count)
+                    } else {
+                        activeSelectionGranularity = .character
+                        if isShift {
+                            if selectionAnchor == nil {
+                                selectionAnchor = cursorPoint
+                            }
+                        } else {
+                            selectionAnchor = nil
+                        }
+                        cursorPoint = targetPoint
+                    }
+                    needsDisplay = true
+                    return
+                } else if screenPoint.x >= geom.dividerRect.minX,
+                          let rightRow = splitInfo.right.multiBufferRow ?? splitInfo.left.multiBufferRow {
+                    splitActiveColumn = .right
+                    isDraggingSelection = true
+                    let text = splitInfo.right.text
+                    let ctLine = getOrCreateCTLine(for: (lineIdx * 2) + 1, text: text, language: splitInfo.language)
+                    let xOffset = max(0, screenPoint.x + scrollOffsetX - geom.rightCodeRect.minX - Self.codeLeftPadding)
+                    let col = ctLine.characterIndex(at: xOffset, in: text)
+                    let targetPoint = MultiBufferPoint(row: rightRow, column: col)
+
+                    if event.clickCount == 2 {
+                        let (wordStart, wordEnd) = wordRange(in: text, at: col)
+                        activeSelectionGranularity = .word(initialStart: wordStart, initialEnd: wordEnd, initialRow: rightRow)
+                        selectionAnchor = MultiBufferPoint(row: rightRow, column: wordStart)
+                        cursorPoint = MultiBufferPoint(row: rightRow, column: wordEnd)
+                    } else if event.clickCount >= 3 {
+                        activeSelectionGranularity = .line(initialRow: rightRow)
+                        selectionAnchor = MultiBufferPoint(row: rightRow, column: 0)
+                        cursorPoint = MultiBufferPoint(row: rightRow, column: text.count)
                     } else {
                         activeSelectionGranularity = .character
                         if isShift {
@@ -2071,6 +2572,19 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     }
 
     public override func mouseDragged(with event: NSEvent) {
+        if isDraggingDivider {
+            let screenPoint = convert(event.locationInWindow, from: nil)
+            let gWidth: CGFloat = gutterWidth
+            let dWidth: CGFloat = 1
+            let availableWidth = max(bounds.width, 400)
+            let totalGutterSpace = (gWidth * 2) + dWidth
+            let totalCodeSpace = max(200, availableWidth - totalGutterSpace)
+            let targetLeftCodeWidth = screenPoint.x - gWidth
+            let newRatio = max(0.15, min(0.85, targetLeftCodeWidth / totalCodeSpace))
+            splitRatio = newRatio
+            return
+        }
+
         if scrollbarDragAxis != nil {
             updateScrollbarDrag(at: convert(event.locationInWindow, from: nil))
             return
@@ -2089,7 +2603,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         if case .code(let codeInfo) = line {
             let text = codeInfo.text
             let ctLine = getOrCreateCTLine(for: lineIdx, text: text, language: codeInfo.language)
-            let xOffset = max(0, docX - (gutterWidth + 12))
+            let xOffset = max(0, docX - (gutterWidth + Self.codeLeftPadding))
             let col = ctLine.characterIndex(at: xOffset, in: text)
             let targetRow = codeInfo.multiBufferRow
 
@@ -2119,6 +2633,43 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                 }
             }
             needsDisplay = true
+        } else if case .splitCode(let splitInfo) = line {
+            let isLeft = (splitActiveColumn == .left)
+            guard let targetRow = isLeft ? (splitInfo.left.multiBufferRow ?? splitInfo.right.multiBufferRow)
+                                         : (splitInfo.right.multiBufferRow ?? splitInfo.left.multiBufferRow) else { return }
+            let geom = splitGeometry(atY: docY - scrollOffsetY, height: lineHeight)
+            let text = isLeft ? splitInfo.left.text : splitInfo.right.text
+            let ctLine = getOrCreateCTLine(for: (lineIdx * 2) + (isLeft ? 0 : 1), text: text, language: splitInfo.language)
+            let codeMinX = isLeft ? geom.leftCodeRect.minX : geom.rightCodeRect.minX
+            let xOffset = max(0, screenPoint.x + scrollOffsetX - codeMinX - Self.codeLeftPadding)
+            let col = ctLine.characterIndex(at: xOffset, in: text)
+
+            switch activeSelectionGranularity {
+            case .character:
+                if selectionAnchor == nil {
+                    selectionAnchor = cursorPoint
+                }
+                cursorPoint = MultiBufferPoint(row: targetRow, column: col)
+            case .word(let initStart, let initEnd, let initRow):
+                let (curWordStart, curWordEnd) = wordRange(in: text, at: col)
+                if targetRow > initRow || (targetRow == initRow && col >= initStart) {
+                    selectionAnchor = MultiBufferPoint(row: initRow, column: initStart)
+                    cursorPoint = MultiBufferPoint(row: targetRow, column: curWordEnd)
+                } else {
+                    selectionAnchor = MultiBufferPoint(row: initRow, column: initEnd)
+                    cursorPoint = MultiBufferPoint(row: targetRow, column: curWordStart)
+                }
+            case .line(let initRow):
+                if targetRow >= initRow {
+                    selectionAnchor = MultiBufferPoint(row: initRow, column: 0)
+                    cursorPoint = MultiBufferPoint(row: targetRow, column: text.count)
+                } else {
+                    let initLen = activeLineLength(at: initRow)
+                    selectionAnchor = MultiBufferPoint(row: initRow, column: initLen)
+                    cursorPoint = MultiBufferPoint(row: targetRow, column: 0)
+                }
+            }
+            needsDisplay = true
         } else {
             if docY > totalDocumentHeight, let lastCode = displayMap.lastCodeInfo {
                 if selectionAnchor == nil {
@@ -2138,6 +2689,13 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
     public override func mouseUp(with event: NSEvent) {
         super.mouseUp(with: event)
+        if isDraggingDivider {
+            isDraggingDivider = false
+            NSCursor.pop()
+            window?.invalidateCursorRects(for: self)
+            needsDisplay = true
+            return
+        }
         if let axis = scrollbarDragAxis {
             scrollbarDragAxis = nil
             showScrollbarsWithAutohide(for: axis == .vertical ? .vertical : .horizontal)
@@ -2146,7 +2704,17 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         activeSelectionGranularity = .character
     }
 
+    public override func resetCursorRects() {
+        super.resetCursorRects()
+        if displayMap?.effectiveLayoutMode == .sideBySide {
+            let geom = splitGeometry(atY: 0, height: bounds.height)
+            let dividerHitRect = CGRect(x: geom.dividerRect.midX - 5, y: 0, width: 10, height: bounds.height)
+            addCursorRect(dividerHitRect, cursor: .resizeLeftRight)
+        }
+    }
+
     // MARK: - Word Boundary Utilities
+
 
     private func isWordChar(_ char: Character) -> Bool {
         char.isLetter || char.isNumber || char == "_"
@@ -2457,7 +3025,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             targetCol -= 1
         } else if let prevRow = dm.previousCodeRow(before: targetRow) {
             targetRow = prevRow
-            targetCol = dm.lineLength(at: prevRow)
+            targetCol = activeLineLength(at: prevRow)
         }
         let newPoint = MultiBufferPoint(row: targetRow, column: targetCol)
         if expandSelection {
@@ -2474,7 +3042,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         guard let dm = displayMap else { return }
         var targetRow = cursorPoint.row
         var targetCol = cursorPoint.column
-        let currentLen = dm.lineLength(at: targetRow)
+        let currentLen = activeLineLength(at: targetRow)
         if targetCol < currentLen {
             targetCol += 1
         } else if let nextRow = dm.nextCodeRow(after: targetRow) {
@@ -2498,7 +3066,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         var targetCol = cursorPoint.column
         if let prevRow = dm.previousCodeRow(before: targetRow) {
             targetRow = prevRow
-            targetCol = min(targetCol, dm.lineLength(at: prevRow))
+            targetCol = min(targetCol, activeLineLength(at: prevRow))
         }
         let newPoint = MultiBufferPoint(row: targetRow, column: targetCol)
         if expandSelection {
@@ -2517,7 +3085,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         var targetCol = cursorPoint.column
         if let nextRow = dm.nextCodeRow(after: targetRow) {
             targetRow = nextRow
-            targetCol = min(targetCol, dm.lineLength(at: nextRow))
+            targetCol = min(targetCol, activeLineLength(at: nextRow))
         }
         let newPoint = MultiBufferPoint(row: targetRow, column: targetCol)
         if expandSelection {
@@ -2535,11 +3103,11 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         var targetRow = cursorPoint.row
         var targetCol = cursorPoint.column
         if targetCol > 0 {
-            let line = dm.lineText(at: targetRow) ?? ""
+            let line = activeLineText(at: targetRow) ?? ""
             targetCol = findPreviousWordBoundary(in: line, from: targetCol)
         } else if let prevRow = dm.previousCodeRow(before: targetRow) {
             targetRow = prevRow
-            targetCol = dm.lineLength(at: prevRow)
+            targetCol = activeLineLength(at: prevRow)
         }
         let newPoint = MultiBufferPoint(row: targetRow, column: targetCol)
         if expandSelection {
@@ -2556,7 +3124,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         guard let dm = displayMap else { return }
         var targetRow = cursorPoint.row
         var targetCol = cursorPoint.column
-        let line = dm.lineText(at: targetRow) ?? ""
+        let line = activeLineText(at: targetRow) ?? ""
         if targetCol < line.count {
             targetCol = findNextWordBoundary(in: line, from: targetCol)
         } else if let nextRow = dm.nextCodeRow(after: targetRow) {
@@ -2587,8 +3155,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     }
 
     private func moveCursorToLineEnd(expandSelection: Bool) {
-        guard let dm = displayMap else { return }
-        let newPoint = MultiBufferPoint(row: cursorPoint.row, column: dm.lineLength(at: cursorPoint.row))
+        let newPoint = MultiBufferPoint(row: cursorPoint.row, column: activeLineLength(at: cursorPoint.row))
         if expandSelection {
             if selectionAnchor == nil {
                 selectionAnchor = cursorPoint
@@ -2615,7 +3182,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     private func moveCursorToDocumentEnd(expandSelection: Bool) {
         guard let dm = displayMap else { return }
         let lastRow = dm.maxCodeRow
-        let newPoint = MultiBufferPoint(row: lastRow, column: dm.lineLength(at: lastRow))
+        let newPoint = MultiBufferPoint(row: lastRow, column: activeLineLength(at: lastRow))
         if expandSelection {
             if selectionAnchor == nil {
                 selectionAnchor = cursorPoint
@@ -2637,7 +3204,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                 break
             }
         }
-        let targetCol = min(cursorPoint.column, dm.lineLength(at: targetRow))
+        let targetCol = min(cursorPoint.column, activeLineLength(at: targetRow))
         let newPoint = MultiBufferPoint(row: targetRow, column: targetCol)
         if expandSelection {
             if selectionAnchor == nil {
@@ -2660,7 +3227,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                 break
             }
         }
-        let targetCol = min(cursorPoint.column, dm.lineLength(at: targetRow))
+        let targetCol = min(cursorPoint.column, activeLineLength(at: targetRow))
         let newPoint = MultiBufferPoint(row: targetRow, column: targetCol)
         if expandSelection {
             if selectionAnchor == nil {
@@ -2677,7 +3244,12 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     }
 
     private func insertText(_ string: Any, replacementRange: NSRange, coalesceTyping: Bool) {
-        guard editingEnabled, let displayMap = displayMap else { return }
+        guard editingEnabled, let displayMap = displayMap else {
+            if isEditable && displayMap?.effectiveLayoutMode == .sideBySide && splitActiveColumn == .left {
+                NSSound.beep()
+            }
+            return
+        }
         let text: String
         if let s = string as? String {
             text = s
@@ -2689,8 +3261,6 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         let mb = displayMap.multiBuffer
 
         var rangeToReplace = normalizedSelectionRange() ?? (cursorPoint..<cursorPoint)
-        let preservesAddedLineHunkShape = rangeToReplace.lowerBound.row == rangeToReplace.upperBound.row
-            && displayMap.codeInfo(for: rangeToReplace.lowerBound.row)?.diffKind == .added
         let affectedRows = rangeToReplace.lowerBound.row..<(rangeToReplace.upperBound.row + 1)
         if displayMap.isDeleted(rowRange: affectedRows) {
             NSSound.beep()
@@ -2749,9 +3319,6 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         let newBufRange = buf.replace(start: safeOldStart, end: safeOldEnd, with: text)
         let lineDelta = (newBufRange.upperBound.row - safeOldEnd.row)
         updateExcerptsAfterEdit(bufferId: buf.id, excerptIndex: startLoc.excerptIndex, lineDelta: lineDelta)
-        if preservesAddedLineHunkShape && lineDelta == 0 {
-            mb.refreshStableHunkPresentation(for: buf.id)
-        }
 
         let edit = TextEdit(
             bufferId: buf.id,
@@ -2770,7 +3337,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         )
 
         mb.recordSelfEdit(for: buf.filePath)
-        mb.scheduleDebouncedSave(delayMs: 200)
+        mb.scheduleDebouncedSave()
 
         let excerptIdx = startLoc.excerptIndex
         let newCursorPt: MultiBufferPoint
@@ -2819,7 +3386,12 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     }
 
     public override func deleteBackward(_ sender: Any?) {
-        guard editingEnabled, let displayMap = displayMap else { return }
+        guard editingEnabled, let displayMap = displayMap else {
+            if isEditable && displayMap?.effectiveLayoutMode == .sideBySide && splitActiveColumn == .left {
+                NSSound.beep()
+            }
+            return
+        }
         let mb = displayMap.multiBuffer
 
         if let sel = normalizedSelectionRange() {
@@ -2884,7 +3456,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             )
 
             mb.recordSelfEdit(for: buf.filePath)
-            mb.scheduleDebouncedSave(delayMs: 200)
+            mb.scheduleDebouncedSave()
 
             let excerptIdx = loc.excerptIndex
             let newCursorPt: MultiBufferPoint
@@ -2941,7 +3513,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             )
 
             mb.recordSelfEdit(for: buf.filePath)
-            mb.scheduleDebouncedSave(delayMs: 200)
+            mb.scheduleDebouncedSave()
 
             let excerptIdx = loc.excerptIndex
             let newCursorPt: MultiBufferPoint
@@ -2979,7 +3551,12 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     }
 
     public override func deleteForward(_ sender: Any?) {
-        guard editingEnabled, let displayMap = displayMap else { return }
+        guard editingEnabled, let displayMap = displayMap else {
+            if isEditable && displayMap?.effectiveLayoutMode == .sideBySide && splitActiveColumn == .left {
+                NSSound.beep()
+            }
+            return
+        }
         let mb = displayMap.multiBuffer
 
         if let sel = normalizedSelectionRange() {
@@ -3042,7 +3619,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             )
 
             mb.recordSelfEdit(for: buf.filePath)
-            mb.scheduleDebouncedSave(delayMs: 200)
+            mb.scheduleDebouncedSave()
 
             let excerptIdx = loc.excerptIndex
             let newCursorPt: MultiBufferPoint
@@ -3098,7 +3675,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             )
 
             mb.recordSelfEdit(for: buf.filePath)
-            mb.scheduleDebouncedSave(delayMs: 200)
+            mb.scheduleDebouncedSave()
 
             let excerptIdx = loc.excerptIndex
             let newCursorPt: MultiBufferPoint
@@ -3184,7 +3761,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                     }
                 }
             }
-            mb.scheduleDebouncedSave(delayMs: 200)
+            mb.scheduleDebouncedSave()
             displayMap.rebuild()
             invalidateLayout()
             restoreSelectionState(
@@ -3211,7 +3788,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                     }
                 }
             }
-            mb.scheduleDebouncedSave(delayMs: 200)
+            mb.scheduleDebouncedSave()
             displayMap.rebuild()
             invalidateLayout()
             restoreSelectionState(
@@ -3244,22 +3821,51 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         return min(anchor, cursorPoint)..<max(anchor, cursorPoint)
     }
 
+    private func getSplitLeftSelectionText() -> String? {
+        guard let dm = displayMap, let sel = normalizedSelectionRange(), !sel.isEmpty else { return nil }
+        var copiedLines: [String] = []
+        for r in sel.lowerBound.row...sel.upperBound.row {
+            guard let line = dm.splitCodeInfo(for: r)?.left.text else { continue }
+            let start = (r == sel.lowerBound.row) ? sel.lowerBound.column : 0
+            let end = (r == sel.upperBound.row) ? sel.upperBound.column : line.count
+            let clampedStart = max(0, min(line.count, start))
+            let clampedEnd = max(clampedStart, min(line.count, end))
+            let startIndex = line.index(line.startIndex, offsetBy: clampedStart)
+            let endIndex = line.index(line.startIndex, offsetBy: clampedEnd)
+            copiedLines.append(String(line[startIndex..<endIndex]))
+        }
+        let result = copiedLines.joined(separator: "\n")
+        return result.isEmpty ? nil : result
+    }
+
     public override func selectAll(_ sender: Any?) {
         guard let dm = displayMap, dm.codeLineCount > 0 else { return }
         let firstRow = dm.minCodeRow
         let lastRow = dm.maxCodeRow
         selectionAnchor = MultiBufferPoint(row: firstRow, column: 0)
-        cursorPoint = MultiBufferPoint(row: lastRow, column: dm.lineLength(at: lastRow))
+        cursorPoint = MultiBufferPoint(row: lastRow, column: activeLineLength(at: lastRow))
         needsDisplay = true
     }
 
     @objc @IBAction public func copy(_ sender: Any?) {
-        guard let dm = displayMap, let text = dm.getSelectionText() else { return }
+        guard let dm = displayMap else { return }
+        let text: String?
+        if dm.effectiveLayoutMode == .sideBySide && splitActiveColumn == .left {
+            text = getSplitLeftSelectionText()
+        } else {
+            text = dm.getSelectionText()
+        }
+        guard let text, !text.isEmpty else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
     }
 
     @objc @IBAction public func cut(_ sender: Any?) {
+        if displayMap?.effectiveLayoutMode == .sideBySide && splitActiveColumn == .left {
+            copy(sender)
+            NSSound.beep()
+            return
+        }
         copy(sender)
         deleteBackward(sender)
     }

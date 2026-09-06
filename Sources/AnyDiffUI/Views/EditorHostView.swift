@@ -67,6 +67,7 @@ public struct EditorHostView: NSViewRepresentable {
         let displayMapID = ObjectIdentifier(displayMap)
         context.coordinator.activeDisplayMapID = displayMapID
         context.coordinator.lastLoadRevisions[displayMapID] = displayMap.loadRevision
+        context.coordinator.lastLayoutModes[displayMapID] = displayMap.effectiveLayoutMode
         DispatchQueue.main.async {
             // The DisplayMap may already contain loaded content when SwiftUI
             // creates this view, so there may be no revision transition to
@@ -97,6 +98,7 @@ public struct EditorHostView: NSViewRepresentable {
             editorView.scrollToTop()
         }
         let mapChanged = editorView.displayMap !== displayMap
+        let layoutModeChanged = context.coordinator.lastLayoutModes[displayMapID] != displayMap.effectiveLayoutMode
         if mapChanged {
             // The state belongs to the map that was visible, not to the editor
             // view itself. Capture it before replacing the map reference.
@@ -109,23 +111,35 @@ public struct EditorHostView: NSViewRepresentable {
             context.coordinator.activeDisplayMapID = displayMapID
             editorView.displayMap = displayMap
             context.coordinator.isSwitchingDisplayMap = false
+        } else if layoutModeChanged {
+            // Layout mode changed on the same map. Suppress transient cursor
+            // clamping from overwriting the saved view state during layout sync.
+            context.coordinator.isSwitchingDisplayMap = true
+            editorView.syncLayoutIfNeeded()
+            context.coordinator.isSwitchingDisplayMap = false
         } else {
             editorView.syncLayoutIfNeeded()
         }
 
         let revisionChanged = context.coordinator.lastLoadRevisions[displayMapID] != displayMap.loadRevision
-        if mapChanged || revisionChanged {
+        if mapChanged || revisionChanged || layoutModeChanged {
             context.coordinator.lastLoadRevisions[displayMapID] = displayMap.loadRevision
+            context.coordinator.lastLayoutModes[displayMapID] = displayMap.effectiveLayoutMode
             let shouldKeepEditorFocus = editorView.window?.firstResponder === editorView
             // A map can be swapped in before its asynchronous load completes.
             // Do not overwrite an existing snapshot with an empty-map reset.
             if displayMap.displayLineCount > 0 {
-                if let state = context.coordinator.viewStates[displayMapID] {
+                if shouldKeepEditorFocus && !mapChanged && !layoutModeChanged {
+                    // Editor is actively focused and user may be typing; do not clobber
+                    // their active cursor or selection with a stale snapshot on background reload.
+                    context.coordinator.saveCurrentViewState()
+                } else if let state = context.coordinator.viewStates[displayMapID] ?? context.coordinator.currentViewState {
                     editorView.restoreViewState(state, shouldFocus: shouldKeepEditorFocus)
+                    context.coordinator.saveCurrentViewState()
                 } else {
                     editorView.resetCursorToFirstVisibleLine(shouldFocus: shouldKeepEditorFocus)
+                    context.coordinator.saveCurrentViewState()
                 }
-                context.coordinator.saveCurrentViewState()
             }
         }
         if editorView.theme.id != theme.id {
@@ -179,6 +193,7 @@ public struct EditorHostView: NSViewRepresentable {
         var viewStates: [ObjectIdentifier: EditorViewState] = [:]
         var lastScrolledFilePaths: [ObjectIdentifier: String] = [:]
         var lastLoadRevisions: [ObjectIdentifier: UInt64] = [:]
+        var lastLayoutModes: [ObjectIdentifier: DiffLayoutMode] = [:]
         var lastViewStateResetTokens: [ObjectIdentifier: UInt64] = [:]
 
         init(_ parent: EditorHostView) {

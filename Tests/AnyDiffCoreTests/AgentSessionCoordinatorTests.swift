@@ -2,6 +2,16 @@ import XCTest
 @testable import AnyDiffCore
 
 final class AgentSessionCoordinatorTests: XCTestCase {
+    override func setUp() {
+        super.setUp()
+        UserDefaults.standard.removeObject(forKey: AgentSessionCoordinator.isRightPanelOpenKey)
+    }
+
+    override func tearDown() {
+        UserDefaults.standard.removeObject(forKey: AgentSessionCoordinator.isRightPanelOpenKey)
+        super.tearDown()
+    }
+
 #if DEBUG
     func testCoordinatorInitialStateWithoutAutoCreate() {
         let coordinator = AgentSessionCoordinator(isMockAgent: true, autoCreateSession: false)
@@ -139,6 +149,35 @@ final class AgentSessionCoordinatorTests: XCTestCase {
         XCTAssertTrue(coordinator.isPanelOpen)
         coordinator.togglePanel()
         XCTAssertFalse(coordinator.isPanelOpen)
+    }
+
+    func testPanelOpenStatePersistence() {
+        UserDefaults.standard.removeObject(forKey: AgentSessionCoordinator.isPanelOpenKey)
+        defer { UserDefaults.standard.removeObject(forKey: AgentSessionCoordinator.isPanelOpenKey) }
+
+        // Initial default should be true
+        let c1 = AgentSessionCoordinator(isMockAgent: true, autoCreateSession: false)
+        XCTAssertTrue(c1.isPanelOpen)
+
+        // Toggle to false and verify persistence
+        c1.togglePanel()
+        XCTAssertFalse(c1.isPanelOpen)
+        XCTAssertEqual(UserDefaults.standard.bool(forKey: AgentSessionCoordinator.isPanelOpenKey), false)
+
+        // New instance must restore false
+        let c2 = AgentSessionCoordinator(isMockAgent: true, autoCreateSession: false)
+        XCTAssertFalse(c2.isPanelOpen)
+        XCTAssertFalse(c2.isRightPanelOpen)
+
+        // Toggle back to true
+        c2.togglePanel()
+        XCTAssertTrue(c2.isPanelOpen)
+        XCTAssertTrue(c2.isRightPanelOpen)
+        XCTAssertEqual(UserDefaults.standard.bool(forKey: AgentSessionCoordinator.isRightPanelOpenKey), true)
+
+        let c3 = AgentSessionCoordinator(isMockAgent: true, autoCreateSession: false)
+        XCTAssertTrue(c3.isPanelOpen)
+        XCTAssertTrue(c3.isRightPanelOpen)
     }
     #endif
 

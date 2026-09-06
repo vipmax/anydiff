@@ -401,6 +401,11 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
 
             // 1. User messages (from history replaying during session/load)
             if type == "user_message_chunk" || type == "user_message" || type == "user" {
+                // When actively streaming a prompt initiated by sendPrompt, the user
+                // message is already optimistically appended. Ignore the echo sent by agents (e.g. OpenCode/SourceCraft).
+                if self.currentStreamMessageId != nil {
+                    return
+                }
                 if !chunk.isEmpty {
                     if let lastIdx = self.messages.indices.last, self.messages[lastIdx].role == .user {
                         self.messages[lastIdx].appendText(chunk)

@@ -114,6 +114,9 @@ public final class Buffer: Identifiable, @unchecked Sendable {
     public var isLazySlice: Bool = false
     public var isFullFile: Bool = false
 
+    /// Metadata snapshot (mtime + size) of the file on disk recorded immediately after AnyDiff saves it.
+    public var savedDiskState: FileDiskState? = nil
+
     public var totalAdditions: Int
     public var totalDeletions: Int
     public var startLineNumber: Int
@@ -461,6 +464,7 @@ public final class Buffer: Identifiable, @unchecked Sendable {
             try fullText.write(to: fileURL, atomically: true, encoding: .utf8)
             lastSavedLineCount = storage.count
         }
+        self.savedDiskState = FileDiskState.query(path: diskPath)
         markSaved()
     }
 }
