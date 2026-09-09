@@ -7,7 +7,7 @@ High-performance native macOS MultiBuffer Diff editor for lightning-fast code re
 ![macOS](https://img.shields.io/badge/macOS-14.0%2B-blue?style=flat-square&logo=apple)
 ![Swift](https://img.shields.io/badge/Swift-6.0-orange?style=flat-square&logo=swift)
 ![Build](https://img.shields.io/badge/build-passing-brightgreen?style=flat-square)
-![Tests](https://img.shields.io/badge/tests-240%2B%20passing-brightgreen?style=flat-square)
+![Tests](https://img.shields.io/badge/tests-250%2B%20passing-brightgreen?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 
 Install via Homebrew:
@@ -22,12 +22,16 @@ If macOS Gatekeeper prevents opening after installation:
 xattr -cr /Applications/AnyDiff.app
 ```
 
-Or download directly from [Releases](https://github.com/vipmax/anydiff/releases/latest) ([.dmg](https://github.com/vipmax/anydiff/releases/download/v1.4.0/AnyDiff.dmg) / [.zip](https://github.com/vipmax/anydiff/releases/download/v1.4.0/AnyDiff-macOS.zip)).
+Or download directly from [Releases](https://github.com/vipmax/anydiff/releases/latest) ([.dmg](https://github.com/vipmax/anydiff/releases/download/v1.5.0/AnyDiff.dmg) / [.zip](https://github.com/vipmax/anydiff/releases/download/v1.5.0/AnyDiff-macOS.zip)).
 
 ---
 
 ## 🚀 Key Features
 
+- **Configurable 3-Panel Layout & Docking**:
+  - Dynamically dock and arrange Changes, Editor, and AI Agent views across Left, Center, and Right panel slots.
+  - Interactive panel headers with instant switching, clear actions, and persistent layout configurations.
+  - Collapsible panels with keyboard shortcuts (`Cmd + Ctrl + S` for Left Panel, `Cmd + Option + A` for Right Panel).
 - **Side-by-Side (Split Diff) & Unified Layouts**:
   - Seamlessly toggle between classic Unified diff and 2-column Side-by-Side diff (`Cmd + D`) with animated transitions.
   - Dedicated `SplitDiffEngine` aligning modifications with automatic spacer rows.

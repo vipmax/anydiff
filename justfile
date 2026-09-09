@@ -83,3 +83,8 @@ deploy:
     scp dist/AnyDiff-macOS.zip dist/AnyDiff.dmg mvpa:~/Downloads/
     ssh mvpa "cd ~/Downloads && rm -rf AnyDiff.app && unzip -q AnyDiff-macOS.zip && xattr -cr AnyDiff.app"
     @echo "🚀 Deployed AnyDiff.app to second Mac ~/Downloads!"
+
+# Automated release: tests, packages, publishes GitHub Release, and updates Homebrew tap.
+publish version:
+    ./scripts/release.sh {{version}}
+

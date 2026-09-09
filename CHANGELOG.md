@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.5.0] - 2026-09-10
+
+### 🧩 Configurable 3-Panel Layout & Docking System
+- **Flexible Panel Assignment**:
+  - Introduce `PanelLayoutManager` allowing arbitrary configuration of Left, Center, and Right slots with `Changes`, `Editor`, and `Agent` panels.
+  - Interactive panel headers with quick-switch menus, dock actions, and empty slot placeholder views.
+  - Automatic panel content movement preventing duplicate views across slots.
+  - Panel configuration persisted in `UserDefaults` (`anydiff_panel_slot_*`).
+- **Enhanced Window & Status Bar Controls**:
+  - Right panel collapsible toggle with animated transitions and state persistence.
+  - Status bar quick panel toggles and visual indicators.
+  - Menu bar commands for showing/hiding and switching panel contents.
+
+### 🛡️ Automated Release Pipeline & Homebrew Integrity
+- **Zero Checksum-Mismatch Automation**:
+  - Added `scripts/release.sh` and `just publish <version>` for automated, atomic release generation and Homebrew tap synchronization.
+  - Protected GitHub Actions CI workflow from clobbering release archive hashes.
+
+### 🧪 Tests & Quality
+- Expanded automated test suite to **259 passing tests** with full test coverage for `PanelLayoutManager` and layout slot transitions.
+
+---
+
 ## [1.4.0] - 2026-09-06
 
 ### 🔀 Side-by-Side (Split Diff) Layout Mode
