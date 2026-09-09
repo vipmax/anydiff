@@ -293,6 +293,8 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         updateFontMetrics()
         startCursorBlink()
         NotificationCenter.default.addObserver(self, selector: #selector(handleFocusFileNotification(_:)), name: .focusFileInEditor, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(handleGoToNextHunkNotification(_:)), name: .goToNextHunk, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(handleGoToPreviousHunkNotification(_:)), name: .goToPreviousHunk, object: nil)
     }
 
     deinit {
@@ -1111,6 +1113,134 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         guard let path = notification.object as? String else { return }
         scrollToFilePath(path)
         focus()
+    }
+
+    // MARK: - Hunk Navigation
+
+    @objc public func goToNextHunk(_ sender: Any? = nil) {
+        guard let dm = displayMap, !dm.multiBuffer.excerpts.isEmpty else { return }
+        let total = dm.multiBuffer.excerpts.count
+        guard total > 0 else { return }
+
+        let currentIdx = currentHunkIndex()
+        let nextIdx = (currentIdx + 1) % total
+        navigateToHunk(at: nextIdx)
+    }
+
+    @objc public func goToPreviousHunk(_ sender: Any? = nil) {
+        guard let dm = displayMap, !dm.multiBuffer.excerpts.isEmpty else { return }
+        let total = dm.multiBuffer.excerpts.count
+        guard total > 0 else { return }
+
+        let currentIdx = currentHunkIndex()
+        let prevIdx = (currentIdx - 1 + total) % total
+        navigateToHunk(at: prevIdx)
+    }
+
+    @objc private func handleGoToNextHunkNotification(_ notification: Notification) {
+        goToNextHunk()
+    }
+
+    @objc private func handleGoToPreviousHunkNotification(_ notification: Notification) {
+        goToPreviousHunk()
+    }
+
+    private func currentHunkIndex() -> Int {
+        guard let dm = displayMap, !dm.multiBuffer.excerpts.isEmpty else { return 0 }
+
+        // 1. If cursor is on screen, use cursor's excerpt
+        if let cy = yOffset(for: cursorPoint.row),
+           cy >= scrollOffsetY && cy <= scrollOffsetY + bounds.height {
+            if let idx = dm.excerptIndex(forCodeRow: cursorPoint.row) {
+                return idx
+            }
+        }
+
+        // 2. Otherwise, use visible line near top of viewport
+        let visibleLine = lineIndex(atY: scrollOffsetY + 40)
+        if let idx = dm.excerptIndex(forDisplayLineIndex: visibleLine) {
+            return idx
+        }
+
+        return 0
+    }
+
+    public func navigateToHunk(at targetIdx: Int) {
+        guard let dm = displayMap, targetIdx >= 0, targetIdx < dm.multiBuffer.excerpts.count else { return }
+
+        // 1. If the file/excerpt is collapsed, expand it!
+        let excerpt = dm.multiBuffer.excerpts[targetIdx]
+        if excerpt.isCollapsed {
+            dm.multiBuffer.expand(filePath: excerpt.filePath)
+            dm.rebuild()
+            invalidateLayout()
+        }
+
+        // 2. Find target MultiBuffer row and display line in target hunk
+        guard targetIdx < dm.excerptLocations.count else { return }
+        let loc = dm.excerptLocations[targetIdx]
+
+        var targetMBRow: Int? = nil
+        var targetDisplayIdx: Int = loc.displayRange.lowerBound
+
+        // Search for the first addition/deletion line in this excerpt
+        for dispIdx in loc.displayRange {
+            guard let line = dm.displayLine(at: dispIdx) else { continue }
+            switch line {
+            case .code(let info):
+                if targetMBRow == nil {
+                    targetMBRow = info.multiBufferRow
+                    targetDisplayIdx = dispIdx
+                }
+                if info.diffKind == .added || info.diffKind == .deleted {
+                    targetMBRow = info.multiBufferRow
+                    targetDisplayIdx = dispIdx
+                    break
+                }
+            case .splitCode(let split):
+                if targetMBRow == nil {
+                    targetMBRow = split.right.multiBufferRow ?? split.left.multiBufferRow
+                    targetDisplayIdx = dispIdx
+                }
+                if split.left.diffKind == .deleted || split.right.diffKind == .added {
+                    targetMBRow = split.right.multiBufferRow ?? split.left.multiBufferRow
+                    targetDisplayIdx = dispIdx
+                    break
+                }
+            default:
+                break
+            }
+            if targetMBRow != nil && targetDisplayIdx == dispIdx {
+                if case .code(let info) = line, info.diffKind == .added || info.diffKind == .deleted {
+                    break
+                }
+                if case .splitCode(let split) = line, split.left.diffKind == .deleted || split.right.diffKind == .added {
+                    break
+                }
+            }
+        }
+
+        let finalRow = targetMBRow ?? loc.codeRange.lowerBound
+        self.cursorPoint = MultiBufferPoint(row: finalRow, column: 0)
+        self.selectionAnchor = nil
+
+        // 3. Scroll viewport so the target hunk is framed nicely (~28% down from viewport top)
+        let targetY = CGFloat(targetDisplayIdx) * lineHeight
+        let viewportHeight = bounds.height
+        let idealScrollY = max(0, targetY - (viewportHeight * 0.28))
+        let maxScrollY = max(0, totalDocumentHeight - bounds.height)
+        scrollOffsetY = max(0, min(maxScrollY, idealScrollY))
+        scrollOffsetX = 0
+        showScrollbarsWithAutohide(for: .vertical)
+
+        // 4. Focus editor and update cursor blink
+        focus()
+        resetCursorBlink()
+        needsDisplay = true
+
+        // 5. Notify delegate to update sidebar selected file
+        let locForCursor = dm.excerptLocation(for: cursorPoint)
+        delegate?.editorDidChangeCursor(location: locForCursor, point: cursorPoint)
     }
 
     // MARK: - Cursor Blinking
@@ -2823,6 +2953,33 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             return
         }
 
+        // F7 (JetBrains standard) or Cmd+F8: Go to Next/Prev Hunk
+        if event.keyCode == 98 { // F7
+            if event.modifierFlags.contains(.shift) {
+                goToPreviousHunk()
+            } else {
+                goToNextHunk()
+            }
+            return
+        }
+        if event.keyCode == 100 && event.modifierFlags.contains(.command) { // Cmd+F8
+            if event.modifierFlags.contains(.shift) {
+                goToPreviousHunk()
+            } else {
+                goToNextHunk()
+            }
+            return
+        }
+        // Cmd+Option+Down / Up or Ctrl+Down / Up
+        if event.keyCode == 125 && (event.modifierFlags.contains([.command, .option]) || (event.modifierFlags.contains(.control) && !event.modifierFlags.contains(.command))) {
+            goToNextHunk()
+            return
+        }
+        if event.keyCode == 126 && (event.modifierFlags.contains([.command, .option]) || (event.modifierFlags.contains(.control) && !event.modifierFlags.contains(.command))) {
+            goToPreviousHunk()
+            return
+        }
+
         interpretKeyEvents([event])
     }
 
@@ -2835,6 +2992,22 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     }
 
     public override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if event.keyCode == 100 && event.modifierFlags.contains(.command) {
+            if event.modifierFlags.contains(.shift) {
+                goToPreviousHunk()
+            } else {
+                goToNextHunk()
+            }
+            return true
+        }
+        if event.keyCode == 98 && !event.modifierFlags.contains(.command) {
+            if event.modifierFlags.contains(.shift) {
+                goToPreviousHunk()
+            } else {
+                goToNextHunk()
+            }
+            return true
+        }
         if event.modifierFlags.contains(.command) {
             let isUndoKey = event.charactersIgnoringModifiers?.lowercased() == "z"
             let hasDisallowedModifier = event.modifierFlags.contains(.option) || event.modifierFlags.contains(.control)
@@ -2873,6 +3046,9 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             return editingEnabled && (displayMap?.multiBuffer.undoManager.canUndo ?? false)
         case #selector(redo(_:)):
             return editingEnabled && (displayMap?.multiBuffer.undoManager.canRedo ?? false)
+        case #selector(goToNextHunk(_:)), #selector(goToPreviousHunk(_:)):
+            guard let dm = displayMap else { return false }
+            return !dm.multiBuffer.excerpts.isEmpty
         default:
             return true
         }
@@ -3245,9 +3421,6 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
     private func insertText(_ string: Any, replacementRange: NSRange, coalesceTyping: Bool) {
         guard editingEnabled, let displayMap = displayMap else {
-            if isEditable && displayMap?.effectiveLayoutMode == .sideBySide && splitActiveColumn == .left {
-                NSSound.beep()
-            }
             return
         }
         let text: String
@@ -3263,7 +3436,6 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         var rangeToReplace = normalizedSelectionRange() ?? (cursorPoint..<cursorPoint)
         let affectedRows = rangeToReplace.lowerBound.row..<(rangeToReplace.upperBound.row + 1)
         if displayMap.isDeleted(rowRange: affectedRows) {
-            NSSound.beep()
             return
         }
 
@@ -3277,7 +3449,6 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             )
             guard let initialEndLoc = displayMap.bufferLocation(for: rangeToReplace.upperBound),
                   initialEndLoc.buffer.id == bufId else {
-                NSSound.beep()
                 return
             }
             let endBufferPoint = BufferPoint(
@@ -3289,7 +3460,6 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             invalidateLayout()
             guard let newVisualStart = displayMap.visualPoint(for: bufId, bufferPoint: startBufferPoint),
                   let newVisualEnd = displayMap.visualPoint(for: bufId, bufferPoint: endBufferPoint) else {
-                NSSound.beep()
                 return
             }
             rangeToReplace = min(newVisualStart, newVisualEnd)..<max(newVisualStart, newVisualEnd)
@@ -3301,7 +3471,6 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         guard let startLoc = displayMap.bufferLocation(for: rangeToReplace.lowerBound),
               let endLoc = displayMap.bufferLocation(for: rangeToReplace.upperBound),
               !startLoc.isDeleted && !endLoc.isDeleted else {
-            NSSound.beep()
             return
         }
 
@@ -3387,9 +3556,6 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
     public override func deleteBackward(_ sender: Any?) {
         guard editingEnabled, let displayMap = displayMap else {
-            if isEditable && displayMap?.effectiveLayoutMode == .sideBySide && splitActiveColumn == .left {
-                NSSound.beep()
-            }
             return
         }
         let mb = displayMap.multiBuffer
@@ -3397,7 +3563,6 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         if let sel = normalizedSelectionRange() {
             let affectedRows = sel.lowerBound.row..<(sel.upperBound.row + 1)
             if displayMap.isDeleted(rowRange: affectedRows) {
-                NSSound.beep()
                 return
             }
             insertText("", replacementRange: NSRange(location: NSNotFound, length: 0))
@@ -3421,7 +3586,6 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         }
 
         guard let loc = displayMap.bufferLocation(for: cursorPoint), !loc.isDeleted else {
-            NSSound.beep()
             return
         }
 
@@ -3552,9 +3716,6 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
     public override func deleteForward(_ sender: Any?) {
         guard editingEnabled, let displayMap = displayMap else {
-            if isEditable && displayMap?.effectiveLayoutMode == .sideBySide && splitActiveColumn == .left {
-                NSSound.beep()
-            }
             return
         }
         let mb = displayMap.multiBuffer
@@ -3562,7 +3723,6 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         if let sel = normalizedSelectionRange() {
             let affectedRows = sel.lowerBound.row..<(sel.upperBound.row + 1)
             if displayMap.isDeleted(rowRange: affectedRows) {
-                NSSound.beep()
                 return
             }
             insertText("", replacementRange: NSRange(location: NSNotFound, length: 0))
@@ -3586,7 +3746,6 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         }
 
         guard let loc = displayMap.bufferLocation(for: cursorPoint), !loc.isDeleted else {
-            NSSound.beep()
             return
         }
 
@@ -3863,7 +4022,6 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     @objc @IBAction public func cut(_ sender: Any?) {
         if displayMap?.effectiveLayoutMode == .sideBySide && splitActiveColumn == .left {
             copy(sender)
-            NSSound.beep()
             return
         }
         copy(sender)

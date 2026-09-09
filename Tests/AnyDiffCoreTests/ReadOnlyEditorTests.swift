@@ -523,82 +523,78 @@ final class ReadOnlyEditorTests: XCTestCase {
         XCTAssertTrue(visibleLines.contains { $0.newLineNumber == 48 && $0.text.contains("Build Release") })
     }
 
-    func testCursorJumpOnTypingInExpandedExcerpt() {
-        let repoRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        let fileURL = repoRoot.appendingPathComponent("Sources/AnyDiffUI/Editor/CustomMultiBufferEditorView.swift")
-        guard (try? String(contentsOf: fileURL, encoding: .utf8)) != nil else { return }
+    func testCursorJumpOnTypingInExpandedExcerpt() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("anydiff_test_\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
 
-        // Parse git diff to get hunks
-        let p2 = Process()
-        p2.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        p2.arguments = ["diff", "HEAD", "--", "Sources/AnyDiffUI/Editor/CustomMultiBufferEditorView.swift"]
-        p2.currentDirectoryURL = repoRoot
-        let pipe2 = Pipe()
-        p2.standardOutput = pipe2
-        try? p2.run()
-        let diffData = pipe2.fileHandleForReading.readDataToEndOfFile()
-        p2.waitUntilExit()
+        // Create a 50-line file on disk
+        let diskLines = (1...50).map { "line \($0) content" }
+        let fileURL = tempDir.appendingPathComponent("SampleFile.swift")
+        try diskLines.joined(separator: "\n").write(to: fileURL, atomically: true, encoding: .utf8)
 
+        // Diff modifies lines 9..12
+        let diffText = """
+        diff --git a/SampleFile.swift b/SampleFile.swift
+        --- a/SampleFile.swift
+        +++ b/SampleFile.swift
+        @@ -9,4 +9,4 @@
+         line 9 content
+        -line 10 content
+        -line 11 content
+        +line 10 modified
+        +line 10.5 addition
+         line 12 content
+        """
+        let diffData = Data(diffText.utf8)
         let parsed = GitDiffParser.shared.parseZeroCopy(data: diffData)
-        guard let file = parsed.first else { return }
+        let file = try XCTUnwrap(parsed.first)
+        let hunk = try XCTUnwrap(file.hunks.first)
 
         let mb = MultiBuffer()
-        mb.baseDirectory = repoRoot.path
-        for hunk in file.hunks {
-            let buf = Buffer(
-                filePath: file.displayPath,
-                storage: .makeDiffFlat(data: diffData, spans: hunk.lineSpans, side: .new),
-                startLineNumber: hunk.newRange.lowerBound,
-                isLazySlice: true
-            )
-            mb.addBuffer(buf)
-            let ex = Excerpt(
-                bufferId: buf.id,
-                filePath: file.displayPath,
-                bufferRange: 0..<buf.lineCount,
-                hunk: hunk
-            )
-            mb.addExcerpt(ex)
-        }
+        mb.baseDirectory = tempDir.path
+        let buf = Buffer(
+            filePath: file.displayPath,
+            storage: .makeDiffFlat(data: diffData, spans: hunk.lineSpans, side: .new),
+            startLineNumber: hunk.newRange.lowerBound,
+            fullDiskPath: fileURL.path,
+            diskFileLineCount: diskLines.count,
+            isLazySlice: true
+        )
+        mb.addBuffer(buf)
+        let ex = Excerpt(
+            bufferId: buf.id,
+            filePath: file.displayPath,
+            bufferRange: 0..<buf.lineCount,
+            hunk: hunk
+        )
+        mb.addExcerpt(ex)
 
-        // Find excerpt around line 2680
-        guard let hunkIdx = mb.excerpts.firstIndex(where: { $0.hunk?.oldRange.contains(2680) == true || $0.hunk?.newRange.contains(2680) == true }) else {
-            XCTFail("Could not find hunk containing 2680")
-            return
-        }
-
-        // Expand excerpt down by 20 lines so line 2692 is included
-        mb.expandExcerpt(at: hunkIdx, up: 0, down: 20)
+        // Expand excerpt down by 15 lines so line 20 is included
+        mb.expandExcerpt(at: 0, up: 0, down: 15)
 
         let dm = DisplayMap(multiBuffer: mb, reviewManager: ReviewManager())
         dm.rebuild()
 
-        let buf = mb.buffer(for: mb.excerpts[hunkIdx].bufferId)!
-        XCTAssertTrue(buf.isFullFile)
+        let expandedBuf = try XCTUnwrap(mb.buffer(for: mb.excerpts[0].bufferId))
+        XCTAssertTrue(expandedBuf.isFullFile)
 
-        // Find visual row of line 2692 (row 2691 in 0-based buffer)
-        guard let visualPtBefore = dm.visualPoint(for: buf.id, bufferPoint: BufferPoint(row: 2691, column: 0)) else {
-            XCTFail("Could not find visualPoint before edit")
-            return
-        }
+        // Target line 20 (row 19 in 0-based buffer)
+        let targetRow = 19
+        let visualPtBefore = try XCTUnwrap(dm.visualPoint(for: expandedBuf.id, bufferPoint: BufferPoint(row: targetRow, column: 0)))
+        let codeInfoBefore = try XCTUnwrap(dm.codeInfo(for: visualPtBefore.row))
+        XCTAssertEqual(codeInfoBefore.newLineNumber, 20)
 
-        let codeInfoBefore = dm.codeInfo(for: visualPtBefore.row)
-        XCTAssertEqual(codeInfoBefore?.newLineNumber, 2692)
+        // Type "123" into buffer at row 19
+        _ = expandedBuf.replace(start: BufferPoint(row: targetRow, column: 4), end: BufferPoint(row: targetRow, column: 4), with: "123")
 
-        // Type "123" into buffer at row 2691
-        _ = buf.replace(start: BufferPoint(row: 2691, column: 4), end: BufferPoint(row: 2691, column: 4), with: "123")
-
-        let targetExcerptIdx = codeInfoBefore!.excerptIndex
+        let targetExcerptIdx = codeInfoBefore.excerptIndex
         let deltas = dm.rebuildExcerpt(at: targetExcerptIdx)
         XCTAssertNotNil(deltas)
 
-        guard let visualPtAfter = dm.visualPoint(for: buf.id, bufferPoint: BufferPoint(row: 2691, column: 7)) else {
-            XCTFail("Could not find visualPoint after edit")
-            return
-        }
-
-        let codeInfoAfter = dm.codeInfo(for: visualPtAfter.row)
-        XCTAssertEqual(codeInfoAfter?.newLineNumber, 2692, "Cursor must stay on line 2692, not jump to line \(codeInfoAfter?.newLineNumber ?? -1)!")
+        let visualPtAfter = try XCTUnwrap(dm.visualPoint(for: expandedBuf.id, bufferPoint: BufferPoint(row: targetRow, column: 7)))
+        let codeInfoAfter = try XCTUnwrap(dm.codeInfo(for: visualPtAfter.row))
+        XCTAssertEqual(codeInfoAfter.newLineNumber, 20, "Cursor must stay on line 20 after typing in expanded excerpt")
     }
 
     func testComparisonTargetEditabilityRules() {

@@ -14,6 +14,7 @@ public struct SidebarFileListView: View {
     @Binding public var selectedFilePath: String?
     public var onReload: () -> Void
     public var onToggleWatchMode: (() -> Void)?
+    public var onBack: (() -> Void)?
 
     @State private var searchText: String = ""
     @State private var isSearchVisible: Bool = false
@@ -31,7 +32,8 @@ public struct SidebarFileListView: View {
         reviewManager: ReviewManager,
         selectedFilePath: Binding<String?>,
         onReload: @escaping () -> Void,
-        onToggleWatchMode: (() -> Void)? = nil
+        onToggleWatchMode: (() -> Void)? = nil,
+        onBack: (() -> Void)? = nil
     ) {
         self.fileDiffs = fileDiffs
         self.theme = theme
@@ -45,6 +47,7 @@ public struct SidebarFileListView: View {
         self._selectedFilePath = selectedFilePath
         self.onReload = onReload
         self.onToggleWatchMode = onToggleWatchMode
+        self.onBack = onBack
     }
 
     private var filteredFiles: [FileDiff] {
@@ -56,7 +59,19 @@ public struct SidebarFileListView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            headerBar
+            GeometryReader { headerGeo in
+                PanelHeaderView(
+                    theme: theme,
+                    onBack: onBack
+                ) {
+                    headerLeadingView(availableWidth: headerGeo.size.width)
+                } actions: {
+                    headerTrailingActions(availableWidth: headerGeo.size.width)
+                }
+                .frame(width: headerGeo.size.width, height: 28, alignment: .leading)
+            }
+            .frame(height: 28)
+
             if isSearchVisible {
                 searchField
                     .transition(.move(edge: .top).combined(with: .opacity))
@@ -96,68 +111,97 @@ public struct SidebarFileListView: View {
     }
 
     @ViewBuilder
-    private var headerBar: some View {
-        HStack(spacing: 6) {
-            Text(isStreaming ? "Loading \(streamingCount > 0 ? streamingCount : filteredFiles.count)..." : "CHANGES \(filteredFiles.count)")
-                .font(.system(size: 10, weight: .bold))
+    private func headerLeadingView(availableWidth: CGFloat) -> some View {
+        HStack(spacing: 5) {
+            Text(isStreaming ? "Loading..." : "CHANGES")
+                .font(.system(size: 10.5, weight: .bold))
                 .foregroundColor(isStreaming ? .accentColor : Color(theme.gutterForeground))
+                .lineLimit(1)
+                .fixedSize()
 
-            Button(action: onReload) {
-                ZStack {
-                    if isReloading {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(Color(theme.gutterForeground))
-                    }
-                }
-                .frame(width: 14, height: 14)
+            if availableWidth >= 165 || isStreaming {
+                let count = isStreaming ? (streamingCount > 0 ? streamingCount : filteredFiles.count) : filteredFiles.count
+                Text("\(count)")
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .foregroundColor(Color(theme.gutterForeground).opacity(0.85))
+                    .padding(.horizontal, 4.5)
+                    .padding(.vertical, 1)
+                    .background(Color(theme.gutterForeground).opacity(0.12))
+                    .clipShape(Capsule())
+                    .lineLimit(1)
+                    .fixedSize()
             }
-            .buttonStyle(ToolbarHoverButtonStyle())
-            .disabled(isReloading)
-            .help("Reload Git Diff (Cmd+R)")
+        }
+        .lineLimit(1)
+        .fixedSize(horizontal: true, vertical: false)
+        .layoutPriority(2)
+    }
+
+    @ViewBuilder
+    private func headerTrailingActions(availableWidth: CGFloat) -> some View {
+        HStack(spacing: 4) {
+            // Action buttons progressively collapse/hide when space is tight
+            if availableWidth >= 215 || isReloading {
+                Button(action: onReload) {
+                    ZStack {
+                        if isReloading {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(Color(theme.gutterForeground))
+                        }
+                    }
+                    .frame(width: 14, height: 14)
+                }
+                .buttonStyle(ToolbarHoverButtonStyle())
+                .disabled(isReloading)
+                .help("Reload Git Diff (Cmd+R)")
+            }
 
             if case .remote = comparisonTarget {
                 // Remote diffs do not have a local directory watcher
             } else if let onToggle = onToggleWatchMode {
-                Button(action: onToggle) {
-                    Image(systemName: isWatchModeEnabled ? "eye.fill" : "eye.slash")
+                if availableWidth >= 280 {
+                    Button(action: onToggle) {
+                        Image(systemName: isWatchModeEnabled ? "eye.fill" : "eye.slash")
+                            .font(.system(size: 10.5))
+                            .foregroundColor(isWatchModeEnabled ? Color(theme.gutterForeground) : Color(theme.gutterForeground).opacity(0.4))
+                            .frame(width: 14, height: 14)
+                    }
+                    .buttonStyle(ToolbarHoverButtonStyle())
+                    .help(isWatchModeEnabled ? "Watch Mode Active: auto-reloading on disk changes (Click to pause, Cmd+Opt+W)" : "Watch Mode Paused: click to enable auto-reload")
+                }
+            }
+
+            if availableWidth >= 245 || isSearchVisible {
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        isSearchVisible.toggle()
+                        if isSearchVisible {
+                            isSearchFocused = true
+                        } else {
+                            searchText = ""
+                            isSearchFocused = false
+                        }
+                    }
+                }) {
+                    Image(systemName: "magnifyingglass")
                         .font(.system(size: 10.5))
-                        .foregroundColor(isWatchModeEnabled ? Color(theme.gutterForeground) : Color(theme.gutterForeground).opacity(0.4))
+                        .foregroundColor(isSearchVisible ? Color(theme.foreground) : Color(theme.gutterForeground))
                         .frame(width: 14, height: 14)
                 }
                 .buttonStyle(ToolbarHoverButtonStyle())
-                .help(isWatchModeEnabled ? "Watch Mode Active: auto-reloading on disk changes (Click to pause, Cmd+Opt+W)" : "Watch Mode Paused: click to enable auto-reload")
+                .help(isSearchVisible ? "Hide Search" : "Filter changed files")
             }
 
-            Button(action: {
-                withAnimation(.easeInOut(duration: 0.18)) {
-                    isSearchVisible.toggle()
-                    if isSearchVisible {
-                        isSearchFocused = true
-                    } else {
-                        searchText = ""
-                        isSearchFocused = false
-                    }
-                }
-            }) {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 10.5))
-                    .foregroundColor(isSearchVisible ? Color(theme.foreground) : Color(theme.gutterForeground))
-                    .frame(width: 14, height: 14)
-            }
-            .buttonStyle(ToolbarHoverButtonStyle())
-            .help(isSearchVisible ? "Hide Search" : "Filter changed files")
-
-            Spacer()
-
+            // +- stats or branch badge is ALWAYS at the far right edge ("справа справа")
             targetComparisonBadge
+                .padding(.leading, (availableWidth >= 215 || isReloading) ? 2 : 0)
         }
-        .frame(height: 24)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 4)
+        .lineLimit(1)
+        .fixedSize(horizontal: true, vertical: false)
     }
 
     @ViewBuilder
@@ -171,6 +215,7 @@ public struct SidebarFileListView: View {
                 .padding(.vertical, 1)
                 .background(Color.accentColor.opacity(0.12))
                 .cornerRadius(4)
+                .lineLimit(1)
         case .directBranch(let branch):
             Text("→ \(branch)")
                 .font(.system(size: 9.5, weight: .medium))
@@ -179,20 +224,27 @@ public struct SidebarFileListView: View {
                 .padding(.vertical, 1)
                 .background(Color.accentColor.opacity(0.12))
                 .cornerRadius(4)
+                .lineLimit(1)
         case .workingTree, .remote:
             let totalAdds = fileDiffs.reduce(0) { $0 + $1.additions }
             let totalDels = fileDiffs.reduce(0) { $0 + $1.deletions }
-            HStack(spacing: 5) {
-                if totalAdds > 0 {
-                    Text("+\(totalAdds)")
-                        .font(.system(size: 10, weight: .bold, design: .monospaced))
-                        .foregroundColor(Color(theme.diffAddedGutter))
+            if totalAdds > 0 || totalDels > 0 {
+                HStack(spacing: 5) {
+                    if totalAdds > 0 {
+                        Text("+\(totalAdds)")
+                            .font(.system(size: 10, weight: .bold, design: .monospaced))
+                            .foregroundColor(Color(theme.diffAddedGutter))
+                            .lineLimit(1)
+                    }
+                    if totalDels > 0 {
+                        Text("-\(totalDels)")
+                            .font(.system(size: 10, weight: .bold, design: .monospaced))
+                            .foregroundColor(Color(theme.diffDeletedGutter))
+                            .lineLimit(1)
+                    }
                 }
-                if totalDels > 0 {
-                    Text("-\(totalDels)")
-                        .font(.system(size: 10, weight: .bold, design: .monospaced))
-                        .foregroundColor(Color(theme.diffDeletedGutter))
-                }
+                .lineLimit(1)
+                .fixedSize()
             }
         }
     }

@@ -85,14 +85,19 @@ public struct StatusBarView: View {
             Text("\(totalFiles) files")
                 .font(.system(size: 11))
                 .foregroundColor(.secondary)
+                .lineLimit(1)
 
             Text("+\(totalAdditions)")
                 .font(.system(size: 11, weight: .semibold, design: .monospaced))
                 .foregroundColor(Color(theme.diffAddedGutter))
+                .lineLimit(1)
 
             Text("-\(totalDeletions)")
                 .font(.system(size: 11, weight: .semibold, design: .monospaced))
                 .foregroundColor(Color(theme.diffDeletedGutter))
+                .lineLimit(1)
         }
+        .lineLimit(1)
+        .fixedSize()
     }
 }

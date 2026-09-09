@@ -1114,6 +1114,19 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
         toggleCollapse(at: firstIdx)
     }
 
+    public func expand(filePath: String) {
+        var changed = false
+        for i in 0..<excerpts.count {
+            if excerpts[i].filePath == filePath && excerpts[i].isCollapsed {
+                excerpts[i].isCollapsed = false
+                changed = true
+            }
+        }
+        if changed {
+            version &+= 1
+        }
+    }
+
     public func collapseAll() {
         for i in 0..<excerpts.count {
             excerpts[i].isCollapsed = true

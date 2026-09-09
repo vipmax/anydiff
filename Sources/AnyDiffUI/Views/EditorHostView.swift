@@ -133,8 +133,11 @@ public struct EditorHostView: NSViewRepresentable {
                     // Editor is actively focused and user may be typing; do not clobber
                     // their active cursor or selection with a stale snapshot on background reload.
                     context.coordinator.saveCurrentViewState()
-                } else if let state = context.coordinator.viewStates[displayMapID] ?? context.coordinator.currentViewState {
+                } else if let state = context.coordinator.viewStates[displayMapID] ?? (mapChanged ? nil : context.coordinator.currentViewState) {
                     editorView.restoreViewState(state, shouldFocus: shouldKeepEditorFocus)
+                    context.coordinator.saveCurrentViewState()
+                } else if let path = selectedFilePath, displayMap.displayLineIndex(forFilePath: path, lineNumber: nil) != nil {
+                    editorView.scrollToFilePath(path)
                     context.coordinator.saveCurrentViewState()
                 } else {
                     editorView.resetCursorToFirstVisibleLine(shouldFocus: shouldKeepEditorFocus)

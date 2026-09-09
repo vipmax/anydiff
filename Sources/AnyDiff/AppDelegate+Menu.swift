@@ -90,6 +90,7 @@ extension AppDelegate {
         let toggleRightPanelItem = NSMenuItem(title: "Toggle Right Panel", action: #selector(toggleRightPanelAction(_:)), keyEquivalent: "a")
         toggleRightPanelItem.keyEquivalentModifierMask = [.command, .option]
         viewMenu.addItem(toggleRightPanelItem)
+        viewMenu.addItem(NSMenuItem(title: "Reset Panels to Default", action: #selector(resetPanelsLayoutAction(_:)), keyEquivalent: ""))
         viewMenu.addItem(NSMenuItem.separator())
         viewMenu.addItem(NSMenuItem(title: "Zoom In", action: #selector(zoomInAction(_:)), keyEquivalent: "+"))
         viewMenu.addItem(NSMenuItem(title: "Zoom Out", action: #selector(zoomOutAction(_:)), keyEquivalent: "-"))
@@ -159,6 +160,21 @@ extension AppDelegate {
 
         viewMenuItem.submenu = viewMenu
         mainMenu.addItem(viewMenuItem)
+
+        // Navigate Menu
+        let navigateMenuItem = NSMenuItem()
+        let navigateMenu = NSMenu(title: "Navigate")
+
+        let nextHunkItem = NSMenuItem(title: "Go to Next Hunk", action: #selector(goToNextHunkAction(_:)), keyEquivalent: String(UnicodeScalar(NSF8FunctionKey)!))
+        nextHunkItem.keyEquivalentModifierMask = [.command]
+        navigateMenu.addItem(nextHunkItem)
+
+        let prevHunkItem = NSMenuItem(title: "Go to Previous Hunk", action: #selector(goToPreviousHunkAction(_:)), keyEquivalent: String(UnicodeScalar(NSF8FunctionKey)!))
+        prevHunkItem.keyEquivalentModifierMask = [.command, .shift]
+        navigateMenu.addItem(prevHunkItem)
+
+        navigateMenuItem.submenu = navigateMenu
+        mainMenu.addItem(navigateMenuItem)
 
         // Window Menu
         let windowMenuItem = NSMenuItem()
@@ -268,6 +284,10 @@ extension AppDelegate {
         NotificationCenter.default.post(name: Notification.Name("anyDiffToggleRightPanel"), object: nil)
     }
 
+    @objc func resetPanelsLayoutAction(_ sender: Any?) {
+        NotificationCenter.default.post(name: Notification.Name("anyDiffResetPanelsLayout"), object: nil)
+    }
+
     @objc func toggleSidebarAction(_ sender: Any?) {
         toggleLeftPanelAction(sender)
     }
@@ -293,5 +313,13 @@ extension AppDelegate {
 
     @objc func findPreviousAction(_ sender: Any?) {
         NotificationCenter.default.post(name: Notification.Name("anyDiffFindPrevious"), object: nil)
+    }
+
+    @objc func goToNextHunkAction(_ sender: Any?) {
+        NotificationCenter.default.post(name: .goToNextHunk, object: nil)
+    }
+
+    @objc func goToPreviousHunkAction(_ sender: Any?) {
+        NotificationCenter.default.post(name: .goToPreviousHunk, object: nil)
     }
 }

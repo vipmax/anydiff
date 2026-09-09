@@ -949,6 +949,92 @@ final class CustomMultiBufferEditorUITests: XCTestCase {
         XCTAssertNotNil(editor2.lineCache.get(lineIndex: 1), "Editor 2 cache must remain intact when Editor 1 is edited")
     }
 
+    func testHunkNavigationNextAndPreviousAndExpandCollapsed() throws {
+        let multiBuffer = MultiBuffer()
+        multiBuffer.setContentMode(.diff)
+
+        let buf1 = Buffer(filePath: "FileA.swift", text: "line A1\nline A2\nline A3")
+        let buf2 = Buffer(filePath: "FileB.swift", text: "line B1\nline B2\nline B3")
+        multiBuffer.addBuffer(buf1)
+        multiBuffer.addBuffer(buf2)
+
+        let hunk1 = DiffHunk(
+            oldRange: 1..<3,
+            newRange: 1..<4,
+            header: "@@ -1,2 +1,3 @@",
+            lines: [
+                DiffLine(kind: .unchanged, text: "line A1", oldLineNumber: 1, newLineNumber: 1),
+                DiffLine(kind: .added, text: "line A2", oldLineNumber: nil, newLineNumber: 2),
+                DiffLine(kind: .unchanged, text: "line A3", oldLineNumber: 2, newLineNumber: 3),
+            ]
+        )
+        let hunk2 = DiffHunk(
+            oldRange: 1..<4,
+            newRange: 1..<3,
+            header: "@@ -1,3 +1,2 @@",
+            lines: [
+                DiffLine(kind: .unchanged, text: "line B1", oldLineNumber: 1, newLineNumber: 1),
+                DiffLine(kind: .deleted, text: "line B2", oldLineNumber: 2, newLineNumber: nil),
+                DiffLine(kind: .unchanged, text: "line B3", oldLineNumber: 3, newLineNumber: 2),
+            ]
+        )
+
+        let ex1 = Excerpt(
+            bufferId: buf1.id,
+            filePath: "FileA.swift",
+            fileStatus: .modified,
+            bufferRange: 0..<3,
+            hunk: hunk1
+        )
+        let ex2 = Excerpt(
+            bufferId: buf2.id,
+            filePath: "FileB.swift",
+            fileStatus: .modified,
+            bufferRange: 0..<3,
+            hunk: hunk2,
+            isCollapsed: true
+        )
+
+        multiBuffer.setExcerpts([ex1, ex2])
+        let displayMap = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
+        displayMap.rebuild()
+
+        let editor = CustomMultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 240),
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = editor
+        editor.frame = NSRect(x: 0, y: 0, width: 400, height: 240)
+        editor.invalidateLayout()
+
+        // Initially cursor is at (0,0)
+        editor.cursorPoint = MultiBufferPoint(row: 0, column: 0)
+
+        // Excerpt 2 is currently collapsed
+        XCTAssertTrue(multiBuffer.excerpts[1].isCollapsed)
+
+        // Go to next hunk (should jump to hunk 2 and uncollapse it)
+        editor.goToNextHunk()
+
+        XCTAssertFalse(multiBuffer.excerpts[1].isCollapsed, "Navigating to a collapsed hunk must expand the file")
+        // The cursor should be on FileB's changed line (row >= 3)
+        XCTAssertGreaterThanOrEqual(editor.cursorPoint.row, 3)
+
+        // Go to previous hunk (should jump back to hunk 1)
+        editor.goToPreviousHunk()
+        XCTAssertEqual(editor.cursorPoint.row, 1, "Should navigate back to hunk 1's added line (row 1)")
+
+        // Test notification triggers
+        NotificationCenter.default.post(name: .goToNextHunk, object: nil)
+        XCTAssertGreaterThanOrEqual(editor.cursorPoint.row, 3)
+
+        NotificationCenter.default.post(name: .goToPreviousHunk, object: nil)
+        XCTAssertEqual(editor.cursorPoint.row, 1)
+    }
+
     private func makeMouseEvent(
         for editor: CustomMultiBufferEditorView,
         window: NSWindow,

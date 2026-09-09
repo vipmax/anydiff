@@ -97,5 +97,7 @@ public struct EditorViewState: Sendable, Equatable {
 }
 
 extension Notification.Name {
-    static let focusFileInEditor = Notification.Name("AnyDiff_focusFileInEditor")
+    public static let focusFileInEditor = Notification.Name("AnyDiff_focusFileInEditor")
+    public static let goToNextHunk = Notification.Name("AnyDiff_goToNextHunk")
+    public static let goToPreviousHunk = Notification.Name("AnyDiff_goToPreviousHunk")
 }
