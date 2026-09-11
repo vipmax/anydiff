@@ -5,6 +5,18 @@ All notable changes to **AnyDiff** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.1] - 2026-09-12
+
+### 🖥️ Native Intel (x86_64) Architecture Support
+- **Dual Architecture Distributions**:
+  - Added full native release support for Intel Macs (`x86_64`) alongside Apple Silicon Macs (`arm64`).
+  - Separate, highly optimized release archives (`AnyDiff-macOS-arm64.dmg` / `.zip` and `AnyDiff-macOS-x86_64.dmg` / `.zip`).
+  - Size-optimized builds with dead-code stripping, minimal reflection symbols, and symbol stripping (<2 MB per archive).
+- **Multi-Architecture Homebrew Cask**:
+  - Updated `vipmax/tap/anydiff` formula with automatic architecture detection (`arch arm: "arm64", intel: "x86_64"`).
+- **One-Line Installer (`scripts/install.sh`)**:
+  - Automatically identifies host CPU architecture (`arm64` vs `x86_64`) and downloads the matching binary.
+
 ---
 
 ## [1.5.0] - 2026-09-10

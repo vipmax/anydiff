@@ -22,7 +22,9 @@ If macOS Gatekeeper prevents opening after installation:
 xattr -cr /Applications/AnyDiff.app
 ```
 
-Or download directly from [Releases](https://github.com/vipmax/anydiff/releases/latest) ([.dmg](https://github.com/vipmax/anydiff/releases/download/v1.5.0/AnyDiff.dmg) / [.zip](https://github.com/vipmax/anydiff/releases/download/v1.5.0/AnyDiff-macOS.zip)).
+Or download directly from [Releases](https://github.com/vipmax/anydiff/releases/latest):
+- **Apple Silicon (M1/M2/M3/M4)**: [.dmg](https://github.com/vipmax/anydiff/releases/download/v1.5.1/AnyDiff-macOS-arm64.dmg) · [.zip](https://github.com/vipmax/anydiff/releases/download/v1.5.1/AnyDiff-macOS-arm64.zip)
+- **Intel (x86_64)**: [.dmg](https://github.com/vipmax/anydiff/releases/download/v1.5.1/AnyDiff-macOS-x86_64.dmg) · [.zip](https://github.com/vipmax/anydiff/releases/download/v1.5.1/AnyDiff-macOS-x86_64.zip)
 
 ---
 

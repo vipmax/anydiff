@@ -22,12 +22,21 @@ echo -e "${PURPLE}${BOLD}⚡ AnyDiff Installer${NC}"
 echo -e "${CYAN}High-Performance MultiBuffer Diff Editor for macOS${NC}"
 echo "--------------------------------------------------------"
 
-# 1. OS Check
+# 1. OS & Architecture Check
 OS="$(uname -s)"
 if [ "$OS" != "Darwin" ]; then
     echo -e "${RED}❌ Error: AnyDiff is a native macOS application.${NC}"
     echo "Detected OS: $OS. Exiting."
     exit 1
+fi
+
+ARCH="$(uname -m)"
+if [ "$ARCH" = "x86_64" ]; then
+    ZIP_NAME="AnyDiff-macOS-x86_64.zip"
+    echo -e "🖥️  Detected architecture: ${BOLD}Intel (x86_64)${NC}"
+else
+    ZIP_NAME="AnyDiff-macOS-arm64.zip"
+    echo -e "🖥️  Detected architecture: ${BOLD}Apple Silicon (arm64)${NC}"
 fi
 
 # 2. Determine Install Destination
@@ -78,6 +87,17 @@ if [ "$DOWNLOAD_SUCCESS" = false ]; then
     echo -e "   ${BLUE}→ Downloading from public releases...${NC}"
     PUBLIC_URL="https://github.com/$REPO/releases/latest/download/$ZIP_NAME"
     if curl -fsSL "$PUBLIC_URL" -o "$ZIP_PATH" 2>/dev/null; then
+        DOWNLOAD_SUCCESS=true
+    fi
+fi
+
+# Fallback to legacy AnyDiff-macOS.zip for older releases
+if [ "$DOWNLOAD_SUCCESS" = false ] && [ "$ZIP_NAME" != "AnyDiff-macOS.zip" ]; then
+    echo -e "   ${BLUE}→ Retrying with legacy AnyDiff-macOS.zip...${NC}"
+    FALLBACK_ZIP="AnyDiff-macOS.zip"
+    FALLBACK_PATH="$TMP_DIR/$FALLBACK_ZIP"
+    if curl -fsSL "https://github.com/$REPO/releases/latest/download/$FALLBACK_ZIP" -o "$FALLBACK_PATH" 2>/dev/null; then
+        ZIP_PATH="$FALLBACK_PATH"
         DOWNLOAD_SUCCESS=true
     fi
 fi

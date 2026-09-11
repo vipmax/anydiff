@@ -34,7 +34,7 @@ jobs:
       - name: Package AnyDiff.app & DMG
         run: |
           chmod +x ./scripts/package_app.sh
-          ./scripts/package_app.sh
+          ./scripts/package_app.sh all
 
       - name: Determine Tag
         id: get_tag
@@ -50,19 +50,26 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ steps.get_tag.outputs.tag }}"
+          RELEASE_FILES=(
+            dist/AnyDiff-macOS-arm64.dmg
+            dist/AnyDiff-macOS-arm64.zip
+            dist/AnyDiff-macOS-x86_64.dmg
+            dist/AnyDiff-macOS-x86_64.zip
+            dist/AnyDiff.dmg
+            dist/AnyDiff-macOS.zip
+          )
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release $TAG already exists."
             EXISTING_ASSETS=$(gh release view "$TAG" --json assets -q '.assets.[].name' 2>/dev/null || true)
-            if echo "$EXISTING_ASSETS" | grep -q "AnyDiff-macOS.zip"; then
+            if echo "$EXISTING_ASSETS" | grep -q "AnyDiff-macOS-arm64.zip"; then
               echo "Release assets already exist for $TAG. Skipping upload to protect Homebrew checksum integrity."
             else
               echo "Uploading assets to existing release $TAG..."
-              gh release upload "$TAG" dist/AnyDiff.dmg dist/AnyDiff-macOS.zip
+              gh release upload "$TAG" "${RELEASE_FILES[@]}"
             fi
           else
             gh release create "$TAG" \
               --title "AnyDiff $TAG" \
               --generate-notes \
-              dist/AnyDiff.dmg \
-              dist/AnyDiff-macOS.zip
+              "${RELEASE_FILES[@]}"
           fi
