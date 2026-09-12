@@ -4,6 +4,7 @@ import Combine
 public struct AgentPreset: Identifiable, Equatable, Sendable, Codable {
     public let id: String
     public var name: String
+    public var version: String?
     public var command: String
     public var arguments: String
     public var iconName: String
@@ -14,7 +15,7 @@ public struct AgentPreset: Identifiable, Equatable, Sendable, Codable {
     public var isCustom: Bool
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, command, arguments, iconName, colorName
+        case id, name, version, command, arguments, iconName, colorName
         case providerName, summary, isMock, isCustom
     }
 
@@ -30,6 +31,7 @@ public struct AgentPreset: Identifiable, Equatable, Sendable, Codable {
     public init(
         id: String = UUID().uuidString,
         name: String,
+        version: String? = nil,
         command: String,
         arguments: String = "",
         iconName: String = "sparkles",
@@ -41,6 +43,7 @@ public struct AgentPreset: Identifiable, Equatable, Sendable, Codable {
     ) {
         self.id = id
         self.name = name
+        self.version = version
         self.command = command
         self.arguments = arguments
         self.iconName = iconName
@@ -99,6 +102,7 @@ public struct AgentPreset: Identifiable, Equatable, Sendable, Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(String.self, forKey: .id)
         name = try container.decode(String.self, forKey: .name)
+        version = try container.decodeIfPresent(String.self, forKey: .version)
         command = try container.decode(String.self, forKey: .command)
         arguments = try container.decodeIfPresent(String.self, forKey: .arguments) ?? ""
         iconName = try container.decodeIfPresent(String.self, forKey: .iconName) ?? "sparkles"
@@ -113,6 +117,7 @@ public struct AgentPreset: Identifiable, Equatable, Sendable, Codable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
         try container.encode(name, forKey: .name)
+        try container.encodeIfPresent(version, forKey: .version)
         try container.encode(command, forKey: .command)
         try container.encode(arguments, forKey: .arguments)
         try container.encode(iconName, forKey: .iconName)
@@ -132,6 +137,8 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
             saveCustomPresets()
         }
     }
+    @Published public var updatingAgentIds: Set<String> = []
+    private var autoUpdateTask: Task<Void, Never>?
     @Published public var selectedPresetId: String {
         didSet {
             UserDefaults.standard.set(selectedPresetId, forKey: "anydiff_selected_agent_preset")
@@ -192,7 +199,11 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
 
     private var cancellables = Set<AnyCancellable>()
 
-    public init(isMockAgent: Bool? = nil, autoCreateSession: Bool = false) {
+    public init(
+        isMockAgent: Bool? = nil,
+        autoCreateSession: Bool = false,
+        enablePeriodicAutoUpdate: Bool = false
+    ) {
         #if DEBUG
         let defaultId = "mock"
         #else
@@ -250,6 +261,14 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
                 }
                 .store(in: &cancellables)
         }
+
+        if enablePeriodicAutoUpdate {
+            startPeriodicAutoUpdate()
+        }
+    }
+
+    deinit {
+        stopPeriodicAutoUpdate()
     }
 
     public var activeSession: AgentSessionItem? {
@@ -258,6 +277,12 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
 
     public var activeManager: AgentSessionManager? {
         activeSession?.manager
+    }
+
+    /// Forwards file change notifications to the active agent session while it is working.
+    public func notifyFileSystemChanged() {
+        guard let activeManager, activeManager.isBusyOrStreaming else { return }
+        activeManager.notifyFileSystemChanged()
     }
 
     public var liveSessions: [AgentSessionItem] {
@@ -595,11 +620,127 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
         allPresets.contains(where: { $0.id == id })
     }
 
+    public func installedVersion(for id: String) -> String? {
+        guard let preset = allPresets.first(where: { $0.id == id }) else { return nil }
+        if let v = preset.version, !v.isEmpty {
+            return v
+        }
+        // Fallback: extract version folder from command path if set (e.g. .../bin/<id>/<version>/...)
+        let components = preset.command.components(separatedBy: "/")
+        if let binIndex = components.firstIndex(where: { $0 == id }), binIndex + 1 < components.count {
+            let candidate = components[binIndex + 1].trimmingCharacters(in: CharacterSet(charactersIn: "\"'/"))
+            if !candidate.isEmpty && !candidate.contains(".par") && !candidate.contains(".exe") {
+                return candidate
+            }
+        }
+        return nil
+    }
+
+    public func hasUpdateAvailable(for entry: ACPRegistryAgentEntry) -> Bool {
+        guard isAgentInstalled(id: entry.id) else { return false }
+        guard let currentVer = installedVersion(for: entry.id) else {
+            return true
+        }
+        return currentVer != entry.version
+    }
+
+    public func isAgentUpdating(id: String) -> Bool {
+        updatingAgentIds.contains(id)
+    }
+
+    public func isAgentInActiveUse(id: String) -> Bool {
+        sessions.contains { session in
+            session.preset.id == id && session.manager.status != .disconnected
+        }
+    }
+
+    public func startPeriodicAutoUpdate(interval: TimeInterval = 3600) {
+        autoUpdateTask?.cancel()
+        autoUpdateTask = Task { [weak self] in
+            // Initial check 3 seconds after startup
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            guard !Task.isCancelled else { return }
+            _ = await self?.checkForAgentUpdates()
+
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                guard !Task.isCancelled else { return }
+                _ = await self?.checkForAgentUpdates()
+            }
+        }
+    }
+
+    public func stopPeriodicAutoUpdate() {
+        autoUpdateTask?.cancel()
+        autoUpdateTask = nil
+    }
+
+    @discardableResult
+    public func checkForAgentUpdates(
+        registryService: ACPRegistryService = .shared,
+        forceRefresh: Bool = false
+    ) async -> [String] {
+        guard let registryAgents = try? await registryService.fetchAgents(forceRefresh: forceRefresh) else {
+            return []
+        }
+
+        let candidates: [ACPRegistryAgentEntry] = await MainActor.run {
+            registryAgents.filter { entry in
+                hasUpdateAvailable(for: entry) && !isAgentInActiveUse(id: entry.id)
+            }
+        }
+
+        var updatedIds: [String] = []
+
+        for entry in candidates {
+
+            await MainActor.run {
+                updatingAgentIds.insert(entry.id)
+                objectWillChange.send()
+            }
+
+            do {
+                if entry.currentPlatformBinaryTarget != nil {
+                    let binaryPath = try await registryService.downloadAndInstallBinary(for: entry)
+                    await MainActor.run {
+                        _ = installRegistryAgent(entry, binaryPath: binaryPath)
+                        updatingAgentIds.remove(entry.id)
+                        objectWillChange.send()
+                    }
+                    updatedIds.append(entry.id)
+                } else if entry.distribution.npx != nil {
+                    await MainActor.run {
+                        _ = installRegistryAgent(entry)
+                        updatingAgentIds.remove(entry.id)
+                        objectWillChange.send()
+                    }
+                    updatedIds.append(entry.id)
+                } else {
+                    await MainActor.run {
+                        updatingAgentIds.remove(entry.id)
+                        objectWillChange.send()
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    updatingAgentIds.remove(entry.id)
+                    objectWillChange.send()
+                }
+            }
+        }
+
+        return updatedIds
+    }
+
     @discardableResult
     public func installRegistryAgent(_ entry: ACPRegistryAgentEntry, binaryPath: String? = nil) -> AgentPreset {
+        let wasSelected = (selectedPresetId == entry.id)
         deleteCustomPreset(id: entry.id)
         let preset = entry.toAgentPreset(binaryInstalledPath: binaryPath)
         customPresets.append(preset)
+        if wasSelected {
+            selectedPresetId = entry.id
+        }
         return preset
     }
 

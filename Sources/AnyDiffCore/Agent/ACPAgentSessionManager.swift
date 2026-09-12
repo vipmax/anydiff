@@ -146,6 +146,8 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
     }
 
     private var preTurnSnapshot: PreTurnGitSnapshot? = nil
+    private var liveGitDiffTask: Task<Void, Never>? = nil
+    private var liveGitDiffPending: Bool = false
 
     private func startPendingPromptIfPossible() {
         guard promptTask == nil,
@@ -164,18 +166,24 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
         liveEditedSummary = nil
 
         let workingDir = pending.workingDirectory
-        self.preTurnSnapshot = AgentGitChangesDetector.capturePreTurnSnapshot(workingDirectory: workingDir)
 
         promptTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            let snapshot = await AgentGitChangesDetector.capturePreTurnSnapshotAsync(workingDirectory: workingDir)
+            guard !Task.isCancelled else { return }
+            self.preTurnSnapshot = snapshot
             do {
                 try await self.client.sendPrompt(sessionId: sessionId, text: pending.text, images: pending.images)
+                self.liveGitDiffTask?.cancel()
+                self.liveGitDiffTask = nil
+                self.liveGitDiffPending = false
                 self.status = .idle
                 self.statusMessage = nil
-                let (summary, _) = AgentGitChangesDetector.computeTurnSummary(
+                let (summary, _) = await AgentGitChangesDetector.computeTurnSummaryAsync(
                     workingDirectory: workingDir,
                     snapshot: self.preTurnSnapshot
                 )
+                guard !Task.isCancelled else { return }
                 if let summary {
                     if let streamId = self.currentStreamMessageId, let idx = self.messages.firstIndex(where: { $0.id == streamId }) {
                         self.messages[idx].editedFilesSummary = summary
@@ -188,6 +196,9 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
                 self.markCurrentStreamComplete()
             } catch {
                 guard !Task.isCancelled else { return }
+                self.liveGitDiffTask?.cancel()
+                self.liveGitDiffTask = nil
+                self.liveGitDiffPending = false
                 self.status = .error(error.localizedDescription)
                 self.statusMessage = "Error: \(error.localizedDescription)"
                 self.appendErrorMessage(error.localizedDescription)
@@ -200,6 +211,9 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
     }
 
     public override func cancel() {
+        liveGitDiffTask?.cancel()
+        liveGitDiffTask = nil
+        liveGitDiffPending = false
         if let permission = pendingPermission {
             client.respondToPermission(requestId: permission.requestId, optionId: nil)
             pendingPermission = nil
@@ -233,6 +247,9 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
     }
 
     public override func clearSession() {
+        liveGitDiffTask?.cancel()
+        liveGitDiffTask = nil
+        liveGitDiffPending = false
         initializationTask?.cancel()
         promptTask?.cancel()
         initializationTask = nil
@@ -250,6 +267,9 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
     }
 
     public override func restartAgent(workingDirectory: String) {
+        liveGitDiffTask?.cancel()
+        liveGitDiffTask = nil
+        liveGitDiffPending = false
         initializationTask?.cancel()
         promptTask?.cancel()
         initializationTask = nil
@@ -663,8 +683,11 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
                     self.messages[idx].appendToolCall(item)
                 }
             }
-            self.updateLiveGitDiffState()
         }
+    }
+
+    public override func notifyFileSystemChanged() {
+        updateLiveGitDiffState()
     }
 
     public func client(_ client: ACPClient, didExecuteFSWrite path: String, oldContent: String?, newContent: String) {
@@ -703,12 +726,29 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
 
     private func updateLiveGitDiffState() {
         guard status == .busy, !currentWorkingDirectory.isEmpty, let snapshot = preTurnSnapshot else { return }
-        let (liveSum, _) = AgentGitChangesDetector.computeTurnSummary(
-            workingDirectory: currentWorkingDirectory,
-            snapshot: snapshot
-        )
-        if let liveSum {
-            self.liveEditedSummary = liveSum
+        let workingDir = currentWorkingDirectory
+
+        if liveGitDiffTask != nil {
+            liveGitDiffPending = true
+            return
+        }
+
+        liveGitDiffTask = Task { @MainActor [weak self] in
+            let (liveSum, _) = await AgentGitChangesDetector.computeTurnSummaryAsync(
+                workingDirectory: workingDir,
+                snapshot: snapshot
+            )
+            guard let self = self else { return }
+            self.liveGitDiffTask = nil
+            if self.status == .busy, self.preTurnSnapshot?.baseCommitHash == snapshot.baseCommitHash {
+                if let liveSum {
+                    self.liveEditedSummary = liveSum
+                }
+            }
+            if self.liveGitDiffPending {
+                self.liveGitDiffPending = false
+                self.updateLiveGitDiffState()
+            }
         }
     }
 

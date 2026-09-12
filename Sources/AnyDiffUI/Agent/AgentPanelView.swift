@@ -35,7 +35,8 @@ public struct AgentPanelView: View {
         agentIcon: String = "sparkles",
         toolcallColorMode: ToolcallColorMode = AgentDisplayPreferences.toolcallColorMode,
         onReview: ((AgentEditedFilesSummary) -> Void)? = nil,
-        onPreviewImages: (([AgentImageAttachment], Int, Bool) -> Void)? = nil
+        onPreviewImages: (([AgentImageAttachment], Int, Bool) -> Void)? = nil,
+        onOpenURL: ((URL) -> Void)? = nil
     ) {
         self.agentManager = agentManager
         self.theme = theme
@@ -47,7 +48,10 @@ public struct AgentPanelView: View {
         self.toolcallColorMode = toolcallColorMode
         self.onReview = onReview
         self.onPreviewImages = onPreviewImages
+        self.onOpenURL = onOpenURL
     }
+
+    public var onOpenURL: ((URL) -> Void)? = nil
 
     public var body: some View {
         VStack(spacing: 0) {
@@ -236,11 +240,19 @@ public struct AgentPanelView: View {
                             previewImages = imgs
                             previewImageIndex = idx
                         }
-                    }
+                    },
+                    onOpenURL: onOpenURL
                 )
                 .transition(.opacity)
             }
         }
+        .environment(\.openURL, OpenURLAction { url in
+            if let onOpenURL {
+                onOpenURL(url)
+                return .handled
+            }
+            return .systemAction
+        })
         .animation(.easeInOut(duration: 0.14), value: agentManager.messages.isEmpty)
     }
 

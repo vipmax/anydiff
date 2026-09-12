@@ -123,6 +123,7 @@ public struct ACPRegistryAgentEntry: Codable, Identifiable, Sendable, Equatable 
         return AgentPreset(
             id: id,
             name: name,
+            version: version,
             command: command,
             arguments: args,
             iconName: icon,

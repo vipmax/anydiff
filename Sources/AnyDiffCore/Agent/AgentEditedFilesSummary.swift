@@ -192,6 +192,23 @@ public enum AgentGitChangesDetector {
         )
     }
 
+    /// Asynchronously captures a fast shadow snapshot on a detached background task so the main thread is never blocked.
+    public static func capturePreTurnSnapshotAsync(workingDirectory: String) async -> PreTurnGitSnapshot {
+        await Task.detached(priority: .userInitiated) {
+            capturePreTurnSnapshot(workingDirectory: workingDirectory)
+        }.value
+    }
+
+    /// Asynchronously computes the isolated diff and summary on a detached background task so the main thread is never blocked.
+    public static func computeTurnSummaryAsync(
+        workingDirectory: String,
+        snapshot: PreTurnGitSnapshot?
+    ) async -> (summary: AgentEditedFilesSummary?, rawDiffData: Data?) {
+        await Task.detached(priority: .userInitiated) {
+            computeTurnSummary(workingDirectory: workingDirectory, snapshot: snapshot)
+        }.value
+    }
+
     /// Computes the isolated diff and summary representing strictly changes made during this turn.
     public static func computeTurnSummary(
         workingDirectory: String,

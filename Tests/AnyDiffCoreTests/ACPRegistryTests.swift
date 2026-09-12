@@ -184,4 +184,197 @@ final class ACPRegistryTests: XCTestCase {
             XCTFail("Expected CancellationError, but got: \(type(of: error)): \(error)")
         }
     }
+
+    func testAgentPresetVersionCodable() throws {
+        // 1. With version
+        let presetWithVersion = AgentPreset(
+            id: "test-ver",
+            name: "Test",
+            version: "1.2.3",
+            command: "test"
+        )
+        let data = try JSONEncoder().encode(presetWithVersion)
+        let decoded = try JSONDecoder().decode(AgentPreset.self, from: data)
+        XCTAssertEqual(decoded.version, "1.2.3")
+
+        // 2. Backward compatibility with legacy JSON without version
+        let legacyJSON = """
+        {
+          "id": "legacy",
+          "name": "Legacy Agent",
+          "command": "legacy-cmd",
+          "arguments": "--flag"
+        }
+        """.data(using: .utf8)!
+        let legacyDecoded = try JSONDecoder().decode(AgentPreset.self, from: legacyJSON)
+        XCTAssertEqual(legacyDecoded.id, "legacy")
+        XCTAssertNil(legacyDecoded.version)
+    }
+
+    func testCoordinatorVersionDetectionAndUpdateAvailable() throws {
+        let coordinator = AgentSessionCoordinator()
+        let agentId = "antigravity-acp"
+
+        let entryV1 = ACPRegistryAgentEntry(
+            id: agentId,
+            name: "Google Antigravity",
+            version: "1.0.0",
+            description: "AI Agent",
+            distribution: ACPRegistryDistribution(
+                binary: [
+                    ACPRegistryAgentEntry.currentPlatformKey: ACPRegistryBinaryTarget(
+                        archive: "https://example.com/agy.zip",
+                        cmd: "./agy_acp_server.par"
+                    )
+                ]
+            )
+        )
+
+        // Before installation
+        XCTAssertFalse(coordinator.isAgentInstalled(id: agentId))
+        XCTAssertFalse(coordinator.hasUpdateAvailable(for: entryV1))
+
+        // Install v1.0.0
+        coordinator.installRegistryAgent(entryV1, binaryPath: "/fake/path/to/agy_acp_server.par")
+        XCTAssertTrue(coordinator.isAgentInstalled(id: agentId))
+        XCTAssertEqual(coordinator.installedVersion(for: agentId), "1.0.0")
+        XCTAssertFalse(coordinator.hasUpdateAvailable(for: entryV1))
+
+        // Registry entry with v1.1.1 released
+        let entryV2 = ACPRegistryAgentEntry(
+            id: agentId,
+            name: "Google Antigravity",
+            version: "1.1.1",
+            description: "AI Agent",
+            distribution: entryV1.distribution
+        )
+
+        // Update should be detected!
+        XCTAssertTrue(coordinator.hasUpdateAvailable(for: entryV2))
+
+        // Update installed agent to v1.1.1
+        coordinator.installRegistryAgent(entryV2, binaryPath: "/fake/path/v1.1.1/agy_acp_server.par")
+        XCTAssertEqual(coordinator.installedVersion(for: agentId), "1.1.1")
+        XCTAssertFalse(coordinator.hasUpdateAvailable(for: entryV2))
+
+        // Cleanup
+        coordinator.uninstallRegistryAgent(id: agentId)
+        XCTAssertFalse(coordinator.isAgentInstalled(id: agentId))
+    }
+
+    func testCoordinatorPreservesSelectedPresetOnUpdate() {
+        let coordinator = AgentSessionCoordinator()
+        let agentId = "antigravity-acp"
+
+        let entryV1 = ACPRegistryAgentEntry(
+            id: agentId,
+            name: "Google Antigravity",
+            version: "1.0.0",
+            description: "AI Agent",
+            distribution: ACPRegistryDistribution(npx: ACPRegistryNpxDistribution(package: "@example/pkg@1.0.0"))
+        )
+
+        coordinator.installRegistryAgent(entryV1)
+        coordinator.selectedPresetId = agentId
+        XCTAssertEqual(coordinator.selectedPresetId, agentId)
+
+        // Reinstalling / updating to v1.1.0 should keep selectedPresetId intact
+        let entryV2 = ACPRegistryAgentEntry(
+            id: agentId,
+            name: "Google Antigravity",
+            version: "1.1.0",
+            description: "AI Agent",
+            distribution: ACPRegistryDistribution(npx: ACPRegistryNpxDistribution(package: "@example/pkg@1.1.0"))
+        )
+        coordinator.installRegistryAgent(entryV2)
+        XCTAssertEqual(coordinator.selectedPresetId, agentId)
+        XCTAssertEqual(coordinator.installedVersion(for: agentId), "1.1.0")
+
+        coordinator.uninstallRegistryAgent(id: agentId)
+    }
+
+    func testCheckForAgentUpdatesEndToEnd() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: config)
+
+        let updatedRegistryJSON = """
+        {
+          "version": "1.0.0",
+          "agents": [
+            {
+              "id": "sample-npx-agent",
+              "name": "Sample NPX Agent",
+              "version": "1.3.0",
+              "description": "An agent running via npx updated",
+              "distribution": {
+                "npx": {
+                  "package": "@example/sample-npx@1.3.0",
+                  "args": ["--acp"]
+                }
+              }
+            }
+          ]
+        }
+        """
+
+        MockURLProtocol.requestHandler = { request in
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            return (response, updatedRegistryJSON.data(using: .utf8)!)
+        }
+
+        let mockRegistryService = ACPRegistryService(
+            registryURL: URL(string: "https://example.com/registry.json")!,
+            session: session
+        )
+
+        let coordinator = AgentSessionCoordinator(isMockAgent: false, autoCreateSession: false)
+
+        // Initially install old v1.2.3
+        let oldEntry = ACPRegistryAgentEntry(
+            id: "sample-npx-agent",
+            name: "Sample NPX Agent",
+            version: "1.2.3",
+            description: "Old version",
+            distribution: ACPRegistryDistribution(npx: ACPRegistryNpxDistribution(package: "@example/sample-npx@1.2.3"))
+        )
+        coordinator.installRegistryAgent(oldEntry)
+        XCTAssertEqual(coordinator.installedVersion(for: "sample-npx-agent"), "1.2.3")
+
+        // Run check for updates
+        let updatedIds = await coordinator.checkForAgentUpdates(registryService: mockRegistryService, forceRefresh: true)
+        XCTAssertEqual(updatedIds, ["sample-npx-agent"])
+        XCTAssertEqual(coordinator.installedVersion(for: "sample-npx-agent"), "1.3.0")
+
+        coordinator.uninstallRegistryAgent(id: "sample-npx-agent")
+    }
+}
+
+final class MockURLProtocol: URLProtocol {
+    static var requestHandler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let handler = Self.requestHandler else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+        do {
+            let (response, data) = try handler(request)
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: data)
+            client?.urlProtocolDidFinishLoading(self)
+        } catch {
+            client?.urlProtocol(self, didFailWithError: error)
+        }
+    }
+
+    override func stopLoading() {}
 }

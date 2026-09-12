@@ -68,6 +68,7 @@ open class AgentSessionManager: ObservableObject, @unchecked Sendable {
     open var isMock: Bool { false }
     open var isReadyForPrompt: Bool { initializationState == .ready }
     open var canAcceptPrompt: Bool { initializationState != .starting && status != .busy && pendingPermission == nil }
+    open var isBusyOrStreaming: Bool { status == .busy || messages.last?.isStreaming == true }
 
     public init() {}
 
@@ -175,6 +176,10 @@ open class AgentSessionManager: ObservableObject, @unchecked Sendable {
         status = .disconnected
         statusMessage = nil
     }
+
+    /// Notifies the active session that files on disk have changed (e.g. from the filesystem watcher).
+    /// Subclasses override this to update live turn diff state when appropriate.
+    open func notifyFileSystemChanged() {}
 
     @discardableResult
     open func revertTurn(messageId: UUID, workingDirectory: String) -> Bool {

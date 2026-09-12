@@ -1344,6 +1344,36 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
         return nil
     }
 
+    /// Finds the best matching excerpt file path in the MultiBuffer for a requested path.
+    /// Prioritizes exact match -> suffix match -> last path component match.
+    public func matchFilePath(_ requestedPath: String) -> String? {
+        let trimmed = requestedPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        // 1. Exact match
+        if multiBuffer.excerpts.contains(where: { $0.filePath == trimmed }) {
+            return trimmed
+        }
+
+        // 2. Suffix match (e.g. "Sources/App.swift" matches "/full/path/Sources/App.swift")
+        for excerpt in multiBuffer.excerpts {
+            if trimmed.hasSuffix("/" + excerpt.filePath) || excerpt.filePath.hasSuffix("/" + trimmed) {
+                return excerpt.filePath
+            }
+        }
+
+        // 3. Last path component match (fallback)
+        let lastComponent = (trimmed as NSString).lastPathComponent
+        guard !lastComponent.isEmpty else { return nil }
+        for excerpt in multiBuffer.excerpts {
+            if (excerpt.filePath as NSString).lastPathComponent == lastComponent {
+                return excerpt.filePath
+            }
+        }
+
+        return nil
+    }
+
     public func isDeleted(multiBufferRow: MultiBufferRow) -> Bool {
         codeInfo(for: multiBufferRow)?.diffKind == .deleted
     }

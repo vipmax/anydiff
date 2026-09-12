@@ -96,6 +96,18 @@ public struct EditorViewState: Sendable, Equatable {
     }
 }
 
+public struct FileNavigationRequest: Equatable, Sendable {
+    public let filePath: String
+    public let lineNumber: Int?
+    public let endLineNumber: Int?
+
+    public init(filePath: String, lineNumber: Int? = nil, endLineNumber: Int? = nil) {
+        self.filePath = filePath
+        self.lineNumber = lineNumber
+        self.endLineNumber = endLineNumber
+    }
+}
+
 extension Notification.Name {
     public static let focusFileInEditor = Notification.Name("AnyDiff_focusFileInEditor")
     public static let goToNextHunk = Notification.Name("AnyDiff_goToNextHunk")

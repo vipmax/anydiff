@@ -165,13 +165,16 @@ public struct VirtualizedAgentRegistryListView: NSViewRepresentable {
             }
 
             let isInstalled = parent.coordinator.isAgentInstalled(id: agent.id)
-            let isInstalling = parent.installingAgentId == agent.id
+            let hasUpdate = parent.coordinator.hasUpdateAvailable(for: agent)
+            let isUpdating = parent.coordinator.isAgentUpdating(id: agent.id)
+            let isInstalling = parent.installingAgentId == agent.id || isUpdating
             let isSupported = agent.isSupportedOnCurrentPlatform
             let progress = isInstalling ? parent.installProgress : 0.0
 
             cell?.configure(
                 agent: agent,
                 isInstalled: isInstalled,
+                hasUpdate: hasUpdate,
                 isInstalling: isInstalling,
                 isSupported: isSupported,
                 progress: progress,
@@ -725,6 +728,7 @@ final class AgentRegistryTableCellView: NSTableCellView {
     func configure(
         agent: ACPRegistryAgentEntry,
         isInstalled: Bool,
+        hasUpdate: Bool = false,
         isInstalling: Bool,
         isSupported: Bool,
         progress: Double,
@@ -766,11 +770,19 @@ final class AgentRegistryTableCellView: NSTableCellView {
         descLabel.textColor = theme.foreground.withAlphaComponent(0.85)
 
         // Version badge pill
-        versionBadge.configure(
-            text: "v\(agent.version)",
-            textColor: theme.gutterForeground,
-            bgColor: theme.foreground.withAlphaComponent(0.07)
-        )
+        if hasUpdate {
+            versionBadge.configure(
+                text: "Update: v\(agent.version)",
+                textColor: NSColor.controlAccentColor,
+                bgColor: NSColor.controlAccentColor.withAlphaComponent(0.12)
+            )
+        } else {
+            versionBadge.configure(
+                text: "v\(agent.version)",
+                textColor: theme.gutterForeground,
+                bgColor: theme.foreground.withAlphaComponent(0.07)
+            )
+        }
 
         // Type badge (npx vs bin)
         if agent.distribution.npx != nil {
@@ -876,16 +888,24 @@ final class AgentRegistryTableCellView: NSTableCellView {
         progressButton.themeGutterForeground = theme.gutterForeground
         progressButton.progress = progress
 
-        // Button state handling: exactly one action visible at a time
+        // Button state handling
         if isInstalling {
             installButton.isHidden = true
             removeButton.isHidden = true
             progressButton.isHidden = false
             progressButton.updateContent()
         } else if isInstalled {
-            installButton.isHidden = true
-            removeButton.isHidden = false
-            progressButton.isHidden = true
+            if hasUpdate {
+                installButton.isHidden = false
+                installButton.isEnabled = true
+                installButton.title = "Update"
+                removeButton.isHidden = false
+                progressButton.isHidden = true
+            } else {
+                installButton.isHidden = true
+                removeButton.isHidden = false
+                progressButton.isHidden = true
+            }
         } else {
             installButton.isHidden = false
             removeButton.isHidden = true

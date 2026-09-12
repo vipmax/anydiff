@@ -14,6 +14,7 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
     public var onRevert: ((AgentEditedFilesSummary) -> Void)?
     public var onRestore: ((AgentEditedFilesSummary) -> Void)?
     public var onPreviewImages: (([AgentImageAttachment], Int) -> Void)?
+    public var onOpenURL: ((URL) -> Void)?
 
     public init(
         messages: [AgentMessage],
@@ -25,7 +26,8 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
         onReview: ((AgentEditedFilesSummary) -> Void)? = nil,
         onRevert: ((AgentEditedFilesSummary) -> Void)? = nil,
         onRestore: ((AgentEditedFilesSummary) -> Void)? = nil,
-        onPreviewImages: (([AgentImageAttachment], Int) -> Void)? = nil
+        onPreviewImages: (([AgentImageAttachment], Int) -> Void)? = nil,
+        onOpenURL: ((URL) -> Void)? = nil
     ) {
         self.messages = messages
         self.theme = theme
@@ -37,6 +39,7 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
         self.onRevert = onRevert
         self.onRestore = onRestore
         self.onPreviewImages = onPreviewImages
+        self.onOpenURL = onOpenURL
     }
 
     public func makeCoordinator() -> Coordinator {
@@ -107,6 +110,7 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
         scrollView.onRevert = onRevert
         scrollView.onRestore = onRestore
         scrollView.onPreviewImages = onPreviewImages
+        scrollView.onOpenURL = onOpenURL
         context.coordinator.record(
             messages: messages,
             theme: theme,
@@ -131,6 +135,7 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
         scrollView.onRevert = onRevert
         scrollView.onRestore = onRestore
         scrollView.onPreviewImages = onPreviewImages
+        scrollView.onOpenURL = onOpenURL
 
         // If SwiftUI called updateNSView purely because of an unrelated UI state change
         // (like isChatNearBottom button appearing or parent view re-evaluating during scroll),
@@ -403,6 +408,11 @@ public final class AgentNativeStandardChatScrollView: NSScrollView {
             documentViewCustom.onPreviewImages = onPreviewImages
         }
     }
+    public var onOpenURL: ((URL) -> Void)? {
+        didSet {
+            documentViewCustom.onOpenURL = onOpenURL
+        }
+    }
 
     public override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -627,6 +637,7 @@ public final class AgentNativeStandardChatDocumentView: NSView {
     public var onRevert: ((AgentEditedFilesSummary) -> Void)?
     public var onRestore: ((AgentEditedFilesSummary) -> Void)?
     public var onPreviewImages: (([AgentImageAttachment], Int) -> Void)?
+    public var onOpenURL: ((URL) -> Void)? = nil
 
     public override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -1112,8 +1123,75 @@ public final class AgentSelectableTextView: NSTextView {
     public override var isFlipped: Bool { true }
 
     public override func hitTest(_ point: NSPoint) -> NSView? {
+        let pInTV = convert(point, from: superview)
+        if let lm = layoutManager, let tc = textContainer, let ts = textStorage {
+            let glyphIdx = lm.glyphIndex(for: pInTV, in: tc)
+            if glyphIdx < lm.numberOfGlyphs {
+                let charIdx = lm.characterIndexForGlyph(at: glyphIdx)
+                if charIdx < ts.length {
+                    let rect = lm.boundingRect(forGlyphRange: NSRange(location: glyphIdx, length: 1), in: tc)
+                    if rect.contains(pInTV), ts.attribute(.link, at: charIdx, effectiveRange: nil) != nil {
+                        return self
+                    }
+                }
+            }
+        }
         if let sv = enclosingScrollView, !(sv is AgentNativeChatScrollView) {
             return super.hitTest(point)
+        }
+        return nil
+    }
+
+    public override func mouseDown(with event: NSEvent) {
+        let pt = convert(event.locationInWindow, from: nil)
+        if let lm = layoutManager, let tc = textContainer, let ts = textStorage {
+            let glyphIdx = lm.glyphIndex(for: pt, in: tc)
+            if glyphIdx < lm.numberOfGlyphs {
+                let charIdx = lm.characterIndexForGlyph(at: glyphIdx)
+                if charIdx < ts.length {
+                    let rect = lm.boundingRect(forGlyphRange: NSRange(location: glyphIdx, length: 1), in: tc)
+                    if rect.contains(pt), let linkVal = ts.attribute(.link, at: charIdx, effectiveRange: nil) {
+                        let url: URL?
+                        if let u = linkVal as? URL {
+                            url = u
+                        } else if let s = linkVal as? String {
+                            url = URL(string: s)
+                        } else {
+                            url = nil
+                        }
+                        if let url {
+                            findEnclosingOpenURLHandler()?(url)
+                            return
+                        }
+                    }
+                }
+            }
+        }
+        super.mouseDown(with: event)
+    }
+
+    public override func resetCursorRects() {
+        super.resetCursorRects()
+        guard let lm = layoutManager, let tc = textContainer, let ts = textStorage else { return }
+        ts.enumerateAttribute(.link, in: NSRange(location: 0, length: ts.length), options: []) { val, range, _ in
+            guard val != nil else { return }
+            let glyphRange = lm.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            lm.enumerateEnclosingRects(forGlyphRange: glyphRange, withinSelectedGlyphRange: NSRange(location: NSNotFound, length: 0), in: tc) { rect, _ in
+                self.addCursorRect(rect, cursor: .pointingHand)
+            }
+        }
+    }
+
+    private func findEnclosingOpenURLHandler() -> ((URL) -> Void)? {
+        var curr: NSView? = self
+        while let v = curr {
+            if let doc = v as? AgentNativeStandardChatDocumentView {
+                return doc.onOpenURL
+            }
+            if let doc = v as? AgentNativeChatDocumentView {
+                return doc.onOpenURL
+            }
+            curr = v.superview
         }
         return nil
     }
@@ -1280,6 +1358,9 @@ public final class AgentNativeChatDocumentView: NSView {
         var endTVKey: String
         var endCharIndex: Int
     }
+    public var onOpenURL: ((URL) -> Void)? = nil
+    private var docTrackingArea: NSTrackingArea?
+
     private var persistentSelection: PersistentTextSelection? = nil
     private var selectionHighlightRects: [NSRect] = []
     private var selectedCombinedText: String = ""
@@ -1630,6 +1711,82 @@ public final class AgentNativeChatDocumentView: NSView {
         startAutoScrollTimer(with: event)
     }
 
+    public override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let docTrackingArea {
+            removeTrackingArea(docTrackingArea)
+        }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .mouseMoved, .activeInActiveApp, .cursorUpdate],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        self.docTrackingArea = area
+    }
+
+    public override func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+        let pt = convert(event.locationInWindow, from: nil)
+        if linkAtPoint(pt) != nil {
+            NSCursor.pointingHand.set()
+        } else {
+            NSCursor.arrow.set()
+        }
+    }
+
+    public override func cursorUpdate(with event: NSEvent) {
+        let pt = convert(event.locationInWindow, from: nil)
+        if linkAtPoint(pt) != nil {
+            NSCursor.pointingHand.set()
+        } else {
+            NSCursor.arrow.set()
+        }
+    }
+
+    public override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        NSCursor.arrow.set()
+    }
+
+    private func linkAtPoint(_ docPt: NSPoint) -> (url: URL, range: NSRange, tv: AgentSelectableTextView)? {
+        guard let cellItem = orderedCells.first(where: { $0.cell.frame.contains(docPt) }) else {
+            return nil
+        }
+        for tv in cellItem.cell.allSelectableTextViews() {
+            let pInTV = tv.convert(docPt, from: self)
+            guard tv.bounds.contains(pInTV) else { continue }
+            guard let lm = tv.layoutManager,
+                  let tc = tv.textContainer,
+                  let ts = tv.textStorage else { continue }
+
+            let glyphIdx = lm.glyphIndex(for: pInTV, in: tc)
+            guard glyphIdx < lm.numberOfGlyphs else { continue }
+            let charIdx = lm.characterIndexForGlyph(at: glyphIdx)
+            guard charIdx < ts.length else { continue }
+
+            let glyphRect = lm.boundingRect(forGlyphRange: NSRange(location: glyphIdx, length: 1), in: tc)
+            guard glyphRect.contains(pInTV) else { continue }
+
+            var effRange = NSRange(location: 0, length: 0)
+            if let linkValue = ts.attribute(.link, at: charIdx, effectiveRange: &effRange) {
+                let url: URL?
+                if let u = linkValue as? URL {
+                    url = u
+                } else if let s = linkValue as? String {
+                    url = URL(string: s)
+                } else {
+                    url = nil
+                }
+                if let validURL = url {
+                    return (validURL, effRange, tv)
+                }
+            }
+        }
+        return nil
+    }
+
     public override func mouseUp(with event: NSEvent) {
         stopAutoScrollTimer()
         guard isDraggingSelection else { return }
@@ -1640,6 +1797,10 @@ public final class AgentNativeChatDocumentView: NSView {
             if dist < 4 {
                 // Clicked without dragging -> clear highlight but keep anchor point
                 clearSelection()
+                if let (url, _, _) = linkAtPoint(p1) {
+                    onOpenURL?(url)
+                    return
+                }
             }
         }
     }
@@ -5158,27 +5319,76 @@ public final class AgentNativeMessageCell: NSView {
         // AttributedString removes markdown delimiters and stores emphasis as
         // inline presentation intents. Convert those intents to AppKit fonts
         // so both message text and thoughts render without literal ** markers.
+        var currentOffset = 0
         for run in parsed.runs {
-            guard let intent = run.inlinePresentationIntent else { continue }
-            let prefix = parsed.characters[parsed.startIndex..<run.range.lowerBound]
-            let location = String(prefix).utf16.count
             let length = String(parsed.characters[run.range]).utf16.count
             guard length > 0 else { continue }
+            let range = NSRange(location: currentOffset, length: length)
+            currentOffset += length
 
-            let runFont: NSFont
-            if intent.rawValue & 4 != 0 {
-                runFont = NSFont.monospacedSystemFont(ofSize: max(11.5, font.pointSize - 0.5), weight: .regular)
-                let codeBg = (NSColor(cgColor: theme.gutterBackground.cgColor) ?? NSColor.windowBackgroundColor).withAlphaComponent(0.65)
-                result.addAttribute(.backgroundColor, value: codeBg, range: NSRange(location: location, length: length))
-            } else if intent.rawValue & 2 != 0 {
-                runFont = NSFont.systemFont(ofSize: font.pointSize, weight: .bold)
-            } else {
-                runFont = font
+            let intent = run.inlinePresentationIntent
+            let link = run.link
+
+            var runFont: NSFont = font
+            if let intent = intent {
+                if intent.rawValue & 4 != 0 {
+                    runFont = NSFont.monospacedSystemFont(ofSize: max(11.5, font.pointSize - 0.5), weight: .regular)
+                    let codeBg = (NSColor(cgColor: theme.gutterBackground.cgColor) ?? NSColor.windowBackgroundColor).withAlphaComponent(0.65)
+                    result.addAttribute(.backgroundColor, value: codeBg, range: range)
+                } else if intent.rawValue & 2 != 0 {
+                    runFont = NSFont.systemFont(ofSize: font.pointSize, weight: .bold)
+                }
             }
-            result.addAttribute(.font, value: runFont, range: NSRange(location: location, length: length))
+
+            if let link = link {
+                let linkColor = NSColor(accentColor)
+                result.addAttribute(.link, value: link, range: range)
+                result.addAttribute(.foregroundColor, value: linkColor, range: range)
+                result.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: range)
+                result.addAttribute(.underlineColor, value: linkColor.withAlphaComponent(0.4), range: range)
+                result.addAttribute(.cursor, value: NSCursor.pointingHand, range: range)
+                result.addAttribute(.toolTip, value: link.isFileURL ? link.path : link.absoluteString, range: range)
+                if (intent?.rawValue ?? 0) & 4 != 0 {
+                    runFont = NSFont.monospacedSystemFont(ofSize: max(11.5, font.pointSize - 0.5), weight: .semibold)
+                }
+            }
+
+            result.addAttribute(.font, value: runFont, range: range)
         }
 
+        linkifyRawURLs(in: result)
+
         return result
+    }
+
+    private static let rawLinkDetector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
+
+    private func linkifyRawURLs(in attrString: NSMutableAttributedString) {
+        guard let detector = Self.rawLinkDetector else { return }
+        let fullLength = (attrString.string as NSString).length
+        guard fullLength > 0 else { return }
+        let fullRange = NSRange(location: 0, length: fullLength)
+        let matches = detector.matches(in: attrString.string, options: [], range: fullRange)
+        let linkColor = NSColor(accentColor)
+
+        for match in matches {
+            guard let url = match.url else { continue }
+            var hasLink = false
+            attrString.enumerateAttribute(.link, in: match.range, options: []) { val, _, stop in
+                if val != nil {
+                    hasLink = true
+                    stop.pointee = true
+                }
+            }
+            if !hasLink {
+                attrString.addAttribute(.link, value: url, range: match.range)
+                attrString.addAttribute(.foregroundColor, value: linkColor, range: match.range)
+                attrString.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: match.range)
+                attrString.addAttribute(.underlineColor, value: linkColor.withAlphaComponent(0.4), range: match.range)
+                attrString.addAttribute(.cursor, value: NSCursor.pointingHand, range: match.range)
+                attrString.addAttribute(.toolTip, value: url.isFileURL ? url.path : url.absoluteString, range: match.range)
+            }
+        }
     }
 
     private func assistantViewHeight(_ view: NSView, contentWidth: CGFloat) -> CGFloat {

@@ -374,4 +374,13 @@ final class AgentSessionCoordinatorTests: XCTestCase {
         XCTAssertTrue(diffText.contains("diff --git a/Sources/AnyDiff/App.swift b/Sources/AnyDiff/App.swift"))
         XCTAssertTrue(diffText.contains("+let c = 30"))
     }
+
+    func testCapturePreTurnSnapshotAsyncNonGit() async {
+        let snapshot = await AgentGitChangesDetector.capturePreTurnSnapshotAsync(workingDirectory: "/nonexistent/path")
+        XCTAssertFalse(snapshot.isGitRepository)
+
+        let (summary, rawData) = await AgentGitChangesDetector.computeTurnSummaryAsync(workingDirectory: "/nonexistent/path", snapshot: snapshot)
+        XCTAssertNil(summary)
+        XCTAssertNil(rawData)
+    }
 }

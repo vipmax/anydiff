@@ -1109,10 +1109,55 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         needsDisplay = true
     }
 
+    @discardableResult
+    public func navigateTo(filePath: String, lineNumber: Int? = nil, endLineNumber: Int? = nil, shouldFocus: Bool = true) -> Bool {
+        syncLayoutIfNeeded()
+        guard let dm = displayMap, let targetFile = dm.matchFilePath(filePath) else {
+            return false
+        }
+
+        if let line = lineNumber {
+            if let row = dm.codeRow(forFilePath: targetFile, lineNumber: line) {
+                if let endLine = endLineNumber, endLine > line,
+                   let endRow = dm.codeRow(forFilePath: targetFile, lineNumber: endLine) {
+                    let endCol = dm.lineLength(at: endRow)
+                    selectionAnchor = MultiBufferPoint(row: row, column: 0)
+                    cursorPoint = MultiBufferPoint(row: endRow, column: endCol)
+                } else {
+                    selectionAnchor = nil
+                    cursorPoint = MultiBufferPoint(row: row, column: 0)
+                }
+
+                if let displayLineIdx = dm.displayLineIndex(forMultiBufferRow: row) {
+                    let targetY = CGFloat(displayLineIdx) * lineHeight
+                    let viewportHeight = bounds.height
+                    let centeredY = max(0, targetY - (viewportHeight / 2) + (lineHeight / 2))
+                    let maxScrollY = max(0, totalDocumentHeight - bounds.height)
+                    scrollOffsetY = min(maxScrollY, centeredY)
+                    showScrollbarsWithAutohide(for: .vertical)
+                }
+                if shouldFocus {
+                    focus()
+                }
+                needsDisplay = true
+                return true
+            }
+        }
+
+        scrollToFilePath(targetFile)
+        if shouldFocus {
+            focus()
+        }
+        return true
+    }
+
     @objc private func handleFocusFileNotification(_ notification: Notification) {
-        guard let path = notification.object as? String else { return }
-        scrollToFilePath(path)
-        focus()
+        if let request = notification.object as? FileNavigationRequest {
+            _ = navigateTo(filePath: request.filePath, lineNumber: request.lineNumber, endLineNumber: request.endLineNumber, shouldFocus: true)
+        } else if let path = notification.object as? String {
+            scrollToFilePath(path)
+            focus()
+        }
     }
 
     // MARK: - Hunk Navigation

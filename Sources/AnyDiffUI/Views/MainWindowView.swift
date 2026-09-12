@@ -53,7 +53,7 @@ public struct MainWindowView: View {
     @State private var hasExecutedSearch: Bool = false
 
     @StateObject private var systemAppearance = SystemAppearanceObserver()
-    @StateObject private var agentCoordinator = AgentSessionCoordinator()
+    @StateObject private var agentCoordinator = AgentSessionCoordinator(enablePeriodicAutoUpdate: true)
     @StateObject private var panelLayout = PanelLayoutManager()
     @State private var isAgentSessionsPresented: Bool = false
     @State private var isAgentSessionsHovered: Bool = false
@@ -848,6 +848,9 @@ public struct MainWindowView: View {
                         },
                         onPreviewImages: { imgs, idx, isDraft in
                             agentCoordinator.showImagePreview(images: imgs, selectedIndex: idx, isDraft: isDraft)
+                        },
+                        onOpenURL: { url in
+                            handleOpenURL(url)
                         }
                     )
                     .id(activeSession.id)
@@ -1677,6 +1680,39 @@ public struct MainWindowView: View {
         reviewDisplayMap.clear()
     }
 
+    private func handleOpenURL(_ url: URL) {
+        let target = FileLinkParser.parse(url: url, workingDirectory: effectiveWorkingDirectory)
+        switch target.targetType {
+        case .web(let webURL):
+            NSWorkspace.shared.open(webURL)
+
+        case .directory(let dirPath):
+            let dirURL = URL(fileURLWithPath: dirPath)
+            NSWorkspace.shared.open(dirURL)
+
+        case .file(let filePath, let line, let endLine):
+            if panelLayout.slot(for: .editor) == nil {
+                panelLayout.assign(.editor, to: .center)
+            }
+
+            if let targetFile = activeDisplayMap.matchFilePath(filePath) {
+                selectedFilePath = targetFile
+                NotificationCenter.default.post(
+                    name: .focusFileInEditor,
+                    object: FileNavigationRequest(filePath: targetFile, lineNumber: line, endLineNumber: endLine)
+                )
+            } else {
+                let fileURL = URL(fileURLWithPath: filePath)
+                if FileManager.default.fileExists(atPath: filePath) {
+                    NSWorkspace.shared.open(fileURL)
+                }
+            }
+
+        case .custom(let customURL):
+            NSWorkspace.shared.open(customURL)
+        }
+    }
+
     private func handleOpenShortcut() {
         if showOpenSourcePopover {
             showOpenSourcePopover = false
@@ -2301,6 +2337,7 @@ public struct MainWindowView: View {
 
         if hasGitStateChange {
             DispatchQueue.main.async {
+                self.agentCoordinator.notifyFileSystemChanged()
                 self.scheduleGitStateReload()
             }
             return
@@ -2360,6 +2397,7 @@ public struct MainWindowView: View {
 
         guard !changedPaths.isEmpty else { return }
         DispatchQueue.main.async {
+            self.agentCoordinator.notifyFileSystemChanged()
             self.pendingWatchPaths.formUnion(changedPaths)
             guard !self.watchRefreshInFlight else { return }
             self.startPendingWatchRefresh(directory: resolvedCurrentDir, checkRenames: hasRenameEvents)
