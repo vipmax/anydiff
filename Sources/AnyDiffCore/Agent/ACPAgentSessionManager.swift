@@ -11,7 +11,6 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
 
     private let client: ACPClient
     private var currentWorkingDirectory: String = ""
-    public internal(set) var currentSessionId: String? = nil
     private var currentStreamMessageId: UUID? = nil
     private var initializationTask: Task<Void, Never>?
     private var initializationWorkingDirectory: String?
@@ -82,6 +81,9 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
 
     public func prepareAgent(workingDirectory: String, loadSessionId: String?) {
         self.targetLoadSessionId = loadSessionId
+        if let loadSessionId, currentSessionId == nil {
+            self.currentSessionId = loadSessionId
+        }
         self.prepareAgent(workingDirectory: workingDirectory)
     }
 
@@ -247,6 +249,7 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
     }
 
     public override func clearSession() {
+        super.clearSession()
         liveGitDiffTask?.cancel()
         liveGitDiffTask = nil
         liveGitDiffPending = false

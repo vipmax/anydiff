@@ -32,12 +32,25 @@ public struct AgentSessionRowView: View {
                 HStack(spacing: 8) {
                     statusIconView
 
-                    VStack(alignment: .leading, spacing: 1) {
+                    VStack(alignment: .leading, spacing: 1.5) {
                         HStack(spacing: 5) {
                             Text(session.title)
                                 .font(.system(size: 11.5, weight: (isActive || session.hasUnreadUpdates) ? .semibold : .regular))
                                 .foregroundColor(.primary)
                                 .lineLimit(1)
+
+                            if let shortId = session.shortSessionId, !session.title.contains(shortId) {
+                                Text(shortId)
+                                    .font(.system(size: 8.5, weight: .medium, design: .monospaced))
+                                    .foregroundColor(.secondary.opacity(0.85))
+                                    .padding(.horizontal, 4)
+                                    .padding(.vertical, 1)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 3.5, style: .continuous)
+                                            .fill(Color.primary.opacity(0.06))
+                                    )
+                                    .layoutPriority(1)
+                            }
 
                             if session.hasUnreadUpdates {
                                 Circle()
@@ -103,6 +116,23 @@ public struct AgentSessionRowView: View {
         .onHover { hovering in
             isHovered = hovering
         }
+        .contextMenu {
+            if let fullId = session.displaySessionId {
+                Button(action: {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(fullId, forType: .string)
+                }) {
+                    Label("Copy Session ID (\(session.shortSessionId ?? fullId))", systemImage: "doc.on.doc")
+                }
+                Divider()
+            }
+            if canClose {
+                Button(role: .destructive, action: onClose) {
+                    Label("Close Session", systemImage: "xmark")
+                }
+            }
+        }
+        .help(session.displaySessionId != nil ? "Session ID: \(session.displaySessionId!)" : session.title)
     }
 
     @ViewBuilder

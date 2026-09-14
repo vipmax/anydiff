@@ -68,6 +68,10 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
         textView.autoresizingMask = [.width]
         textView.delegate = context.coordinator
         textView.placeholderString = placeholder
+        textView.string = text
+        if !text.isEmpty {
+            textView.selectedRange = NSRange(location: (text as NSString).length, length: 0)
+        }
         textView.onSend = onSend
         textView.onFocusChanged = onFocusChanged
         textView.onImagesPasted = onImagesPasted
@@ -79,6 +83,10 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
         scrollView.documentView = textView
         context.coordinator.textView = textView
         context.coordinator.scrollView = scrollView
+
+        DispatchQueue.main.async {
+            textView.recalculateHeight()
+        }
 
         return scrollView
     }
@@ -276,7 +284,7 @@ public struct AgentInputView: View {
     public var onReview: ((AgentEditedFilesSummary) -> Void)?
     public var onPreviewImages: (([AgentImageAttachment], Int, Bool) -> Void)?
 
-    @State private var attachedImages: [AgentImageAttachment] = []
+    @Binding public var attachedImages: [AgentImageAttachment]
     @State private var previewImageIndex: Int? = nil
     @State private var isSettingsPopoverPresented: Bool = false
     @Binding private var calculatedHeight: CGFloat
@@ -287,6 +295,7 @@ public struct AgentInputView: View {
 
     public init(
         text: Binding<String>,
+        attachedImages: Binding<[AgentImageAttachment]>? = nil,
         agentManager: AgentSessionManager,
         theme: Theme,
         accentColor: Color = .accentColor,
@@ -298,6 +307,10 @@ public struct AgentInputView: View {
         onPreviewImages: (([AgentImageAttachment], Int, Bool) -> Void)? = nil
     ) {
         self._text = text
+        self._attachedImages = attachedImages ?? Binding(
+            get: { agentManager.draftAttachments },
+            set: { agentManager.draftAttachments = $0 }
+        )
         self.agentManager = agentManager
         self.theme = theme
         self.accentColor = accentColor
@@ -311,6 +324,7 @@ public struct AgentInputView: View {
 
     public init(
         text: Binding<String>,
+        attachedImages: Binding<[AgentImageAttachment]>? = nil,
         agentManager: AgentSessionManager,
         theme: Theme,
         accentColor: Color = .accentColor,
@@ -322,6 +336,10 @@ public struct AgentInputView: View {
         onPreviewImages: (([AgentImageAttachment], Int, Bool) -> Void)? = nil
     ) {
         self._text = text
+        self._attachedImages = attachedImages ?? Binding(
+            get: { agentManager.draftAttachments },
+            set: { agentManager.draftAttachments = $0 }
+        )
         self.agentManager = agentManager
         self.theme = theme
         self.accentColor = accentColor

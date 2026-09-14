@@ -27,6 +27,19 @@ final class AgentSessionCoordinatorTests: XCTestCase {
         XCTAssertTrue(coordinator.isMockAgent)
         XCTAssertTrue(coordinator.isPanelOpen)
         XCTAssertEqual(coordinator.activeSession?.title, "Mock Session")
+        XCTAssertEqual(coordinator.activeSession?.displaySessionId, "mock-1")
+        XCTAssertEqual(coordinator.activeSession?.shortSessionId, "mock-1")
+    }
+
+    func testSessionItemSessionIdTracking() {
+        let manager = AgentSessionManager()
+        let session = AgentSessionItem(manager: manager, isMock: false)
+        XCTAssertNil(session.displaySessionId)
+        XCTAssertNil(session.shortSessionId)
+
+        manager.currentSessionId = "0853a6d5-8baa-4c94-9ee6-f876a6e37c17"
+        XCTAssertEqual(session.displaySessionId, "0853a6d5-8baa-4c94-9ee6-f876a6e37c17")
+        XCTAssertEqual(session.shortSessionId, "0853a6d5")
     }
 #endif
 
@@ -383,4 +396,59 @@ final class AgentSessionCoordinatorTests: XCTestCase {
         XCTAssertNil(summary)
         XCTAssertNil(rawData)
     }
+
+    func testDraftPromptAndAttachmentsPreservedAcrossSessionSwitchesAndStartScreen() {
+        let coordinator = AgentSessionCoordinator(isMockAgent: false, autoCreateSession: true)
+        guard let session1 = coordinator.activeSession else {
+            XCTFail("Expected initial active session")
+            return
+        }
+
+        // Initially empty
+        XCTAssertEqual(session1.draftPrompt, "")
+        XCTAssertEqual(session1.draftAttachments.count, 0)
+
+        // User writes draft in session 1
+        session1.draftPrompt = "Hello from agent 1 draft"
+        let attachment1 = AgentImageAttachment(id: UUID(), mimeType: "image/png", filename: "screenshot1.png")
+        session1.draftAttachments = [attachment1]
+
+        // User opens start screen ("Choose agents")
+        coordinator.openStartScreen()
+        XCTAssertTrue(coordinator.showStartScreen)
+        XCTAssertEqual(coordinator.activeSession?.draftPrompt, "Hello from agent 1 draft")
+        XCTAssertEqual(coordinator.activeSession?.draftAttachments.count, 1)
+
+        // User creates/selects session 2
+        let session2 = coordinator.createNewSession(workingDirectory: "/tmp")
+        coordinator.selectSession(id: session2.id)
+        XCTAssertFalse(coordinator.showStartScreen)
+        XCTAssertEqual(coordinator.activeSessionId, session2.id)
+
+        // Session 2 has its own empty draft
+        XCTAssertEqual(session2.draftPrompt, "")
+        XCTAssertEqual(session2.draftAttachments.count, 0)
+
+        // User writes draft in session 2
+        session2.draftPrompt = "Draft for agent 2"
+
+        // User switches back to session 1 ("Back to chat" or selecting session 1)
+        coordinator.selectSession(id: session1.id)
+        XCTAssertEqual(coordinator.activeSessionId, session1.id)
+        XCTAssertEqual(coordinator.activeSession?.draftPrompt, "Hello from agent 1 draft")
+        XCTAssertEqual(coordinator.activeSession?.draftAttachments.first?.filename, "screenshot1.png")
+
+        // Switching back to session 2 restores session 2 draft
+        coordinator.selectSession(id: session2.id)
+        XCTAssertEqual(coordinator.activeSession?.draftPrompt, "Draft for agent 2")
+        XCTAssertEqual(coordinator.activeSession?.draftAttachments.count, 0)
+
+        // Clearing session 1 resets its draft
+        session1.manager.clearSession()
+        XCTAssertEqual(session1.draftPrompt, "")
+        XCTAssertEqual(session1.draftAttachments.count, 0)
+        // Session 2 draft is untouched
+        XCTAssertEqual(session2.draftPrompt, "Draft for agent 2")
+    }
 }
+

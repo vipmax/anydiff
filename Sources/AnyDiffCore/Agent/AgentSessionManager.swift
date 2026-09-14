@@ -49,6 +49,7 @@ public struct AgentPermissionRequest: Identifiable, Sendable {
 open class AgentSessionManager: ObservableObject, @unchecked Sendable {
     @Published public var status: AgentConnectionStatus = .disconnected
     @Published public var initializationState: AgentInitializationState = .notStarted
+    @Published public var currentSessionId: String? = nil
     @Published public var messages: [AgentMessage] = []
     @Published public var isPanelOpen: Bool = true
     @Published public var statusMessage: String? = nil
@@ -65,6 +66,8 @@ open class AgentSessionManager: ObservableObject, @unchecked Sendable {
     @Published public var pendingPermission: AgentPermissionRequest? = nil
     @Published public var liveEditedSummary: AgentEditedFilesSummary? = nil
     @Published public var isNotificationsEnabled: Bool = false
+    @Published public var draftPrompt: String = ""
+    @Published public var draftAttachments: [AgentImageAttachment] = []
     open var isMock: Bool { false }
     open var isReadyForPrompt: Bool { initializationState == .ready }
     open var canAcceptPrompt: Bool { initializationState != .starting && status != .busy && pendingPermission == nil }
@@ -166,6 +169,8 @@ open class AgentSessionManager: ObservableObject, @unchecked Sendable {
 
     open func clearSession() {
         messages.removeAll()
+        draftPrompt = ""
+        draftAttachments.removeAll()
         initializationState = .notStarted
         status = .disconnected
         statusMessage = nil

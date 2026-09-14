@@ -2,27 +2,33 @@ import SwiftUI
 import AppKit
 import AnyDiffCore
 
-public enum MarkdownBlock: Identifiable {
+public enum MarkdownBlock: Identifiable, Equatable {
     public var id: String {
         switch self {
         case .header(let level, let text):
             return "h_\(level)_\(text.hashValue)"
         case .bulletItem(let text):
             return "b_\(text.hashValue)"
+        case .numberedItem(let number, let text):
+            return "n_\(number)_\(text.hashValue)"
         case .paragraph(let text):
             return "p_\(text.hashValue)"
         case .codeBlock(let lang, let code):
             return "c_\(lang ?? "")_\(code.hashValue)"
         case .quote(let text):
             return "q_\(text.hashValue)"
+        case .divider:
+            return "d"
         }
     }
 
     case header(level: Int, text: String)
     case bulletItem(String)
+    case numberedItem(number: String, text: String)
     case paragraph(String)
     case codeBlock(language: String?, code: String)
     case quote(String)
+    case divider
 }
 
 public enum AgentMarkdownParser {
@@ -58,8 +64,8 @@ public enum AgentMarkdownParser {
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
 
-            // 1. Code Block Fence
-            if trimmed.hasPrefix("```") {
+            // 1. Code Block Fence (``` or ~~~)
+            if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
                 if inCodeBlock {
                     let code = currentCodeLines.joined(separator: "\n")
                     blocks.append(.codeBlock(language: currentLanguage, code: code))
@@ -94,32 +100,67 @@ public enum AgentMarkdownParser {
                 flushQuote()
             }
 
-            // 3. Headers
-            if trimmed.hasPrefix("### ") {
+            // 3. Thematic break / Divider (---, ***, ___)
+            if isDivider(trimmed) {
                 flushParagraph()
-                blocks.append(.header(level: 3, text: String(trimmed.dropFirst(4))))
-                continue
-            } else if trimmed.hasPrefix("## ") {
-                flushParagraph()
-                blocks.append(.header(level: 2, text: String(trimmed.dropFirst(3))))
-                continue
-            } else if trimmed.hasPrefix("# ") {
-                flushParagraph()
-                blocks.append(.header(level: 1, text: String(trimmed.dropFirst(2))))
+                blocks.append(.divider)
                 continue
             }
 
-            // 4. Bullet Items (prevents Apple AttributedString markdown list parsing abort on + / -)
-            if trimmed.hasPrefix("- ") || trimmed.hasPrefix("* ") {
+            // 4. Headers (#, ##, ###, ####, #####, ######)
+            if trimmed.hasPrefix("#") {
+                var level = 0
+                for char in trimmed {
+                    if char == "#" {
+                        level += 1
+                    } else {
+                        break
+                    }
+                }
+                if level >= 1 && level <= 6 {
+                    let afterHashes = trimmed.dropFirst(level)
+                    if afterHashes.hasPrefix(" ") || afterHashes.hasPrefix("\t") {
+                        flushParagraph()
+                        let headerText = afterHashes.trimmingCharacters(in: .whitespaces)
+                        blocks.append(.header(level: level, text: headerText))
+                        continue
+                    }
+                }
+            }
+
+            // 5. Bullet Items (- , * , + )
+            if trimmed.hasPrefix("- ") || trimmed.hasPrefix("* ") || trimmed.hasPrefix("+ ") {
                 flushParagraph()
-                let itemText = String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+                var itemText = String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+                if itemText.hasPrefix("[ ] ") {
+                    itemText = "☐ " + itemText.dropFirst(4)
+                } else if itemText.hasPrefix("[x] ") || itemText.hasPrefix("[X] ") {
+                    itemText = "☑ " + itemText.dropFirst(4)
+                }
                 if !itemText.isEmpty {
                     blocks.append(.bulletItem(itemText))
                 }
                 continue
             }
 
-            // 5. Empty lines
+            // 6. Numbered list items (e.g. "1. ", "2) ")
+            if let match = trimmed.range(of: #"^\d+[\.\)]\s+"#, options: .regularExpression) {
+                flushParagraph()
+                let prefix = String(trimmed[match])
+                let number = prefix.trimmingCharacters(in: CharacterSet(charactersIn: ".) \t"))
+                var itemText = String(trimmed[match.upperBound...]).trimmingCharacters(in: .whitespaces)
+                if itemText.hasPrefix("[ ] ") {
+                    itemText = "☐ " + itemText.dropFirst(4)
+                } else if itemText.hasPrefix("[x] ") || itemText.hasPrefix("[X] ") {
+                    itemText = "☑ " + itemText.dropFirst(4)
+                }
+                if !itemText.isEmpty {
+                    blocks.append(.numberedItem(number: number, text: itemText))
+                }
+                continue
+            }
+
+            // 7. Empty lines
             if trimmed.isEmpty {
                 flushParagraph()
                 continue
@@ -137,6 +178,15 @@ public enum AgentMarkdownParser {
 
         return blocks
     }
+
+    private static func isDivider(_ trimmed: String) -> Bool {
+        guard trimmed.count >= 3 else { return false }
+        let nonSpace = trimmed.filter { !$0.isWhitespace }
+        guard nonSpace.count >= 3 else { return false }
+        return nonSpace.allSatisfy({ $0 == "-" }) ||
+               nonSpace.allSatisfy({ $0 == "*" }) ||
+               nonSpace.allSatisfy({ $0 == "_" })
+    }
 }
 
 public struct AgentMarkdownView: View {
@@ -150,13 +200,24 @@ public struct AgentMarkdownView: View {
         self.blocks = AgentMarkdownParser.parse(content)
     }
 
+    private func headerFontSize(for level: Int) -> CGFloat {
+        switch level {
+        case 1: return 15
+        case 2: return 14
+        case 3: return 13.5
+        case 4: return 13
+        case 5: return 12.5
+        default: return 12
+        }
+    }
+
     public var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ForEach(blocks) { block in
+            ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                 switch block {
                 case .header(let level, let text):
                     Text(LocalizedStringKey(text))
-                        .font(.system(size: level == 1 ? 15 : (level == 2 ? 14 : 13.5), weight: .bold))
+                        .font(.system(size: headerFontSize(for: level), weight: .bold))
                         .foregroundColor(Color(theme.foreground))
                         .padding(.top, 4)
                         .lineLimit(nil)
@@ -164,13 +225,32 @@ public struct AgentMarkdownView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
 
                 case .bulletItem(let text):
-                    Text(LocalizedStringKey("• \(text)"))
-                        .font(.system(size: 13))
-                        .foregroundColor(Color(theme.foreground))
-                        .lineSpacing(3)
-                        .lineLimit(nil)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    HStack(alignment: .top, spacing: 6) {
+                        Text("•")
+                            .font(.system(size: 13))
+                            .foregroundColor(Color(theme.foreground))
+                        Text(LocalizedStringKey(text))
+                            .font(.system(size: 13))
+                            .foregroundColor(Color(theme.foreground))
+                            .lineSpacing(3)
+                            .lineLimit(nil)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                case .numberedItem(let number, let text):
+                    HStack(alignment: .top, spacing: 6) {
+                        Text("\(number).")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(Color(theme.gutterForeground))
+                        Text(LocalizedStringKey(text))
+                            .font(.system(size: 13))
+                            .foregroundColor(Color(theme.foreground))
+                            .lineSpacing(3)
+                            .lineLimit(nil)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
                 case .paragraph(let text):
                     Text(LocalizedStringKey(text))
@@ -206,6 +286,11 @@ public struct AgentMarkdownView: View {
                                 .padding(.vertical, 3),
                             alignment: .leading
                         )
+
+                case .divider:
+                    Divider()
+                        .overlay(Color(theme.excerptHeaderBorder).opacity(0.4))
+                        .padding(.vertical, 4)
                 }
             }
         }

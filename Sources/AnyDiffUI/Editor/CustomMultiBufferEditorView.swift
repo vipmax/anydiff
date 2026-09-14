@@ -471,7 +471,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         // available and we had to fall back to the selected file or first line.
         self.scrollOffsetX = max(0, state.scrollOffsetX)
 
-        if restoredCursor {
+        if restoredCursor && !restoredScroll {
             ensureCursorVisible()
         }
 

@@ -324,18 +324,33 @@ public struct AgentSavedSessionsView: View {
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
 
-            Button(action: { loadSessions() }) {
-                Text("Retry")
-                    .font(.system(size: 11.5, weight: .medium))
-                    .foregroundColor(presetColor)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 6)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(presetColor.opacity(0.12))
-                    )
+            HStack(spacing: 8) {
+                Button(action: onBack) {
+                    Text("Back to Agents")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundColor(Color(theme.foreground).opacity(0.85))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 6)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(Color(theme.foreground).opacity(0.08))
+                        )
+                }
+                .buttonStyle(.plain)
+
+                Button(action: { loadSessions() }) {
+                    Text("Retry")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundColor(presetColor)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 6)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(presetColor.opacity(0.12))
+                        )
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
             .padding(.top, 4)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

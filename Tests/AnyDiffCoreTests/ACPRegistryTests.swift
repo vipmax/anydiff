@@ -2,6 +2,27 @@ import XCTest
 @testable import AnyDiffCore
 
 final class ACPRegistryTests: XCTestCase {
+    private var testBinDir: URL!
+    private var testDefaults: UserDefaults!
+
+    override func setUp() {
+        super.setUp()
+        testBinDir = FileManager.default.temporaryDirectory.appendingPathComponent("anydiff-reg-tests-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: testBinDir, withIntermediateDirectories: true)
+        ACPRegistryBinaryDownloader.customBaseBinDirectory = testBinDir
+        testDefaults = UserDefaults(suiteName: "ACPRegistryTests-\(UUID().uuidString)")!
+        AgentSessionCoordinator.defaultUserDefaults = testDefaults
+    }
+
+    override func tearDown() {
+        ACPRegistryBinaryDownloader.customBaseBinDirectory = nil
+        AgentSessionCoordinator.defaultUserDefaults = .standard
+        if let testBinDir {
+            try? FileManager.default.removeItem(at: testBinDir)
+        }
+        super.tearDown()
+    }
+
     let sampleRegistryJSON = """
     {
       "version": "1.0.0",
@@ -98,7 +119,7 @@ final class ACPRegistryTests: XCTestCase {
         // 1. Without installed path (defaults to expected Application Support path)
         let defaultPreset = binaryAgent.toAgentPreset()
         XCTAssertEqual(defaultPreset.id, "sample-binary-agent")
-        XCTAssertTrue(defaultPreset.command.contains("AnyDiff/bin/sample-binary-agent/2.0.0/sample-bin"))
+        XCTAssertTrue(defaultPreset.command.contains("sample-binary-agent/2.0.0/sample-bin"))
         XCTAssertEqual(defaultPreset.arguments, "--mode=acp")
 
         // 2. With installed path provided
@@ -352,6 +373,84 @@ final class ACPRegistryTests: XCTestCase {
         XCTAssertEqual(coordinator.installedVersion(for: "sample-npx-agent"), "1.3.0")
 
         coordinator.uninstallRegistryAgent(id: "sample-npx-agent")
+    }
+
+    func testAgentPresetExecutableAvailability() throws {
+        // 1. Mock preset is always available
+        let mockPreset = AgentPreset(name: "Mock Agent", command: "", isMock: true)
+        XCTAssertTrue(mockPreset.isExecutableAvailable)
+        XCTAssertNil(mockPreset.executablePathIfLocal)
+
+        // 2. Command with PATH lookup (e.g. npx)
+        let npxPreset = AgentPreset(name: "NPX Agent", command: "npx", arguments: "-y agent")
+        XCTAssertTrue(npxPreset.isExecutableAvailable)
+        XCTAssertNil(npxPreset.executablePathIfLocal)
+
+        // 3. Shell pipeline command
+        let shellPreset = AgentPreset(name: "Shell", command: "command -v foo && foo || bar")
+        XCTAssertTrue(shellPreset.isExecutableAvailable)
+        XCTAssertNil(shellPreset.executablePathIfLocal)
+
+        // 4. Missing binary path
+        let missingPath = "/nonexistent/path/to/my_agent_binary"
+        let missingPreset = AgentPreset(name: "Missing", command: "\"\(missingPath)\"")
+        XCTAssertEqual(missingPreset.executablePathIfLocal, missingPath)
+        XCTAssertFalse(missingPreset.isExecutableAvailable)
+
+        // 5. Existing binary path (create a dummy executable in testBinDir)
+        let existingPath = testBinDir.appendingPathComponent("test_exec").path
+        FileManager.default.createFile(atPath: existingPath, contents: Data(), attributes: [.posixPermissions: 0o755])
+        let existingPreset = AgentPreset(name: "Existing", command: "\"\(existingPath)\"")
+        XCTAssertEqual(existingPreset.executablePathIfLocal, existingPath)
+        XCTAssertTrue(existingPreset.isExecutableAvailable)
+    }
+
+    func testHasMissingBinaryDetection() async throws {
+        let coordinator = AgentSessionCoordinator(isMockAgent: false, autoCreateSession: false)
+        let missingPath = "/fake/path/v1.0.0/missing_agent.par"
+        let entry = ACPRegistryAgentEntry(
+            id: "missing-agent",
+            name: "Missing Agent",
+            version: "1.0.0",
+            description: "An agent with missing binary",
+            distribution: ACPRegistryDistribution(
+                binary: [
+                    ACPRegistryAgentEntry.currentPlatformKey: ACPRegistryBinaryTarget(
+                        archive: "https://example.com/missing.zip",
+                        cmd: "./missing_agent.par"
+                    )
+                ]
+            )
+        )
+
+        coordinator.installRegistryAgent(entry, binaryPath: missingPath)
+        XCTAssertTrue(coordinator.isAgentInstalled(id: "missing-agent"))
+        XCTAssertTrue(coordinator.hasMissingBinary(id: "missing-agent"))
+
+        // Fetching saved sessions for missing binary should throw executableNotFound
+        let preset = coordinator.allPresets.first(where: { $0.id == "missing-agent" })!
+        do {
+            _ = try await coordinator.fetchSavedSessions(for: preset, workingDirectory: "/tmp")
+            XCTFail("Should have thrown ACPClientError.executableNotFound")
+        } catch let error as ACPClientError {
+            switch error {
+            case .executableNotFound(let path):
+                XCTAssertEqual(path, missingPath)
+            default:
+                XCTFail("Unexpected ACPClientError: \(error)")
+            }
+        } catch {
+            XCTFail("Unexpected error type: \(error)")
+        }
+
+        coordinator.uninstallRegistryAgent(id: "missing-agent")
+    }
+
+    func testTestIsolationDoesNotTouchUserDirectory() {
+        // Base directory must be directed to temporary directory under test
+        let baseDir = ACPRegistryBinaryDownloader.baseBinDirectory
+        XCTAssertFalse(baseDir.path.contains("Application Support/AnyDiff/bin"), "Tests must not point to user's Application Support directory!")
+        XCTAssertTrue(baseDir.path.contains("anydiff"), "Tests must use an isolated temporary sandbox directory.")
     }
 }
 

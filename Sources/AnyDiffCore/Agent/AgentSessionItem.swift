@@ -22,6 +22,16 @@ public final class AgentSessionItem: Identifiable, ObservableObject, @unchecked 
         set { manager.isNotificationsEnabled = newValue }
     }
 
+    public var draftPrompt: String {
+        get { manager.draftPrompt }
+        set { manager.draftPrompt = newValue }
+    }
+
+    public var draftAttachments: [AgentImageAttachment] {
+        get { manager.draftAttachments }
+        set { manager.draftAttachments = newValue }
+    }
+
     private var cancellables = Set<AnyCancellable>()
     private var lastSeenMessageCount: Int = 0
 
@@ -42,6 +52,13 @@ public final class AgentSessionItem: Identifiable, ObservableObject, @unchecked 
         self.lastSeenMessageCount = manager.messages.count
 
         manager.$isNotificationsEnabled
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+            .store(in: &cancellables)
+
+        manager.$currentSessionId
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 self?.objectWillChange.send()
@@ -127,6 +144,28 @@ public final class AgentSessionItem: Identifiable, ObservableObject, @unchecked 
     public func markAsRead() {
         self.lastSeenMessageCount = manager.messages.count
         self.hasUnreadUpdates = false
+    }
+
+    public var sessionId: String? {
+        manager.currentSessionId
+    }
+
+    public var displaySessionId: String? {
+        if let id = manager.currentSessionId, !id.isEmpty {
+            return id
+        }
+        if isMock {
+            return "mock-1"
+        }
+        return nil
+    }
+
+    public var shortSessionId: String? {
+        guard let id = displaySessionId else { return nil }
+        if id.count > 8 {
+            return String(id.prefix(8))
+        }
+        return id
     }
 
     public var statusDescription: String {

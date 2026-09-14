@@ -1,5 +1,22 @@
 import Foundation
 
+public enum ACPClientError: LocalizedError, Sendable {
+    case executableNotFound(String)
+    case processTerminated(Int, String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .executableNotFound(let path):
+            return "Agent executable not found on disk: \(path). Please re-download this agent from ACP Registry or check your settings."
+        case .processTerminated(let code, let stderr):
+            if code == 127 {
+                return "Agent executable or command not found (exit code 127). \(stderr.isEmpty ? "Please verify installation." : stderr)"
+            }
+            return "Agent process exited with code \(code)\(stderr.isEmpty ? "" : ": \(stderr)")"
+        }
+    }
+}
+
 public enum ACPLogger {
     private static let logURL = URL(fileURLWithPath: "/tmp/anydiff_acp.log")
     private static let lock = NSLock()
@@ -316,7 +333,9 @@ public final class ACPClient: ACPTransportDelegate, @unchecked Sendable {
         }
 
         let failureMsg: String
-        if !stderrText.isEmpty {
+        if exitCode == 127 {
+            failureMsg = "Agent command or binary not found (exit code 127). \(stderrText.isEmpty ? "Please check that the executable is installed." : stderrText)"
+        } else if !stderrText.isEmpty {
             failureMsg = "Agent process exited with code \(exitCode): \(stderrText)"
         } else {
             failureMsg = "Agent process exited with code \(exitCode)"

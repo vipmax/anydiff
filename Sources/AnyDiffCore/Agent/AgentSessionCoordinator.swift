@@ -28,6 +28,42 @@ public struct AgentPreset: Identifiable, Equatable, Sendable, Codable {
         return "\(trimmedCmd) \(trimmedArgs)"
     }
 
+    /// If the preset command points directly to a local filesystem executable file (e.g. "/path/to/bin" or '"/path/to/bin"'), returns that normalized path.
+    public var executablePathIfLocal: String? {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        var rawPath: String?
+        if trimmed.hasPrefix("\"") {
+            if let secondQuote = trimmed.dropFirst().firstIndex(of: "\"") {
+                rawPath = String(trimmed[trimmed.index(after: trimmed.startIndex)..<secondQuote])
+            }
+        } else if trimmed.hasPrefix("'") {
+            if let secondQuote = trimmed.dropFirst().firstIndex(of: "'") {
+                rawPath = String(trimmed[trimmed.index(after: trimmed.startIndex)..<secondQuote])
+            }
+        } else {
+            let firstToken = trimmed.components(separatedBy: .whitespaces).first ?? ""
+            if !firstToken.isEmpty {
+                rawPath = firstToken
+            }
+        }
+
+        guard let path = rawPath else { return nil }
+        if path.hasPrefix("/") || path.hasPrefix("~") || path.hasPrefix("./") || path.hasPrefix("../") {
+            return (path as NSString).expandingTildeInPath
+        }
+        return nil
+    }
+
+    /// Checks whether the preset's executable is present and runnable on disk (if it references a local path).
+    /// Always returns true for mock presets and commands resolved via PATH (like `npx` or shell pipelines).
+    public var isExecutableAvailable: Bool {
+        if isMock { return true }
+        if let localPath = executablePathIfLocal {
+            return FileManager.default.isExecutableFile(atPath: localPath)
+        }
+        return true
+    }
+
     public init(
         id: String = UUID().uuidString,
         name: String,
@@ -139,21 +175,25 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
     }
     @Published public var updatingAgentIds: Set<String> = []
     private var autoUpdateTask: Task<Void, Never>?
+    public let userDefaults: UserDefaults
+
+    public static var defaultUserDefaults: UserDefaults = .standard
+
     @Published public var selectedPresetId: String {
         didSet {
-            UserDefaults.standard.set(selectedPresetId, forKey: "anydiff_selected_agent_preset")
+            userDefaults.set(selectedPresetId, forKey: "anydiff_selected_agent_preset")
         }
     }
     @Published public var isMockAgent: Bool {
         didSet {
-            UserDefaults.standard.set(isMockAgent, forKey: "anydiff_agent_is_mock")
+            userDefaults.set(isMockAgent, forKey: "anydiff_agent_is_mock")
         }
     }
     public static let isRightPanelOpenKey = "anydiff_is_right_panel_open"
     public static var isPanelOpenKey: String { isRightPanelOpenKey }
     @Published public var isPanelOpen: Bool {
         didSet {
-            UserDefaults.standard.set(isPanelOpen, forKey: Self.isRightPanelOpenKey)
+            userDefaults.set(isPanelOpen, forKey: Self.isRightPanelOpenKey)
         }
     }
     public var isRightPanelOpen: Bool {
@@ -202,24 +242,27 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
     public init(
         isMockAgent: Bool? = nil,
         autoCreateSession: Bool = false,
-        enablePeriodicAutoUpdate: Bool = false
+        enablePeriodicAutoUpdate: Bool = false,
+        userDefaults: UserDefaults? = nil
     ) {
+        let defaults = userDefaults ?? Self.defaultUserDefaults
+        self.userDefaults = defaults
         #if DEBUG
         let defaultId = "mock"
         #else
         let defaultId = ""
         #endif
-        let savedPresetId = UserDefaults.standard.string(forKey: "anydiff_selected_agent_preset") ?? defaultId
+        let savedPresetId = defaults.string(forKey: "anydiff_selected_agent_preset") ?? defaultId
         self.selectedPresetId = savedPresetId
-        self.customPresets = Self.loadCustomPresets()
+        self.customPresets = Self.loadCustomPresets(from: defaults)
 
         #if DEBUG
-        let mock = isMockAgent ?? (UserDefaults.standard.object(forKey: "anydiff_agent_is_mock") as? Bool ?? (savedPresetId == "mock"))
+        let mock = isMockAgent ?? (defaults.object(forKey: "anydiff_agent_is_mock") as? Bool ?? (savedPresetId == "mock"))
         #else
         let mock = false
         #endif
         self.isMockAgent = mock
-        self.isPanelOpen = UserDefaults.standard.object(forKey: Self.isRightPanelOpenKey) as? Bool ?? true
+        self.isPanelOpen = defaults.object(forKey: Self.isRightPanelOpenKey) as? Bool ?? true
 
         if autoCreateSession {
             #if DEBUG
@@ -357,7 +400,11 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
             }
             .store(in: &cancellables)
 
-        if !workingDirectory.isEmpty {
+        if !chosenPreset.isExecutableAvailable {
+            let missingPath = chosenPreset.executablePathIfLocal ?? chosenPreset.command
+            manager.status = .error("Executable not found on disk: \(missingPath)")
+            manager.statusMessage = "Agent executable missing. Please re-download from ACP Registry."
+        } else if !workingDirectory.isEmpty {
             manager.prepareAgent(workingDirectory: workingDirectory)
         }
 
@@ -461,6 +508,11 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
             return mockItems
         }
         #endif
+
+        guard preset.isExecutableAvailable else {
+            let missingPath = preset.executablePathIfLocal ?? preset.command
+            throw ACPClientError.executableNotFound(missingPath)
+        }
 
         let client = ACPClient()
         try client.start(command: preset.effectiveCommand, workingDirectory: resolvedWorkingDirectory)
@@ -620,6 +672,12 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
         allPresets.contains(where: { $0.id == id })
     }
 
+    /// Returns true if the agent is registered as a preset, but its required local binary is missing from disk.
+    public func hasMissingBinary(id: String) -> Bool {
+        guard let preset = allPresets.first(where: { $0.id == id }) else { return false }
+        return !preset.isExecutableAvailable
+    }
+
     public func installedVersion(for id: String) -> String? {
         guard let preset = allPresets.first(where: { $0.id == id }) else { return nil }
         if let v = preset.version, !v.isEmpty {
@@ -752,12 +810,12 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
 
     private func saveCustomPresets() {
         if let data = try? JSONEncoder().encode(customPresets) {
-            UserDefaults.standard.set(data, forKey: "anydiff_custom_agent_presets")
+            userDefaults.set(data, forKey: "anydiff_custom_agent_presets")
         }
     }
 
-    private static func loadCustomPresets() -> [AgentPreset] {
-        guard let data = UserDefaults.standard.data(forKey: "anydiff_custom_agent_presets"),
+    private static func loadCustomPresets(from defaults: UserDefaults) -> [AgentPreset] {
+        guard let data = defaults.data(forKey: "anydiff_custom_agent_presets"),
               let presets = try? JSONDecoder().decode([AgentPreset].self, from: data) else {
             return []
         }

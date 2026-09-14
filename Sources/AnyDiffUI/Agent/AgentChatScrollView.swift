@@ -943,6 +943,29 @@ public final class AgentNativeCodeBlockView: AgentNativeFlippedView {
     public var isExpanded: Bool { header.isExpanded }
 }
 
+public final class AgentNativeDividerView: AgentNativeFlippedView {
+    public let lineView = NSView()
+
+    public init(theme: Theme) {
+        super.init(frame: .zero)
+        wantsLayer = true
+        lineView.wantsLayer = true
+        let borderColor = NSColor(cgColor: theme.excerptHeaderBorder.cgColor)?.withAlphaComponent(0.35) ?? NSColor.separatorColor
+        lineView.layer?.backgroundColor = borderColor.cgColor
+        addSubview(lineView)
+    }
+
+    public required init?(coder: NSCoder) {
+        super.init(coder: coder)
+    }
+
+    public func applyLayout(width: CGFloat) {
+        let h: CGFloat = 16
+        frame = NSRect(x: frame.origin.x, y: frame.origin.y, width: width, height: h)
+        lineView.frame = NSRect(x: 0, y: (h - 1) / 2, width: width, height: 1)
+    }
+}
+
 public final class AgentNativeThoughtBlockView: AgentNativeFlippedView {
     public let headerButton = NSButton()
     public let textView = AgentSelectableTextView()
@@ -4758,6 +4781,21 @@ public final class AgentNativeMessageCell: NSView {
                     .paragraphStyle: style
                 ])
                 mutable.append(codeAttr)
+            case .divider:
+                if i > 0 && mutable.length > 0 {
+                    mutable.append(NSAttributedString(string: "\n", attributes: [.font: NSFont.systemFont(ofSize: 13)]))
+                }
+                let divStyle = NSMutableParagraphStyle()
+                divStyle.alignment = .center
+                divStyle.paragraphSpacing = 6
+                divStyle.paragraphSpacingBefore = 6
+                let divColor = (NSColor(cgColor: theme.excerptHeaderBorder.cgColor) ?? .separatorColor).withAlphaComponent(0.4)
+                let divAttr = NSAttributedString(string: "────────────────────────────────────────\n", attributes: [
+                    .font: NSFont.systemFont(ofSize: 10, weight: .light),
+                    .foregroundColor: divColor,
+                    .paragraphStyle: divStyle
+                ])
+                mutable.append(divAttr)
             }
         }
 
@@ -4974,6 +5012,7 @@ public final class AgentNativeMessageCell: NSView {
         case richText(NSAttributedString)
         case quote(NSAttributedString)
         case codeBlock(language: String?, code: String)
+        case divider
     }
 
     private func compileSections(
@@ -5017,29 +5056,66 @@ public final class AgentNativeMessageCell: NSView {
         for block in blocks {
             switch block {
             case .header(let level, let text):
-                let font = NSFont.systemFont(ofSize: level == 1 ? 15 : (level == 2 ? 14 : 13.5), weight: .bold)
+                let fontSize: CGFloat
+                switch level {
+                case 1: fontSize = 15
+                case 2: fontSize = 14
+                case 3: fontSize = 13.5
+                case 4: fontSize = 13
+                case 5: fontSize = 12.5
+                default: fontSize = 12
+                }
+                let font = NSFont.systemFont(ofSize: fontSize, weight: .bold)
                 let color = NSColor(cgColor: theme.foreground.cgColor) ?? .textColor
                 let style = NSMutableParagraphStyle()
                 style.paragraphSpacing = 6
-                style.paragraphSpacingBefore = currentRichText.length > 0 ? 10 : 0
+                style.paragraphSpacingBefore = currentRichText.length > 0 ? (level <= 2 ? 12 : 8) : 0
                 style.alignment = .left
-                let attr = NSAttributedString(string: "\(text)\n", attributes: [
-                    .font: font,
-                    .foregroundColor: color,
-                    .paragraphStyle: style
-                ])
-                currentRichText.append(attr)
+                let headerAttr = formatInlineMarkdownString(
+                    text,
+                    font: font,
+                    color: color,
+                    paragraphStyle: style
+                )
+                let mutable = NSMutableAttributedString(attributedString: headerAttr)
+                mutable.append(NSAttributedString(string: "\n", attributes: [.font: font]))
+                currentRichText.append(mutable)
                 finishRichTextBlock()
 
             case .bulletItem(let text):
-                let bulletAttr = formatMarkdownString("• \(text)")
-                let bulletMutable = NSMutableAttributedString(attributedString: bulletAttr)
                 let style = NSMutableParagraphStyle()
                 style.lineSpacing = 3
                 style.paragraphSpacing = 4
                 style.alignment = .left
-                bulletMutable.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: bulletMutable.length))
+                style.firstLineHeadIndent = 0
+                style.headIndent = 16
+                let bulletAttr = formatInlineMarkdownString(
+                    "•  \(text)",
+                    font: NSFont.systemFont(ofSize: 13),
+                    color: NSColor(cgColor: theme.foreground.cgColor) ?? .textColor,
+                    paragraphStyle: style
+                )
+                let bulletMutable = NSMutableAttributedString(attributedString: bulletAttr)
                 currentRichText.append(bulletMutable)
+                currentRichText.append(NSAttributedString(string: "\n", attributes: [.font: NSFont.systemFont(ofSize: 13)]))
+                finishRichTextBlock()
+
+            case .numberedItem(let number, let text):
+                let style = NSMutableParagraphStyle()
+                style.lineSpacing = 3
+                style.paragraphSpacing = 4
+                style.alignment = .left
+                style.firstLineHeadIndent = 0
+                let indent: CGFloat = number.count > 1 ? 24 : 18
+                style.headIndent = indent
+                let numAttr = formatInlineMarkdownString(
+                    "\(number).  \(text)",
+                    font: NSFont.systemFont(ofSize: 13),
+                    color: NSColor(cgColor: theme.foreground.cgColor) ?? .textColor,
+                    paragraphStyle: style
+                )
+                let numMutable = NSMutableAttributedString(attributedString: numAttr)
+                currentRichText.append(numMutable)
                 currentRichText.append(NSAttributedString(string: "\n", attributes: [.font: NSFont.systemFont(ofSize: 13)]))
                 finishRichTextBlock()
 
@@ -5087,6 +5163,10 @@ public final class AgentNativeMessageCell: NSView {
                     flushRichText()
                     sections.append(.codeBlock(language: lang, code: code))
                 }
+
+            case .divider:
+                flushRichText()
+                sections.append(.divider)
             }
         }
 
@@ -5240,6 +5320,9 @@ public final class AgentNativeMessageCell: NSView {
             container.addSubview(codeScrollView)
 
             return container
+
+        case .divider:
+            return AgentNativeDividerView(theme: theme)
         }
     }
 
@@ -5331,12 +5414,24 @@ public final class AgentNativeMessageCell: NSView {
 
             var runFont: NSFont = font
             if let intent = intent {
-                if intent.rawValue & 4 != 0 {
+                if intent.contains(.code) {
                     runFont = NSFont.monospacedSystemFont(ofSize: max(11.5, font.pointSize - 0.5), weight: .regular)
                     let codeBg = (NSColor(cgColor: theme.gutterBackground.cgColor) ?? NSColor.windowBackgroundColor).withAlphaComponent(0.65)
                     result.addAttribute(.backgroundColor, value: codeBg, range: range)
-                } else if intent.rawValue & 2 != 0 {
-                    runFont = NSFont.systemFont(ofSize: font.pointSize, weight: .bold)
+                } else {
+                    let isBold = intent.contains(.stronglyEmphasized)
+                    let isItalic = intent.contains(.emphasized)
+                    if isBold && isItalic {
+                        let base = NSFont.systemFont(ofSize: font.pointSize, weight: .bold)
+                        runFont = NSFontManager.shared.convert(base, toHaveTrait: .italicFontMask)
+                    } else if isBold {
+                        runFont = NSFont.systemFont(ofSize: font.pointSize, weight: .bold)
+                    } else if isItalic {
+                        runFont = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask)
+                    }
+                }
+                if intent.contains(.strikethrough) {
+                    result.addAttribute(.strikethroughStyle, value: NSUnderlineStyle.single.rawValue, range: range)
                 }
             }
 
@@ -5393,6 +5488,9 @@ public final class AgentNativeMessageCell: NSView {
 
     private func assistantViewHeight(_ view: NSView, contentWidth: CGFloat) -> CGFloat {
         guard !view.isHidden, view.alphaValue > 0.01 else { return 0 }
+        if view is AgentNativeDividerView {
+            return 16
+        }
         if let thought = view as? AgentNativeThoughtBlockView {
             return thought.measureHeight(width: contentWidth)
         }
@@ -5458,6 +5556,10 @@ public final class AgentNativeMessageCell: NSView {
             if tv.layer?.mask != nil {
                 tv.layer?.mask = nil
             }
+        } else if let divider = view as? AgentNativeDividerView {
+            let frame = NSRect(x: horizontalPadding, y: currentY, width: contentWidth, height: 16)
+            if animated { divider.animator().frame = frame } else { divider.frame = frame }
+            divider.applyLayout(width: contentWidth)
         } else if let codeBlock = view as? AgentNativeCodeBlockView {
             let codeHeight = measuredTextHeight(
                 for: codeBlock.tv,

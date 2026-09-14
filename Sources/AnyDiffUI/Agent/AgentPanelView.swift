@@ -14,7 +14,6 @@ public struct AgentPanelView: View {
     public var onReview: ((AgentEditedFilesSummary) -> Void)?
     public var onPreviewImages: (([AgentImageAttachment], Int, Bool) -> Void)?
 
-    @State private var inputText: String = ""
     @State private var isInputCollapsed: Bool = false
     @State private var isChatNearBottom: Bool = true
     @State private var scrollToBottomRequest: Int = 0
@@ -179,7 +178,8 @@ public struct AgentPanelView: View {
 
     private var agentInputView: some View {
         AgentInputView(
-            text: $inputText,
+            text: $agentManager.draftPrompt,
+            attachedImages: $agentManager.draftAttachments,
             agentManager: agentManager,
             theme: theme,
             accentColor: agentAccentColor,

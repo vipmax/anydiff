@@ -165,6 +165,7 @@ public struct VirtualizedAgentRegistryListView: NSViewRepresentable {
             }
 
             let isInstalled = parent.coordinator.isAgentInstalled(id: agent.id)
+            let hasMissingBinary = parent.coordinator.hasMissingBinary(id: agent.id)
             let hasUpdate = parent.coordinator.hasUpdateAvailable(for: agent)
             let isUpdating = parent.coordinator.isAgentUpdating(id: agent.id)
             let isInstalling = parent.installingAgentId == agent.id || isUpdating
@@ -174,6 +175,7 @@ public struct VirtualizedAgentRegistryListView: NSViewRepresentable {
             cell?.configure(
                 agent: agent,
                 isInstalled: isInstalled,
+                hasMissingBinary: hasMissingBinary,
                 hasUpdate: hasUpdate,
                 isInstalling: isInstalling,
                 isSupported: isSupported,
@@ -728,6 +730,7 @@ final class AgentRegistryTableCellView: NSTableCellView {
     func configure(
         agent: ACPRegistryAgentEntry,
         isInstalled: Bool,
+        hasMissingBinary: Bool = false,
         hasUpdate: Bool = false,
         isInstalling: Bool,
         isSupported: Bool,
@@ -770,7 +773,13 @@ final class AgentRegistryTableCellView: NSTableCellView {
         descLabel.textColor = theme.foreground.withAlphaComponent(0.85)
 
         // Version badge pill
-        if hasUpdate {
+        if hasMissingBinary {
+            versionBadge.configure(
+                text: "Missing Binary",
+                textColor: NSColor.systemOrange,
+                bgColor: NSColor.systemOrange.withAlphaComponent(0.14)
+            )
+        } else if hasUpdate {
             versionBadge.configure(
                 text: "Update: v\(agent.version)",
                 textColor: NSColor.controlAccentColor,
@@ -895,7 +904,13 @@ final class AgentRegistryTableCellView: NSTableCellView {
             progressButton.isHidden = false
             progressButton.updateContent()
         } else if isInstalled {
-            if hasUpdate {
+            if hasMissingBinary {
+                installButton.isHidden = false
+                installButton.isEnabled = true
+                installButton.title = "Re-download"
+                removeButton.isHidden = false
+                progressButton.isHidden = true
+            } else if hasUpdate {
                 installButton.isHidden = false
                 installButton.isEnabled = true
                 installButton.title = "Update"

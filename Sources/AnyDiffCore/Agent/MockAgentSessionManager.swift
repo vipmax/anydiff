@@ -26,6 +26,7 @@ public final class MockAgentSessionManager: AgentSessionManager, @unchecked Send
         self.contextUsagePercentage = 72
         self.status = .idle
         self.initializationState = .ready
+        self.currentSessionId = "mock-1"
         if loadFixtures {
             self.loadSampleConversation()
         }
@@ -649,6 +650,7 @@ public final class MockAgentSessionManager: AgentSessionManager, @unchecked Send
     }
 
     public override func clearSession() {
+        super.clearSession()
         mockTask?.cancel()
         mockTask = nil
         loadSampleConversation()

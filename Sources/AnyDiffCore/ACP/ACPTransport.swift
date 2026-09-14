@@ -74,6 +74,34 @@ public final class ACPTransport: @unchecked Sendable {
 
         // Launch shell command via login shell to evaluate environment & PATH correctly
         let trimmedCmd = command.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Validate if command targets an explicit local path that does not exist
+        var checkPath: String? = nil
+        if trimmedCmd.hasPrefix("\"") {
+            if let secondQuote = trimmedCmd.dropFirst().firstIndex(of: "\"") {
+                let candidate = String(trimmedCmd[trimmedCmd.index(after: trimmedCmd.startIndex)..<secondQuote])
+                if candidate.hasPrefix("/") || candidate.hasPrefix("~") || candidate.hasPrefix("./") {
+                    checkPath = (candidate as NSString).expandingTildeInPath
+                }
+            }
+        } else if trimmedCmd.hasPrefix("'") {
+            if let secondQuote = trimmedCmd.dropFirst().firstIndex(of: "'") {
+                let candidate = String(trimmedCmd[trimmedCmd.index(after: trimmedCmd.startIndex)..<secondQuote])
+                if candidate.hasPrefix("/") || candidate.hasPrefix("~") || candidate.hasPrefix("./") {
+                    checkPath = (candidate as NSString).expandingTildeInPath
+                }
+            }
+        } else {
+            let firstToken = trimmedCmd.components(separatedBy: .whitespaces).first ?? ""
+            if firstToken.hasPrefix("/") || firstToken.hasPrefix("~") || firstToken.hasPrefix("./") {
+                checkPath = (firstToken as NSString).expandingTildeInPath
+            }
+        }
+
+        if let checkPath, !FileManager.default.fileExists(atPath: checkPath) {
+            throw ACPClientError.executableNotFound(checkPath)
+        }
+
         let finalCmd: String
         if trimmedCmd.contains(" ") && !trimmedCmd.hasPrefix("\"") && !trimmedCmd.hasPrefix("'") && FileManager.default.fileExists(atPath: trimmedCmd) {
             finalCmd = "\"\(trimmedCmd)\""

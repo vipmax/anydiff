@@ -559,7 +559,22 @@ private struct AgentCardButton: View {
                                 .foregroundColor(Color(theme.foreground))
                                 .lineLimit(1)
 
-                            if !badgeTitle.isEmpty {
+                            if !preset.isExecutableAvailable {
+                                HStack(spacing: 3) {
+                                    Image(systemName: "exclamationmark.triangle.fill")
+                                        .font(.system(size: 8.5))
+                                    Text("Missing Binary")
+                                        .font(.system(size: 9.5, weight: .medium))
+                                }
+                                .foregroundColor(.orange)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1.5)
+                                .background(
+                                    Capsule()
+                                        .fill(Color.orange.opacity(0.12))
+                                )
+                                .help("Binary not found on disk. Open ACP Registry to re-download.")
+                            } else if !badgeTitle.isEmpty {
                                 Text(badgeTitle)
                                     .font(.system(size: 10, weight: .semibold))
                                     .foregroundColor(presetColor)

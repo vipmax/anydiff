@@ -238,9 +238,6 @@ public struct EditorHostView: NSViewRepresentable {
             guard let mapID = activeDisplayMapID,
                   let state = currentViewState else { return }
             viewStates[mapID] = state
-            if let file = state.selectedFilePath {
-                lastScrolledFilePaths[mapID] = file
-            }
         }
     }
 }

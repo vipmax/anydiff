@@ -29,7 +29,24 @@ public enum ACPRegistryDownloadError: LocalizedError, Sendable {
 }
 
 public enum ACPRegistryBinaryDownloader {
+    public static var isRunningUnderTestingEnvironment: Bool {
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+            || ProcessInfo.processInfo.environment["XCTestBundlePath"] != nil
+            || NSClassFromString("XCTestCase") != nil
+    }
+
+    public static var customBaseBinDirectory: URL? = nil
+
     public static var baseBinDirectory: URL {
+        if let custom = customBaseBinDirectory {
+            return custom
+        }
+        if isRunningUnderTestingEnvironment {
+            let tempDir = FileManager.default.temporaryDirectory
+                .appendingPathComponent("anydiff-test-bin", isDirectory: true)
+            try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+            return tempDir
+        }
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         return appSupport.appendingPathComponent("AnyDiff", isDirectory: true).appendingPathComponent("bin", isDirectory: true)
     }
