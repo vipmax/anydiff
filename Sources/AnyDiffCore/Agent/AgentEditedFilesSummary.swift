@@ -160,8 +160,9 @@ public enum AgentGitChangesDetector {
                 // Working tree had dirty changes; stash commit captured them perfectly.
                 baseRef = stashOutput
             } else {
-                // Working tree was clean vs HEAD; base reference is HEAD.
-                baseRef = "HEAD"
+                // Working tree was clean vs HEAD; base reference is HEAD commit hash.
+                let headSha = runGit(arguments: ["-C", workingDirectory, "rev-parse", "HEAD"])
+                baseRef = (headSha?.isEmpty == false) ? headSha : "HEAD"
             }
         } else {
             // git stash create failed. Do NOT guess "HEAD" to avoid attributing existing diffs.
@@ -228,6 +229,7 @@ public enum AgentGitChangesDetector {
         var deletedList: [String] = []
 
         // 1. Get numstat and status for tracked files against base snapshot ref
+        var numstatItems: [String: (adds: Int, dels: Int)] = [:]
         if let baseRef = snapshot.baseCommitHash {
             if let numstat = runGit(arguments: ["-C", workingDirectory, "diff", "--numstat", baseRef]) {
                 for line in numstat.components(separatedBy: "\n") {
@@ -237,7 +239,7 @@ public enum AgentGitChangesDetector {
                         let dels = Int(parts[1]) ?? 0
                         let path = parts[2].trimmingCharacters(in: .whitespacesAndNewlines)
                         if !path.isEmpty {
-                            items.append(AgentEditedFileItem(path: path, additions: adds, deletions: dels))
+                            numstatItems[path] = (adds, dels)
                         }
                     }
                 }
@@ -248,12 +250,39 @@ public enum AgentGitChangesDetector {
                     let parts = line.components(separatedBy: "\t")
                     guard !parts.isEmpty else { continue }
                     let statusLetter = parts[0].prefix(1)
-                    if statusLetter == "A" && parts.count >= 2 {
-                        createdList.append(parts[1].trimmingCharacters(in: .whitespacesAndNewlines))
-                    } else if statusLetter == "D" && parts.count >= 2 {
-                        deletedList.append(parts[1].trimmingCharacters(in: .whitespacesAndNewlines))
-                    } else if parts.count >= 2 {
-                        modifiedList.append(parts[1].trimmingCharacters(in: .whitespacesAndNewlines))
+                    let path = (statusLetter == "R" && parts.count >= 3)
+                        ? parts[2].trimmingCharacters(in: .whitespacesAndNewlines)
+                        : (parts.count >= 2 ? parts[1].trimmingCharacters(in: .whitespacesAndNewlines) : "")
+                    guard !path.isEmpty else { continue }
+
+                    // If git diff reports this file as Added ("A"), check if it was already
+                    // present as an untracked file before this turn started.
+                    // Because `git stash create` does not capture untracked files, any pre-existing
+                    // untracked file that was merely staged/committed during this turn will appear
+                    // in `git diff baseRef` as Added ("A").
+                    if statusLetter == "A" && snapshot.untrackedFiles.contains(path) {
+                        let fullPath = URL(fileURLWithPath: workingDirectory).appendingPathComponent(path).path
+                        let currentMtime = (try? FileManager.default.attributesOfItem(atPath: fullPath))?[.modificationDate] as? Date
+                        let wasModified = (currentMtime?.timeIntervalSince1970 ?? 0) > (snapshot.untrackedModTimes[path] ?? 0) + 0.5
+                        if wasModified {
+                            modifiedList.append(path)
+                            let (adds, dels) = numstatItems[path] ?? (0, 0)
+                            items.append(AgentEditedFileItem(path: path, additions: adds, deletions: dels))
+                        }
+                        // If not modified, it was just staged/committed without changes during this turn — ignore!
+                        continue
+                    }
+
+                    let (adds, dels) = numstatItems[path] ?? (0, 0)
+                    if statusLetter == "A" {
+                        createdList.append(path)
+                        items.append(AgentEditedFileItem(path: path, additions: adds, deletions: dels))
+                    } else if statusLetter == "D" {
+                        deletedList.append(path)
+                        items.append(AgentEditedFileItem(path: path, additions: adds, deletions: dels))
+                    } else {
+                        modifiedList.append(path)
+                        items.append(AgentEditedFileItem(path: path, additions: adds, deletions: dels))
                     }
                 }
             }
@@ -294,9 +323,15 @@ public enum AgentGitChangesDetector {
 
         // 3. Capture raw unified diff data for fast MultiBuffer rendering
         var rawData: Data? = nil
-        if let baseRef = snapshot.baseCommitHash,
-           let diffData = runGitData(arguments: ["-C", workingDirectory, "diff", "-U3", baseRef]) {
-            rawData = diffData
+        if let baseRef = snapshot.baseCommitHash {
+            let filterPaths = Set(items.map(\.path))
+            if !filterPaths.isEmpty {
+                var diffArgs = ["-C", workingDirectory, "diff", "-U3", baseRef, "--"]
+                diffArgs.append(contentsOf: filterPaths.sorted())
+                if let diffData = runGitData(arguments: diffArgs) {
+                    rawData = diffData
+                }
+            }
         }
 
         let summary = AgentEditedFilesSummary(

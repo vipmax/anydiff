@@ -367,6 +367,62 @@ final class AgentSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(turn2Summary?.displayTitle, "Edited 1 file")
     }
 
+    func testPreExistingUntrackedFileCommittedDuringTurnDoesNotAttributeToTurn() throws {
+        let tempDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("anydiff-git-untracked-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        func runProcess(_ args: [String]) {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+            p.arguments = ["-C", tempDir.path] + args
+            p.standardOutput = FileHandle.nullDevice
+            p.standardError = FileHandle.nullDevice
+            try? p.run()
+            p.waitUntilExit()
+        }
+
+        runProcess(["init"])
+        runProcess(["config", "user.name", "Test"])
+        runProcess(["config", "user.email", "test@example.com"])
+
+        let file1URL = tempDir.appendingPathComponent("existing_file.txt")
+        try "initial content\n".write(to: file1URL, atomically: true, encoding: .utf8)
+        runProcess(["add", "existing_file.txt"])
+        runProcess(["commit", "-m", "Initial commit"])
+
+        // 1. Simulate pre-existing dirty tracked file and pre-existing untracked file
+        try "modified existing content\n".write(to: file1URL, atomically: true, encoding: .utf8)
+        runProcess(["add", "existing_file.txt"])
+
+        let untrackedURL = tempDir.appendingPathComponent("AgentMarkdownParserTests.swift")
+        try "class AgentMarkdownParserTests {}\n".write(to: untrackedURL, atomically: true, encoding: .utf8)
+
+        // 2. Capture snapshot before turn
+        let snapshot = AgentGitChangesDetector.capturePreTurnSnapshot(workingDirectory: tempDir.path)
+        XCTAssertTrue(snapshot.isGitRepository)
+        XCTAssertTrue(snapshot.untrackedFiles.contains("AgentMarkdownParserTests.swift"))
+
+        // 3. Turn 1: Agent commits the untracked file without modifying its contents
+        runProcess(["add", "AgentMarkdownParserTests.swift"])
+        runProcess(["commit", "-m", "Commit pre-existing untracked file"])
+
+        let (turn1Summary, _) = AgentGitChangesDetector.computeTurnSummary(workingDirectory: tempDir.path, snapshot: snapshot)
+        // MUST BE NIL — committing a pre-existing untracked file should NOT be attributed to the turn!
+        XCTAssertNil(turn1Summary)
+
+        // 4. Turn 2: Agent edits an actual file during this turn
+        let agentFileURL = tempDir.appendingPathComponent("turn_edit.txt")
+        try "agent line 1\nagent line 2\n".write(to: agentFileURL, atomically: true, encoding: .utf8)
+
+        let (turn2Summary, _) = AgentGitChangesDetector.computeTurnSummary(workingDirectory: tempDir.path, snapshot: snapshot)
+        XCTAssertNotNil(turn2Summary)
+        // MUST ONLY contain turn_edit.txt, NOT AgentMarkdownParserTests.swift or existing_file.txt!
+        XCTAssertEqual(turn2Summary?.files.count, 1)
+        XCTAssertEqual(turn2Summary?.files.first?.path, "turn_edit.txt")
+        XCTAssertEqual(turn2Summary?.displayTitle, "Edited 1 file")
+    }
+
     func testToolCallItemCreateEditedFilesSummary() {
         let editTool = ToolCallItem(
             toolName: "replace_file_content",
