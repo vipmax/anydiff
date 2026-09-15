@@ -15,10 +15,12 @@ public struct SidebarFileListView: View {
     public var onReload: () -> Void
     public var onToggleWatchMode: (() -> Void)?
     public var onBack: (() -> Void)?
+    public var onSwitchToFiles: (() -> Void)?
 
     @State private var searchText: String = ""
     @State private var isSearchVisible: Bool = false
     @FocusState private var isSearchFocused: Bool
+    @State private var isTitleHovered: Bool = false
 
     public init(
         fileDiffs: [FileDiff],
@@ -33,7 +35,8 @@ public struct SidebarFileListView: View {
         selectedFilePath: Binding<String?>,
         onReload: @escaping () -> Void,
         onToggleWatchMode: (() -> Void)? = nil,
-        onBack: (() -> Void)? = nil
+        onBack: (() -> Void)? = nil,
+        onSwitchToFiles: (() -> Void)? = nil
     ) {
         self.fileDiffs = fileDiffs
         self.theme = theme
@@ -48,6 +51,7 @@ public struct SidebarFileListView: View {
         self.onReload = onReload
         self.onToggleWatchMode = onToggleWatchMode
         self.onBack = onBack
+        self.onSwitchToFiles = onSwitchToFiles
     }
 
     private var filteredFiles: [FileDiff] {
@@ -113,11 +117,33 @@ public struct SidebarFileListView: View {
     @ViewBuilder
     private func headerLeadingView(availableWidth: CGFloat) -> some View {
         HStack(spacing: 5) {
-            Text(isStreaming ? "Loading..." : "CHANGES")
-                .font(.system(size: 10.5, weight: .bold))
-                .foregroundColor(isStreaming ? .accentColor : Color(theme.gutterForeground))
-                .lineLimit(1)
-                .fixedSize()
+            if let onSwitch = onSwitchToFiles {
+                Button(action: onSwitch) {
+                    Text(isStreaming ? "Loading..." : "CHANGES")
+                        .font(.system(size: 10.5, weight: .bold))
+                        .foregroundColor(isStreaming ? .accentColor : Color(theme.foreground))
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 2)
+                        .background(
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(isTitleHovered ? Color(theme.gutterForeground).opacity(0.14) : Color.clear)
+                        )
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .onHover { hovering in
+                    isTitleHovered = hovering
+                }
+                .help("Switch to Project Files (Cmd+2)")
+            } else {
+                Text(isStreaming ? "Loading..." : "CHANGES")
+                    .font(.system(size: 10.5, weight: .bold))
+                    .foregroundColor(isStreaming ? .accentColor : Color(theme.foreground))
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 2)
+                    .lineLimit(1)
+                    .fixedSize()
+            }
 
             if availableWidth >= 165 || isStreaming {
                 let count = isStreaming ? (streamingCount > 0 ? streamingCount : filteredFiles.count) : filteredFiles.count
@@ -158,21 +184,6 @@ public struct SidebarFileListView: View {
                 .buttonStyle(ToolbarHoverButtonStyle())
                 .disabled(isReloading)
                 .help("Reload Git Diff (Cmd+R)")
-            }
-
-            if case .remote = comparisonTarget {
-                // Remote diffs do not have a local directory watcher
-            } else if let onToggle = onToggleWatchMode {
-                if availableWidth >= 280 {
-                    Button(action: onToggle) {
-                        Image(systemName: isWatchModeEnabled ? "eye.fill" : "eye.slash")
-                            .font(.system(size: 10.5))
-                            .foregroundColor(isWatchModeEnabled ? Color(theme.gutterForeground) : Color(theme.gutterForeground).opacity(0.4))
-                            .frame(width: 14, height: 14)
-                    }
-                    .buttonStyle(ToolbarHoverButtonStyle())
-                    .help(isWatchModeEnabled ? "Watch Mode Active: auto-reloading on disk changes (Click to pause, Cmd+Opt+W)" : "Watch Mode Paused: click to enable auto-reload")
-                }
             }
 
             if availableWidth >= 245 || isSearchVisible {

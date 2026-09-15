@@ -26,7 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         mainWindow.titleVisibility = .hidden
         mainWindow.titlebarAppearsTransparent = true
         mainWindow.titlebarSeparatorStyle = .none
-        mainWindow.backgroundColor = NSColor(red: 0.11, green: 0.12, blue: 0.14, alpha: 1.0)
+        mainWindow.backgroundColor = initialTheme().background
         mainWindow.toolbarStyle = .unified
         let windowToolbar = NSToolbar(identifier: "AnyDiffWindowToolbar")
         windowToolbar.allowsUserCustomization = false
@@ -52,5 +52,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
+    }
+
+    private func initialTheme() -> Theme {
+        let storedThemeId = UserDefaults.standard.string(forKey: "selectedThemeId") ?? "system"
+        if storedThemeId == "system" {
+            let isDark = NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            return isDark ? .vesper : .macOSLight
+        } else if let theme = Theme.allThemes.first(where: { $0.id == storedThemeId }) {
+            return theme
+        }
+        return .vesper
     }
 }

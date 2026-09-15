@@ -9,11 +9,15 @@ public protocol CustomMultiBufferEditorDelegate: AnyObject {
     func editorDidRequestAddComment(filePath: String, lineNumber: Int)
     func editorDidScroll()
     func editorDidChangeContent()
+    func editorDidRequestCloseFile(filePath: String)
+    func editorDidRequestOpenExternalIDE(filePath: String, lineNumber: Int?)
 }
 
 public extension CustomMultiBufferEditorDelegate {
     func editorDidScroll() {}
     func editorDidChangeContent() {}
+    func editorDidRequestCloseFile(filePath: String) {}
+    func editorDidRequestOpenExternalIDE(filePath: String, lineNumber: Int?) {}
 }
 
 /// A high-performance, virtualized MultiBuffer Code Reviewer & Editor View built with CoreText
@@ -243,6 +247,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
     // Hover State
     private var hoveredGutterLineIndex: Int? = nil
+    private var hoveredCloseFilePath: String? = nil
     private var trackingArea: NSTrackingArea?
 
     // Scrollbar Auto-Hide Animation
@@ -681,6 +686,16 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         scrollOffsetX = max(0, min(maxScrollX, scrollOffsetX - dx))
 
         showScrollbarsWithAutohide(for: scrollbarAxis)
+
+        if let win = window {
+            let currentMouse = convert(win.mouseLocationOutsideOfEventStream, from: nil)
+            if bounds.contains(currentMouse) {
+                updateCloseHoverState(at: currentMouse)
+            } else if hoveredCloseFilePath != nil {
+                hoveredCloseFilePath = nil
+                needsDisplay = true
+            }
+        }
 
         if event.phase == .ended || event.phase == .cancelled {
             scrollLockAxis = nil
@@ -1601,6 +1616,26 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         return nil
     }
 
+    // MARK: - Excerpt Header Action Geometry
+
+    func closeButtonRect(in headerRect: CGRect) -> CGRect {
+        let size: CGFloat = 18
+        let x: CGFloat = 26
+        let y = headerRect.minY + (headerRect.height - size) / 2.0
+        return CGRect(x: x, y: y, width: size, height: size)
+    }
+
+    public func currentFocusedFilePath() -> String? {
+        guard let dm = displayMap else { return nil }
+        if let loc = dm.excerptLocation(for: cursorPoint) {
+            return loc.filePath
+        }
+        if let (stickyInfo, _) = currentStickyHeader() {
+            return stickyInfo.filePath
+        }
+        return dm.multiBuffer.excerpts.first?.filePath
+    }
+
     // MARK: - Excerpt Header Drawing
 
     private func drawExcerptHeader(info: ExcerptHeaderInfo, in rect: CGRect, isSticky: Bool = false, context: CGContext) {
@@ -1657,20 +1692,50 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         }
         context.restoreGState()
 
-        // File Icon
+        // File Icon / Close Button on Hover
         let iconSize: CGFloat = 14
         let iconX: CGFloat = 28
         let iconY = rect.minY + (rect.height - iconSize) / 2.0
-        let icon = FileIconProvider.shared.image(for: info.filePath, pointSize: 12, weight: .medium)
+        let closeRect = closeButtonRect(in: headerRect)
+        let isCloseHovered = (hoveredCloseFilePath == info.filePath)
 
-        icon.draw(
-            in: CGRect(x: iconX, y: iconY, width: iconSize, height: iconSize),
-            from: .zero,
-            operation: .sourceOver,
-            fraction: contentAlpha,
-            respectFlipped: true,
-            hints: nil
-        )
+        if isCloseHovered {
+            // Subtle rounded hover background
+            let bgRect = closeRect.insetBy(dx: 1, dy: 1)
+            context.saveGState()
+            context.setFillColor(theme.gutterForeground.withAlphaComponent(0.18).cgColor)
+            let path = CGPath(roundedRect: bgRect, cornerWidth: 3.5, cornerHeight: 3.5, transform: nil)
+            context.addPath(path)
+            context.fillPath()
+            context.restoreGState()
+
+            // Close ✕
+            context.saveGState()
+            context.setStrokeColor(theme.foreground.cgColor)
+            context.setLineWidth(1.4)
+            context.setLineCap(.round)
+            let cMidX = closeRect.midX
+            let cMidY = closeRect.midY
+            let d: CGFloat = 3.5
+            context.beginPath()
+            context.move(to: CGPoint(x: cMidX - d, y: cMidY - d))
+            context.addLine(to: CGPoint(x: cMidX + d, y: cMidY + d))
+            context.move(to: CGPoint(x: cMidX - d, y: cMidY + d))
+            context.addLine(to: CGPoint(x: cMidX + d, y: cMidY - d))
+            context.strokePath()
+            context.restoreGState()
+        } else {
+            let icon = FileIconProvider.shared.image(for: info.filePath, pointSize: 12, weight: .medium)
+
+            icon.draw(
+                in: CGRect(x: iconX, y: iconY, width: iconSize, height: iconSize),
+                from: .zero,
+                operation: .sourceOver,
+                fraction: contentAlpha,
+                respectFlipped: true,
+                hints: nil
+            )
+        }
 
         // Title and Breadcrumbs Text
         let titleColor: NSColor
@@ -2456,6 +2521,15 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
         // 1. Check if user clicked on Sticky Excerpt Header
         if let (stickyInfo, stickyFrame) = currentStickyHeader(), stickyFrame.contains(screenPoint) {
+            let closeRect = closeButtonRect(in: stickyFrame)
+            if closeRect.contains(screenPoint) {
+                delegate?.editorDidRequestCloseFile(filePath: stickyInfo.filePath)
+                return
+            }
+            if event.modifierFlags.contains(.option) {
+                delegate?.editorDidRequestOpenExternalIDE(filePath: stickyInfo.filePath, lineNumber: nil)
+                return
+            }
             displayMap.multiBuffer.toggleCollapse(filePath: stickyInfo.filePath)
             displayMap.rebuild()
             invalidateLayout()
@@ -2475,6 +2549,17 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         if docY >= lineMinY && docY <= lineMaxY {
             switch line {
             case .excerptHeader(let header):
+                let headerRect = CGRect(x: 0, y: lineMinY, width: bounds.width, height: height)
+                let closeRect = closeButtonRect(in: headerRect)
+                let clickPoint = CGPoint(x: screenPoint.x, y: docY)
+                if closeRect.contains(clickPoint) {
+                    delegate?.editorDidRequestCloseFile(filePath: header.filePath)
+                    return
+                }
+                if event.modifierFlags.contains(.option) {
+                    delegate?.editorDidRequestOpenExternalIDE(filePath: header.filePath, lineNumber: nil)
+                    return
+                }
                 displayMap.multiBuffer.toggleCollapse(filePath: header.filePath)
                 displayMap.rebuild()
                 invalidateLayout()
@@ -2879,6 +2964,58 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         activeSelectionGranularity = .character
     }
 
+    @discardableResult
+    private func updateCloseHoverState(at screenPoint: CGPoint) -> Bool {
+        var shouldHandCursor = false
+        var hoveredFilePath: String? = nil
+
+        if let (stickyInfo, stickyFrame) = currentStickyHeader(), stickyFrame.contains(screenPoint) {
+            let closeRect = closeButtonRect(in: stickyFrame)
+            if closeRect.contains(screenPoint) {
+                shouldHandCursor = true
+                hoveredFilePath = stickyInfo.filePath
+            }
+        } else if let displayMap = displayMap {
+            let docY = screenPoint.y + scrollOffsetY
+            let lineIdx = lineIndex(atY: docY)
+            if let line = displayMap.displayLine(at: lineIdx), case .excerptHeader(let header) = line {
+                let lineMinY = yOffset(forDisplayLineIndex: lineIdx)
+                let height = lineHeight(forDisplayLineIndex: lineIdx)
+                let headerRect = CGRect(x: 0, y: lineMinY, width: bounds.width, height: height)
+                let closeRect = closeButtonRect(in: headerRect)
+                let pt = CGPoint(x: screenPoint.x, y: docY)
+                if closeRect.contains(pt) {
+                    shouldHandCursor = true
+                    hoveredFilePath = header.filePath
+                }
+            }
+        }
+
+        if hoveredFilePath != hoveredCloseFilePath {
+            hoveredCloseFilePath = hoveredFilePath
+            needsDisplay = true
+        }
+
+        if shouldHandCursor {
+            NSCursor.pointingHand.set()
+        }
+        return shouldHandCursor
+    }
+
+    public override func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+        let screenPoint = convert(event.locationInWindow, from: nil)
+        updateCloseHoverState(at: screenPoint)
+    }
+
+    public override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        if hoveredCloseFilePath != nil {
+            hoveredCloseFilePath = nil
+            needsDisplay = true
+        }
+    }
+
     public override func resetCursorRects() {
         super.resetCursorRects()
         if displayMap?.effectiveLayoutMode == .sideBySide {
@@ -3069,6 +3206,12 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                     _ = displayMap?.multiBuffer.flushImmediateSave()
                 }
                 return true
+            }
+            if event.charactersIgnoringModifiers?.lowercased() == "w" {
+                if let filePath = currentFocusedFilePath() {
+                    delegate?.editorDidRequestCloseFile(filePath: filePath)
+                    return true
+                }
             }
             if NSApp.mainMenu?.performKeyEquivalent(with: event) == true {
                 return true

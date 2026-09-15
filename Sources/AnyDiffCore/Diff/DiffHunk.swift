@@ -106,6 +106,7 @@ public enum FileDiffStatus: String, Codable, Sendable {
     case deleted
     case renamed
     case copied
+    case unmodified
 }
 
 /// A parsed file diff containing metadata and list of hunks

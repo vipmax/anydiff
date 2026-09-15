@@ -25,6 +25,8 @@ public struct EditorHostView: NSViewRepresentable {
     public var onCursorChange: (ExcerptLocation?, MultiBufferPoint) -> Void
     public var onAddCommentRequest: (String, Int) -> Void
     public var onContentEdited: (() -> Void)?
+    public var onCloseFileRequest: ((String) -> Void)?
+    public var onOpenExternalIDERequest: ((String, Int?) -> Void)?
 
     public init(
         displayMap: DisplayMap,
@@ -38,7 +40,9 @@ public struct EditorHostView: NSViewRepresentable {
         searchMatchScrollRequest: SearchMatchScrollRequest? = nil,
         onCursorChange: @escaping (ExcerptLocation?, MultiBufferPoint) -> Void,
         onAddCommentRequest: @escaping (String, Int) -> Void,
-        onContentEdited: (() -> Void)? = nil
+        onContentEdited: (() -> Void)? = nil,
+        onCloseFileRequest: ((String) -> Void)? = nil,
+        onOpenExternalIDERequest: ((String, Int?) -> Void)? = nil
     ) {
         self.displayMap = displayMap
         self.theme = theme
@@ -52,6 +56,8 @@ public struct EditorHostView: NSViewRepresentable {
         self.onCursorChange = onCursorChange
         self.onAddCommentRequest = onAddCommentRequest
         self.onContentEdited = onContentEdited
+        self.onCloseFileRequest = onCloseFileRequest
+        self.onOpenExternalIDERequest = onOpenExternalIDERequest
     }
 
     public func makeCoordinator() -> Coordinator {
@@ -227,6 +233,14 @@ public struct EditorHostView: NSViewRepresentable {
             guard !isSwitchingDisplayMap else { return }
             saveCurrentViewState()
             parent.onContentEdited?()
+        }
+
+        public func editorDidRequestCloseFile(filePath: String) {
+            parent.onCloseFileRequest?(filePath)
+        }
+
+        public func editorDidRequestOpenExternalIDE(filePath: String, lineNumber: Int?) {
+            parent.onOpenExternalIDERequest?(filePath, lineNumber)
         }
 
         var currentViewState: EditorViewState? {

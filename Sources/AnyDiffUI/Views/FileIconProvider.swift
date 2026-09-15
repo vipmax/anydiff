@@ -88,7 +88,7 @@ public final class FileIconProvider: @unchecked Sendable {
         case ".env", ".env.local", ".env.production", ".env.development", ".env.example", ".env.test":
             return FileIcon(svg: Icons.env, languageName: "Environment")
         case "readme", "readme.md", "readme.txt":
-            return FileIcon(svg: Icons.markdown, languageName: "Readme")
+            return FileIcon(svg: Icons.markdown, languageName: "Readme", fallbackColor: NSColor.secondaryLabelColor)
         case "license", "license.md", "license.txt", "licence", "licence.md", "licence.txt":
             return FileIcon(systemName: "doc.text.fill", color: NSColor.systemOrange, languageName: "License")
         case "tsconfig.json", "jsconfig.json":
@@ -182,7 +182,7 @@ public final class FileIconProvider: @unchecked Sendable {
         case "xml", "plist", "config", "ini", "props":
             return FileIcon(systemName: "doc.badge.gearshape.fill", color: NSColor.secondaryLabelColor, languageName: "Config/XML")
         case "md", "markdown", "mdx", "rst":
-            return FileIcon(svg: Icons.markdown, languageName: "Markdown")
+            return FileIcon(svg: Icons.markdown, languageName: "Markdown", fallbackColor: NSColor.secondaryLabelColor)
         case "txt", "text", "log":
             return FileIcon(systemName: "doc.text.fill", color: NSColor.secondaryLabelColor, languageName: "Plain Text")
         case "sh", "bash", "zsh", "fish", "command":

@@ -2285,4 +2285,61 @@ final class MultiBufferTests: XCTestCase {
         excerpt.bufferRange = 0..<3
         XCTAssertFalse(dm.usesOriginalHunk(excerpt: excerpt, buffer: buffer))
     }
+
+    func testUnmodifiedFileStatusAndPanelContentFiles() {
+        let status = FileDiffStatus.unmodified
+        XCTAssertEqual(status.rawValue, "unmodified")
+
+        let fileDiff = FileDiff(oldPath: "clean.swift", newPath: "clean.swift", status: .unmodified, hunks: [])
+        XCTAssertEqual(fileDiff.status, .unmodified)
+        XCTAssertEqual(fileDiff.displayPath, "clean.swift")
+
+        let content = PanelContent.files
+        XCTAssertEqual(content.title, "Files")
+        XCTAssertEqual(content.iconName, "folder")
+        XCTAssertTrue(PanelContent.allCases.contains(.files))
+    }
+
+    func testMultiBufferRemoveFile() {
+        let mb = MultiBuffer()
+        let buf1 = Buffer(filePath: "A.swift", text: "line 1\nline 2")
+        let buf2 = Buffer(filePath: "B.swift", text: "hello\nworld")
+        mb.addBuffer(buf1)
+        mb.addBuffer(buf2)
+        mb.setExcerpts([
+            Excerpt(bufferId: buf1.id, filePath: "A.swift", bufferRange: 0..<2),
+            Excerpt(bufferId: buf2.id, filePath: "B.swift", bufferRange: 0..<2)
+        ])
+
+        XCTAssertEqual(mb.excerpts.count, 2)
+        XCTAssertEqual(mb.buffers.count, 2)
+
+        mb.removeFile(filePath: "A.swift")
+        XCTAssertEqual(mb.excerpts.count, 1)
+        XCTAssertEqual(mb.excerpts.first?.filePath, "B.swift")
+        XCTAssertNil(mb.buffer(for: buf1.id))
+        XCTAssertNotNil(mb.buffer(for: buf2.id))
+    }
+
+    func testMultiBufferNaturalAlphabeticalInsertion() {
+        let mb = MultiBuffer()
+        let bufA = Buffer(filePath: "File1.swift", text: "1")
+        let bufC = Buffer(filePath: "File10.swift", text: "10")
+        mb.addBuffer(bufA)
+        mb.addBuffer(bufC)
+        mb.setExcerpts([
+            Excerpt(bufferId: bufA.id, filePath: "File1.swift", bufferRange: 0..<1),
+            Excerpt(bufferId: bufC.id, filePath: "File10.swift", bufferRange: 0..<1)
+        ])
+
+        // Insert File2.swift - under natural sort File2 comes after File1 and before File10!
+        let bufB = Buffer(filePath: "File2.swift", text: "2")
+        let excB = Excerpt(bufferId: bufB.id, filePath: "File2.swift", bufferRange: 0..<1)
+        mb.replaceFile(filePath: "File2.swift", buffers: [bufB], excerpts: [excB])
+
+        XCTAssertEqual(mb.excerpts.count, 3)
+        XCTAssertEqual(mb.excerpts[0].filePath, "File1.swift")
+        XCTAssertEqual(mb.excerpts[1].filePath, "File2.swift")
+        XCTAssertEqual(mb.excerpts[2].filePath, "File10.swift")
+    }
 }

@@ -201,6 +201,8 @@ public struct EmptyPanelView: View {
         switch content {
         case .changes:
             return Color.orange
+        case .files:
+            return Color.teal
         case .editor:
             return Color.blue
         case .agent:

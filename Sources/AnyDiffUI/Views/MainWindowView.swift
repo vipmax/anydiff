@@ -111,6 +111,7 @@ public struct MainWindowView: View {
     @State private var fileDiffs: [FileDiff] = []
     @State private var selectedFilePath: String? = nil
     @State private var selectedFilePathBeforeReview: String? = nil
+    @State private var manuallyOpenedFilePaths: Set<String> = []
     @State private var isWatchModeEnabled: Bool = true
     @State private var folderWatcher: FolderWatcher? = nil
     @State private var selectedTheme: Theme = .vesper
@@ -234,7 +235,7 @@ public struct MainWindowView: View {
                     ToolbarItem(placement: .automatic) {
                         Spacer()
                     }
-                    ToolbarItem(placement: .automatic) {
+                    ToolbarItem(placement: .primaryAction) {
                         windowToolbarTrailingItems
                     }
                 }
@@ -249,8 +250,7 @@ public struct MainWindowView: View {
         }
         .preferredColorScheme(activeTheme.isDark ? .dark : .light)
         .environment(\.colorScheme, activeTheme.isDark ? .dark : .light)
-        .toolbarBackground(Color(activeTheme.background), for: .windowToolbar)
-        .toolbarBackground(.visible, for: .windowToolbar)
+        .toolbarBackground(.hidden, for: .windowToolbar)
         .toolbarColorScheme(activeTheme.isDark ? .dark : .light, for: .windowToolbar)
         .background(Color(activeTheme.background).ignoresSafeArea())
         .onDrop(of: [UTType.fileURL, UTType.url, UTType.text], isTargeted: $isWindowDropTargeted) { providers in
@@ -337,6 +337,12 @@ public struct MainWindowView: View {
         }
         .onChange(of: selectedTheme.id) { _ in updateWindowAppearance() }
         .onChange(of: followsSystemAppearance) { _ in updateWindowAppearance() }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didEnterFullScreenNotification)) { _ in
+            updateWindowAppearance()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didExitFullScreenNotification)) { _ in
+            updateWindowAppearance()
+        }
         .onChange(of: isWatchModeEnabled) { enabled in
             if enabled {
                 guard let currentDir = loadableWorkingDirectory else {
@@ -462,7 +468,7 @@ public struct MainWindowView: View {
         switch panelLayout.leftContent {
         case .editor: return 360
         case .agent: return 280
-        case .changes, nil: return 200
+        case .changes, .files, nil: return 200
         }
     }
 
@@ -470,7 +476,7 @@ public struct MainWindowView: View {
         switch panelLayout.leftContent {
         case .editor: return 500
         case .agent: return 360
-        case .changes, nil: return 280
+        case .changes, .files, nil: return 280
         }
     }
 
@@ -478,13 +484,13 @@ public struct MainWindowView: View {
         switch panelLayout.leftContent {
         case .editor: return 1200
         case .agent: return 800
-        case .changes, nil: return 800
+        case .changes, .files, nil: return 800
         }
     }
 
     private var centerColumnMinWidth: CGFloat {
         switch panelLayout.centerContent {
-        case .changes: return 200
+        case .changes, .files: return 200
         case .agent: return 280
         case .editor, nil: return 320
         }
@@ -492,7 +498,7 @@ public struct MainWindowView: View {
 
     private var centerColumnIdealWidth: CGFloat {
         switch panelLayout.centerContent {
-        case .changes: return 280
+        case .changes, .files: return 280
         case .agent: return 560
         case .editor, nil: return 760
         }
@@ -505,7 +511,7 @@ public struct MainWindowView: View {
     private var rightColumnMinWidth: CGFloat {
         guard panelLayout.isRightPanelOpen else { return 0 }
         switch panelLayout.rightContent {
-        case .changes: return 200
+        case .changes, .files: return 200
         case .editor: return 360
         case .agent: return 320
         case nil: return 240
@@ -515,7 +521,7 @@ public struct MainWindowView: View {
     private var rightColumnIdealWidth: CGFloat {
         guard panelLayout.isRightPanelOpen else { return 0 }
         switch panelLayout.rightContent {
-        case .changes: return 280
+        case .changes, .files: return 280
         case .editor: return 600
         case .agent: return 560
         case nil: return 320
@@ -525,7 +531,7 @@ public struct MainWindowView: View {
     private var rightColumnMaxWidth: CGFloat {
         guard panelLayout.isRightPanelOpen else { return 0 }
         switch panelLayout.rightContent {
-        case .changes: return 800
+        case .changes, .files: return 800
         case .editor: return 1400
         case .agent: return 950
         case nil: return 800
@@ -540,6 +546,8 @@ public struct MainWindowView: View {
             switch panelLayout.content(for: slot) {
             case .changes:
                 changesPanelView(for: slot)
+            case .files:
+                filesPanelView(for: slot)
             case .editor:
                 editorPanelView(for: slot)
             case .agent:
@@ -578,8 +586,41 @@ public struct MainWindowView: View {
                 withAnimation(.easeInOut(duration: 0.18)) {
                     panelLayout.clear(slot)
                 }
-            }
+            },
+            onSwitchToFiles: slot == .left ? {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    panelLayout.assign(.files, to: .left)
+                }
+            } : nil
         )
+    }
+
+    @ViewBuilder
+    private func filesPanelView(for slot: PanelSlot) -> some View {
+        FilesPanelView(
+            rootDirectory: effectiveWorkingDirectory,
+            fileDiffs: activeFileDiffs,
+            openFilePaths: Set(activeDisplayMap.multiBuffer.excerpts.map(\.filePath)),
+            theme: activeTheme,
+            selectedFilePath: $selectedFilePath,
+            onOpenFile: { path in
+                openFileInEditor(path: path)
+            },
+            onOpenExternalIDE: { path in
+                openInExternalIDE(filePath: path)
+            },
+            onBack: {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    panelLayout.clear(slot)
+                }
+            },
+            onSwitchToChanges: slot == .left ? {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    panelLayout.assign(.changes, to: .left)
+                }
+            } : nil
+        )
+        .id(effectiveWorkingDirectory)
     }
 
     @ViewBuilder
@@ -995,12 +1036,8 @@ public struct MainWindowView: View {
                 agentCoordinator.isPanelOpen = panelLayout.isRightPanelOpen
             }
         }) {
-            Image(systemName: "sidebar.right")
-                .font(.system(size: 16, weight: .medium))
-                .frame(width: 18, height: 18)
-                .foregroundColor(Color(nsColor: .secondaryLabelColor))
+            Label(isOpen ? "Hide \(title)" : "Show \(title)", systemImage: "sidebar.right")
         }
-        .buttonStyle(ToolbarHoverButtonStyle())
         .help(isOpen ? "Hide \(title) (Cmd+Opt+A)" : "Show \(title) (Cmd+Opt+A)")
     }
 
@@ -1114,6 +1151,12 @@ public struct MainWindowView: View {
                 if isProjectSearchActive {
                     handleSearchContentEdited()
                 }
+            },
+            onCloseFileRequest: { path in
+                closeFileFromEditor(filePath: path)
+            },
+            onOpenExternalIDERequest: { path, line in
+                openInExternalIDE(filePath: path, line: line)
             }
         )
         .clipped()
@@ -1320,6 +1363,18 @@ public struct MainWindowView: View {
     @ViewBuilder
     private var hiddenKeyboardShortcuts: some View {
         Group {
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    panelLayout.assign(.changes, to: .left)
+                }
+            }) {}
+                .keyboardShortcut("1", modifiers: .command)
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    panelLayout.assign(.files, to: .left)
+                }
+            }) {}
+                .keyboardShortcut("2", modifiers: .command)
             Button(action: {
                 withAnimation(.easeInOut(duration: 0.15)) {
                     toggleDiffLayoutMode()
@@ -1691,25 +1746,119 @@ public struct MainWindowView: View {
             NSWorkspace.shared.open(dirURL)
 
         case .file(let filePath, let line, let endLine):
-            if panelLayout.slot(for: .editor) == nil {
-                panelLayout.assign(.editor, to: .center)
-            }
-
-            if let targetFile = activeDisplayMap.matchFilePath(filePath) {
-                selectedFilePath = targetFile
-                NotificationCenter.default.post(
-                    name: .focusFileInEditor,
-                    object: FileNavigationRequest(filePath: targetFile, lineNumber: line, endLineNumber: endLine)
-                )
-            } else {
-                let fileURL = URL(fileURLWithPath: filePath)
-                if FileManager.default.fileExists(atPath: filePath) {
-                    NSWorkspace.shared.open(fileURL)
-                }
-            }
+            openFileInEditor(path: filePath, line: line, endLine: endLine)
 
         case .custom(let customURL):
             NSWorkspace.shared.open(customURL)
+        }
+    }
+
+    public func openFileInEditor(path: String, line: Int? = nil, endLine: Int? = nil) {
+        if panelLayout.slot(for: .editor) == nil {
+            panelLayout.assign(.editor, to: .center)
+        }
+
+        let baseDir = effectiveWorkingDirectory
+        let resolvedRelativePath: String
+        let fullDiskPath: String
+
+        if (path as NSString).isAbsolutePath {
+            fullDiskPath = path
+            if path.hasPrefix(baseDir) {
+                let suffix = String(path.dropFirst(baseDir.count))
+                resolvedRelativePath = suffix.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            } else {
+                resolvedRelativePath = (path as NSString).lastPathComponent
+            }
+        } else {
+            resolvedRelativePath = path
+            fullDiskPath = (baseDir as NSString).appendingPathComponent(path)
+        }
+
+        // 1. Check if already present in activeDisplayMap
+        if let targetFile = activeDisplayMap.matchFilePath(resolvedRelativePath) ?? activeDisplayMap.matchFilePath(path) {
+            selectedFilePath = targetFile
+            NotificationCenter.default.post(
+                name: .focusFileInEditor,
+                object: FileNavigationRequest(filePath: targetFile, lineNumber: line, endLineNumber: endLine)
+            )
+            return
+        }
+
+        // 2. Not present: read from disk and insert as clean unmodified buffer
+        guard FileManager.default.fileExists(atPath: fullDiskPath),
+              let content = try? String(contentsOfFile: fullDiskPath, encoding: .utf8) else {
+            return
+        }
+
+        let lines = content.components(separatedBy: "\n")
+        let buffer = Buffer(
+            filePath: resolvedRelativePath,
+            lines: lines,
+            language: Buffer.detectLanguage(for: resolvedRelativePath),
+            baselineLines: lines,
+            totalAdditions: 0,
+            totalDeletions: 0,
+            startLineNumber: 1,
+            fullDiskPath: fullDiskPath,
+            diskFileLineCount: lines.count
+        )
+        buffer.isFullFile = true
+
+        let excerpt = Excerpt(
+            bufferId: buffer.id,
+            filePath: resolvedRelativePath,
+            fileStatus: .unmodified,
+            bufferRange: 0..<lines.count,
+            hunk: nil,
+            isCollapsed: false,
+            isFileStart: true
+        )
+
+        let cleanFileDiff = FileDiff(
+            oldPath: resolvedRelativePath,
+            newPath: resolvedRelativePath,
+            status: .unmodified,
+            hunks: []
+        )
+
+        let insertIndex = fileDiffs.firstIndex(where: {
+            $0.displayPath.localizedStandardCompare(resolvedRelativePath) == .orderedDescending
+        }) ?? fileDiffs.count
+        fileDiffs.insert(cleanFileDiff, at: insertIndex)
+
+        multiBuffer.replaceFile(filePath: resolvedRelativePath, buffers: [buffer], excerpts: [excerpt])
+        manuallyOpenedFilePaths.insert(resolvedRelativePath)
+
+        displayMap.rebuild()
+        selectedFilePath = resolvedRelativePath
+
+        NotificationCenter.default.post(
+            name: .focusFileInEditor,
+            object: FileNavigationRequest(filePath: resolvedRelativePath, lineNumber: line, endLineNumber: endLine)
+        )
+    }
+
+    public func closeFileFromEditor(filePath: String) {
+        fileDiffs.removeAll { $0.displayPath == filePath }
+        multiBuffer.removeFile(filePath: filePath)
+        manuallyOpenedFilePaths.remove(filePath)
+        displayMap.rebuild()
+        if selectedFilePath == filePath {
+            selectedFilePath = fileDiffs.first?.displayPath
+        }
+    }
+
+    public func openInExternalIDE(filePath: String, line: Int? = nil) {
+        let baseDir = effectiveWorkingDirectory
+        let fullPath = (filePath as NSString).isAbsolutePath ? filePath : (baseDir as NSString).appendingPathComponent(filePath)
+        let lineArg = line != nil ? "-g '\(fullPath):\(line!)'" : "'\(fullPath)'"
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/sh")
+            process.arguments = ["-c", "cursor \(lineArg) 2>/dev/null || code \(lineArg) 2>/dev/null || open '\(fullPath)'"]
+            try? process.run()
         }
     }
 
@@ -1879,9 +2028,10 @@ public struct MainWindowView: View {
 
     private func updateWindowAppearance() {
         DispatchQueue.main.async {
-            if let window = NSApp.windows.first {
+            for window in NSApp.windows {
                 window.backgroundColor = activeTheme.background
                 window.appearance = NSAppearance(named: activeTheme.isDark ? .darkAqua : .aqua)
+                window.titlebarAppearsTransparent = true
                 window.titlebarSeparatorStyle = .none
             }
         }
@@ -2195,6 +2345,8 @@ public struct MainWindowView: View {
         isReloading = true
         if multiBuffer.baseDirectory != currentDir {
             resetProjectSearch()
+            manuallyOpenedFilePaths.removeAll()
+            selectedFilePath = nil
         }
         multiBuffer.baseDirectory = currentDir
         let folderName = (currentDir as NSString).lastPathComponent
@@ -2268,6 +2420,7 @@ public struct MainWindowView: View {
         remoteBranches = []
         repoStatus = .notGitRepository
         selectedFilePath = nil
+        manuallyOpenedFilePaths.removeAll()
         multiBuffer.baseDirectory = nil
         resetProjectSearch()
         loadDiff(files: [])
@@ -2870,10 +3023,23 @@ public struct MainWindowView: View {
         let targetDM = isReview ? reviewDisplayMap : displayMap
 
         let collapsedFilePaths = Set(targetMB.excerpts.filter { $0.isCollapsed }.map { $0.filePath })
+        var allFiles = parsedFiles
+        if !isReview {
+            for cleanPath in manuallyOpenedFilePaths {
+                if !allFiles.contains(where: { $0.displayPath == cleanPath }) {
+                    let cleanDiff = FileDiff(oldPath: cleanPath, newPath: cleanPath, status: .unmodified, hunks: [])
+                    let insertIndex = allFiles.firstIndex(where: {
+                        $0.displayPath.localizedStandardCompare(cleanPath) == .orderedDescending
+                    }) ?? allFiles.count
+                    allFiles.insert(cleanDiff, at: insertIndex)
+                }
+            }
+        }
+
         if isReview {
-            self.reviewFileDiffs = parsedFiles
+            self.reviewFileDiffs = allFiles
         } else {
-            self.fileDiffs = parsedFiles
+            self.fileDiffs = allFiles
         }
 
         targetMB.clear()
@@ -2883,7 +3049,7 @@ public struct MainWindowView: View {
 
         let baseDir = effectiveBaseDirectory
 
-        for file in parsedFiles {
+        for file in allFiles {
             let relativePath = file.displayPath
             let wasCollapsed = collapsedFilePaths.contains(relativePath)
             var fullPath = (baseDir as NSString).appendingPathComponent(relativePath)
@@ -2901,7 +3067,34 @@ public struct MainWindowView: View {
             let fileAdds = file.additions
             let fileDels = file.deletions
 
-            if file.hunks.isEmpty {
+            if file.status == .unmodified {
+                let content = (try? String(contentsOfFile: fullPath, encoding: .utf8)) ?? ""
+                let lines = content.components(separatedBy: "\n")
+                let buffer = Buffer(
+                    filePath: file.displayPath,
+                    lines: lines,
+                    language: Buffer.detectLanguage(for: file.displayPath),
+                    baselineLines: lines,
+                    totalAdditions: 0,
+                    totalDeletions: 0,
+                    startLineNumber: 1,
+                    fullDiskPath: fullPath,
+                    diskFileLineCount: lines.count
+                )
+                buffer.isFullFile = true
+                targetMB.addBuffer(buffer)
+
+                let excerpt = Excerpt(
+                    bufferId: buffer.id,
+                    filePath: file.displayPath,
+                    fileStatus: .unmodified,
+                    bufferRange: 0..<lines.count,
+                    hunk: nil,
+                    isCollapsed: wasCollapsed,
+                    isFileStart: true
+                )
+                targetMB.addExcerpt(excerpt)
+            } else if file.hunks.isEmpty {
                 let buffer = Buffer(
                     filePath: file.displayPath,
                     lines: [],

@@ -5,7 +5,10 @@ default:
 
 # Run the app with Debug configuration.
 dev path="":
-    swift run -c debug AnyDiff {{path}}
+    @swift build -c debug
+    @bin_dir="$(swift build --show-bin-path)"; \
+    swiftc -target $(uname -m)-apple-macos13.0 -I "$bin_dir" -L "$bin_dir" -lAnyDiffCore -lAnyDiffUI -Xlinker -rpath -Xlinker "$bin_dir" Sources/AnyDiff/*.swift -o "$bin_dir/AnyDiff" && \
+    "$bin_dir/AnyDiff" {{path}}
 
 # Run the app with Release optimizations.
 release path="":
@@ -17,11 +20,13 @@ build:
 
 # Build the Debug binary without running it.
 build-debug:
-    swift build -c debug
+    @swift build -c debug
+    @bin_dir="$(swift build --show-bin-path)"; \
+    swiftc -target $(uname -m)-apple-macos13.0 -I "$bin_dir" -L "$bin_dir" -lAnyDiffCore -lAnyDiffUI -Xlinker -rpath -Xlinker "$bin_dir" Sources/AnyDiff/*.swift -o "$bin_dir/AnyDiff"
 
 # Attach to the running debug app and export a short text-readable profile.
 trace:
-    app_pid="$(pgrep -n -f '^\.build/arm64-apple-macosx/debug/AnyDiff( |$)' || true)"; \
+    app_pid="$(pgrep -n -f 'AnyDiff( |$)' || true)"; \
     if [ -z "$app_pid" ]; then \
         printf 'No debug AnyDiff process found. Run: just dev .\n' >&2; \
         exit 1; \
@@ -41,6 +46,7 @@ trace:
 # Remove Swift Package Manager build artifacts.
 clean:
     swift package clean
+    rm -rf .build
 
 # Clean and rebuild both Debug and Release configurations.
 rebuild:

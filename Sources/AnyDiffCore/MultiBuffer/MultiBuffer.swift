@@ -51,7 +51,9 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
     /// to apply a filesystem refresh without rebuilding the whole document.
     public func replaceFile(filePath: String, buffers newBuffers: [Buffer], excerpts newExcerpts: [Excerpt]) {
         let oldExcerptIndices = excerpts.indices.filter { excerpts[$0].filePath == filePath }
-        let insertionIndex = oldExcerptIndices.first ?? excerpts.firstIndex(where: { $0.filePath > filePath }) ?? excerpts.count
+        let insertionIndex = oldExcerptIndices.first ?? excerpts.firstIndex(where: {
+            $0.filePath.localizedStandardCompare(filePath) == .orderedDescending
+        }) ?? excerpts.count
         let oldBufferIDs = Set(oldExcerptIndices.map { excerpts[$0].bufferId })
 
         undoManager.invalidate(bufferIds: oldBufferIDs)
@@ -66,6 +68,20 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
 
         let clampedIndex = min(insertionIndex, excerpts.count)
         excerpts.insert(contentsOf: newExcerpts, at: clampedIndex)
+        version &+= 1
+    }
+
+    /// Removes all excerpts and buffers belonging to `filePath` and clears undo history for them.
+    public func removeFile(filePath: String) {
+        let oldExcerptIndices = excerpts.indices.filter { excerpts[$0].filePath == filePath }
+        guard !oldExcerptIndices.isEmpty else { return }
+        let oldBufferIDs = Set(oldExcerptIndices.map { excerpts[$0].bufferId })
+
+        undoManager.invalidate(bufferIds: oldBufferIDs)
+        excerpts.removeAll { $0.filePath == filePath }
+        for id in oldBufferIDs {
+            buffers.removeValue(forKey: id)
+        }
         version &+= 1
     }
 
