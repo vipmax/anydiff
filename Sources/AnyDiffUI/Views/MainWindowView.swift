@@ -224,6 +224,11 @@ public struct MainWindowView: View {
     public var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             panelView(for: .left)
+                .overlay(alignment: .trailing) {
+                    Rectangle()
+                        .fill(Color(NSColor.separatorColor))
+                        .frame(width: 1)
+                }
                 .navigationSplitViewColumnWidth(min: leftColumnMinWidth, ideal: leftColumnIdealWidth, max: leftColumnMaxWidth)
         } content: {
             panelView(for: .center)
@@ -2038,6 +2043,7 @@ public struct MainWindowView: View {
                 window.titlebarAppearsTransparent = true
                 window.titlebarSeparatorStyle = .none
                 alignSidebarToggleLeading(in: window)
+                updateSplitViewDividers(in: window)
             }
         }
     }
@@ -2051,6 +2057,23 @@ public func alignSidebarToggleLeading(in window: NSWindow) {
         tb.removeItem(at: toggleIdx - 1)
         tb.insertItem(withItemIdentifier: .flexibleSpace, at: toggleIdx)
     }
+}
+
+public func updateSplitViewDividers(in window: NSWindow) {
+    func rec(v: NSView) {
+        if String(describing: type(of: v)).contains("Divider") {
+            v.wantsLayer = true
+            v.layer?.backgroundColor = NSColor.separatorColor.cgColor
+            if let subs = v.layer?.sublayers {
+                for sub in subs {
+                    sub.backgroundColor = NSColor.separatorColor.cgColor
+                    sub.opacity = 1.0
+                }
+            }
+        }
+        for s in v.subviews { rec(v: s) }
+    }
+    if let cv = window.contentView { rec(v: cv) }
 }
 
 extension MainWindowView {
