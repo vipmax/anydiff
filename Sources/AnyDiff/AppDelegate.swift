@@ -40,6 +40,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         mainWindow.orderFrontRegardless()
         self.window = mainWindow
 
+        DispatchQueue.main.async {
+            alignSidebarToggleLeading(in: mainWindow)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            alignSidebarToggleLeading(in: mainWindow)
+        }
+
         setupMainMenu()
 
         NSRunningApplication.current.activate(options: [.activateAllWindows])

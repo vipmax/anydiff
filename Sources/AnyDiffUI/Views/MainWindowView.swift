@@ -247,6 +247,7 @@ public struct MainWindowView: View {
         .onChange(of: columnVisibility) { newVisibility in
             let isOpen = (newVisibility == .all)
             UserDefaults.standard.set(isOpen, forKey: Self.isLeftPanelOpenKey)
+            updateWindowAppearance()
         }
         .preferredColorScheme(activeTheme.isDark ? .dark : .light)
         .environment(\.colorScheme, activeTheme.isDark ? .dark : .light)
@@ -341,6 +342,9 @@ public struct MainWindowView: View {
             updateWindowAppearance()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didExitFullScreenNotification)) { _ in
+            updateWindowAppearance()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResizeNotification)) { _ in
             updateWindowAppearance()
         }
         .onChange(of: isWatchModeEnabled) { enabled in
@@ -2033,9 +2037,23 @@ public struct MainWindowView: View {
                 window.appearance = NSAppearance(named: activeTheme.isDark ? .darkAqua : .aqua)
                 window.titlebarAppearsTransparent = true
                 window.titlebarSeparatorStyle = .none
+                alignSidebarToggleLeading(in: window)
             }
         }
     }
+}
+
+public func alignSidebarToggleLeading(in window: NSWindow) {
+    guard let tb = window.toolbar else { return }
+    if let toggleIdx = tb.items.firstIndex(where: { $0.itemIdentifier.rawValue.contains("toggleSidebar") }),
+       toggleIdx > 0,
+       tb.items[toggleIdx - 1].itemIdentifier == .flexibleSpace {
+        tb.removeItem(at: toggleIdx - 1)
+        tb.insertItem(withItemIdentifier: .flexibleSpace, at: toggleIdx)
+    }
+}
+
+extension MainWindowView {
 
     // MARK: - Remote GitHub Diff Loading
 
