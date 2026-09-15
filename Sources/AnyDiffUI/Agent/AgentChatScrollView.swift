@@ -414,6 +414,9 @@ public final class AgentNativeStandardChatScrollView: NSScrollView {
         }
     }
 
+    public override var isOpaque: Bool { true }
+    public override var mouseDownCanMoveWindow: Bool { false }
+
     public override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         setup()
@@ -428,7 +431,8 @@ public final class AgentNativeStandardChatScrollView: NSScrollView {
         hasVerticalScroller = true
         hasHorizontalScroller = false
         autohidesScrollers = true
-        drawsBackground = false
+        drawsBackground = true
+        backgroundColor = NSColor(cgColor: Theme.zedDark.background.cgColor) ?? .windowBackgroundColor
         borderType = .noBorder
         scrollsDynamically = true
         wantsLayer = true
@@ -529,6 +533,10 @@ public final class AgentNativeStandardChatScrollView: NSScrollView {
         if shouldScrollToBottom {
             followsBottom = true
         }
+        let themeBgColor = NSColor(cgColor: theme.background.cgColor) ?? .windowBackgroundColor
+        if backgroundColor != themeBgColor {
+            backgroundColor = themeBgColor
+        }
         documentViewCustom.setBottomInset(pendingBottomInset)
         documentViewCustom.updateMessages(
             messages,
@@ -604,7 +612,13 @@ public final class AgentNativeStandardChatScrollView: NSScrollView {
     public var isNearBottom: Bool {
         let clipBounds = contentView.bounds
         let docHeight = documentViewCustom.bounds.height
-        return docHeight <= clipBounds.height || clipBounds.maxY >= docHeight - 45
+        guard docHeight > clipBounds.height else { return true }
+        let distFromBottom = docHeight - clipBounds.maxY
+        if lastNearBottom == true {
+            return distFromBottom <= 70
+        } else {
+            return distFromBottom <= 35
+        }
     }
 
     private func notifyNearBottomChanged() {
@@ -618,6 +632,7 @@ public final class AgentNativeStandardChatScrollView: NSScrollView {
 
 public final class AgentNativeStandardChatDocumentView: NSView {
     public override var isFlipped: Bool { true }
+    public override var mouseDownCanMoveWindow: Bool { false }
 
     public struct CellEntry {
         public let id: UUID
@@ -776,6 +791,9 @@ public final class AgentNativeStandardChatDocumentView: NSView {
             let height = cell.layout(for: contentWidth)
             let cellFrame = NSRect(x: 0, y: currentY, width: contentWidth, height: height)
             orderedCells[i].frame = cellFrame
+            if cell.superview != nil && cell.frame != cellFrame {
+                cell.frame = cellFrame
+            }
             currentY += height + 10
         }
 
@@ -808,9 +826,12 @@ public final class AgentNativeStandardChatDocumentView: NSView {
                 } else if item.cell.frame != item.frame {
                     item.cell.frame = item.frame
                 }
+                if item.cell.isHidden {
+                    item.cell.isHidden = false
+                }
             } else {
-                if item.cell.superview != nil {
-                    item.cell.removeFromSuperview()
+                if item.cell.superview != nil && !item.cell.isHidden {
+                    item.cell.isHidden = true
                 }
             }
         }
@@ -1099,10 +1120,45 @@ public final class AgentNativeThoughtBlockView: AgentNativeFlippedView {
     }
 }
 
-public final class AgentSelectableTextView: NSTextView {
+public final class AgentSelectableTextView: NSTextView, NSTextStorageDelegate {
     public weak var parentCell: AgentNativeMessageCell?
     public var cellId: UUID?
     public var tvKey: String = ""
+
+    public var hasLinks: Bool {
+        if !hasLinksChecked {
+            hasLinksChecked = true
+            _hasLinks = false
+            if let ts = textStorage, ts.length > 0 {
+                ts.enumerateAttribute(.link, in: NSRange(location: 0, length: ts.length), options: [.longestEffectiveRangeNotRequired]) { val, _, stop in
+                    if val != nil {
+                        self._hasLinks = true
+                        stop.pointee = true
+                    }
+                }
+            }
+        }
+        return _hasLinks
+    }
+    private var hasLinksChecked: Bool = false
+    private var _hasLinks: Bool = false
+    private var cachedLinkRects: [NSRect]?
+    private var lastCalculatedBoundsWidth: CGFloat = -1
+
+    public func invalidateLinksCache() {
+        hasLinksChecked = false
+        cachedLinkRects = nil
+        lastCalculatedBoundsWidth = -1
+    }
+
+    public func textStorage(
+        _ textStorage: NSTextStorage,
+        didProcessEditing editedMask: NSTextStorageEditActions,
+        range editedRange: NSRange,
+        changeInLength delta: Int
+    ) {
+        invalidateLinksCache()
+    }
 
     public init() {
         let textStorage = NSTextStorage()
@@ -1114,6 +1170,8 @@ public final class AgentSelectableTextView: NSTextView {
         layoutManager.addTextContainer(textContainer)
 
         super.init(frame: .zero, textContainer: textContainer)
+
+        textStorage.delegate = self
 
         self.isEditable = false
         self.isSelectable = false
@@ -1146,8 +1204,8 @@ public final class AgentSelectableTextView: NSTextView {
     public override var isFlipped: Bool { true }
 
     public override func hitTest(_ point: NSPoint) -> NSView? {
-        let pInTV = convert(point, from: superview)
-        if let lm = layoutManager, let tc = textContainer, let ts = textStorage {
+        if hasLinks, let lm = layoutManager, let tc = textContainer, let ts = textStorage {
+            let pInTV = convert(point, from: superview)
             let glyphIdx = lm.glyphIndex(for: pInTV, in: tc)
             if glyphIdx < lm.numberOfGlyphs {
                 let charIdx = lm.characterIndexForGlyph(at: glyphIdx)
@@ -1195,14 +1253,28 @@ public final class AgentSelectableTextView: NSTextView {
 
     public override func resetCursorRects() {
         super.resetCursorRects()
-        guard let lm = layoutManager, let tc = textContainer, let ts = textStorage else { return }
+        guard hasLinks else { return }
+        guard let lm = layoutManager, let tc = textContainer, let ts = textStorage, ts.length > 0 else { return }
+
+        let currentWidth = bounds.width
+        if let cached = cachedLinkRects, abs(lastCalculatedBoundsWidth - currentWidth) < 0.5 {
+            for rect in cached {
+                addCursorRect(rect, cursor: .pointingHand)
+            }
+            return
+        }
+
+        var rects: [NSRect] = []
         ts.enumerateAttribute(.link, in: NSRange(location: 0, length: ts.length), options: []) { val, range, _ in
             guard val != nil else { return }
             let glyphRange = lm.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
             lm.enumerateEnclosingRects(forGlyphRange: glyphRange, withinSelectedGlyphRange: NSRange(location: NSNotFound, length: 0), in: tc) { rect, _ in
+                rects.append(rect)
                 self.addCursorRect(rect, cursor: .pointingHand)
             }
         }
+        cachedLinkRects = rects
+        lastCalculatedBoundsWidth = currentWidth
     }
 
     private func findEnclosingOpenURLHandler() -> ((URL) -> Void)? {
@@ -2595,7 +2667,7 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
         }
         let area = NSTrackingArea(
             rect: bounds,
-            options: [.mouseEnteredAndExited, .mouseMoved, .activeInActiveApp],
+            options: [.mouseEnteredAndExited, .activeInActiveApp],
             owner: self,
             userInfo: nil
         )
@@ -2610,11 +2682,6 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
 
     public override func mouseExited(with event: NSEvent) {
         super.mouseExited(with: event)
-        updateCardHover(for: event)
-    }
-
-    public override func mouseMoved(with event: NSEvent) {
-        super.mouseMoved(with: event)
         updateCardHover(for: event)
     }
 
@@ -5712,6 +5779,13 @@ public final class AgentNativeMessageCell: NSView {
             } else {
                 userBubbleView.frame = bubbleFrame
             }
+            let bubbleBounds = CGRect(origin: .zero, size: bubbleFrame.size)
+            userBubbleView.layer?.shadowPath = CGPath(
+                roundedRect: bubbleBounds,
+                cornerWidth: 13,
+                cornerHeight: 13,
+                transform: nil
+            )
 
             var currentInsideY: CGFloat = 9
             if hasImages {
