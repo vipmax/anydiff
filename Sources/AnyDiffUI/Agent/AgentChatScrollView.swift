@@ -1252,7 +1252,10 @@ public final class AgentSelectableTextView: NSTextView, NSTextStorageDelegate {
     }
 
     public override func resetCursorRects() {
-        super.resetCursorRects()
+        // Do not call super.resetCursorRects() to avoid adding an I-beam cursor over chat text.
+        // The hover cursor remains the standard arrow pointer everywhere in the chat,
+        // eliminating cursor flickering between text and pointer during scrolling,
+        // while clickable links still show the pointing hand cursor.
         guard hasLinks else { return }
         guard let lm = layoutManager, let tc = textContainer, let ts = textStorage, ts.length > 0 else { return }
 
