@@ -1149,6 +1149,7 @@ public final class AgentSelectableTextView: NSTextView, NSTextStorageDelegate {
         hasLinksChecked = false
         cachedLinkRects = nil
         lastCalculatedBoundsWidth = -1
+        window?.invalidateCursorRects(for: self)
     }
 
     public func textStorage(
@@ -1203,18 +1204,69 @@ public final class AgentSelectableTextView: NSTextView, NSTextStorageDelegate {
 
     public override var isFlipped: Bool { true }
 
+    public override func setFrameSize(_ newSize: NSSize) {
+        let sizeChanged = bounds.size != newSize
+        super.setFrameSize(newSize)
+        if sizeChanged {
+            window?.invalidateCursorRects(for: self)
+        }
+    }
+
+    public override func addTrackingArea(_ trackingArea: NSTrackingArea) {
+        // AppKit's NSTextView automatically adds a tracking area with
+        // .cursorUpdate | .mouseEnteredAndExited | .mouseMoved (rawValue 551),
+        // which forces NSCursor.iBeam over all text and causes rapid cursor flickering
+        // between arrow and I-beam during hover and scroll.
+        if trackingArea.options.contains(.cursorUpdate) || trackingArea.options.contains(.mouseEnteredAndExited) {
+            return
+        }
+        super.addTrackingArea(trackingArea)
+    }
+
+    public override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for ta in trackingAreas {
+            if ta.options.contains(.cursorUpdate) || ta.options.contains(.mouseEnteredAndExited) {
+                removeTrackingArea(ta)
+            }
+        }
+    }
+
+    public override func mouseEntered(with event: NSEvent) {
+        // Suppress NSTextView's default behavior of setting NSCursor.iBeam
+    }
+
+    public override func mouseExited(with event: NSEvent) {
+        // Suppress NSTextView's default cursor resetting
+    }
+
+    public override func cursorUpdate(with event: NSEvent) {
+        if hasLinks {
+            let mouseLoc = window?.mouseLocationOutsideOfEventStream ?? event.locationInWindow
+            let pInTV = convert(mouseLoc, from: nil)
+            if isOverLink(at: pInTV) {
+                NSCursor.pointingHand.set()
+                return
+            }
+        }
+        NSCursor.arrow.set()
+    }
+
+    private func isOverLink(at pInTV: NSPoint) -> Bool {
+        guard hasLinks, let lm = layoutManager, let tc = textContainer, let ts = textStorage else { return false }
+        let glyphIdx = lm.glyphIndex(for: pInTV, in: tc)
+        guard glyphIdx < lm.numberOfGlyphs else { return false }
+        let charIdx = lm.characterIndexForGlyph(at: glyphIdx)
+        guard charIdx < ts.length else { return false }
+        let rect = lm.boundingRect(forGlyphRange: NSRange(location: glyphIdx, length: 1), in: tc)
+        return rect.contains(pInTV) && ts.attribute(.link, at: charIdx, effectiveRange: nil) != nil
+    }
+
     public override func hitTest(_ point: NSPoint) -> NSView? {
-        if hasLinks, let lm = layoutManager, let tc = textContainer, let ts = textStorage {
+        if hasLinks {
             let pInTV = convert(point, from: superview)
-            let glyphIdx = lm.glyphIndex(for: pInTV, in: tc)
-            if glyphIdx < lm.numberOfGlyphs {
-                let charIdx = lm.characterIndexForGlyph(at: glyphIdx)
-                if charIdx < ts.length {
-                    let rect = lm.boundingRect(forGlyphRange: NSRange(location: glyphIdx, length: 1), in: tc)
-                    if rect.contains(pInTV), ts.attribute(.link, at: charIdx, effectiveRange: nil) != nil {
-                        return self
-                    }
-                }
+            if isOverLink(at: pInTV) {
+                return self
             }
         }
         if let sv = enclosingScrollView, !(sv is AgentNativeChatScrollView) {
@@ -1225,7 +1277,7 @@ public final class AgentSelectableTextView: NSTextView, NSTextStorageDelegate {
 
     public override func mouseDown(with event: NSEvent) {
         let pt = convert(event.locationInWindow, from: nil)
-        if let lm = layoutManager, let tc = textContainer, let ts = textStorage {
+        if hasLinks, let lm = layoutManager, let tc = textContainer, let ts = textStorage {
             let glyphIdx = lm.glyphIndex(for: pt, in: tc)
             if glyphIdx < lm.numberOfGlyphs {
                 let charIdx = lm.characterIndexForGlyph(at: glyphIdx)
@@ -1253,9 +1305,10 @@ public final class AgentSelectableTextView: NSTextView, NSTextStorageDelegate {
 
     public override func resetCursorRects() {
         // Do not call super.resetCursorRects() to avoid adding an I-beam cursor over chat text.
-        // The hover cursor remains the standard arrow pointer everywhere in the chat,
-        // eliminating cursor flickering between text and pointer during scrolling,
-        // while clickable links still show the pointing hand cursor.
+        // Instead, explicitly add an arrow cursor for the entire view bounds so the pointer remains
+        // a stable arrow everywhere, while clickable links still show the pointing hand cursor.
+        addCursorRect(bounds, cursor: .arrow)
+
         guard hasLinks else { return }
         guard let lm = layoutManager, let tc = textContainer, let ts = textStorage, ts.length > 0 else { return }
 
