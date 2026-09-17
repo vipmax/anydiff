@@ -209,12 +209,22 @@ public final class AgentNativeChatScrollView: NSScrollView {
         }
 
         documentView = documentViewCustom
-        registerForDraggedTypes([.fileURL, .png, .tiff])
+        registerForDraggedTypes([
+            .fileURL,
+            .png,
+            .tiff,
+            NSPasteboard.PasteboardType("public.jpeg"),
+            NSPasteboard.PasteboardType("public.image"),
+            NSPasteboard.PasteboardType("public.png"),
+            NSPasteboard.PasteboardType("com.apple.pasteboard.promised-file-url"),
+            NSPasteboard.PasteboardType("NSFilenamesPboardType"),
+            .URL
+        ])
     }
 
     public override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
         let pb = sender.draggingPasteboard
-        if !ImageAttachmentHelpers.extractImages(from: pb).isEmpty {
+        if ImageAttachmentHelpers.hasImages(in: pb) {
             return .copy
         }
         return []
@@ -456,12 +466,22 @@ public final class AgentNativeStandardChatScrollView: NSScrollView {
             self.documentViewCustom.updateVisibleCells(in: self.contentView)
         }
 
-        registerForDraggedTypes([.fileURL, .png, .tiff])
+        registerForDraggedTypes([
+            .fileURL,
+            .png,
+            .tiff,
+            NSPasteboard.PasteboardType("public.jpeg"),
+            NSPasteboard.PasteboardType("public.image"),
+            NSPasteboard.PasteboardType("public.png"),
+            NSPasteboard.PasteboardType("com.apple.pasteboard.promised-file-url"),
+            NSPasteboard.PasteboardType("NSFilenamesPboardType"),
+            .URL
+        ])
     }
 
     public override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
         let pb = sender.draggingPasteboard
-        if !ImageAttachmentHelpers.extractImages(from: pb).isEmpty {
+        if ImageAttachmentHelpers.hasImages(in: pb) {
             return .copy
         }
         return []
@@ -2631,6 +2651,9 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
     public var isExpanded: Bool = false
     public var onToggle: (() -> Void)?
     public var onReview: ((AgentEditedFilesSummary) -> Void)?
+    private weak var parentCell: AgentNativeMessageCell?
+    private var cachedParentHunk: DiffHunk?
+    private var cachedParentHunkDataCount: Int = -1
     private let headerContainer = AgentNativeFlippedView()
     private let headerButton = NSButton()
     private let openInEditorButton = AgentHoverButton(frame: .zero)
@@ -2669,14 +2692,73 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
     ) {
         self.item = item
         self.theme = theme
+        self.parentCell = parentCell
         self.toolcallColorMode = toolcallColorMode
         self.isExpanded = initiallyExpanded
         super.init(frame: .zero)
         setup(index: index, parentCell: parentCell)
+        if initiallyExpanded {
+            installVirtualizedDetailView()
+        }
     }
 
     public required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    private func hunkFromParentMessage(for item: ToolCallItem) -> DiffHunk? {
+        guard let rawData = parentCell?.message.editedFilesSummary?.rawDiffData,
+              !rawData.isEmpty,
+              let itemPath = item.path ?? (item.shortToolName == "Edit" || item.shortToolName == "Create" ? (item.displayTitle.isEmpty ? nil : item.displayTitle) : nil),
+              !itemPath.isEmpty else {
+            return nil
+        }
+        if rawData.count == cachedParentHunkDataCount {
+            return cachedParentHunk
+        }
+        let parsedFiles = GitDiffParser.shared.parse(data: rawData)
+        guard let matchedFile = parsedFiles.first(where: {
+            let p = $0.displayPath
+            return p == itemPath || p.hasSuffix(itemPath) || itemPath.hasSuffix(p)
+        }), !matchedFile.hunks.isEmpty else {
+            cachedParentHunk = nil
+            cachedParentHunkDataCount = rawData.count
+            return nil
+        }
+        let resultHunk: DiffHunk
+        if matchedFile.hunks.count == 1 {
+            resultHunk = matchedFile.hunks[0]
+        } else {
+            let allLines = matchedFile.hunks.flatMap(\.lines)
+            let totalAdds = matchedFile.hunks.reduce(0) { $0 + $1.addedLineCount }
+            let totalDels = matchedFile.hunks.reduce(0) { $0 + $1.deletedLineCount }
+            resultHunk = DiffHunk(
+                oldRange: 1..<(totalDels + 1),
+                newRange: 1..<(totalAdds + 1),
+                header: "@@ -1,\(totalDels) +1,\(totalAdds) @@",
+                lines: allLines,
+                status: .modified
+            )
+        }
+        cachedParentHunk = resultHunk
+        cachedParentHunkDataCount = rawData.count
+        return resultHunk
+    }
+
+    private var effectiveAdditionsCount: Int? {
+        if let adds = item.additionsCount { return adds }
+        guard item.shortToolName == "Edit" || item.shortToolName == "Create",
+              let itemPath = item.path ?? (item.displayTitle.isEmpty ? nil : item.displayTitle),
+              let files = parentCell?.message.editedFilesSummary?.files else { return nil }
+        return files.first(where: { $0.path == itemPath || $0.path.hasSuffix(itemPath) || itemPath.hasSuffix($0.path) })?.additions
+    }
+
+    private var effectiveDeletionsCount: Int? {
+        if let dels = item.deletionsCount { return dels }
+        guard item.shortToolName == "Edit" || item.shortToolName == "Create",
+              let itemPath = item.path ?? (item.displayTitle.isEmpty ? nil : item.displayTitle),
+              let files = parentCell?.message.editedFilesSummary?.files else { return nil }
+        return files.first(where: { $0.path == itemPath || $0.path.hasSuffix(itemPath) || itemPath.hasSuffix($0.path) })?.deletions
     }
 
     public var hasExpandableContent: Bool {
@@ -2685,6 +2767,9 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
 
     private func hasExpandableContent(for item: ToolCallItem) -> Bool {
         if item.oldContent != nil || item.newContent != nil { return true }
+        if item.shortToolName == "Edit" || item.shortToolName == "Create" {
+            return hunkFromParentMessage(for: item) != nil
+        }
         if item.shortToolName == "Run" { return true }
         if let cmd = item.command, !cmd.isEmpty { return true }
         if let out = item.output, !out.isEmpty { return true }
@@ -2694,7 +2779,7 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
     }
 
     private var hasDiffStats: Bool {
-        (item.additionsCount ?? 0) > 0 || (item.deletionsCount ?? 0) > 0
+        (effectiveAdditionsCount ?? 0) > 0 || (effectiveDeletionsCount ?? 0) > 0
     }
 
     private var shouldShowOpenInEditorButton: Bool {
@@ -2754,6 +2839,8 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
         item = newItem
         theme = newTheme
 
+        cachedParentHunkDataCount = -1
+        cachedParentHunk = nil
         cachedLayoutWidth = -1
         cachedLayoutHeight = 0
         cachedDescriptionHeightWidth = -1
@@ -2768,6 +2855,9 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
 
         virtualizedDetailView?.removeFromSuperview()
         virtualizedDetailView = nil
+        if isExpanded {
+            installVirtualizedDetailView()
+        }
 
         // Action badge update
         applyActionAppearance(background: bgCol, foreground: fgCol)
@@ -2778,24 +2868,35 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
         titleLabel.stringValue = newItem.displayTitle
         titleLabel.textColor = NSColor(cgColor: newTheme.foreground.cgColor) ?? .textColor
 
-        if let description = newItem.descriptionText, !description.isEmpty {
+        let descText = newItem.descriptionText?.isEmpty == false ? newItem.descriptionText : ((!hasExpandableContent(for: newItem)) ? (newItem.summary ?? newItem.output) : nil)
+        if let description = descText, !description.isEmpty {
             descriptionLabel.stringValue = description
+            descriptionLabel.font = (newItem.descriptionText?.isEmpty == false) ? NSFont.systemFont(ofSize: 11) : NSFont.monospacedSystemFont(ofSize: 10.5, weight: .regular)
+            descriptionLabel.textColor = (newItem.descriptionText?.isEmpty == false)
+                ? (NSColor(cgColor: newTheme.foreground.cgColor)?.withAlphaComponent(0.85) ?? .textColor)
+                : (NSColor(cgColor: newTheme.gutterForeground.cgColor) ?? .secondaryLabelColor)
+            if descriptionLabel.superview == nil {
+                addSubview(descriptionLabel)
+            }
         } else {
             descriptionLabel.stringValue = ""
+            descriptionLabel.removeFromSuperview()
         }
 
         // Diff stats (+ / -)
-        if newItem.additionsCount != nil || newItem.deletionsCount != nil {
+        let adds = effectiveAdditionsCount
+        let dels = effectiveDeletionsCount
+        if adds != nil || dels != nil {
             let statsAttr = NSMutableAttributedString()
             let font = NSFont.monospacedSystemFont(ofSize: 10, weight: .bold)
 
-            if let adds = newItem.additionsCount, adds > 0 {
+            if let adds = adds, adds > 0 {
                 statsAttr.append(NSAttributedString(string: "+\(adds)", attributes: [
                     .font: font,
                     .foregroundColor: shouldColorEditStats ? NSColor.systemGreen : neutralToolColor
                 ]))
             }
-            if let dels = newItem.deletionsCount, dels > 0 {
+            if let dels = dels, dels > 0 {
                 if statsAttr.length > 0 {
                     statsAttr.append(NSAttributedString(string: " ", attributes: [.font: font]))
                 }
@@ -2909,17 +3010,19 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
         headerContainer.addSubview(titleLabel)
 
         // Diff stats (+ / -)
-        if item.additionsCount != nil || item.deletionsCount != nil {
+        let adds = effectiveAdditionsCount
+        let dels = effectiveDeletionsCount
+        if adds != nil || dels != nil {
             let statsAttr = NSMutableAttributedString()
             let font = NSFont.monospacedSystemFont(ofSize: 10, weight: .bold)
 
-            if let adds = item.additionsCount, adds > 0 {
+            if let adds = adds, adds > 0 {
                 statsAttr.append(NSAttributedString(string: "+\(adds)", attributes: [
                     .font: font,
                     .foregroundColor: shouldColorEditStats ? NSColor.systemGreen : neutralToolColor
                 ]))
             }
-            if let dels = item.deletionsCount, dels > 0 {
+            if let dels = dels, dels > 0 {
                 if statsAttr.length > 0 {
                     statsAttr.append(NSAttributedString(string: " ", attributes: [.font: font]))
                 }
@@ -3000,15 +3103,13 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
         headerContainer.addSubview(diffStatsButton)
 
         // Description
-        if let desc = item.descriptionText, !desc.isEmpty {
+        let descText = item.descriptionText?.isEmpty == false ? item.descriptionText : ((!hasExpandableContent) ? (item.summary ?? item.output) : nil)
+        if let desc = descText, !desc.isEmpty {
             descriptionLabel.stringValue = desc
-            descriptionLabel.font = NSFont.systemFont(ofSize: 11)
-            descriptionLabel.textColor = NSColor(cgColor: theme.foreground.cgColor)?.withAlphaComponent(0.85) ?? .textColor
-            addSubview(descriptionLabel)
-        } else if let summary = item.summary, !summary.isEmpty, !hasExpandableContent {
-            descriptionLabel.stringValue = summary
-            descriptionLabel.font = NSFont.monospacedSystemFont(ofSize: 10.5, weight: .regular)
-            descriptionLabel.textColor = NSColor(cgColor: theme.gutterForeground.cgColor) ?? .secondaryLabelColor
+            descriptionLabel.font = (item.descriptionText?.isEmpty == false) ? NSFont.systemFont(ofSize: 11) : NSFont.monospacedSystemFont(ofSize: 10.5, weight: .regular)
+            descriptionLabel.textColor = (item.descriptionText?.isEmpty == false)
+                ? (NSColor(cgColor: theme.foreground.cgColor)?.withAlphaComponent(0.85) ?? .textColor)
+                : (NSColor(cgColor: theme.gutterForeground.cgColor) ?? .secondaryLabelColor)
             addSubview(descriptionLabel)
         }
 
@@ -3058,6 +3159,8 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
         isExpanded.toggle()
         cachedLayoutWidth = -1
         cachedLayoutHeight = 0
+        cachedDetailHeightWidth = -1
+        cachedDetailHeight = 0
         if isExpanded {
             installVirtualizedDetailView()
         }
@@ -3067,8 +3170,24 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
     }
 
     @objc private func diffStatsClicked() {
-        guard let summary = item.createEditedFilesSummary() else { return }
-        onReview?(summary)
+        var summary = item.createEditedFilesSummary()
+        if summary?.rawDiffData == nil, let parentDiff = parentCell?.message.editedFilesSummary?.rawDiffData {
+            if let p = item.path ?? (item.shortToolName == "Edit" ? item.displayTitle : nil), !p.isEmpty {
+                let parsed = GitDiffParser.shared.parse(data: parentDiff)
+                if parsed.contains(where: {
+                    let path = $0.displayPath
+                    return path == p || path.hasSuffix(p) || p.hasSuffix(path)
+                }) {
+                    summary = AgentEditedFilesSummary(
+                        files: [AgentEditedFileItem(path: p, additions: effectiveAdditionsCount ?? 0, deletions: effectiveDeletionsCount ?? 0)],
+                        baseCommitHash: parentCell?.message.editedFilesSummary?.baseCommitHash,
+                        rawDiffData: parentDiff
+                    )
+                }
+            }
+        }
+        guard let finalSummary = summary else { return }
+        onReview?(finalSummary)
     }
 
     @objc private func openInEditorClicked() {
@@ -3105,14 +3224,15 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
             bufferId: buffer.id,
             filePath: buffer.filePath,
             fileStatus: .modified,
-            bufferRange: 0..<max(1, buffer.lineCount),
+            bufferRange: 0..<buffer.lineCount,
             hunk: content.hunk,
             isFileStart: true
         ))
 
         let displayMap = DisplayMap(
             multiBuffer: multiBuffer,
-            reviewManager: ReviewManager()
+            reviewManager: ReviewManager(),
+            showsExcerptHeaders: false
         )
         let editor = CustomMultiBufferEditorView(displayMap: displayMap, theme: displayTheme)
         editor.wantsLayer = true
@@ -3127,6 +3247,8 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
         detailScrollView.isHidden = true
         detailContainer.addSubview(editor)
         virtualizedDetailView = editor
+        cachedDetailHeightWidth = -1
+        cachedDetailHeight = 0
     }
 
     private func virtualizedDetailContent() -> (lines: [String], hunk: DiffHunk?) {
@@ -3145,7 +3267,8 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
                     lines: changedDiff,
                     status: .modified
                 )
-                return (changedDiff.filter { $0.kind != .deleted }.map(\.text), hunk)
+                let nonDeleted = changedDiff.filter { $0.kind != .deleted }.map(\.text)
+                return (nonDeleted.isEmpty ? [""] : nonDeleted, hunk)
             }
         }
 
@@ -3184,10 +3307,20 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
                 lines: diffLines,
                 status: .modified
             )
+            let nonDeleted = diffLines.filter { $0.kind != .deleted }.map(\.text)
             return (
-                diffLines.filter { $0.kind != .deleted }.map(\.text),
+                nonDeleted.isEmpty ? [""] : nonDeleted,
                 hunk
             )
+        }
+
+        // Fallback for file edits when old/new content wasn't captured directly:
+        // Attempt to extract hunk from parent message's rawDiffData
+        if item.shortToolName == "Edit" || item.shortToolName == "Create" {
+            if let parentHunk = hunkFromParentMessage(for: item) {
+                let lines = parentHunk.lines.filter { $0.kind != .deleted }.map(\.text)
+                return (lines.isEmpty ? [""] : lines, parentHunk)
+            }
         }
 
         var lines: [String] = []
@@ -3197,19 +3330,23 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
             } else if item.shortToolName == "Run", !item.displayTitle.isEmpty {
                 lines.append("$ \(item.displayTitle)")
             }
-            if let output = item.output, !output.isEmpty {
-                let boundedOutput = output.count > 200_000
-                    ? String(output.prefix(180_000)) + "\n\n... output truncated ...\n"
-                    : output
-                lines.append(contentsOf: boundedOutput.components(separatedBy: "\n"))
+            if item.shortToolName != "Edit" && item.shortToolName != "Create" {
+                if let output = item.output, !output.isEmpty {
+                    let boundedOutput = output.count > 200_000
+                        ? String(output.prefix(180_000)) + "\n\n... output truncated ...\n"
+                        : output
+                    lines.append(contentsOf: boundedOutput.components(separatedBy: "\n"))
+                }
             }
         }
 
-        if lines.isEmpty, let summary = item.summary, !summary.isEmpty {
-            lines = summary.components(separatedBy: "\n")
-        }
-        if lines.isEmpty, let description = item.descriptionText, !description.isEmpty {
-            lines = description.components(separatedBy: "\n")
+        if lines.isEmpty, item.shortToolName != "Edit" && item.shortToolName != "Create" {
+            if let summary = item.summary, !summary.isEmpty {
+                lines = summary.components(separatedBy: "\n")
+            }
+            if lines.isEmpty, let description = item.descriptionText, !description.isEmpty {
+                lines = description.components(separatedBy: "\n")
+            }
         }
         return (lines.isEmpty ? [""] : lines, nil)
     }
@@ -3472,6 +3609,9 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
         }
 
         if hasExpandableContent && isExpanded {
+            if virtualizedDetailView == nil {
+                installVirtualizedDetailView()
+            }
             let detailTVWidth = max(40, innerWidth - 12)
             let maxDetailHeight: CGFloat = 320
             let rawHeight = detailContentHeight(width: detailTVWidth)
@@ -3596,14 +3736,15 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
         if hasExpandableContent {
             let detailContentWidth = max(40, innerWidth - 12)
             let maxDetailHeight: CGFloat = 320
-            let rawHeight = isExpanded ? detailContentHeight(width: detailContentWidth) : 0
-            let containerHeight = min(maxDetailHeight, rawHeight + 12)
-            let detailFrame = NSRect(x: padding, y: currentY, width: innerWidth, height: containerHeight)
-            let contentFrame = NSRect(x: 6, y: 6, width: detailContentWidth, height: max(10, containerHeight - 12))
 
             if virtualizedDetailView == nil, isExpanded {
                 installVirtualizedDetailView()
             }
+
+            let rawHeight = isExpanded ? detailContentHeight(width: detailContentWidth) : 0
+            let containerHeight = min(maxDetailHeight, rawHeight + 12)
+            let detailFrame = NSRect(x: padding, y: currentY, width: innerWidth, height: containerHeight)
+            let contentFrame = NSRect(x: 6, y: 6, width: detailContentWidth, height: max(10, containerHeight - 12))
 
             if isExpanded {
                 detailContainer.isHidden = false
@@ -3644,8 +3785,12 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
     }
 
     private func detailContentHeight(width: CGFloat) -> CGFloat {
-        if abs(cachedDetailHeightWidth - width) < 0.5 {
+        if abs(cachedDetailHeightWidth - width) < 0.5, cachedDetailHeight > 0 {
             return cachedDetailHeight
+        }
+
+        if virtualizedDetailView == nil, hasExpandableContent {
+            installVirtualizedDetailView()
         }
 
         if let virtualizedDetailView {
@@ -4319,6 +4464,7 @@ public final class AgentNativeMessageCell: NSView {
         let toolCallsChanged = message.toolCalls != previousMessage.toolCalls
         let partsChanged = message.orderedParts != previousMessage.orderedParts
         let contentChanged = previousMessage.content.count != message.content.count || previousMessage.content != message.content
+        let editedFilesChanged = previousMessage.editedFilesSummary != message.editedFilesSummary
 
         self.message = message
         self.theme = theme
@@ -4424,11 +4570,12 @@ public final class AgentNativeMessageCell: NSView {
             // 2. Tool calls. Keep unchanged cards alive while a running tool
             // streams status/output updates. Rebuilding the whole list here
             // made every tool event recreate all headers and nested views.
-            if toolCallsChanged || themeChanged || accentChanged || displayModeChanged || toolCallViews.isEmpty {
+            if toolCallsChanged || editedFilesChanged || themeChanged || accentChanged || displayModeChanged || toolCallViews.isEmpty {
                 updateToolCallViews(
                     previousItems: previousMessage.toolCalls,
                     newItems: message.toolCalls,
-                    styleChanged: themeChanged || displayModeChanged
+                    styleChanged: themeChanged || displayModeChanged,
+                    editedFilesChanged: editedFilesChanged
                 )
             }
 
@@ -4515,7 +4662,8 @@ public final class AgentNativeMessageCell: NSView {
     private func updateToolCallViews(
         previousItems: [ToolCallItem],
         newItems: [ToolCallItem],
-        styleChanged: Bool
+        styleChanged: Bool,
+        editedFilesChanged: Bool = false
     ) {
         let previousIDs = previousItems.map(\.id)
         let canReplaceInPlace = !styleChanged &&
@@ -4544,7 +4692,7 @@ public final class AgentNativeMessageCell: NSView {
             return
         }
 
-        for index in newItems.indices where previousItems[index] != newItems[index] {
+        for index in newItems.indices where previousItems[index] != newItems[index] || editedFilesChanged {
             if let card = toolCallViews[index] as? AgentNativeToolCardView,
                card.canUpdateInPlace(with: newItems[index]) {
                 card.update(item: newItems[index], theme: theme)

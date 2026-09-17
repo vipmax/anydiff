@@ -24,7 +24,7 @@ just build-debug           # Build the debug binary
 just test                  # Run the fast AnyDiffCoreTests suite
 just test-all              # Run all tests, including benchmarks
 just bench                 # Run benchmarks in release configuration
-just check                 # Build release and run release unit tests
+just check                 # Build debug and run fast unit tests
 just package               # Create dist/AnyDiff.app, ZIP, and DMG artifacts
 ```
 

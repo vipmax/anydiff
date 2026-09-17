@@ -125,13 +125,58 @@ public struct RawJSONRPCMessage: Codable, Sendable {
 
 public struct ACPInitializeParams: Codable, Sendable {
     public let protocolVersion: Int
-    public let capabilities: ACPClientCapabilities
+    public let clientCapabilities: ACPClientCapabilities
     public let clientInfo: ACPClientInfo
 
-    public init(protocolVersion: Int = 1, capabilities: ACPClientCapabilities = .default, clientInfo: ACPClientInfo = .default) {
+    public var capabilities: ACPClientCapabilities {
+        clientCapabilities
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case protocolVersion
+        case clientCapabilities
+        case capabilities
+        case clientInfo
+    }
+
+    public init(
+        protocolVersion: Int = 1,
+        clientCapabilities: ACPClientCapabilities = .default,
+        clientInfo: ACPClientInfo = .default
+    ) {
         self.protocolVersion = protocolVersion
-        self.capabilities = capabilities
+        self.clientCapabilities = clientCapabilities
         self.clientInfo = clientInfo
+    }
+
+    public init(
+        protocolVersion: Int = 1,
+        capabilities: ACPClientCapabilities,
+        clientInfo: ACPClientInfo = .default
+    ) {
+        self.protocolVersion = protocolVersion
+        self.clientCapabilities = capabilities
+        self.clientInfo = clientInfo
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.protocolVersion = try container.decode(Int.self, forKey: .protocolVersion)
+        if let caps = try? container.decode(ACPClientCapabilities.self, forKey: .clientCapabilities) {
+            self.clientCapabilities = caps
+        } else if let caps = try? container.decode(ACPClientCapabilities.self, forKey: .capabilities) {
+            self.clientCapabilities = caps
+        } else {
+            self.clientCapabilities = .default
+        }
+        self.clientInfo = (try? container.decode(ACPClientInfo.self, forKey: .clientInfo)) ?? .default
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(protocolVersion, forKey: .protocolVersion)
+        try container.encode(clientCapabilities, forKey: .clientCapabilities)
+        try container.encode(clientInfo, forKey: .clientInfo)
     }
 }
 
@@ -748,6 +793,17 @@ public struct ACPConfigOption: Codable, Sendable, Identifiable {
         self.type = type
         self.currentValue = currentValue
         self.options = options
+    }
+
+    public var isBoolean: Bool {
+        type?.caseInsensitiveCompare("boolean") == .orderedSame
+    }
+
+    public var boolValue: Bool {
+        guard let cur = currentValue?.trimmingCharacters(in: .whitespacesAndNewlines), !cur.isEmpty else {
+            return false
+        }
+        return cur.caseInsensitiveCompare("true") == .orderedSame || cur == "1" || cur.caseInsensitiveCompare("yes") == .orderedSame || cur.caseInsensitiveCompare("on") == .orderedSame
     }
 
     enum CodingKeys: String, CodingKey {
@@ -1368,6 +1424,40 @@ public struct ACPSessionUpdateContent: Codable, Sendable {
 
 public struct ACPFSReadTextFileParams: Codable, Sendable {
     public let path: String
+    public let sessionId: String?
+    public let line: Int?
+    public let limit: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case path
+        case sessionId
+        case session_id
+        case line
+        case limit
+    }
+
+    public init(path: String, sessionId: String? = nil, line: Int? = nil, limit: Int? = nil) {
+        self.path = path
+        self.sessionId = sessionId
+        self.line = line
+        self.limit = limit
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.path = try container.decode(String.self, forKey: .path)
+        self.sessionId = (try? container.decode(String.self, forKey: .sessionId)) ?? (try? container.decode(String.self, forKey: .session_id))
+        self.line = try? container.decode(Int.self, forKey: .line)
+        self.limit = try? container.decode(Int.self, forKey: .limit)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(path, forKey: .path)
+        try container.encodeIfPresent(sessionId, forKey: .sessionId)
+        try container.encodeIfPresent(line, forKey: .line)
+        try container.encodeIfPresent(limit, forKey: .limit)
+    }
 }
 
 public struct ACPFSReadTextFileResult: Codable, Sendable {
@@ -1381,6 +1471,34 @@ public struct ACPFSReadTextFileResult: Codable, Sendable {
 public struct ACPFSWriteTextFileParams: Codable, Sendable {
     public let path: String
     public let content: String
+    public let sessionId: String?
+
+    enum CodingKeys: String, CodingKey {
+        case path
+        case content
+        case sessionId
+        case session_id
+    }
+
+    public init(path: String, content: String, sessionId: String? = nil) {
+        self.path = path
+        self.content = content
+        self.sessionId = sessionId
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.path = try container.decode(String.self, forKey: .path)
+        self.content = try container.decode(String.self, forKey: .content)
+        self.sessionId = (try? container.decode(String.self, forKey: .sessionId)) ?? (try? container.decode(String.self, forKey: .session_id))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(path, forKey: .path)
+        try container.encode(content, forKey: .content)
+        try container.encodeIfPresent(sessionId, forKey: .sessionId)
+    }
 }
 
 public struct ACPFSWriteTextFileResult: Codable, Sendable {

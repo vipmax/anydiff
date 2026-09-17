@@ -70,10 +70,10 @@ test-all:
 bench:
     ANYDIFF_RUN_BENCHMARKS=1 swift test -c release --filter AnyDiffBenchmarks
 
-# Build Release and run the Release unit tests.
+# Build Debug and run the fast unit tests.
 check:
-    just build
-    just test-release
+    just build-debug
+    just test
 
 # Package AnyDiff.app bundle, ZIP, and DMG for distribution to other Macs.
 package:

@@ -193,10 +193,12 @@ public struct MainWindowView: View {
     }
 
     private func toggleLeftPanel() {
-        if columnVisibility == .all {
-            columnVisibility = .doubleColumn
-        } else {
-            columnVisibility = .all
+        withAnimation(.easeInOut(duration: 0.12)) {
+            if columnVisibility == .all {
+                columnVisibility = .doubleColumn
+            } else {
+                columnVisibility = .all
+            }
         }
     }
 
@@ -224,11 +226,6 @@ public struct MainWindowView: View {
     public var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             panelView(for: .left)
-                .overlay(alignment: .trailing) {
-                    Rectangle()
-                        .fill(Color(NSColor.separatorColor))
-                        .frame(width: 1)
-                }
                 .navigationSplitViewColumnWidth(min: leftColumnMinWidth, ideal: leftColumnIdealWidth, max: leftColumnMaxWidth)
         } content: {
             panelView(for: .center)
@@ -259,6 +256,7 @@ public struct MainWindowView: View {
         .toolbarBackground(.hidden, for: .windowToolbar)
         .toolbarColorScheme(activeTheme.isDark ? .dark : .light, for: .windowToolbar)
         .background(Color(activeTheme.background).ignoresSafeArea())
+        .background(WindowAppearanceConfigurator(theme: activeTheme))
         .onDrop(of: [UTType.fileURL, UTType.url, UTType.text], isTargeted: $isWindowDropTargeted) { providers in
             handleWindowDrop(providers: providers)
         }
@@ -352,6 +350,9 @@ public struct MainWindowView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResizeNotification)) { _ in
             updateWindowAppearance()
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSSplitView.didResizeSubviewsNotification)) { _ in
+            updateWindowAppearance()
+        }
         .onChange(of: isWatchModeEnabled) { enabled in
             if enabled {
                 guard let currentDir = loadableWorkingDirectory else {
@@ -410,7 +411,7 @@ public struct MainWindowView: View {
             isWatchModeEnabled.toggle()
         }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffToggleLeftPanel"))) { _ in
-            withAnimation(.easeInOut(duration: 0.2)) {
+            withAnimation(.easeInOut(duration: 0.12)) {
                 toggleLeftPanel()
             }
         }
@@ -425,7 +426,7 @@ public struct MainWindowView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffToggleSidebar"))) { _ in
-            withAnimation(.easeInOut(duration: 0.2)) {
+            withAnimation(.easeInOut(duration: 0.12)) {
                 toggleLeftPanel()
             }
         }
@@ -2036,16 +2037,104 @@ public struct MainWindowView: View {
     }
 
     private func updateWindowAppearance() {
-        DispatchQueue.main.async {
-            for window in NSApp.windows {
-                window.backgroundColor = activeTheme.background
-                window.appearance = NSAppearance(named: activeTheme.isDark ? .darkAqua : .aqua)
-                window.titlebarAppearsTransparent = true
-                window.titlebarSeparatorStyle = .none
-                alignSidebarToggleLeading(in: window)
-                updateSplitViewDividers(in: window)
+        for window in NSApp.windows {
+            window.backgroundColor = activeTheme.background
+            window.appearance = NSAppearance(named: activeTheme.isDark ? .darkAqua : .aqua)
+            window.titlebarAppearsTransparent = true
+            window.titlebarSeparatorStyle = .none
+            alignSidebarToggleLeading(in: window)
+            updateSplitViewDividers(in: window, color: activeTheme.panelDivider)
+        }
+    }
+}
+
+public struct WindowAppearanceConfigurator: NSViewRepresentable {
+    public var theme: Theme
+
+    public init(theme: Theme) {
+        self.theme = theme
+    }
+
+    public func makeNSView(context: Context) -> WindowLifecycleView {
+        let view = WindowLifecycleView()
+        view.theme = theme
+        return view
+    }
+
+    public func updateNSView(_ nsView: WindowLifecycleView, context: Context) {
+        nsView.theme = theme
+        nsView.applyAppearance()
+    }
+}
+
+public final class WindowLifecycleView: NSView {
+    public var theme: Theme = .vesper
+
+    private var observers: [NSObjectProtocol] = []
+
+    public override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setupNotificationObservers()
+    }
+
+    public required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setupNotificationObservers()
+    }
+
+    deinit {
+        for obs in observers {
+            NotificationCenter.default.removeObserver(obs)
+        }
+    }
+
+    private func setupNotificationObservers() {
+        let center = NotificationCenter.default
+        let subviewsObs = center.addObserver(
+            forName: NSSplitView.didResizeSubviewsNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.applyAppearance()
+        }
+        let resizeObs = center.addObserver(
+            forName: NSWindow.didResizeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.applyAppearance()
+        }
+        let tbObs = center.addObserver(
+            forName: NSToolbar.willAddItemNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notif in
+            guard let self = self, let tb = notif.object as? NSToolbar, tb === self.window?.toolbar else { return }
+            DispatchQueue.main.async { [weak self] in
+                self?.applyAppearance()
             }
         }
+        observers.append(contentsOf: [subviewsObs, resizeObs, tbObs])
+    }
+
+    public override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        applyAppearance()
+    }
+
+    public override func layout() {
+        super.layout()
+        applyAppearance()
+    }
+
+    public func applyAppearance() {
+        guard let window = self.window else { return }
+        window.backgroundColor = theme.background
+        window.appearance = NSAppearance(named: theme.isDark ? .darkAqua : .aqua)
+        window.titlebarAppearsTransparent = true
+        window.titlebarSeparatorStyle = .none
+        alignSidebarToggleLeading(in: window)
+        updateSplitViewDividers(in: window, color: theme.panelDivider)
     }
 }
 
@@ -2055,25 +2144,39 @@ public func alignSidebarToggleLeading(in window: NSWindow) {
        toggleIdx > 0,
        tb.items[toggleIdx - 1].itemIdentifier == .flexibleSpace {
         tb.removeItem(at: toggleIdx - 1)
-        tb.insertItem(withItemIdentifier: .flexibleSpace, at: toggleIdx)
     }
 }
 
-public func updateSplitViewDividers(in window: NSWindow) {
+public func updateSplitViewDividers(in window: NSWindow, color: NSColor = NSColor.separatorColor) {
+    let scale = window.backingScaleFactor > 0 ? window.backingScaleFactor : 2.0
+    let thickness: CGFloat = 1.0 / scale
     func rec(v: NSView) {
         if String(describing: type(of: v)).contains("Divider") {
             v.wantsLayer = true
-            v.layer?.backgroundColor = NSColor.separatorColor.cgColor
+            v.layer?.backgroundColor = NSColor.clear.cgColor
+            let layerName = "anydiff.divider"
+            let lineLayer = v.layer?.sublayers?.first(where: { $0.name == layerName }) ?? CALayer()
+            lineLayer.name = layerName
+            let lineWidth = min(v.bounds.width, thickness)
+            let lineX = max(0, (v.bounds.width - lineWidth) / 2.0)
+            lineLayer.frame = CGRect(x: lineX, y: 0, width: lineWidth, height: v.bounds.height)
+            lineLayer.backgroundColor = color.cgColor
+            lineLayer.opacity = 1.0
+            lineLayer.isHidden = false
+            if lineLayer.superlayer == nil {
+                v.layer?.addSublayer(lineLayer)
+            }
             if let subs = v.layer?.sublayers {
-                for sub in subs {
-                    sub.backgroundColor = NSColor.separatorColor.cgColor
-                    sub.opacity = 1.0
+                for sub in subs where sub !== lineLayer {
+                    sub.isHidden = true
                 }
             }
         }
         for s in v.subviews { rec(v: s) }
     }
-    if let cv = window.contentView { rec(v: cv) }
+    if let root = window.contentView?.superview ?? window.contentView {
+        rec(v: root)
+    }
 }
 
 extension MainWindowView {

@@ -236,10 +236,12 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
     /// One UInt32 per 256 hunk lines. Unlike `excerptDiffCache`, this stays tiny
     /// even after every hunk in a mega-diff has been visited.
     private var hunkBufferRowRankCache: [UUID: [UInt32]] = [:]
+    public var showsExcerptHeaders: Bool = true
 
-    public init(multiBuffer: MultiBuffer, reviewManager: ReviewManager) {
+    public init(multiBuffer: MultiBuffer, reviewManager: ReviewManager, showsExcerptHeaders: Bool = true) {
         self.multiBuffer = multiBuffer
         self.reviewManager = reviewManager
+        self.showsExcerptHeaders = showsExcerptHeaders
         rebuild()
     }
 
@@ -320,7 +322,7 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
                 nextExcerptIndex = nil
             }
 
-            let hasHeader = isFirstExcerptOfFile
+            let hasHeader = showsExcerptHeaders && isFirstExcerptOfFile
             let hasTopGap = (!excerpt.isCollapsed && topHidden > 0)
             // The diff does not contain the total line count after its last hunk.
             // Keep an unknown-size expansion affordance for local lazy slices;

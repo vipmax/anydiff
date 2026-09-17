@@ -107,7 +107,7 @@ public final class ACPClient: ACPTransportDelegate, @unchecked Sendable {
     public func initialize() async throws -> ACPInitializeResult {
         let params = ACPInitializeParams(
             protocolVersion: 1,
-            capabilities: ACPClientCapabilities(
+            clientCapabilities: ACPClientCapabilities(
                 fs: ACPClientCapabilities.FileSystemCapabilities(readTextFile: true, writeTextFile: true),
                 terminal: true,
                 session: ACPClientCapabilities.SessionCapabilities(
@@ -408,7 +408,18 @@ public final class ACPClient: ACPTransportDelegate, @unchecked Sendable {
 
         let fullPath = resolvePath(params.path)
         do {
-            let content = try String(contentsOfFile: fullPath, encoding: .utf8)
+            var content = try String(contentsOfFile: fullPath, encoding: .utf8)
+            if params.line != nil || params.limit != nil {
+                let startLine = max(1, params.line ?? 1)
+                let lines = content.split(separator: "\n", omittingEmptySubsequences: false)
+                let startIndex = startLine - 1
+                if startIndex < lines.count {
+                    let endIndex = params.limit.map { min(lines.count, startIndex + max(0, $0)) } ?? lines.count
+                    content = lines[startIndex..<endIndex].joined(separator: "\n")
+                } else {
+                    content = ""
+                }
+            }
             delegate?.client(self, didExecuteTool: "fs/read_text_file", path: params.path, details: "Read \(content.count) chars")
             sendRawResponse(id: id, result: ACPFSReadTextFileResult(content: content))
         } catch {

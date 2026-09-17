@@ -19,6 +19,11 @@ public struct Theme: Identifiable, Sendable {
     public let selectionBackground: NSColor
     public let excerptHeaderBackground: NSColor
     public let excerptHeaderBorder: NSColor
+    public let panelDivider: NSColor
+
+    public var separatorColor: NSColor {
+        panelDivider
+    }
 
     // Text & Gutter
     public let foreground: NSColor
@@ -58,6 +63,7 @@ public struct Theme: Identifiable, Sendable {
         selectionBackground: NSColor,
         excerptHeaderBackground: NSColor,
         excerptHeaderBorder: NSColor,
+        panelDivider: NSColor? = nil,
         foreground: NSColor,
         gutterForeground: NSColor,
         gutterActiveForeground: NSColor,
@@ -88,6 +94,7 @@ public struct Theme: Identifiable, Sendable {
         self.selectionBackground = selectionBackground
         self.excerptHeaderBackground = excerptHeaderBackground
         self.excerptHeaderBorder = excerptHeaderBorder
+        self.panelDivider = panelDivider ?? NSColor.separatorColor
         self.foreground = foreground
         self.gutterForeground = gutterForeground
         self.gutterActiveForeground = gutterActiveForeground
@@ -314,6 +321,7 @@ public struct Theme: Identifiable, Sendable {
         selectionBackground: NSColor(red: 1.0, green: 1.0, blue: 1.0, alpha: 0.16),
         excerptHeaderBackground: NSColor(red: 0.063, green: 0.063, blue: 0.063, alpha: 1.0),
         excerptHeaderBorder: NSColor(red: 0.157, green: 0.157, blue: 0.157, alpha: 1.0),
+        panelDivider: NSColor.black,
         foreground: NSColor(red: 1.0, green: 1.0, blue: 1.0, alpha: 1.0),
         gutterForeground: NSColor(red: 0.314, green: 0.314, blue: 0.314, alpha: 1.0),
         gutterActiveForeground: NSColor(red: 0.700, green: 0.700, blue: 0.700, alpha: 1.0),

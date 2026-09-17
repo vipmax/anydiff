@@ -297,7 +297,10 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
     }
 
     private func ensureConnectedAndSession(workingDirectory: String) async throws {
-        if !client.isConnected || currentWorkingDirectory != workingDirectory {
+        let isReconnecting = !client.isConnected || currentWorkingDirectory != workingDirectory
+        let resolvedTitle: String
+
+        if isReconnecting {
             client.stop()
             currentWorkingDirectory = workingDirectory
             DispatchQueue.main.async {
@@ -307,7 +310,6 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
             try await startClient(command: agentCommand, workingDirectory: workingDirectory)
 
             let initResult = try await client.initialize()
-            let resolvedTitle: String
             if !self.agentTitle.isEmpty {
                 resolvedTitle = self.agentTitle
             } else if let title = initResult.agentInfo?.title, !title.isEmpty {
@@ -317,73 +319,50 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
             } else {
                 resolvedTitle = "Agent"
             }
+        } else {
+            resolvedTitle = self.agentTitle.isEmpty ? "Agent" : self.agentTitle
+        }
 
-            let sessionOpts: [ACPConfigOption]?
-            let sessId: String
-            if let targetId = targetLoadSessionId {
-                let loadResult = try await client.loadSession(sessionId: targetId, cwd: workingDirectory)
-                sessId = targetId
-                sessionOpts = loadResult.configOptions
-            } else {
-                let sessionResult = try await client.createSessionFull(cwd: workingDirectory)
-                sessId = sessionResult.sessionId
-                sessionOpts = sessionResult.configOptions
+        guard currentSessionId == nil else { return }
+
+        let sessId: String
+        let initialOpts: [ACPConfigOption]?
+        let isNewSession = (targetLoadSessionId == nil)
+
+        if let targetId = targetLoadSessionId {
+            let loadResult = try await client.loadSession(sessionId: targetId, cwd: workingDirectory)
+            sessId = targetId
+            initialOpts = loadResult.configOptions
+            self.targetLoadSessionId = nil
+        } else {
+            let sessionResult = try await client.createSessionFull(cwd: workingDirectory)
+            sessId = sessionResult.sessionId
+            initialOpts = sessionResult.configOptions
+        }
+
+        var finalOpts = initialOpts ?? []
+        var toSync: [(configId: String, value: String)] = []
+
+        if isNewSession, !finalOpts.isEmpty {
+            let (merged, syncItems) = optionsWithSavedPreferencesMerged(finalOpts)
+            finalOpts = merged
+            toSync = syncItems
+        }
+
+        DispatchQueue.main.async {
+            self.agentTitle = resolvedTitle
+            self.statusMessage = "Connected to \(resolvedTitle)"
+            self.currentSessionId = sessId
+            if !finalOpts.isEmpty {
+                self.applyConfigOptions(finalOpts)
             }
+        }
 
-            DispatchQueue.main.async {
-                self.agentTitle = resolvedTitle
-                self.statusMessage = "Connected to \(resolvedTitle)"
-                self.currentSessionId = sessId
-                if let options = sessionOpts, !options.isEmpty {
-                    self.applyConfigOptions(options)
+        for item in toSync {
+            if let updated = try? await self.client.setConfigOption(sessionId: sessId, configId: item.configId, value: item.value) {
+                DispatchQueue.main.async {
+                    self.applyConfigOptions(updated)
                 }
-            }
-        } else if currentSessionId == nil {
-            let sessionOpts: [ACPConfigOption]?
-            let sessId: String
-            if let targetId = targetLoadSessionId {
-                let loadResult = try await client.loadSession(sessionId: targetId, cwd: workingDirectory)
-                sessId = targetId
-                sessionOpts = loadResult.configOptions
-            } else {
-                let sessionResult = try await client.createSessionFull(cwd: workingDirectory)
-                sessId = sessionResult.sessionId
-                sessionOpts = sessionResult.configOptions
-            }
-
-            DispatchQueue.main.async {
-                self.currentSessionId = sessId
-                if let options = sessionOpts, !options.isEmpty {
-                    self.applyConfigOptions(options)
-                }
-            }
-        }
-    }
-
-    private func applyConfigOptions(_ options: [ACPConfigOption]) {
-        self.configOptions = options
-        if let modelOpt = options.first(where: { $0.id == ACPConfigOptionID.model }) {
-            let currentVal = modelOpt.currentValue ?? modelOpt.options?.first?.value
-            if let currentVal {
-                let opt = modelOpt.options?.first(where: { $0.value == currentVal })
-                self.selectedModel = opt?.name ?? currentVal
-                self.selectedModelValue = currentVal
-            }
-        }
-        if let effortOpt = options.first(where: { $0.id == ACPConfigOptionID.reasoningEffort }) {
-            let currentVal = effortOpt.currentValue ?? effortOpt.options?.first?.value
-            if let currentVal {
-                let opt = effortOpt.options?.first(where: { $0.value == currentVal })
-                self.selectedReasoningEffort = opt?.name ?? currentVal
-                self.selectedReasoningEffortValue = currentVal
-            }
-        }
-        if let modeOpt = options.first(where: { $0.id == ACPConfigOptionID.mode }) {
-            let currentVal = modeOpt.currentValue ?? modeOpt.options?.first?.value
-            if let currentVal {
-                let opt = modeOpt.options?.first(where: { $0.value == currentVal })
-                self.selectedAgentMode = opt?.name ?? currentVal
-                self.selectedAgentModeValue = currentVal
             }
         }
     }

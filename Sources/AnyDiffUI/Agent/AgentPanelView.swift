@@ -113,7 +113,7 @@ public struct AgentPanelView: View {
             }
         }
         .background(Color(theme.background))
-        .onDrop(of: [UTType.image, UTType.fileURL, UTType.png, UTType.jpeg, UTType.tiff, UTType.url], isTargeted: $isPanelDropTargeted) { providers in
+        .onDrop(of: [UTType.image, UTType.fileURL, UTType.png, UTType.jpeg, UTType.tiff, UTType.webP, UTType.heic, UTType.url, UTType.data, UTType.item], isTargeted: $isPanelDropTargeted) { providers in
             ImageAttachmentHelpers.extractImages(from: providers) { droppedImages in
                 guard !droppedImages.isEmpty else { return }
                 NotificationCenter.default.post(

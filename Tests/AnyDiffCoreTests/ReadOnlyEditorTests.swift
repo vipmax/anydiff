@@ -230,7 +230,6 @@ final class ReadOnlyEditorTests: XCTestCase {
 
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600), styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.contentView = editor
-        window.makeKeyAndOrderFront(nil)
 
         // 1. Unified mode: click right at first character of code (gutterWidth + 13)
         let row0Y = editor.yOffset(forDisplayLineIndex: 1)
@@ -835,7 +834,6 @@ final class ReadOnlyEditorTests: XCTestCase {
 
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600), styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.contentView = editor
-        window.makeKeyAndOrderFront(nil)
 
         XCTAssertEqual(editor.splitActiveColumn, .right)
 

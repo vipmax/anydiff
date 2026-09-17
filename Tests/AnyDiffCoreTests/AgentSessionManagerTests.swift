@@ -345,4 +345,163 @@ final class AgentSessionManagerTests: XCTestCase {
         }
         wait(for: [exp], timeout: 1.0)
     }
+
+    func testAgentConfigOptionPersistenceAcrossSessions() {
+        let suiteName = "test.anydiff.config.persistence.\(UUID().uuidString)"
+        let testDefaults = UserDefaults(suiteName: suiteName)!
+        defer { testDefaults.removePersistentDomain(forName: suiteName) }
+
+        let agyManager1 = ACPAgentSessionManager()
+        agyManager1.presetId = "agy"
+        agyManager1.userDefaults = testDefaults
+
+        agyManager1.configOptions = [
+            ACPConfigOption(
+                id: ACPConfigOptionID.model,
+                name: "Model",
+                currentValue: "gemini-3.7-flash-high",
+                options: [
+                    ACPConfigOption.OptionValue(value: "gemini-3.7-flash-high", name: "Gemini 3.7 Flash (High)"),
+                    ACPConfigOption.OptionValue(value: "gemini-3.8-flash-high", name: "Gemini 3.8 Flash (High)")
+                ]
+            ),
+            ACPConfigOption(
+                id: ACPConfigOptionID.mode,
+                name: "Session Mode",
+                currentValue: "default",
+                options: [
+                    ACPConfigOption.OptionValue(value: "default", name: "Default"),
+                    ACPConfigOption.OptionValue(value: "architect", name: "Architect")
+                ]
+            )
+        ]
+
+        // Select Gemini 3.8 and architect mode
+        agyManager1.selectConfigOption(id: ACPConfigOptionID.model, value: "gemini-3.8-flash-high")
+        agyManager1.selectConfigOption(id: ACPConfigOptionID.mode, value: "architect")
+
+        XCTAssertEqual(agyManager1.selectedModel, "Gemini 3.8 Flash (High)")
+        XCTAssertEqual(agyManager1.selectedModelValue, "gemini-3.8-flash-high")
+        XCTAssertEqual(agyManager1.selectedAgentMode, "Architect")
+        XCTAssertEqual(agyManager1.selectedAgentModeValue, "architect")
+
+        // Create a completely new manager for agy with the same UserDefaults
+        let agyManager2 = ACPAgentSessionManager()
+        agyManager2.presetId = "agy"
+        agyManager2.userDefaults = testDefaults
+
+        let saved = agyManager2.savedConfigOptions()
+        XCTAssertEqual(saved[ACPConfigOptionID.model], "gemini-3.8-flash-high")
+        XCTAssertEqual(saved[ACPConfigOptionID.mode], "architect")
+
+        // Claude manager should NOT have agy's saved options
+        let claudeManager = ACPAgentSessionManager()
+        claudeManager.presetId = "claude"
+        claudeManager.userDefaults = testDefaults
+        XCTAssertTrue(claudeManager.savedConfigOptions().isEmpty)
+    }
+
+    func testOptionsWithSavedPreferencesMergedRestoresModelAndFiltersInvalid() {
+        let suiteName = "test.anydiff.config.merge.\(UUID().uuidString)"
+        let testDefaults = UserDefaults(suiteName: suiteName)!
+        defer { testDefaults.removePersistentDomain(forName: suiteName) }
+
+        let manager = ACPAgentSessionManager()
+        manager.presetId = "agy"
+        manager.userDefaults = testDefaults
+
+        // Save a valid model and an invalid/obsolete mode
+        manager.saveConfigOption(id: ACPConfigOptionID.model, value: "gemini-3.8-flash-high")
+        manager.saveConfigOption(id: ACPConfigOptionID.mode, value: "nonexistent-obsolete-mode")
+
+        // Server returns default options (3.7)
+        let serverOptions = [
+            ACPConfigOption(
+                id: ACPConfigOptionID.model,
+                name: "Model",
+                currentValue: "gemini-3.7-flash-high",
+                options: [
+                    ACPConfigOption.OptionValue(value: "gemini-3.7-flash-high", name: "Gemini 3.7 Flash (High)"),
+                    ACPConfigOption.OptionValue(value: "gemini-3.8-flash-high", name: "Gemini 3.8 Flash (High)")
+                ]
+            ),
+            ACPConfigOption(
+                id: ACPConfigOptionID.mode,
+                name: "Session Mode",
+                currentValue: "default",
+                options: [
+                    ACPConfigOption.OptionValue(value: "default", name: "Default"),
+                    ACPConfigOption.OptionValue(value: "ask", name: "Ask")
+                ]
+            )
+        ]
+
+        let (merged, toSync) = manager.optionsWithSavedPreferencesMerged(serverOptions)
+
+        // Valid model is restored to 3.8 and queued for sync
+        let restoredModel = merged.first(where: { $0.id == ACPConfigOptionID.model })
+        XCTAssertEqual(restoredModel?.currentValue, "gemini-3.8-flash-high")
+        XCTAssertEqual(toSync.count, 1)
+        XCTAssertEqual(toSync[0].configId, ACPConfigOptionID.model)
+        XCTAssertEqual(toSync[0].value, "gemini-3.8-flash-high")
+
+        // Invalid mode was rejected and kept as server default ("default")
+        let keptMode = merged.first(where: { $0.id == ACPConfigOptionID.mode })
+        XCTAssertEqual(keptMode?.currentValue, "default")
+
+        // Apply merged options to manager
+        manager.applyConfigOptions(merged)
+        XCTAssertEqual(manager.selectedModel, "Gemini 3.8 Flash (High)")
+        XCTAssertEqual(manager.selectedModelValue, "gemini-3.8-flash-high")
+        XCTAssertEqual(manager.selectedAgentMode, "Default")
+    }
+
+    func testBooleanConfigOptionPersistence() {
+        let suiteName = "test.anydiff.config.bool.\(UUID().uuidString)"
+        let testDefaults = UserDefaults(suiteName: suiteName)!
+        defer { testDefaults.removePersistentDomain(forName: suiteName) }
+
+        let manager = ACPAgentSessionManager()
+        manager.presetId = "codex"
+        manager.userDefaults = testDefaults
+
+        let boolOpt = ACPConfigOption(
+            id: "enable_web_search",
+            name: "Web Search",
+            type: "boolean",
+            currentValue: "false"
+        )
+
+        manager.configOptions = [boolOpt]
+        manager.selectConfigOption(id: "enable_web_search", value: "true")
+
+        XCTAssertEqual(manager.configOptions[0].currentValue, "true")
+        XCTAssertEqual(manager.savedConfigOptions()["enable_web_search"], "true")
+
+        let (merged, toSync) = manager.optionsWithSavedPreferencesMerged([boolOpt])
+        XCTAssertEqual(merged[0].currentValue, "true")
+        XCTAssertEqual(toSync.count, 1)
+        XCTAssertEqual(toSync[0].configId, "enable_web_search")
+        XCTAssertEqual(toSync[0].value, "true")
+    }
+
+    func testApplyConfigOptionsPopulatesCurrentValueWhenNil() {
+        let manager = ACPAgentSessionManager()
+        let modelOpt = ACPConfigOption(
+            id: ACPConfigOptionID.model,
+            name: "Model",
+            category: "model",
+            type: "select",
+            currentValue: nil, // server sent nil
+            options: [
+                ACPConfigOption.OptionValue(value: "gemini-3.8-flash-high", name: "Gemini 3.8 Flash (High)"),
+                ACPConfigOption.OptionValue(value: "gemini-3.8-flash-medium", name: "Gemini 3.8 Flash (Medium)")
+            ]
+        )
+        manager.applyConfigOptions([modelOpt])
+
+        XCTAssertEqual(manager.selectedModelValue, "gemini-3.8-flash-high")
+        XCTAssertEqual(manager.selectedModel, "Gemini 3.8 Flash (High)")
+        XCTAssertEqual(manager.configOptions.first?.currentValue, "gemini-3.8-flash-high", "configOptions must have non-nil currentValue matching the selected default")
+    }
 }

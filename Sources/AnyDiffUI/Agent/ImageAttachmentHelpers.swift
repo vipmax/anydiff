@@ -5,7 +5,7 @@ import AnyDiffCore
 
 public enum ImageAttachmentHelpers {
     private static let supportedImageExtensions: Set<String> = [
-        "png", "jpg", "jpeg", "webp", "gif", "bmp", "tiff", "tif", "heic", "heif", "svg"
+        "png", "jpg", "jpeg", "webp", "gif", "bmp", "tiff", "tif", "heic", "heif", "svg", "ico", "avif"
     ]
 
     /// Extracts all image attachments present in the given pasteboard and caches them to disk.
@@ -13,33 +13,64 @@ public enum ImageAttachmentHelpers {
         var attachments: [AgentImageAttachment] = []
         var processedFingerprints: Set<Int> = []
 
-        // 1. Check for file URLs in pasteboard (e.g. copied files in Finder)
-        if let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL] {
-            for url in urls {
-                let ext = url.pathExtension.lowercased()
-                if supportedImageExtensions.contains(ext),
-                   let data = try? Data(contentsOf: url),
-                   let image = NSImage(data: data) {
-                    let fingerprint = data.count ^ ext.hashValue
-                    if !processedFingerprints.contains(fingerprint) {
-                        processedFingerprints.insert(fingerprint)
-                        let mimeType = mimeTypeForExtension(ext)
-                        let size = imagePixelSize(image: image, data: data)
-                        let normalizedData = normalizedImageData(from: image, fallbackData: data, preferredMimeType: mimeType)
-                        let attachment = AgentImageStore.shared.save(
-                            data: normalizedData,
-                            mimeType: mimeType,
-                            filename: url.lastPathComponent,
-                            width: Double(size.width),
-                            height: Double(size.height)
-                        )
-                        attachments.append(attachment)
-                    }
+        // 1. Check for file URLs in pasteboard (e.g. copied files in Finder or dragged screenshots)
+        var candidateURLs: [URL] = []
+        if let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [NSPasteboard.ReadingOptionKey.urlReadingFileURLsOnly: true]) as? [URL] {
+            candidateURLs.append(contentsOf: urls)
+        }
+        if candidateURLs.isEmpty, let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL] {
+            candidateURLs.append(contentsOf: urls.filter { $0.isFileURL })
+        }
+        // Fallback for Finder drag-and-drop legacy/standard filenames type
+        if candidateURLs.isEmpty, let filenames = pasteboard.propertyList(forType: NSPasteboard.PasteboardType("NSFilenamesPboardType")) as? [String] {
+            candidateURLs.append(contentsOf: filenames.map { URL(fileURLWithPath: $0) })
+        }
+        // Fallback for pasteboard items carrying .fileURL
+        if candidateURLs.isEmpty, let items = pasteboard.pasteboardItems {
+            for item in items {
+                if let urlString = item.string(forType: .fileURL), let u = URL(string: urlString), u.isFileURL {
+                    candidateURLs.append(u)
                 }
             }
         }
 
-        // 2. Check for direct image pasteboard items (e.g. screenshots from clipboard)
+        for url in candidateURLs {
+            let accessing = url.startAccessingSecurityScopedResource()
+            defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+
+            let ext = url.pathExtension.lowercased()
+            let isSupportedExt = supportedImageExtensions.contains(ext)
+            if (isSupportedExt || ext.isEmpty),
+               let data = try? Data(contentsOf: url),
+               let image = NSImage(data: data) {
+                let fingerprint = data.count ^ (ext.isEmpty ? data.prefix(32).hashValue : ext.hashValue)
+                if !processedFingerprints.contains(fingerprint) {
+                    processedFingerprints.insert(fingerprint)
+                    let mimeType = ext.isEmpty ? "image/png" : mimeTypeForExtension(ext)
+                    let size = imagePixelSize(image: image, data: data)
+                    let normalizedData = normalizedImageData(from: image, fallbackData: data, preferredMimeType: mimeType)
+                    let filename = url.lastPathComponent.isEmpty ? "image.png" : url.lastPathComponent
+                    let attachment = AgentImageStore.shared.save(
+                        data: normalizedData,
+                        mimeType: mimeType,
+                        filename: filename,
+                        width: Double(size.width),
+                        height: Double(size.height)
+                    )
+                    attachments.append(attachment)
+                }
+            }
+        }
+
+        // If file URL images were found, we are done.
+        // On macOS (especially with floating screenshot thumbnails), the pasteboard provides
+        // BOTH the file URL AND raw bitmap representations (PNG/TIFF) for the same screenshot.
+        // Processing raw items after file URLs would duplicate the screenshot.
+        if !attachments.isEmpty {
+            return deduplicateAttachments(attachments)
+        }
+
+        // 2. Check for direct image pasteboard items (e.g. screenshots from clipboard or browser drop)
         if let items = pasteboard.pasteboardItems {
             for (index, item) in items.enumerated() {
                 var itemData: Data? = nil
@@ -57,7 +88,6 @@ public enum ImageAttachmentHelpers {
                     itemMimeType = "image/png"
                     detectedExt = "png"
                 } else if let tiffData = item.data(forType: .tiff) {
-                    // Convert TIFF to PNG
                     if let img = NSImage(data: tiffData),
                        let pngData = convertToPNGData(image: img) {
                         itemData = pngData
@@ -73,6 +103,11 @@ public enum ImageAttachmentHelpers {
                     itemData = jpegData
                     itemMimeType = "image/jpeg"
                     detectedExt = "jpg"
+                } else if let imgType = NSPasteboard.PasteboardType("public.image") as NSPasteboard.PasteboardType?,
+                          let data = item.data(forType: imgType) {
+                    itemData = data
+                    itemMimeType = "image/png"
+                    detectedExt = "png"
                 }
 
                 if let data = itemData, let image = NSImage(data: data) {
@@ -109,24 +144,56 @@ public enum ImageAttachmentHelpers {
             attachments.append(attachment)
         }
 
-        return attachments
+        return deduplicateAttachments(attachments)
+    }
+
+    /// Fast check if pasteboard contains any supported images without reading data or writing to disk cache.
+    public static func hasImages(in pasteboard: NSPasteboard) -> Bool {
+        if let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [NSPasteboard.ReadingOptionKey.urlReadingFileURLsOnly: true]) as? [URL] {
+            if urls.contains(where: { supportedImageExtensions.contains($0.pathExtension.lowercased()) }) {
+                return true
+            }
+        }
+        if let filenames = pasteboard.propertyList(forType: NSPasteboard.PasteboardType("NSFilenamesPboardType")) as? [String] {
+            if filenames.contains(where: { supportedImageExtensions.contains(URL(fileURLWithPath: $0).pathExtension.lowercased()) }) {
+                return true
+            }
+        }
+        if let types = pasteboard.types {
+            let imageTypes: Set<NSPasteboard.PasteboardType> = [
+                .png, .tiff,
+                NSPasteboard.PasteboardType("public.png"),
+                NSPasteboard.PasteboardType("public.jpeg"),
+                NSPasteboard.PasteboardType("public.image"),
+                NSPasteboard.PasteboardType("public.tiff")
+            ]
+            if !imageTypes.isDisjoint(with: types) {
+                return true
+            }
+        }
+        return false
     }
 
     /// Extracts file URLs from drag-and-drop info that point to images and caches them to disk.
     public static func extractImages(fromURLs urls: [URL]) -> [AgentImageAttachment] {
         var attachments: [AgentImageAttachment] = []
         for url in urls {
+            let accessing = url.startAccessingSecurityScopedResource()
+            defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+
             let ext = url.pathExtension.lowercased()
-            if supportedImageExtensions.contains(ext),
+            let isSupportedExt = supportedImageExtensions.contains(ext)
+            if (isSupportedExt || ext.isEmpty),
                let data = try? Data(contentsOf: url),
                let image = NSImage(data: data) {
-                let mimeType = mimeTypeForExtension(ext)
+                let mimeType = ext.isEmpty ? "image/png" : mimeTypeForExtension(ext)
                 let size = imagePixelSize(image: image, data: data)
                 let normalized = normalizedImageData(from: image, fallbackData: data, preferredMimeType: mimeType)
+                let filename = url.lastPathComponent.isEmpty ? "image.png" : url.lastPathComponent
                 let attachment = AgentImageStore.shared.save(
                     data: normalized,
                     mimeType: mimeType,
-                    filename: url.lastPathComponent,
+                    filename: filename,
                     width: Double(size.width),
                     height: Double(size.height)
                 )
@@ -144,10 +211,46 @@ public enum ImageAttachmentHelpers {
 
         for (index, provider) in providers.enumerated() {
             group.enter()
-            var handled = false
+
+            // Helper to try loading raw image data if file URL path fails or is unavailable
+            let tryLoadImageData: (@escaping () -> Void) -> Void = { next in
+                let supportedTypes: [UTType] = [
+                    .png, .jpeg, .tiff, .webP, .heic, .image
+                ]
+                var candidateTypeId: String? = nil
+                for t in supportedTypes {
+                    if provider.hasItemConformingToTypeIdentifier(t.identifier) {
+                        candidateTypeId = t.identifier
+                        break
+                    }
+                }
+
+                if let typeId = candidateTypeId {
+                    provider.loadDataRepresentation(forTypeIdentifier: typeId) { data, _ in
+                        if let data = data, let img = NSImage(data: data) {
+                            let size = imagePixelSize(image: img, data: data)
+                            let pngData = convertToPNGData(image: img) ?? data
+                            let suggested = provider.suggestedName
+                            let cleanName = (suggested?.isEmpty == false) ? suggested! : "dropped_image_\(index + 1).png"
+                            let attachment = AgentImageStore.shared.save(
+                                data: pngData,
+                                mimeType: "image/png",
+                                filename: cleanName.hasSuffix(".png") ? cleanName : "\(cleanName).png",
+                                width: Double(size.width),
+                                height: Double(size.height)
+                            )
+                            lock.lock()
+                            attachments.append(attachment)
+                            lock.unlock()
+                        }
+                        next()
+                    }
+                } else {
+                    next()
+                }
+            }
 
             if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
-                handled = true
                 provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
                     var targetURL: URL? = nil
                     if let url = item as? URL {
@@ -165,41 +268,32 @@ public enum ImageAttachmentHelpers {
                         targetURL = URL(string: trimmed) ?? URL(fileURLWithPath: trimmed)
                     }
 
-                    if let url = targetURL {
+                    if let url = targetURL, url.isFileURL {
                         let extracted = extractImages(fromURLs: [url])
-                        lock.lock()
-                        attachments.append(contentsOf: extracted)
-                        lock.unlock()
+                        if !extracted.isEmpty {
+                            lock.lock()
+                            attachments.append(contentsOf: extracted)
+                            lock.unlock()
+                            group.leave()
+                            return
+                        }
                     }
-                    group.leave()
+
+                    // Fallback to loading data representation if fileURL failed or wasn't readable
+                    tryLoadImageData {
+                        group.leave()
+                    }
                 }
             } else if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) ||
                       provider.hasItemConformingToTypeIdentifier(UTType.png.identifier) ||
                       provider.hasItemConformingToTypeIdentifier(UTType.jpeg.identifier) ||
-                      provider.hasItemConformingToTypeIdentifier(UTType.tiff.identifier) {
-                handled = true
-                let typeId = provider.hasItemConformingToTypeIdentifier(UTType.png.identifier) ? UTType.png.identifier :
-                             (provider.hasItemConformingToTypeIdentifier(UTType.jpeg.identifier) ? UTType.jpeg.identifier : UTType.image.identifier)
-
-                provider.loadDataRepresentation(forTypeIdentifier: typeId) { data, _ in
-                    if let data = data, let img = NSImage(data: data) {
-                        let size = imagePixelSize(image: img, data: data)
-                        let pngData = convertToPNGData(image: img) ?? data
-                        let attachment = AgentImageStore.shared.save(
-                            data: pngData,
-                            mimeType: "image/png",
-                            filename: "dropped_image_\(index + 1).png",
-                            width: Double(size.width),
-                            height: Double(size.height)
-                        )
-                        lock.lock()
-                        attachments.append(attachment)
-                        lock.unlock()
-                    }
+                      provider.hasItemConformingToTypeIdentifier(UTType.tiff.identifier) ||
+                      provider.hasItemConformingToTypeIdentifier(UTType.webP.identifier) ||
+                      provider.hasItemConformingToTypeIdentifier(UTType.heic.identifier) {
+                tryLoadImageData {
                     group.leave()
                 }
             } else if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
-                handled = true
                 provider.loadItem(forTypeIdentifier: UTType.url.identifier, options: nil) { item, _ in
                     var targetURL: URL? = nil
                     if let u = item as? URL {
@@ -210,24 +304,69 @@ public enum ImageAttachmentHelpers {
                         let trimmed = str.trimmingCharacters(in: .whitespacesAndNewlines)
                         targetURL = URL(string: trimmed) ?? URL(fileURLWithPath: trimmed)
                     }
-                    if let url = targetURL {
+                    if let url = targetURL, url.isFileURL {
                         let extracted = extractImages(fromURLs: [url])
-                        lock.lock()
-                        attachments.append(contentsOf: extracted)
-                        lock.unlock()
+                        if !extracted.isEmpty {
+                            lock.lock()
+                            attachments.append(contentsOf: extracted)
+                            lock.unlock()
+                            group.leave()
+                            return
+                        }
                     }
-                    group.leave()
+                    tryLoadImageData {
+                        group.leave()
+                    }
                 }
-            }
-
-            if !handled {
+            } else {
                 group.leave()
             }
         }
 
         group.notify(queue: .main) {
-            completion(attachments)
+            completion(deduplicateAttachments(attachments))
         }
+    }
+
+    /// Deduplicates attachments that represent the same image (e.g. from dual file-URL and raw-data representations
+    /// created by macOS when dragging floating screenshot thumbnails or copying images).
+    public static func deduplicateAttachments(_ attachments: [AgentImageAttachment]) -> [AgentImageAttachment] {
+        var result: [AgentImageAttachment] = []
+        for att in attachments {
+            let existingIdx = result.firstIndex { existing in
+                // 1. Same exact attachment ID
+                if att.id == existing.id {
+                    return true
+                }
+                // 2. Same file path on disk
+                if let p1 = att.filePath, let p2 = existing.filePath, !p1.isEmpty, p1 == p2 {
+                    return true
+                }
+                // 3. Exact same data bytes
+                if !att.data.isEmpty && att.data == existing.data {
+                    return true
+                }
+                return false
+            }
+
+            if let idx = existingIdx {
+                let existing = result[idx]
+                // If existing has a generic auto-generated filename and att has a specific named file, upgrade to att
+                if isGenericFilename(existing.filename) && !isGenericFilename(att.filename) {
+                    result[idx] = att
+                }
+            } else {
+                result.append(att)
+            }
+        }
+        return result
+    }
+
+    private static func isGenericFilename(_ filename: String?) -> Bool {
+        guard let filename else { return true }
+        return filename.hasPrefix("image_") ||
+               filename.hasPrefix("dropped_image_") ||
+               filename == "pasted_image.png"
     }
 
     /// Converts an `NSImage` to PNG `Data`.

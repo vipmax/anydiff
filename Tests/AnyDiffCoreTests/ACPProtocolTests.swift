@@ -337,4 +337,42 @@ final class ACPProtocolTests: XCTestCase {
         XCTAssertEqual(toolInput["old_content"]?.value as? String, "line 1\nline 2\nline 3\n")
         XCTAssertEqual(toolInput["new_content"]?.value as? String, "line 1\nline 2 modified\nline 3\n")
     }
+
+    func testACPConfigOptionBooleanProperties() {
+        let boolOptTrue = ACPConfigOption(
+            id: "opt_bool_1",
+            name: "Search",
+            type: "boolean",
+            currentValue: "true"
+        )
+        XCTAssertTrue(boolOptTrue.isBoolean)
+        XCTAssertTrue(boolOptTrue.boolValue)
+
+        let boolOptFalse = ACPConfigOption(
+            id: "opt_bool_2",
+            name: "Search",
+            type: "Boolean",
+            currentValue: "false"
+        )
+        XCTAssertTrue(boolOptFalse.isBoolean)
+        XCTAssertFalse(boolOptFalse.boolValue)
+
+        let boolOptOne = ACPConfigOption(
+            id: "opt_bool_3",
+            name: "Search",
+            type: "BOOLEAN",
+            currentValue: "1"
+        )
+        XCTAssertTrue(boolOptOne.isBoolean)
+        XCTAssertTrue(boolOptOne.boolValue)
+
+        let stringOpt = ACPConfigOption(
+            id: "opt_select",
+            name: "Model",
+            type: "select",
+            currentValue: "true"
+        )
+        XCTAssertFalse(stringOpt.isBoolean)
+        XCTAssertTrue(stringOpt.boolValue)
+    }
 }

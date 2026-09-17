@@ -269,9 +269,14 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
             let initialPreset = mock ? AgentPreset.mock : (allPresets.first(where: { $0.id == savedPresetId && !$0.isMock }) ?? (allPresets.first(where: { !$0.isMock }) ?? AgentPreset(id: "live", name: "Agent", command: "")))
             let initialManager: AgentSessionManager
             if mock {
-                initialManager = MockAgentSessionManager()
+                let mockManager = MockAgentSessionManager()
+                mockManager.presetId = initialPreset.id
+                mockManager.userDefaults = defaults
+                initialManager = mockManager
             } else {
                 let acp = ACPAgentSessionManager()
+                acp.presetId = initialPreset.id
+                acp.userDefaults = defaults
                 acp.agentCommand = initialPreset.effectiveCommand
                 acp.agentTitle = initialPreset.name
                 initialManager = acp
@@ -279,6 +284,8 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
             #else
             let initialPreset = allPresets.first(where: { $0.id == savedPresetId && !$0.isMock }) ?? (allPresets.first(where: { !$0.isMock }) ?? AgentPreset(id: "live", name: "Agent", command: ""))
             let acp = ACPAgentSessionManager()
+            acp.presetId = initialPreset.id
+            acp.userDefaults = defaults
             acp.agentCommand = initialPreset.effectiveCommand
             acp.agentTitle = initialPreset.name
             let initialManager: AgentSessionManager = acp
@@ -359,10 +366,14 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
         #if DEBUG
         if isMock {
             let mockManager = MockAgentSessionManager(loadFixtures: false)
+            mockManager.presetId = chosenPreset.id
+            mockManager.userDefaults = userDefaults
             manager = mockManager
             title = "Mock Session \(mockSessions.count + 1)"
         } else {
             let acp = ACPAgentSessionManager()
+            acp.presetId = chosenPreset.id
+            acp.userDefaults = userDefaults
             acp.agentCommand = chosenPreset.effectiveCommand
             acp.agentTitle = chosenPreset.name
             manager = acp
@@ -370,6 +381,8 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
         }
         #else
         let acp = ACPAgentSessionManager()
+        acp.presetId = chosenPreset.id
+        acp.userDefaults = userDefaults
         acp.agentCommand = chosenPreset.effectiveCommand
         acp.agentTitle = chosenPreset.name
         manager = acp
@@ -568,10 +581,14 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
         #if DEBUG
         if isMock {
             let mockManager = MockAgentSessionManager(loadFixtures: true)
+            mockManager.presetId = preset.id
+            mockManager.userDefaults = userDefaults
             mockManager.agentTitle = preset.name
             manager = mockManager
         } else {
             let acp = ACPAgentSessionManager()
+            acp.presetId = preset.id
+            acp.userDefaults = userDefaults
             acp.agentCommand = preset.effectiveCommand
             acp.agentTitle = preset.name
             manager = acp
@@ -582,6 +599,8 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
         }
         #else
         let acp = ACPAgentSessionManager()
+        acp.presetId = preset.id
+        acp.userDefaults = userDefaults
         acp.agentCommand = preset.effectiveCommand
         acp.agentTitle = preset.name
         manager = acp

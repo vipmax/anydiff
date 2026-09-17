@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 import AnyDiffCore
 
 public struct AgentAutoGrowingTextView: NSViewRepresentable {
@@ -51,6 +52,7 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
         scrollView.registerForDraggedTypes([.fileURL, .png, .tiff])
 
         let textView = AgentInputCustomTextView()
+        textView.setupDragDrop()
         textView.isRichText = false
         textView.isEditable = true
         textView.isSelectable = true
@@ -75,7 +77,6 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
         textView.onSend = onSend
         textView.onFocusChanged = onFocusChanged
         textView.onImagesPasted = onImagesPasted
-        textView.registerForDraggedTypes([.fileURL, .png, .tiff])
         textView.onHeightChanged = { [weak coordinator = context.coordinator] newHeight in
             coordinator?.reportHeight(newHeight)
         }
@@ -191,6 +192,27 @@ public final class AgentInputCustomTextView: NSTextView {
     public var onFocusChanged: ((Bool) -> Void)?
     public var onImagesPasted: (([AgentImageAttachment]) -> Void)?
 
+    public override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil {
+            setupDragDrop()
+        }
+    }
+
+    public func setupDragDrop() {
+        registerForDraggedTypes([
+            .fileURL,
+            .png,
+            .tiff,
+            NSPasteboard.PasteboardType("public.jpeg"),
+            NSPasteboard.PasteboardType("public.image"),
+            NSPasteboard.PasteboardType("public.file-url"),
+            NSPasteboard.PasteboardType("com.apple.pasteboard.promised-file-url"),
+            NSPasteboard.PasteboardType("NSFilenamesPboardType"),
+            .string
+        ])
+    }
+
     public override func becomeFirstResponder() -> Bool {
         let didBecomeFirstResponder = super.becomeFirstResponder()
         if didBecomeFirstResponder {
@@ -236,8 +258,7 @@ public final class AgentInputCustomTextView: NSTextView {
     }
 
     public override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        let images = ImageAttachmentHelpers.extractImages(from: sender.draggingPasteboard)
-        if !images.isEmpty {
+        if ImageAttachmentHelpers.hasImages(in: sender.draggingPasteboard) {
             return .copy
         }
         return super.draggingEntered(sender)
@@ -292,6 +313,7 @@ public struct AgentInputView: View {
     @State private var isSendButtonHovered: Bool = false
     @State private var isInputFocused: Bool = false
     @State private var inputFocusRequest: Int = 0
+    @State private var isInputDropTargeted: Bool = false
 
     public init(
         text: Binding<String>,
@@ -368,10 +390,20 @@ public struct AgentInputView: View {
                 expandedView
             }
         }
+        .onDrop(of: [UTType.image, UTType.fileURL, UTType.png, UTType.jpeg, UTType.tiff, UTType.webP, UTType.heic, UTType.url, UTType.data, UTType.item], isTargeted: $isInputDropTargeted) { providers in
+            ImageAttachmentHelpers.extractImages(from: providers) { droppedImages in
+                guard !droppedImages.isEmpty else { return }
+                withAnimation(.spring(response: 0.25, dampingFraction: 0.75)) {
+                    attachedImages = ImageAttachmentHelpers.deduplicateAttachments(attachedImages + droppedImages)
+                    isCollapsed = false
+                }
+            }
+            return true
+        }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffAttachImages"))) { notification in
             if let newImages = notification.userInfo?["images"] as? [AgentImageAttachment], !newImages.isEmpty {
                 withAnimation(.spring(response: 0.25, dampingFraction: 0.75)) {
-                    attachedImages.append(contentsOf: newImages)
+                    attachedImages = ImageAttachmentHelpers.deduplicateAttachments(attachedImages + newImages)
                     isCollapsed = false
                 }
             }
@@ -476,7 +508,7 @@ public struct AgentInputView: View {
                         },
                         onImagesPasted: { newImages in
                             withAnimation(.spring(response: 0.25, dampingFraction: 0.75)) {
-                                attachedImages.append(contentsOf: newImages)
+                                attachedImages = ImageAttachmentHelpers.deduplicateAttachments(attachedImages + newImages)
                             }
                         }
                     )
@@ -640,29 +672,31 @@ public struct AgentInputView: View {
                                 ForEach(groups) { group in
                                     Menu(group.groupName) {
                                         ForEach(group.items, id: \.value) { value in
-                                            optionValueButton(option: option, value: value)
+                                            optionValueItem(option: option, value: value)
                                         }
                                     }
                                 }
                             } else {
                                 ForEach(values, id: \.value) { value in
-                                    optionValueButton(option: option, value: value)
+                                    optionValueItem(option: option, value: value)
                                 }
                             }
                         } else {
                             ForEach(values, id: \.value) { value in
-                                optionValueButton(option: option, value: value)
+                                optionValueItem(option: option, value: value)
                             }
                         }
                     } label: {
                         settingsOptionRow(option)
                     }
-                } else if option.type?.lowercased() == "boolean" {
-                    Button {
-                        let nextValue = option.currentValue?.lowercased() == "true" ? "false" : "true"
-                        agentManager.selectConfigOption(id: option.id, value: nextValue)
-                    } label: {
-                        settingsOptionRow(option)
+                } else if option.isBoolean {
+                    Toggle(isOn: Binding<Bool>(
+                        get: { option.boolValue },
+                        set: { next in
+                            agentManager.selectConfigOption(id: option.id, value: next ? "true" : "false")
+                        }
+                    )) {
+                        Text(settingsTitle(for: option))
                     }
                 }
             }
@@ -689,17 +723,33 @@ public struct AgentInputView: View {
         .agentInputInteractiveHover(cornerRadius: 15, horizontalPadding: 2, verticalPadding: 2)
     }
 
-    private func optionValueButton(option: ACPConfigOption, value: ACPConfigOption.OptionValue) -> some View {
-        Button {
-            agentManager.selectConfigOption(id: option.id, value: value.value)
-        } label: {
-            HStack(spacing: 8) {
-                Text(value.name)
-                if option.currentValue == value.value {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 10, weight: .bold))
-                }
+    private func optionValueItem(option: ACPConfigOption, value: ACPConfigOption.OptionValue) -> some View {
+        let isSelected = isOptionSelected(option: option, value: value)
+        return Toggle(isOn: Binding<Bool>(
+            get: { isSelected },
+            set: { _ in
+                agentManager.selectConfigOption(id: option.id, value: value.value)
             }
+        )) {
+            Text(value.name)
+        }
+    }
+
+    private func isOptionSelected(option: ACPConfigOption, value: ACPConfigOption.OptionValue) -> Bool {
+        if let cur = option.currentValue, !cur.isEmpty {
+            if cur == value.value || cur == value.name {
+                return true
+            }
+        }
+        switch option.id {
+        case ACPConfigOptionID.model:
+            return agentManager.selectedModelValue == value.value || agentManager.selectedModel == value.name
+        case ACPConfigOptionID.reasoningEffort:
+            return agentManager.selectedReasoningEffortValue == value.value || agentManager.selectedReasoningEffort == value.name
+        case ACPConfigOptionID.mode:
+            return agentManager.selectedAgentModeValue == value.value || agentManager.selectedAgentMode == value.name
+        default:
+            return false
         }
     }
 
@@ -756,8 +806,8 @@ public struct AgentInputView: View {
            let selected = option.options?.first(where: { $0.value == current }) {
             return selected.name
         }
-        if option.type?.lowercased() == "boolean" {
-            return option.currentValue?.lowercased() == "true" ? "On" : "Off"
+        if option.isBoolean {
+            return option.boolValue ? "On" : "Off"
         }
         return option.currentValue ?? "—"
     }

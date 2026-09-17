@@ -73,6 +73,38 @@ open class AgentSessionManager: ObservableObject, @unchecked Sendable {
     open var canAcceptPrompt: Bool { initializationState != .starting && status != .busy && pendingPermission == nil }
     open var isBusyOrStreaming: Bool { status == .busy || messages.last?.isStreaming == true }
 
+    open var presetId: String? = nil
+    public var userDefaults: UserDefaults = .standard
+
+    open var configStorageIdentifier: String {
+        if let presetId = presetId?.trimmingCharacters(in: .whitespacesAndNewlines), !presetId.isEmpty {
+            return presetId.lowercased()
+        }
+        let trimmedTitle = agentTitle.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if !trimmedTitle.isEmpty && trimmedTitle != "agent" {
+            return trimmedTitle
+        }
+        return "default"
+    }
+
+    public var configStorageKey: String {
+        "anydiff_agent_config_\(configStorageIdentifier)"
+    }
+
+    open func savedConfigOptions() -> [String: String] {
+        userDefaults.dictionary(forKey: configStorageKey) as? [String: String] ?? [:]
+    }
+
+    open func saveConfigOption(id: String, value: String) {
+        var current = savedConfigOptions()
+        current[id] = value
+        userDefaults.set(current, forKey: configStorageKey)
+    }
+
+    open func clearSavedConfigOptions() {
+        userDefaults.removeObject(forKey: configStorageKey)
+    }
+
     public init() {}
 
     open func togglePanel() {
@@ -120,9 +152,11 @@ open class AgentSessionManager: ObservableObject, @unchecked Sendable {
         selectConfigOption(id: ACPConfigOptionID.mode, value: value)
     }
 
-    /// Applies any agent-provided config option locally. ACP-backed managers
-    /// override this to persist the choice with `session/set_config_option`.
+    /// Applies any agent-provided config option locally and persists it. ACP-backed managers
+    /// override this to also sync the choice with `session/set_config_option`.
     open func selectConfigOption(id: String, value: String) {
+        saveConfigOption(id: id, value: value)
+
         if let index = configOptions.firstIndex(where: { $0.id == id }) {
             configOptions[index].currentValue = value
         }
@@ -140,6 +174,83 @@ open class AgentSessionManager: ObservableObject, @unchecked Sendable {
         default:
             break
         }
+    }
+
+    /// Applies full config options returned from an ACP session or preset.
+    open func applyConfigOptions(_ options: [ACPConfigOption]) {
+        var updated = options
+        if let modelIdx = updated.firstIndex(where: { $0.id == ACPConfigOptionID.model }) {
+            let currentVal = updated[modelIdx].currentValue ?? updated[modelIdx].options?.first?.value
+            if let currentVal {
+                let opt = updated[modelIdx].options?.first(where: { $0.value == currentVal })
+                self.selectedModel = opt?.name ?? currentVal
+                self.selectedModelValue = currentVal
+                if updated[modelIdx].currentValue == nil {
+                    updated[modelIdx].currentValue = currentVal
+                }
+            }
+        }
+        if let effortIdx = updated.firstIndex(where: { $0.id == ACPConfigOptionID.reasoningEffort }) {
+            let currentVal = updated[effortIdx].currentValue ?? updated[effortIdx].options?.first?.value
+            if let currentVal {
+                let opt = updated[effortIdx].options?.first(where: { $0.value == currentVal })
+                self.selectedReasoningEffort = opt?.name ?? currentVal
+                self.selectedReasoningEffortValue = currentVal
+                if updated[effortIdx].currentValue == nil {
+                    updated[effortIdx].currentValue = currentVal
+                }
+            }
+        }
+        if let modeIdx = updated.firstIndex(where: { $0.id == ACPConfigOptionID.mode }) {
+            let currentVal = updated[modeIdx].currentValue ?? updated[modeIdx].options?.first?.value
+            if let currentVal {
+                let opt = updated[modeIdx].options?.first(where: { $0.value == currentVal })
+                self.selectedAgentMode = opt?.name ?? currentVal
+                self.selectedAgentModeValue = currentVal
+                if updated[modeIdx].currentValue == nil {
+                    updated[modeIdx].currentValue = currentVal
+                }
+            }
+        }
+        self.configOptions = updated
+    }
+
+    /// Merges saved user preferences into the options provided by the server/agent.
+    /// Returns the updated options (with currentValue updated) along with any options
+    /// that need to be synced to the active session via `session/set_config_option`.
+    open func optionsWithSavedPreferencesMerged(
+        _ options: [ACPConfigOption],
+        savedPreferences: [String: String]? = nil
+    ) -> (merged: [ACPConfigOption], toSync: [(configId: String, value: String)]) {
+        let prefs = savedPreferences ?? savedConfigOptions()
+        guard !prefs.isEmpty else {
+            return (options, [])
+        }
+
+        var merged = options
+        var toSync: [(configId: String, value: String)] = []
+
+        for (idx, opt) in merged.enumerated() {
+            guard let savedVal = prefs[opt.id] else { continue }
+
+            let isValid: Bool
+            if let choices = opt.options, !choices.isEmpty {
+                isValid = choices.contains { $0.value == savedVal }
+            } else if opt.isBoolean {
+                isValid = (savedVal.caseInsensitiveCompare("true") == .orderedSame || savedVal.caseInsensitiveCompare("false") == .orderedSame || savedVal == "1" || savedVal == "0")
+            } else {
+                isValid = !savedVal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+
+            guard isValid else { continue }
+
+            if opt.currentValue != savedVal {
+                toSync.append((configId: opt.id, value: savedVal))
+                merged[idx].currentValue = savedVal
+            }
+        }
+
+        return (merged, toSync)
     }
 
     private func displayName(for id: String, value: String) -> String? {
