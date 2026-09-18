@@ -124,8 +124,11 @@ public struct CommitDetailPopoverView: View {
                         Image(systemName: hasCopiedHash ? "checkmark" : "doc.on.doc")
                             .font(.system(size: 10))
                             .foregroundColor(hasCopiedHash ? .green : (isCopyHashHovered ? .primary : .secondary))
+                            .frame(width: 16, height: 16, alignment: .center)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .frame(width: 16, height: 16)
                     .help(hasCopiedHash ? "Copied" : "Copy Hash")
                     .onHover { isCopyHashHovered = $0 }
                 }
@@ -171,9 +174,11 @@ public struct CommitDetailPopoverView: View {
                 Image(systemName: hasCopiedMessage ? "checkmark" : "doc.on.clipboard")
                     .font(.system(size: 11))
                     .foregroundColor(hasCopiedMessage ? .green : (isCopyMessageBtnHovered ? .primary : .secondary))
+                    .frame(width: 18, height: 18, alignment: .center)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .frame(width: 18, height: 18)
             .help(hasCopiedMessage ? "Message Copied" : "Copy Message")
             .opacity(isMessageHovered || hasCopiedMessage ? 1 : 0)
             .onHover { isCopyMessageBtnHovered = $0 }
