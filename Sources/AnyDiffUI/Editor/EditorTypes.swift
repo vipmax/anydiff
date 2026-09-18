@@ -39,17 +39,20 @@ public struct EditorScrollAnchor: Sendable, Equatable {
     public let lineNumber: Int?
     public let isHeader: Bool
     public let pixelOffsetInLine: CGFloat
+    public let isOldSide: Bool
 
     public init(
         filePath: String,
         lineNumber: Int?,
         isHeader: Bool = false,
-        pixelOffsetInLine: CGFloat = 0
+        pixelOffsetInLine: CGFloat = 0,
+        isOldSide: Bool = false
     ) {
         self.filePath = filePath
         self.lineNumber = lineNumber
         self.isHeader = isHeader
         self.pixelOffsetInLine = pixelOffsetInLine
+        self.isOldSide = isOldSide
     }
 }
 

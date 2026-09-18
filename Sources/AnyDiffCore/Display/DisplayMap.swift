@@ -1033,23 +1033,84 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
     }
 
     /// Fast O(log N) scroll anchor resolution for display line index without materializing diff lines.
-    public func fastScrollAnchor(forDisplayLineIndex lineIdx: Int) -> (filePath: String, lineNumber: Int?, isHeader: Bool)? {
+    public func fastScrollAnchor(forDisplayLineIndex lineIdx: Int) -> (filePath: String, lineNumber: Int?, isHeader: Bool, isOldSide: Bool)? {
         guard let locIdx = excerptIndex(forDisplayLineIndex: lineIdx),
               locIdx >= 0 && locIdx < multiBuffer.excerpts.count else { return nil }
         let excerpt = multiBuffer.excerpts[locIdx]
         let loc = excerptLocations[locIdx]
 
         if loc.hasHeader && lineIdx == loc.displayRange.lowerBound {
-            return (excerpt.filePath, nil, true)
+            return (excerpt.filePath, nil, true, false)
+        }
+
+        guard loc.codeLineCount > 0, let buffer = multiBuffer.buffer(for: excerpt.bufferId) else {
+            return (excerpt.filePath, nil, false, false)
         }
 
         let codeStart = loc.displayRange.lowerBound + (loc.hasHeader ? 1 : 0) + (loc.hasTopGap ? 1 : 0)
-        let offset = lineIdx - codeStart
-        guard offset >= 0 && offset < loc.codeLineCount else { return (excerpt.filePath, nil, false) }
-        guard let buffer = multiBuffer.buffer(for: excerpt.bufferId) else { return (excerpt.filePath, nil, false) }
+        let rawOffset = lineIdx - codeStart
+        let clampedOffset = max(0, min(loc.codeLineCount - 1, rawOffset))
+        let locInfo = sourceLocation(forExcerptOffset: clampedOffset, inExcerptAt: locIdx, buffer: buffer, excerpt: excerpt)
+        return (excerpt.filePath, locInfo.lineNumber, false, locInfo.isOldSide)
+    }
 
-        let lineNum = lineNumber(forExcerptOffset: offset, inExcerptAt: locIdx, buffer: buffer, excerpt: excerpt)
-        return (excerpt.filePath, lineNum, false)
+    private func sourceLocation(
+        forExcerptOffset offset: Int,
+        inExcerptAt excerptIdx: Int,
+        buffer: Buffer,
+        excerpt: Excerpt
+    ) -> (lineNumber: Int, isOldSide: Bool) {
+        let fallbackLineNumber = buffer.startLineNumber + offset
+
+        // 1. Split mode (side-by-side)
+        if effectiveLayoutMode == .sideBySide {
+            let splitRows = getCachedSplitRows(for: excerptIdx)
+            guard offset < splitRows.count else { return (fallbackLineNumber, false) }
+            let row = splitRows[offset]
+            if let rightNum = row.right.lineNumber, !row.right.isSpacer {
+                return (rightNum, false)
+            } else if let leftNum = row.left.lineNumber, !row.left.isSpacer {
+                return (leftNum, true)
+            }
+            return (fallbackLineNumber, false)
+        }
+
+        // 2. Unchanged original git hunk
+        if let hunk = excerpt.hunk, usesOriginalHunk(excerpt: excerpt, buffer: buffer) {
+            if !hunk.lineSpans.isEmpty && offset < hunk.lineSpans.count {
+                let span = hunk.lineSpans[offset]
+                if span.newLineNumber > 0 {
+                    return (Int(span.newLineNumber), false)
+                } else if span.oldLineNumber > 0 {
+                    return (Int(span.oldLineNumber), true)
+                }
+                return (1, false)
+            }
+            if !hunk.lines.isEmpty && offset < hunk.lines.count {
+                let line = hunk.lines[offset]
+                if let newNum = line.newLineNumber {
+                    return (newNum, false)
+                } else if let oldNum = line.oldLineNumber {
+                    return (oldNum, true)
+                }
+                return (1, false)
+            }
+            return (1, false)
+        }
+
+        // 3. Diff lines from cache or computed slice
+        let diffLines = getCachedDiffLines(for: excerptIdx)
+        if offset < diffLines.count {
+            let line = diffLines[offset].line
+            if let newNum = line.newLineNumber {
+                return (newNum, false)
+            } else if let oldNum = line.oldLineNumber {
+                return (oldNum, true)
+            }
+            return (fallbackLineNumber, false)
+        }
+
+        return (fallbackLineNumber, false)
     }
 
     private func lineNumber(
@@ -1058,38 +1119,7 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
         buffer: Buffer,
         excerpt: Excerpt
     ) -> Int {
-        let fallbackLineNumber = buffer.startLineNumber + offset
-
-        // 1. Split mode (side-by-side)
-        if effectiveLayoutMode == .sideBySide {
-            let splitRows = getCachedSplitRows(for: excerptIdx)
-            guard offset < splitRows.count else { return fallbackLineNumber }
-            let row = splitRows[offset]
-            return row.right.lineNumber ?? row.left.lineNumber ?? fallbackLineNumber
-        }
-
-        // 2. Unchanged original git hunk
-        if let hunk = excerpt.hunk, usesOriginalHunk(excerpt: excerpt, buffer: buffer) {
-            if !hunk.lineSpans.isEmpty && offset < hunk.lineSpans.count {
-                let span = hunk.lineSpans[offset]
-                let num = span.newLineNumber > 0 ? span.newLineNumber : span.oldLineNumber
-                return num > 0 ? Int(num) : 1
-            }
-            if !hunk.lines.isEmpty && offset < hunk.lines.count {
-                let line = hunk.lines[offset]
-                return line.newLineNumber ?? line.oldLineNumber ?? 1
-            }
-            return 1
-        }
-
-        // 3. Diff lines from cache or computed slice
-        let diffLines = getCachedDiffLines(for: excerptIdx)
-        if offset < diffLines.count {
-            let line = diffLines[offset].line
-            return line.newLineNumber ?? line.oldLineNumber ?? fallbackLineNumber
-        }
-
-        return fallbackLineNumber
+        sourceLocation(forExcerptOffset: offset, inExcerptAt: excerptIdx, buffer: buffer, excerpt: excerpt).lineNumber
     }
 
     public func codeInfo(for multiBufferRow: MultiBufferRow) -> DisplayCodeLineInfo? {
@@ -1312,34 +1342,44 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
             }
         }
 
-        return exactOldRow ?? bestRow
+        return isOldSide ? (exactOldRow ?? bestRow) : (bestRow ?? exactOldRow)
     }
 
     /// Finds the display line index closest to the given file path and line number
     public func displayLineIndex(forFilePath filePath: String, lineNumber: Int?, isHeader: Bool = false) -> Int? {
+        displayLineIndex(forFilePath: filePath, lineNumber: lineNumber, isHeader: isHeader, isOldSide: false)
+    }
+
+    public func displayLineIndex(
+        forFilePath filePath: String,
+        lineNumber: Int?,
+        isHeader: Bool = false,
+        isOldSide: Bool = false
+    ) -> Int? {
         guard !multiBuffer.excerpts.isEmpty else { return nil }
 
-        for loc in excerptLocations {
-            guard loc.excerptIndex >= 0 && loc.excerptIndex < multiBuffer.excerpts.count else { continue }
-            let excerpt = multiBuffer.excerpts[loc.excerptIndex]
-            guard excerpt.filePath == filePath else { continue }
+        if isHeader {
+            for loc in excerptLocations {
+                guard loc.excerptIndex >= 0 && loc.excerptIndex < multiBuffer.excerpts.count else { continue }
+                let excerpt = multiBuffer.excerpts[loc.excerptIndex]
+                guard excerpt.filePath == filePath else { continue }
 
-            if isHeader && loc.hasHeader {
-                return loc.displayRange.lowerBound
-            }
-            if lineNumber == nil && loc.hasHeader {
-                return loc.displayRange.lowerBound
+                if loc.hasHeader {
+                    return loc.displayRange.lowerBound
+                }
             }
         }
 
-        if let targetLine = lineNumber, let codeR = codeRow(forFilePath: filePath, lineNumber: targetLine) {
+        if let targetLine = lineNumber, let codeR = codeRow(forFilePath: filePath, lineNumber: targetLine, isOldSide: isOldSide) {
             return displayLineIndex(forMultiBufferRow: codeR)
         }
 
-        for loc in excerptLocations {
-            guard loc.excerptIndex >= 0 && loc.excerptIndex < multiBuffer.excerpts.count else { continue }
-            if multiBuffer.excerpts[loc.excerptIndex].filePath == filePath {
-                return loc.displayRange.lowerBound
+        if lineNumber == nil {
+            for loc in excerptLocations {
+                guard loc.excerptIndex >= 0 && loc.excerptIndex < multiBuffer.excerpts.count else { continue }
+                if multiBuffer.excerpts[loc.excerptIndex].filePath == filePath {
+                    return loc.displayRange.lowerBound
+                }
             }
         }
 

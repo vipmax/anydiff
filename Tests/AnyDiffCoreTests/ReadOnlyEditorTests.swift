@@ -1115,4 +1115,185 @@ final class ReadOnlyEditorTests: XCTestCase {
         XCTAssertLessThan(tInsert, 0.02, "Insert on unchanged line took \(tInsert)s")
         XCTAssertLessThan(tDelete, 0.02, "Immediate delete took \(tDelete)s")
     }
+
+    func testScrollAnchorPreservationAcrossPrecedingFileModifications() {
+        let multiBuffer = MultiBuffer()
+        let bufA = Buffer(filePath: "FileA.swift", text: "A1\nA2\nA3\nA4\nA5")
+        let bLines = (1...50).map { "B\($0)" }.joined(separator: "\n")
+        let bufB = Buffer(filePath: "FileB.swift", text: bLines)
+        multiBuffer.addBuffer(bufA)
+        multiBuffer.addBuffer(bufB)
+        multiBuffer.setExcerpts([
+            Excerpt(bufferId: bufA.id, filePath: "FileA.swift", bufferRange: 0..<5),
+            Excerpt(bufferId: bufB.id, filePath: "FileB.swift", bufferRange: 0..<50)
+        ])
+        let dm = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
+        dm.rebuild()
+
+        let editor = CustomMultiBufferEditorView(displayMap: dm, theme: .unifiedDark)
+        editor.frame = CGRect(x: 0, y: 0, width: 800, height: 200)
+        editor.invalidateLayout()
+
+        // Find display line for FileB line 5 and scroll to it
+        guard let bLine5Idx = dm.displayLineIndex(forFilePath: "FileB.swift", lineNumber: 5) else {
+            XCTFail("FileB line 5 display line not found")
+            return
+        }
+        let bLine5Y = editor.yOffset(forDisplayLineIndex: bLine5Idx)
+        editor.scrollOffsetY = bLine5Y
+
+        let savedState = editor.captureViewState()
+        XCTAssertEqual(savedState.scrollAnchor?.filePath, "FileB.swift")
+        XCTAssertEqual(savedState.scrollAnchor?.lineNumber, 5)
+
+        // Now modify FileA by adding 30 lines (simulating external edit from watcher)
+        let newLinesA = (1...35).map { "A\($0)" }.joined(separator: "\n")
+        let bufANew = Buffer(filePath: "FileA.swift", text: newLinesA)
+        multiBuffer.replaceFile(
+            filePath: "FileA.swift",
+            buffers: [bufANew],
+            excerpts: [Excerpt(bufferId: bufANew.id, filePath: "FileA.swift", bufferRange: 0..<35)]
+        )
+        dm.rebuild()
+        dm.markContentLoaded()
+
+        // Restore view state
+        editor.restoreViewState(savedState, shouldFocus: false)
+
+        // The top of the viewport should still pin exactly to FileB line 5
+        guard let bLine5IdxAfter = dm.displayLineIndex(forFilePath: "FileB.swift", lineNumber: 5) else {
+            XCTFail("FileB line 5 display line not found after rebuild")
+            return
+        }
+        let bLine5YAfter = editor.yOffset(forDisplayLineIndex: bLine5IdxAfter)
+        XCTAssertEqual(editor.scrollOffsetY, bLine5YAfter, "Viewport must stay pinned to FileB line 5 despite FileA expanding by 30 lines")
+    }
+
+    func testScrollAnchorPreservationOnFoldGap() {
+        let multiBuffer = MultiBuffer()
+        // Hunk that starts at line 50 with 30 code lines, creating a top fold gap
+        let codeLines = (50...80).map { "code \($0)" }
+        let buf = Buffer(filePath: "FileA.swift", lines: codeLines, startLineNumber: 50, isLazySlice: true)
+        buf.diskFileLineCount = 100
+        multiBuffer.addBuffer(buf)
+        let exc = Excerpt(bufferId: buf.id, filePath: "FileA.swift", bufferRange: 0..<codeLines.count, isFileStart: true)
+        multiBuffer.setExcerpts([exc])
+
+        let dm = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
+        dm.rebuild()
+
+        let editor = CustomMultiBufferEditorView(displayMap: dm, theme: .unifiedDark)
+        editor.frame = CGRect(x: 0, y: 0, width: 800, height: 100)
+        editor.invalidateLayout()
+
+        // Display line 0: Header
+        // Display line 1: Top fold gap (hidden lines 1..49)
+        // Display line 2: Code line 50
+        let gapAnchor = dm.fastScrollAnchor(forDisplayLineIndex: 1)
+        XCTAssertNotNil(gapAnchor)
+        XCTAssertEqual(gapAnchor?.filePath, "FileA.swift")
+        XCTAssertEqual(gapAnchor?.lineNumber, 50, "Top fold gap should anchor to the first code line (50) instead of returning nil")
+        XCTAssertFalse(gapAnchor?.isHeader == true)
+
+        // Scroll to fold gap and capture state
+        editor.scrollOffsetY = editor.yOffset(forDisplayLineIndex: 1)
+        let state = editor.captureViewState()
+        XCTAssertEqual(state.scrollAnchor?.lineNumber, 50)
+
+        // Rebuild and restore
+        dm.rebuild()
+        editor.restoreViewState(state, shouldFocus: false)
+
+        // Should not jump to header (line 0, Y = 0)
+        let headerY = editor.yOffset(forDisplayLineIndex: 0)
+        XCTAssertGreaterThan(editor.scrollOffsetY, headerY, "Restoring fold gap anchor must not jump to header at Y = 0")
+    }
+
+    func testScrollAnchorPreservationOnDeletedLine() {
+        let multiBuffer = MultiBuffer()
+        var hunkLines: [DiffLine] = []
+        for i in 1...20 {
+            hunkLines.append(DiffLine(kind: .unchanged, text: "u\(i)", oldLineNumber: i, newLineNumber: i))
+        }
+        hunkLines.append(DiffLine(kind: .deleted, text: "d21", oldLineNumber: 21, newLineNumber: nil))
+        hunkLines.append(DiffLine(kind: .added, text: "a21", oldLineNumber: nil, newLineNumber: 21))
+        for i in 22...40 {
+            hunkLines.append(DiffLine(kind: .unchanged, text: "u\(i)", oldLineNumber: i, newLineNumber: i))
+        }
+
+        let hunk = DiffHunk(
+            oldRange: 1..<41,
+            newRange: 1..<41,
+            header: "@@ -1,40 +1,40 @@",
+            lines: hunkLines
+        )
+        let bufferLines = hunkLines.compactMap { line -> String? in
+            guard line.kind != .deleted else { return nil }
+            return line.text
+        }
+        let buf = Buffer(filePath: "FileA.swift", text: bufferLines.joined(separator: "\n"))
+        multiBuffer.addBuffer(buf)
+        multiBuffer.setExcerpts([Excerpt(bufferId: buf.id, filePath: "FileA.swift", bufferRange: 0..<bufferLines.count, hunk: hunk)])
+
+        let dm = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
+        dm.rebuild()
+
+        let editor = CustomMultiBufferEditorView(displayMap: dm, theme: .unifiedDark)
+        editor.frame = CGRect(x: 0, y: 0, width: 800, height: 100)
+        editor.invalidateLayout()
+
+        // Line 0: Header
+        // Lines 1..20: u1..u20
+        // Line 21: d21 (deleted, oldLineNumber 21)
+        let delDisplayIdx = 21
+        let delAnchor = dm.fastScrollAnchor(forDisplayLineIndex: delDisplayIdx)
+        XCTAssertNotNil(delAnchor)
+        XCTAssertEqual(delAnchor?.lineNumber, 21)
+        XCTAssertTrue(delAnchor?.isOldSide == true, "Deleted line fastScrollAnchor must report isOldSide: true")
+
+        editor.scrollOffsetY = editor.yOffset(forDisplayLineIndex: delDisplayIdx)
+        let state = editor.captureViewState()
+        XCTAssertTrue(state.scrollAnchor?.isOldSide == true)
+
+        dm.rebuild()
+        editor.restoreViewState(state, shouldFocus: false)
+        XCTAssertEqual(editor.scrollOffsetY, editor.yOffset(forDisplayLineIndex: delDisplayIdx))
+    }
+
+    func testViewportStabilityWhenFileRemovedFromDiff() {
+        let multiBuffer = MultiBuffer()
+        let bufA = Buffer(filePath: "FileA.swift", text: "A1\nA2\nA3")
+        let bufB = Buffer(filePath: "FileB.swift", text: "B1\nB2\nB3\nB4\nB5")
+        multiBuffer.addBuffer(bufA)
+        multiBuffer.addBuffer(bufB)
+        multiBuffer.setExcerpts([
+            Excerpt(bufferId: bufA.id, filePath: "FileA.swift", bufferRange: 0..<3),
+            Excerpt(bufferId: bufB.id, filePath: "FileB.swift", bufferRange: 0..<5)
+        ])
+        let dm = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
+        dm.rebuild()
+
+        let editor = CustomMultiBufferEditorView(displayMap: dm, theme: .unifiedDark)
+        editor.frame = CGRect(x: 0, y: 0, width: 800, height: 100)
+        editor.invalidateLayout()
+
+        // Scroll to FileB
+        guard let bLine1Idx = dm.displayLineIndex(forFilePath: "FileB.swift", lineNumber: 1) else {
+            XCTFail("FileB line 1 not found")
+            return
+        }
+        let bLine1Y = editor.yOffset(forDisplayLineIndex: bLine1Idx)
+        editor.scrollOffsetY = bLine1Y
+        let state = editor.captureViewState()
+
+        // Now FileB is committed and removed completely from diff
+        multiBuffer.removeFile(filePath: "FileB.swift")
+        dm.rebuild()
+        dm.markContentLoaded()
+
+        // Restore view state: should clamp scrollOffsetY within valid bounds, not jump to 0
+        editor.restoreViewState(state, shouldFocus: false)
+        let maxScrollY = max(0, editor.totalDocumentHeight - editor.bounds.height)
+        XCTAssertEqual(editor.scrollOffsetY, min(bLine1Y, maxScrollY))
+    }
 }

@@ -137,7 +137,11 @@ public struct EditorHostView: NSViewRepresentable {
             if displayMap.displayLineCount > 0 {
                 if shouldKeepEditorFocus && !mapChanged && !layoutModeChanged {
                     // Editor is actively focused and user may be typing; do not clobber
-                    // their active cursor or selection with a stale snapshot on background reload.
+                    // their active cursor or selection with a stale snapshot on background reload,
+                    // but pin the scroll anchor so layout shifts above don't displace the viewport.
+                    if let state = context.coordinator.viewStates[displayMapID] ?? context.coordinator.currentViewState {
+                        editorView.restoreScrollAnchor(from: state)
+                    }
                     context.coordinator.saveCurrentViewState()
                 } else if let state = context.coordinator.viewStates[displayMapID] ?? (mapChanged ? nil : context.coordinator.currentViewState) {
                     editorView.restoreViewState(state, shouldFocus: shouldKeepEditorFocus)
@@ -252,6 +256,9 @@ public struct EditorHostView: NSViewRepresentable {
             guard let mapID = activeDisplayMapID,
                   let state = currentViewState else { return }
             viewStates[mapID] = state
+            if let path = state.scrollAnchor?.filePath {
+                lastScrolledFilePaths[mapID] = path
+            }
         }
     }
 }

@@ -1854,6 +1854,7 @@ public struct MainWindowView: View {
         multiBuffer.removeFile(filePath: filePath)
         manuallyOpenedFilePaths.remove(filePath)
         displayMap.rebuild()
+        displayMap.markContentLoaded()
         if selectedFilePath == filePath {
             selectedFilePath = fileDiffs.first?.displayPath
         }
@@ -2791,6 +2792,7 @@ extension MainWindowView {
                     }
                 }
                 self.displayMap.rebuild(invalidatingPaths: safePaths)
+                self.displayMap.markContentLoaded()
                 self.updateWatchedFileDiffs(result.files, safePaths: safePaths)
                 if !searchPathsToInvalidate.isEmpty {
                     let updatedMatches = ProjectSearchEngine.shared.recalculateMatches(

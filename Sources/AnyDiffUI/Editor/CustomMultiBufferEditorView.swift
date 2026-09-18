@@ -366,12 +366,13 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                     filePath: fastAnchor.filePath,
                     lineNumber: fastAnchor.lineNumber,
                     isHeader: fastAnchor.isHeader,
-                    pixelOffsetInLine: pixelOffset
+                    pixelOffsetInLine: pixelOffset,
+                    isOldSide: fastAnchor.isOldSide
                 )
             }
         }
 
-        let currentFile = cursorAnchor?.filePath ?? scrollAnchor?.filePath
+        let currentFile = scrollAnchor?.filePath ?? cursorAnchor?.filePath
         return EditorViewState(
             cursorAnchor: cursorAnchor,
             selectionAnchor: selectionState,
@@ -452,7 +453,12 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         // 2. Restore Scroll Position using Scroll Anchor (keeps viewport pinned)
         var restoredScroll = false
         if let sAnchor = state.scrollAnchor,
-           let targetLineIdx = dm.displayLineIndex(forFilePath: sAnchor.filePath, lineNumber: sAnchor.lineNumber, isHeader: sAnchor.isHeader) {
+           let targetLineIdx = dm.displayLineIndex(
+                forFilePath: sAnchor.filePath,
+                lineNumber: sAnchor.lineNumber,
+                isHeader: sAnchor.isHeader,
+                isOldSide: sAnchor.isOldSide
+           ) {
             let targetY = yOffset(forDisplayLineIndex: targetLineIdx)
             let maxScrollY = max(0, totalDocumentHeight - bounds.height)
             self.scrollOffsetY = max(0, min(maxScrollY, targetY + sAnchor.pixelOffsetInLine))
@@ -461,14 +467,27 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         }
 
         if !restoredScroll {
-            if let path = state.selectedFilePath,
-               dm.displayLineIndex(forFilePath: path, lineNumber: nil, isHeader: false) != nil {
-                scrollToFilePath(path)
-            } else if !restoredCursor {
-                // The selected file may have disappeared (for example after
-                // a rename/delete). Never leave the viewport at an obsolete
-                // offset or silently keep a cursor in a missing anchor.
-                resetCursorToFirstVisibleLine(shouldFocus: shouldFocus)
+            if let sAnchor = state.scrollAnchor,
+               let targetLineIdx = dm.displayLineIndex(forFilePath: sAnchor.filePath, lineNumber: nil, isHeader: true) {
+                let targetY = yOffset(forDisplayLineIndex: targetLineIdx)
+                let maxScrollY = max(0, totalDocumentHeight - bounds.height)
+                self.scrollOffsetY = max(0, min(maxScrollY, targetY))
+                restoredScroll = true
+            } else if let path = state.selectedFilePath,
+               let targetLineIdx = dm.displayLineIndex(forFilePath: path, lineNumber: nil, isHeader: true) {
+                let targetY = yOffset(forDisplayLineIndex: targetLineIdx)
+                let maxScrollY = max(0, totalDocumentHeight - bounds.height)
+                self.scrollOffsetY = max(0, min(maxScrollY, targetY))
+                restoredScroll = true
+            } else {
+                // The anchored file may have disappeared (for example after
+                // a commit/checkout/delete). Keep the viewport within valid bounds
+                // at the current position instead of jumping to 0.
+                let maxScrollY = max(0, totalDocumentHeight - bounds.height)
+                self.scrollOffsetY = max(0, min(maxScrollY, self.scrollOffsetY))
+                if !restoredCursor {
+                    resetCursorToFirstVisibleLine(shouldFocus: shouldFocus)
+                }
             }
         }
 
@@ -486,6 +505,38 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         }
         let loc = dm.excerptLocation(for: cursorPoint)
         delegate?.editorDidChangeCursor(location: loc, point: cursorPoint)
+        delegate?.editorDidScroll()
+    }
+
+    /// Restores only the scroll viewport anchor across diff reloads without mutating active cursor or selection
+    public func restoreScrollAnchor(from state: EditorViewState) {
+        invalidateLayout()
+        syncLayoutIfNeeded()
+
+        guard let dm = displayMap, dm.displayLineCount > 0 else { return }
+
+        if let sAnchor = state.scrollAnchor,
+           let targetLineIdx = dm.displayLineIndex(
+                forFilePath: sAnchor.filePath,
+                lineNumber: sAnchor.lineNumber,
+                isHeader: sAnchor.isHeader,
+                isOldSide: sAnchor.isOldSide
+           ) {
+            let targetY = yOffset(forDisplayLineIndex: targetLineIdx)
+            let maxScrollY = max(0, totalDocumentHeight - bounds.height)
+            self.scrollOffsetY = max(0, min(maxScrollY, targetY + sAnchor.pixelOffsetInLine))
+        } else if let sAnchor = state.scrollAnchor,
+                  let targetLineIdx = dm.displayLineIndex(forFilePath: sAnchor.filePath, lineNumber: nil, isHeader: true) {
+            let targetY = yOffset(forDisplayLineIndex: targetLineIdx)
+            let maxScrollY = max(0, totalDocumentHeight - bounds.height)
+            self.scrollOffsetY = max(0, min(maxScrollY, targetY))
+        } else {
+            let maxScrollY = max(0, totalDocumentHeight - bounds.height)
+            self.scrollOffsetY = max(0, min(maxScrollY, self.scrollOffsetY))
+        }
+
+        self.scrollOffsetX = max(0, state.scrollOffsetX)
+        needsDisplay = true
         delegate?.editorDidScroll()
     }
 
