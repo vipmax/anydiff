@@ -18,6 +18,10 @@ public final class GraphTrackView: NSView {
         NSColor(red: 0.95, green: 0.25, blue: 0.37, alpha: 1.0)  // Rose
     ]
 
+    private static let dashedPattern: [CGFloat] = [3.0, 3.0]
+    private static let ringDashPattern: [CGFloat] = [2.5, 2.5]
+    private static let solidPattern: [CGFloat] = []
+
     public var graphRow: GraphRow? {
         didSet {
             needsDisplay = true
@@ -82,11 +86,7 @@ public final class GraphTrackView: NSView {
             let color = Self.color(for: segment.colorIndex)
 
             context.setStrokeColor(color.cgColor)
-            if segment.isDashed {
-                context.setLineDash(phase: 0, lengths: [3, 3])
-            } else {
-                context.setLineDash(phase: 0, lengths: [])
-            }
+            context.setLineDash(phase: 0, lengths: segment.isDashed ? Self.dashedPattern : Self.solidPattern)
 
             context.beginPath()
             if fromX == toX {
@@ -109,11 +109,7 @@ public final class GraphTrackView: NSView {
             let color = Self.color(for: segment.colorIndex)
 
             context.setStrokeColor(color.cgColor)
-            if segment.isDashed {
-                context.setLineDash(phase: 0, lengths: [3, 3])
-            } else {
-                context.setLineDash(phase: 0, lengths: [])
-            }
+            context.setLineDash(phase: 0, lengths: segment.isDashed ? Self.dashedPattern : Self.solidPattern)
 
             context.beginPath()
             if fromX == toX {
@@ -131,7 +127,7 @@ public final class GraphTrackView: NSView {
         }
 
         // Reset line dash before drawing nodes
-        context.setLineDash(phase: 0, lengths: [])
+        context.setLineDash(phase: 0, lengths: Self.solidPattern)
 
         // 4. Draw Commit Node at (nodeLane, midY)
         let nodeX = Self.xPosition(for: row.nodeLane)
@@ -150,7 +146,7 @@ public final class GraphTrackView: NSView {
 
             context.setStrokeColor(nodeColor.cgColor)
             context.setLineWidth(1.5)
-            context.setLineDash(phase: 0, lengths: [2.5, 2.5])
+            context.setLineDash(phase: 0, lengths: Self.ringDashPattern)
             context.strokeEllipse(in: outerRect)
 
             let innerRadius: CGFloat = 1.8

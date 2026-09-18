@@ -180,7 +180,7 @@ public final class GitLogReader: Sendable {
 
         let shortHash = String(fields[1]).trimmingCharacters(in: .whitespacesAndNewlines)
         let parentsString = String(fields[2]).trimmingCharacters(in: .whitespacesAndNewlines)
-        let parents = parentsString.isEmpty ? [] : parentsString.components(separatedBy: " ")
+        let parents = parentsString.isEmpty ? [] : parentsString.split(separator: " ").map(String.init)
 
         let authorName = String(fields[3])
         let authorEmail = String(fields[4])
@@ -219,9 +219,8 @@ public final class GitLogReader: Sendable {
 
     private func decodeSubstring(buffer: UnsafeBufferPointer<UInt8>, from start: Int, to end: Int) -> Substring {
         guard start < end, let base = buffer.baseAddress else { return "" }
-        let count = end - start
-        let data = Data(bytes: base + start, count: count)
-        return Substring(String(decoding: data, as: UTF8.self))
+        let rawSlice = UnsafeBufferPointer(start: base + start, count: end - start)
+        return Substring(String(decoding: rawSlice, as: UTF8.self))
     }
 
     /// Fetches all branch and tag references grouped by the commit hash they point to.
@@ -243,7 +242,7 @@ public final class GitLogReader: Sendable {
             return result
         }
 
-        let lines = output.components(separatedBy: "\n")
+        let lines = output.split(whereSeparator: \.isNewline)
         for line in lines {
             let parts = line.split(separator: "\u{1f}", omittingEmptySubsequences: false)
             guard parts.count >= 3 else { continue }

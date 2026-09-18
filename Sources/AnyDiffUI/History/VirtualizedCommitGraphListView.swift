@@ -293,6 +293,63 @@ final class CommitTableRowView: NSTableRowView {
     }
 }
 
+// MARK: - Reusable Ref Badge View (Zero-Alloc during scroll)
+final class RefBadgeItemView: NSView {
+    private static let branchImage = NSImage(systemSymbolName: "arrow.triangle.branch", accessibilityDescription: nil)
+    private static let tagImage = NSImage(systemSymbolName: "tag.fill", accessibilityDescription: nil)
+
+    private let icon = NSImageView()
+    private let label = NSTextField(labelWithString: "")
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.cornerRadius = 3
+
+        icon.imageScaling = .scaleProportionallyUpOrDown
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        icon.setContentHuggingPriority(.required, for: .horizontal)
+        icon.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        label.font = .systemFont(ofSize: 9.5, weight: .semibold)
+        label.lineBreakMode = .byTruncatingTail
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        addSubview(icon)
+        addSubview(label)
+
+        NSLayoutConstraint.activate([
+            icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 3),
+            icon.centerYAnchor.constraint(equalTo: centerYAnchor),
+            icon.widthAnchor.constraint(equalToConstant: 9),
+            icon.heightAnchor.constraint(equalToConstant: 9),
+
+            label.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 2),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            label.topAnchor.constraint(equalTo: topAnchor, constant: 1.5),
+            label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -1.5)
+        ])
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func configure(with ref: GitRef) {
+        let isHead = ref.type == .head
+        let bgColor = isHead ? NSColor.controlAccentColor.withAlphaComponent(0.20) : NSColor.secondaryLabelColor.withAlphaComponent(0.12)
+        layer?.backgroundColor = bgColor.cgColor
+
+        let tint = isHead ? NSColor.controlAccentColor : NSColor.secondaryLabelColor
+        icon.image = ref.type.isTag ? Self.tagImage : Self.branchImage
+        icon.contentTintColor = tint
+        label.textColor = tint
+        label.stringValue = ref.shortName
+    }
+}
+
 // MARK: - Recycled Two-Level Commit Cell View
 final class CommitGraphTableCellView: NSTableCellView {
     private let graphTrackView = GraphTrackView()
@@ -305,6 +362,8 @@ final class CommitGraphTableCellView: NSTableCellView {
     private let topRowStack = NSStackView()
     private let workingIconView = NSImageView()
     private let refBadgeStack = NSStackView()
+    private let refBadge0 = RefBadgeItemView()
+    private let refBadge1 = RefBadgeItemView()
     private let summaryLabel = NSTextField(labelWithString: "")
 
     // Row 2: Bottom line (hash, author, reltime, N changes, +- figures)
@@ -398,6 +457,10 @@ final class CommitGraphTableCellView: NSTableCellView {
         refBadgeStack.translatesAutoresizingMaskIntoConstraints = false
         refBadgeStack.setContentHuggingPriority(.required, for: .horizontal)
         refBadgeStack.setContentCompressionResistancePriority(.required, for: .horizontal)
+        refBadgeStack.addArrangedSubview(refBadge0)
+        refBadgeStack.addArrangedSubview(refBadge1)
+        refBadge0.isHidden = true
+        refBadge1.isHidden = true
 
         summaryLabel.font = .systemFont(ofSize: 12, weight: .medium)
         summaryLabel.alignment = .left
@@ -535,15 +598,14 @@ final class CommitGraphTableCellView: NSTableCellView {
         graphWidthConstraint?.constant = graphWidth
         graphTrackView.graphRow = row
 
-        // Clear refs stack
-        refBadgeStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-
         if row.isWorkingChanges {
             workingIconView.isHidden = false
             topRowStack.setVisibilityPriority(.mustHold, for: workingIconView)
 
             refBadgeStack.isHidden = true
             topRowStack.setVisibilityPriority(.notVisible, for: refBadgeStack)
+            refBadge0.isHidden = true
+            refBadge1.isHidden = true
 
             hashLabel.isHidden = true
             bottomRowStack.setVisibilityPriority(.notVisible, for: hashLabel)
@@ -582,17 +644,23 @@ final class CommitGraphTableCellView: NSTableCellView {
             summaryLabel.font = .systemFont(ofSize: 12, weight: .medium)
             summaryLabel.textColor = Color(theme.foreground).nsColor
 
-            // Add ref badges if present
-            let refsPrefix = Array(commit.refs.prefix(2))
-            if refsPrefix.isEmpty {
+            // Configure ref badges (zero-alloc using pre-allocated badge views)
+            let refs = commit.refs
+            if refs.isEmpty {
                 refBadgeStack.isHidden = true
                 topRowStack.setVisibilityPriority(.notVisible, for: refBadgeStack)
+                refBadge0.isHidden = true
+                refBadge1.isHidden = true
             } else {
                 refBadgeStack.isHidden = false
                 topRowStack.setVisibilityPriority(.mustHold, for: refBadgeStack)
-                for ref in refsPrefix {
-                    let badge = createRefBadge(ref: ref, theme: theme)
-                    refBadgeStack.addArrangedSubview(badge)
+                refBadge0.configure(with: refs[0])
+                refBadge0.isHidden = false
+                if refs.count > 1 {
+                    refBadge1.configure(with: refs[1])
+                    refBadge1.isHidden = false
+                } else {
+                    refBadge1.isHidden = true
                 }
             }
 
@@ -649,44 +717,6 @@ final class CommitGraphTableCellView: NSTableCellView {
         }
     }
 
-    private func createRefBadge(ref: GitRef, theme: Theme) -> NSView {
-        let container = NSView()
-        container.wantsLayer = true
-        container.layer?.cornerRadius = 3
-
-        let isHead = ref.type == .head
-        let bgColor = isHead ? NSColor.controlAccentColor.withAlphaComponent(0.20) : NSColor.secondaryLabelColor.withAlphaComponent(0.12)
-        container.layer?.backgroundColor = bgColor.cgColor
-
-        let iconName = ref.type.isTag ? "tag.fill" : "arrow.triangle.branch"
-        let icon = NSImageView()
-        icon.image = NSImage(systemSymbolName: iconName, accessibilityDescription: ref.shortName)
-        icon.contentTintColor = isHead ? NSColor.controlAccentColor : NSColor.secondaryLabelColor
-        icon.translatesAutoresizingMaskIntoConstraints = false
-
-        let label = NSTextField(labelWithString: ref.shortName)
-        label.font = .systemFont(ofSize: 9.5, weight: .semibold)
-        label.textColor = isHead ? NSColor.controlAccentColor : NSColor.secondaryLabelColor
-        label.lineBreakMode = .byTruncatingTail
-        label.translatesAutoresizingMaskIntoConstraints = false
-
-        container.addSubview(icon)
-        container.addSubview(label)
-
-        NSLayoutConstraint.activate([
-            icon.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 3),
-            icon.centerYAnchor.constraint(equalTo: container.centerYAnchor),
-            icon.widthAnchor.constraint(equalToConstant: 9),
-            icon.heightAnchor.constraint(equalToConstant: 9),
-
-            label.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 2),
-            label.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -4),
-            label.topAnchor.constraint(equalTo: container.topAnchor, constant: 1.5),
-            label.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -1.5)
-        ])
-
-        return container
-    }
 
     static let fullDateFormatter: DateFormatter = {
         let formatter = DateFormatter()

@@ -83,7 +83,7 @@ public final class GitGraphLayoutEngine: Sendable {
         rows.reserveCapacity(commits.count + (includeWorkingChanges ? 1 : 0))
 
         // Tracks remaining commit hashes so we only connect parent commits that actually exist in future rows
-        var remainingHashes = Set(commits.map(\.hash))
+        var remainingHashes = Set(commits.lazy.map(\.hash))
 
         // Tracks which commit hash is expected next on each active lane
         var lanes: [String?] = []
@@ -237,14 +237,18 @@ public final class GitGraphLayoutEngine: Sendable {
                 lanes.removeLast()
             }
 
-            let maxActiveLane = max(
-                nodeLane,
-                inbound.map(\.fromLane).max() ?? 0,
-                inbound.map(\.toLane).max() ?? 0,
-                outbound.map(\.fromLane).max() ?? 0,
-                outbound.map(\.toLane).max() ?? 0,
-                passThrough.map(\.lane).max() ?? 0
-            )
+            var maxActiveLane = nodeLane
+            for s in inbound {
+                if s.fromLane > maxActiveLane { maxActiveLane = s.fromLane }
+                if s.toLane > maxActiveLane { maxActiveLane = s.toLane }
+            }
+            for s in outbound {
+                if s.fromLane > maxActiveLane { maxActiveLane = s.fromLane }
+                if s.toLane > maxActiveLane { maxActiveLane = s.toLane }
+            }
+            for t in passThrough {
+                if t.lane > maxActiveLane { maxActiveLane = t.lane }
+            }
 
             let graphRow = GraphRow(
                 id: commit.hash,

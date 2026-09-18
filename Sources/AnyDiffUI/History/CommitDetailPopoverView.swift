@@ -335,10 +335,14 @@ public struct CommitDetailPopoverView: View {
         }
     }
 
-    private static func formatDate(_ date: Date) -> String {
+    private static let fullDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "d MMM yyyy, HH:mm"
-        let dateStr = formatter.string(from: date)
+        return formatter
+    }()
+
+    private static func formatDate(_ date: Date) -> String {
+        let dateStr = fullDateFormatter.string(from: date)
         let relStr = formatRelativeDate(date)
         return "\(dateStr) (\(relStr))"
     }
