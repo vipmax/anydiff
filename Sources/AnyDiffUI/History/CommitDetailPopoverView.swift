@@ -19,6 +19,7 @@ public struct CommitDetailPopoverView: View {
     @State private var isLoadingFiles: Bool = false
     @State private var hasCopiedHash: Bool = false
     @State private var hasCopiedMessage: Bool = false
+    @State private var isHashHovered: Bool = false
     @State private var isCopyHashHovered: Bool = false
     @State private var isMessageHovered: Bool = false
     @State private var isCopyMessageBtnHovered: Bool = false
@@ -130,8 +131,11 @@ public struct CommitDetailPopoverView: View {
                     .buttonStyle(.plain)
                     .frame(width: 16, height: 16)
                     .help(hasCopiedHash ? "Copied" : "Copy Hash")
+                    .opacity(isHashHovered || isCopyHashHovered || hasCopiedHash ? 1 : 0)
                     .onHover { isCopyHashHovered = $0 }
                 }
+                .contentShape(Rectangle())
+                .onHover { isHashHovered = $0 }
 
                 // Attached branches / tags if any
                 ForEach(commit.refs, id: \.name) { ref in
