@@ -82,6 +82,9 @@ public final class GitGraphLayoutEngine: Sendable {
         var rows: [GraphRow] = []
         rows.reserveCapacity(commits.count + (includeWorkingChanges ? 1 : 0))
 
+        // Tracks remaining commit hashes so we only connect parent commits that actually exist in future rows
+        var remainingHashes = Set(commits.map(\.hash))
+
         // Tracks which commit hash is expected next on each active lane
         var lanes: [String?] = []
         var currentRowIdx = 0
@@ -118,6 +121,7 @@ public final class GitGraphLayoutEngine: Sendable {
         // 2. Process all commits in topological order
         for commit in commits {
             let commitHash = commit.hash
+            remainingHashes.remove(commitHash)
 
             // Find all active lanes currently expecting this commit
             var matchingLanes: [Int] = []
@@ -144,15 +148,17 @@ public final class GitGraphLayoutEngine: Sendable {
             // Each lane index has a consistent, stable color (Lane 0 is always Blue mainline)
             let nodeColor = nodeLane % Self.paletteSize
 
-            // Inbound segments: straight track from previous row, plus any other branches converging into this node
+            // Inbound segments: incoming line from previous row (only if an incoming track actually exists)
             var inbound: [GraphSegment] = []
             let isFirstCommitUnderWorkingChanges = includeWorkingChanges && currentRowIdx == 1
-            inbound.append(GraphSegment(
-                fromLane: nodeLane,
-                toLane: nodeLane,
-                colorIndex: nodeColor,
-                isDashed: isFirstCommitUnderWorkingChanges
-            ))
+            if matchingLanes.contains(nodeLane) || isFirstCommitUnderWorkingChanges {
+                inbound.append(GraphSegment(
+                    fromLane: nodeLane,
+                    toLane: nodeLane,
+                    colorIndex: nodeColor,
+                    isDashed: isFirstCommitUnderWorkingChanges
+                ))
+            }
 
             for otherLane in matchingLanes where otherLane != nodeLane {
                 inbound.append(GraphSegment(
@@ -172,16 +178,16 @@ public final class GitGraphLayoutEngine: Sendable {
                 }
             }
 
-            // Outbound segments: connecting this commit down to its parent(s)
+            // Outbound segments: connecting this commit down to its parent(s) that actually exist in future rows
             var outbound: [GraphSegment] = []
-            let parents = commit.parentHashes
+            let reachableParents = commit.parentHashes.filter { remainingHashes.contains($0) }
             let isMerge = commit.isMergeCommit
 
-            if parents.isEmpty {
-                // Root commit (no parents) -> terminates this lane
+            if reachableParents.isEmpty {
+                // Root commit or detached/filtered node with no reachable parents -> terminates this lane
                 lanes[nodeLane] = nil
-            } else if parents.count == 1 {
-                let p0 = parents[0]
+            } else if reachableParents.count == 1 {
+                let p0 = reachableParents[0]
                 if let existingParentLane = lanes.firstIndex(where: { $0 == p0 }) {
                     if existingParentLane < nodeLane {
                         // Parent is already expected on a lower (more primary) lane: curve into it and terminate this lane
@@ -201,15 +207,15 @@ public final class GitGraphLayoutEngine: Sendable {
                     outbound.append(GraphSegment(fromLane: nodeLane, toLane: nodeLane, colorIndex: nodeColor))
                 }
             } else {
-                // Merge commit with 2 or more parents
-                let p0 = parents[0]
+                // Merge commit with 2 or more reachable parents
+                let p0 = reachableParents[0]
                 // First parent continues on nodeLane
                 lanes[nodeLane] = p0
                 outbound.append(GraphSegment(fromLane: nodeLane, toLane: nodeLane, colorIndex: nodeColor))
 
                 // Additional parents (branches branching off or merging)
-                for pIdx in 1..<parents.count {
-                    let pi = parents[pIdx]
+                for pIdx in 1..<reachableParents.count {
+                    let pi = reachableParents[pIdx]
                     if let existingParentLane = lanes.firstIndex(where: { $0 == pi }) {
                         outbound.append(GraphSegment(fromLane: nodeLane, toLane: existingParentLane, colorIndex: existingParentLane % Self.paletteSize))
                     } else {

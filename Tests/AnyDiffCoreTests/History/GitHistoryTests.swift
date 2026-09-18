@@ -198,4 +198,25 @@ final class GitHistoryTests: XCTestCase {
         XCTAssertEqual(rootFile.fileName, "README.md")
         XCTAssertEqual(rootFile.directoryPath, "")
     }
+
+    func testFilteredOrDisconnectedCommitsStayOnLaneZeroWithoutLeakingLanes() {
+        // Simulates search results where commits are not direct parents of each other
+        let c1 = GitCommit(hash: "c1", shortHash: "c1", parentHashes: ["p1_not_in_results"], authorName: "A", authorEmail: "", date: Date(), summary: "c1")
+        let c2 = GitCommit(hash: "c2", shortHash: "c2", parentHashes: ["p2_not_in_results"], authorName: "A", authorEmail: "", date: Date(), summary: "c2")
+        let c3 = GitCommit(hash: "c3", shortHash: "c3", parentHashes: ["p3_not_in_results"], authorName: "A", authorEmail: "", date: Date(), summary: "c3")
+
+        let rows = GitGraphLayoutEngine.shared.buildLayout(commits: [c1, c2, c3], includeWorkingChanges: false)
+
+        XCTAssertEqual(rows.count, 3)
+
+        // All commits should stay cleanly on Lane 0 without stair-stepping
+        for (i, row) in rows.enumerated() {
+            XCTAssertEqual(row.nodeLane, 0, "Row \(i) should stay on lane 0")
+            XCTAssertEqual(row.nodeColorIndex, 0, "Row \(i) should use mainline color")
+            XCTAssertEqual(row.totalLanes, 1, "Row \(i) should only require 1 total lane")
+            XCTAssertTrue(row.passThroughTracks.isEmpty, "Row \(i) should not have pass-through tracks")
+            XCTAssertTrue(row.inboundSegments.isEmpty, "Row \(i) should not have dangling ceiling segments")
+            XCTAssertTrue(row.outboundSegments.isEmpty, "Row \(i) should not have dangling floor segments")
+        }
+    }
 }
