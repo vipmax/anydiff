@@ -728,13 +728,12 @@ public struct MainWindowView: View {
         guard !dir.isEmpty else { return }
         readOnlyMultiBuffer.baseDirectory = dir
         readOnlyDisplayMap.layoutMode = diffLayoutMode
-        readOnlyViewStateResetToken &+= 1
-        clearReadOnlyDiff()
 
         DispatchQueue.global(qos: .userInitiated).async {
             let (files, rawData) = self.fetchGitDiffFiles(at: dir, target: .commit(hash: hash, summary: ""))
             DispatchQueue.main.async {
                 guard case .commit(let currentHash, _) = self.comparisonTarget, currentHash == hash else { return }
+                self.readOnlyViewStateResetToken &+= 1
                 self.loadDiff(files: files, rawData: rawData, isReadOnly: true)
                 if let target = targetFilePath {
                     self.focusFileInMultiBuffer(target)
