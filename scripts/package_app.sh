@@ -28,7 +28,18 @@ package_single_arch() {
     mkdir -p "${ARCH_RESOURCES_DIR}"
 
     # Copy binary & strip symbols for minimal release size
-    cp ".build/${TRIPLE}/release/AnyDiff" "${ARCH_MACOS_DIR}/AnyDiff"
+    local BINARY_SRC=".build/${TRIPLE}/release/AnyDiff"
+    if [ ! -f "$BINARY_SRC" ]; then
+        BINARY_SRC=".build/${ARCH}-apple-macosx/release/AnyDiff"
+    fi
+    if [ ! -f "$BINARY_SRC" ]; then
+        BINARY_SRC=".build/release/AnyDiff"
+    fi
+    if [ ! -f "$BINARY_SRC" ]; then
+        BINARY_SRC=".build/out/Products/Release/AnyDiff"
+    fi
+
+    cp "$BINARY_SRC" "${ARCH_MACOS_DIR}/AnyDiff"
     chmod +x "${ARCH_MACOS_DIR}/AnyDiff"
     echo "✂️ [2.5/5] Stripping debug and unexported symbols (${ARCH})..."
     strip -u -r "${ARCH_MACOS_DIR}/AnyDiff"
@@ -39,7 +50,7 @@ package_single_arch() {
     fi
 
     # Copy SwiftPM resource bundles (e.g., AnyDiff_AnyDiffUI.bundle)
-    for bundle_dir in .build/${TRIPLE}/release/*.bundle; do
+    for bundle_dir in .build/${TRIPLE}/release/*.bundle(N) .build/release/*.bundle(N) .build/out/Products/Release/*.bundle(N); do
         if [ -d "$bundle_dir" ] && [ ! -d "${ARCH_RESOURCES_DIR}/$(basename "$bundle_dir")" ]; then
             bundle_name="$(basename "$bundle_dir")"
             echo "📦 Copying resource bundle: $bundle_name"

@@ -2150,8 +2150,12 @@ public func alignSidebarToggleLeading(in window: NSWindow) {
 public func updateSplitViewDividers(in window: NSWindow, color: NSColor = NSColor.separatorColor) {
     let scale = window.backingScaleFactor > 0 ? window.backingScaleFactor : 2.0
     let thickness: CGFloat = 1.0 / scale
+    func isSplitDivider(_ v: NSView) -> Bool {
+        let name = String(describing: type(of: v))
+        return name.contains("SplitDivider") || (v.superview is NSSplitView && name.contains("Divider"))
+    }
     func rec(v: NSView) {
-        if String(describing: type(of: v)).contains("Divider") {
+        if isSplitDivider(v) {
             v.wantsLayer = true
             v.layer?.backgroundColor = NSColor.clear.cgColor
             let layerName = "anydiff.divider"

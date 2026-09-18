@@ -17,15 +17,15 @@ permissions:
 jobs:
   build-and-release:
     name: Build & Publish Release
-    runs-on: macos-14
+    runs-on: macos-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      - name: Select Xcode version
+      - name: Show Xcode & Swift version
         run: |
-          sudo xcode-select -s /Applications/Xcode_15.4.app || sudo xcode-select -s /Applications/Xcode_16.0.app || true
+          xcode-select -p
           swift --version
 
       - name: Run Test Suite
