@@ -26,6 +26,7 @@ public struct HistoryPanelView: View {
     @FocusState private var isSearchFocused: Bool
     @State private var isTitleHovered: Bool = false
     @State private var searchDebounceWorkItem: DispatchWorkItem? = nil
+    @State private var searchKeyMonitor: Any? = nil
 
     private static let batchSize = 150
 
@@ -123,6 +124,17 @@ public struct HistoryPanelView: View {
         .onChange(of: searchText) { newQuery in
             triggerSearch(query: newQuery)
         }
+        .onChange(of: isSearchVisible) { visible in
+            if visible {
+                setupSearchKeyMonitor()
+            } else {
+                removeSearchKeyMonitor()
+            }
+        }
+        .onDisappear {
+            removeSearchKeyMonitor()
+            searchDebounceWorkItem?.cancel()
+        }
     }
 
     @ViewBuilder
@@ -193,12 +205,12 @@ public struct HistoryPanelView: View {
 
             // Toggle Search (moved to the end on the right)
             Button(action: {
-                withAnimation(.easeInOut(duration: 0.12)) {
-                    isSearchVisible.toggle()
-                    if isSearchVisible {
+                if isSearchVisible {
+                    cancelSearch()
+                } else {
+                    withAnimation(.easeInOut(duration: 0.12)) {
+                        isSearchVisible = true
                         isSearchFocused = true
-                    } else {
-                        searchText = ""
                     }
                 }
             }) {
@@ -208,7 +220,7 @@ public struct HistoryPanelView: View {
                     .frame(width: 20, height: 20)
             }
             .buttonStyle(ToolbarHoverButtonStyle())
-            .help("Filter commits (Cmd+F)")
+            .help("Filter commits")
         }
     }
 
@@ -224,6 +236,9 @@ public struct HistoryPanelView: View {
                 .font(.system(size: 12))
                 .foregroundColor(Color(theme.foreground))
                 .focused($isSearchFocused)
+                .onExitCommand {
+                    cancelSearch()
+                }
 
             if !searchText.isEmpty {
                 Button(action: { searchText = "" }) {
@@ -239,6 +254,9 @@ public struct HistoryPanelView: View {
         .cornerRadius(6)
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
+        .onExitCommand {
+            cancelSearch()
+        }
     }
 
     @ViewBuilder
@@ -349,6 +367,34 @@ public struct HistoryPanelView: View {
                     }
                 }
             }
+        }
+    }
+
+    private func cancelSearch() {
+        withAnimation(.easeInOut(duration: 0.12)) {
+            searchText = ""
+            isSearchVisible = false
+            isSearchFocused = false
+        }
+        removeSearchKeyMonitor()
+    }
+
+    private func setupSearchKeyMonitor() {
+        removeSearchKeyMonitor()
+        searchKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard self.isSearchVisible else { return event }
+            if event.keyCode == 53 { // Escape
+                self.cancelSearch()
+                return nil
+            }
+            return event
+        }
+    }
+
+    private func removeSearchKeyMonitor() {
+        if let monitor = searchKeyMonitor {
+            NSEvent.removeMonitor(monitor)
+            searchKeyMonitor = nil
         }
     }
 
