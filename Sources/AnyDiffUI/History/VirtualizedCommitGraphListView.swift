@@ -435,7 +435,7 @@ final class CommitGraphTableCellView: NSTableCellView {
         dotLabel1.setContentCompressionResistancePriority(.required, for: .horizontal)
 
         timeLabel.font = .systemFont(ofSize: 10, weight: .regular)
-        timeLabel.textColor = .tertiaryLabelColor
+        timeLabel.textColor = .secondaryLabelColor
         timeLabel.translatesAutoresizingMaskIntoConstraints = false
         timeLabel.setContentHuggingPriority(.required, for: .horizontal)
         timeLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
@@ -561,8 +561,9 @@ final class CommitGraphTableCellView: NSTableCellView {
             dotLabel1.isHidden = true
             bottomRowStack.setVisibilityPriority(.notVisible, for: dotLabel1)
 
-            let countText = workingChangesCount > 0 ? "\(workingChangesCount) \(workingChangesCount == 1 ? "file" : "files")" : "Clean"
+            let countText = workingChangesCount > 0 ? "\(workingChangesCount)" : "Clean"
             changesCountLabel.stringValue = countText
+            changesCountLabel.toolTip = workingChangesCount > 0 ? "\(workingChangesCount) \(workingChangesCount == 1 ? "file" : "files") changed" : "Working tree clean"
             changesCountLabel.isHidden = false
             bottomRowStack.setVisibilityPriority(.mustHold, for: changesCountLabel)
             dotLabel2.isHidden = false
@@ -603,19 +604,22 @@ final class CommitGraphTableCellView: NSTableCellView {
 
             authorLabel.stringValue = commit.authorName.isEmpty ? "unknown" : commit.authorName
             timeLabel.stringValue = Self.formatRelativeDate(commit.date)
+            timeLabel.toolTip = Self.fullDateFormatter.string(from: commit.date)
             timeLabel.isHidden = false
             bottomRowStack.setVisibilityPriority(.mustHold, for: timeLabel)
             dotLabel1.isHidden = false
             bottomRowStack.setVisibilityPriority(.mustHold, for: dotLabel1)
 
             if commit.filesChanged > 0 {
-                changesCountLabel.stringValue = "\(commit.filesChanged) \(commit.filesChanged == 1 ? "file" : "files")"
+                changesCountLabel.stringValue = "\(commit.filesChanged)"
+                changesCountLabel.toolTip = "\(commit.filesChanged) \(commit.filesChanged == 1 ? "file" : "files") changed"
                 changesCountLabel.isHidden = false
                 bottomRowStack.setVisibilityPriority(.mustHold, for: changesCountLabel)
                 dotLabel2.isHidden = false
                 bottomRowStack.setVisibilityPriority(.mustHold, for: dotLabel2)
             } else {
                 changesCountLabel.isHidden = true
+                changesCountLabel.toolTip = nil
                 bottomRowStack.setVisibilityPriority(.notVisible, for: changesCountLabel)
                 dotLabel2.isHidden = true
                 bottomRowStack.setVisibilityPriority(.notVisible, for: dotLabel2)
@@ -684,6 +688,18 @@ final class CommitGraphTableCellView: NSTableCellView {
         return container
     }
 
+    static let fullDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "d MMM yyyy, HH:mm"
+        return formatter
+    }()
+
+    private static let relativeDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MMM d, yyyy"
+        return formatter
+    }()
+
     private static func formatRelativeDate(_ date: Date) -> String {
         let seconds = -date.timeIntervalSinceNow
         if seconds < 60 {
@@ -698,9 +714,7 @@ final class CommitGraphTableCellView: NSTableCellView {
             let days = Int(seconds / 86400)
             return "\(days)d ago"
         } else {
-            let formatter = DateFormatter()
-            formatter.dateFormat = "MMM d, yyyy"
-            return formatter.string(from: date)
+            return relativeDateFormatter.string(from: date)
         }
     }
 
