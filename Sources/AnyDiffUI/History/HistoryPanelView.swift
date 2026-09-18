@@ -25,6 +25,7 @@ public struct HistoryPanelView: View {
     @State private var isSearchVisible: Bool = false
     @FocusState private var isSearchFocused: Bool
     @State private var isTitleHovered: Bool = false
+    @State private var searchDebounceWorkItem: DispatchWorkItem? = nil
 
     private static let batchSize = 150
 
@@ -119,8 +120,8 @@ public struct HistoryPanelView: View {
         .onChange(of: showAllBranches) { _ in
             loadInitialCommits(clearImmediately: true)
         }
-        .onChange(of: searchText) { _ in
-            rebuildGraphLayout()
+        .onChange(of: searchText) { newQuery in
+            triggerSearch(query: newQuery)
         }
     }
 
@@ -176,7 +177,21 @@ public struct HistoryPanelView: View {
             .buttonStyle(ToolbarHoverButtonStyle())
             .help(showAllBranches ? "Showing all branches (--all)" : "Showing current branch only")
 
-            // Toggle Search
+            // Reload
+            Button(action: {
+                loadInitialCommits()
+            }) {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 11))
+                    .foregroundColor(Color(theme.gutterForeground))
+                    .frame(width: 20, height: 20)
+                    .rotationEffect(.degrees(isLoading ? 360 : 0))
+                    .animation(isLoading ? Animation.linear(duration: 1).repeatForever(autoreverses: false) : .default, value: isLoading)
+            }
+            .buttonStyle(ToolbarHoverButtonStyle())
+            .help("Reload commit history")
+
+            // Toggle Search (moved to the end on the right)
             Button(action: {
                 withAnimation(.easeInOut(duration: 0.12)) {
                     isSearchVisible.toggle()
@@ -194,20 +209,6 @@ public struct HistoryPanelView: View {
             }
             .buttonStyle(ToolbarHoverButtonStyle())
             .help("Filter commits (Cmd+F)")
-
-            // Reload
-            Button(action: {
-                loadInitialCommits()
-            }) {
-                Image(systemName: "arrow.clockwise")
-                    .font(.system(size: 11))
-                    .foregroundColor(Color(theme.gutterForeground))
-                    .frame(width: 20, height: 20)
-                    .rotationEffect(.degrees(isLoading ? 360 : 0))
-                    .animation(isLoading ? Animation.linear(duration: 1).repeatForever(autoreverses: false) : .default, value: isLoading)
-            }
-            .buttonStyle(ToolbarHoverButtonStyle())
-            .help("Reload commit history")
         }
     }
 
@@ -290,6 +291,7 @@ public struct HistoryPanelView: View {
 
         let all = showAllBranches
         let limit = Self.batchSize
+        let query = searchText.trimmingCharacters(in: .whitespaces)
 
         DispatchQueue.global(qos: .userInitiated).async {
             let loaded = GitLogReader.shared.readCommits(
@@ -299,12 +301,14 @@ public struct HistoryPanelView: View {
                 all: all
             )
 
+            let rows = Self.calculateGraphRows(commits: loaded, query: query)
+
             DispatchQueue.main.async {
                 guard self.directory == dir else { return }
                 self.commits = loaded
+                self.graphRows = rows
                 self.hasMoreCommits = loaded.count >= limit
                 self.isLoading = false
-                self.rebuildGraphLayout()
             }
         }
     }
@@ -317,6 +321,7 @@ public struct HistoryPanelView: View {
         let all = showAllBranches
         let skip = commits.count
         let limit = Self.batchSize
+        let query = searchText.trimmingCharacters(in: .whitespaces)
 
         DispatchQueue.global(qos: .userInitiated).async {
             let loaded = GitLogReader.shared.readCommits(
@@ -329,32 +334,75 @@ public struct HistoryPanelView: View {
             DispatchQueue.main.async {
                 if loaded.isEmpty {
                     self.hasMoreCommits = false
+                    self.isLoadingMore = false
                 } else {
                     self.commits.append(contentsOf: loaded)
                     self.hasMoreCommits = loaded.count >= limit
-                    self.rebuildGraphLayout()
+                    let allCommits = self.commits
+
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        let rows = Self.calculateGraphRows(commits: allCommits, query: query)
+                        DispatchQueue.main.async {
+                            self.graphRows = rows
+                            self.isLoadingMore = false
+                        }
+                    }
                 }
-                self.isLoadingMore = false
             }
         }
     }
 
-    private func rebuildGraphLayout() {
-        let filtered: [GitCommit]
-        if searchText.isEmpty {
-            filtered = commits
-        } else {
-            let query = searchText.lowercased()
-            filtered = commits.filter { commit in
-                commit.summary.lowercased().contains(query) ||
-                commit.authorName.lowercased().contains(query) ||
-                commit.shortHash.lowercased().contains(query) ||
-                commit.hash.lowercased().contains(query)
+    private func triggerSearch(query: String) {
+        searchDebounceWorkItem?.cancel()
+
+        let trimmed = query.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty {
+            // Immediate reset when clearing search
+            let allCommits = commits
+            DispatchQueue.global(qos: .userInteractive).async {
+                let rows = GitGraphLayoutEngine.shared.buildLayout(
+                    commits: allCommits,
+                    includeWorkingChanges: true
+                )
+                DispatchQueue.main.async {
+                    guard self.searchText.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+                    self.graphRows = rows
+                }
+            }
+            return
+        }
+
+        let allCommits = commits
+        let workItem = DispatchWorkItem {
+            let rows = Self.calculateGraphRows(commits: allCommits, query: trimmed)
+            DispatchQueue.main.async {
+                guard self.searchText.trimmingCharacters(in: .whitespaces) == trimmed else { return }
+                self.graphRows = rows
             }
         }
 
-        let includeWorkingChanges = searchText.isEmpty
-        self.graphRows = GitGraphLayoutEngine.shared.buildLayout(
+        self.searchDebounceWorkItem = workItem
+        DispatchQueue.global(qos: .userInteractive).asyncAfter(deadline: .now() + 0.1, execute: workItem)
+    }
+
+    private static func calculateGraphRows(commits: [GitCommit], query: String) -> [GraphRow] {
+        let filtered: [GitCommit]
+        let includeWorkingChanges: Bool
+
+        if query.isEmpty {
+            filtered = commits
+            includeWorkingChanges = true
+        } else {
+            includeWorkingChanges = false
+            filtered = commits.filter { commit in
+                commit.summary.localizedCaseInsensitiveContains(query) ||
+                commit.authorName.localizedCaseInsensitiveContains(query) ||
+                commit.shortHash.localizedCaseInsensitiveContains(query) ||
+                commit.hash.localizedCaseInsensitiveContains(query)
+            }
+        }
+
+        return GitGraphLayoutEngine.shared.buildLayout(
             commits: filtered,
             includeWorkingChanges: includeWorkingChanges
         )
