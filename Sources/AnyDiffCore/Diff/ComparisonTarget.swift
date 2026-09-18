@@ -10,6 +10,8 @@ public enum ComparisonTarget: Equatable, Hashable, Sendable {
     case directBranch(String)
     /// Remote GitHub PR / commit / compare diff
     case remote(GitHubDiffReference)
+    /// Direct diff of a specific commit in history
+    case commit(hash: String, summary: String)
 
     public var title: String {
         switch self {
@@ -21,6 +23,9 @@ public enum ComparisonTarget: Equatable, Hashable, Sendable {
             return "vs \(branch)"
         case .remote(let ref):
             return ref.displayTitle
+        case .commit(let hash, let summary):
+            let short = String(hash.prefix(7))
+            return summary.isEmpty ? "Commit \(short)" : "\(short): \(summary)"
         }
     }
 
@@ -34,6 +39,13 @@ public enum ComparisonTarget: Equatable, Hashable, Sendable {
             return "→ \(branch)"
         case .remote(let ref):
             return ref.displayTitle
+        case .commit(let hash, _):
+            return String(hash.prefix(7))
         }
+    }
+
+    public var isCommit: Bool {
+        if case .commit = self { return true }
+        return false
     }
 }

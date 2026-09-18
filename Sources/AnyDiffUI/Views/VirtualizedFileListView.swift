@@ -76,16 +76,21 @@ public struct VirtualizedFileListView: NSViewRepresentable {
         if let selectedPath = selectedFilePath,
            let index = files.firstIndex(where: { $0.displayPath == selectedPath }) {
             if tableView.selectedRow != index {
+                context.coordinator.isSyncingSelection = true
                 tableView.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+                context.coordinator.isSyncingSelection = false
             }
         } else if selectedFilePath == nil && tableView.selectedRow != -1 {
+            context.coordinator.isSyncingSelection = true
             tableView.deselectAll(nil)
+            context.coordinator.isSyncingSelection = false
         }
     }
 
     public final class Coordinator: NSObject, NSTableViewDelegate, NSTableViewDataSource {
         var parent: VirtualizedFileListView
         weak var tableView: NSTableView?
+        var isSyncingSelection: Bool = false
         var cachedFiles: [FileDiff] = []
         var cachedThemeId: String = ""
         var cachedReviewedSet: Set<String> = []
@@ -140,6 +145,7 @@ public struct VirtualizedFileListView: NSViewRepresentable {
         }
 
         public func tableViewSelectionDidChange(_ notification: Notification) {
+            guard !isSyncingSelection else { return }
             guard let tableView = tableView else { return }
             let selectedRow = tableView.selectedRow
             if selectedRow >= 0 && selectedRow < parent.files.count {

@@ -160,16 +160,21 @@ public struct VirtualizedFileTreeView: NSViewRepresentable {
         if let selectedPath = selectedFilePath,
            let index = items.firstIndex(where: { !$0.isDirectory && $0.relativePath == selectedPath }) {
             if tableView.selectedRow != index {
+                context.coordinator.isSyncingSelection = true
                 tableView.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+                context.coordinator.isSyncingSelection = false
             }
         } else if selectedFilePath == nil && tableView.selectedRow != -1 {
+            context.coordinator.isSyncingSelection = true
             tableView.deselectAll(nil)
+            context.coordinator.isSyncingSelection = false
         }
     }
 
     public final class Coordinator: NSObject, NSTableViewDelegate, NSTableViewDataSource {
         var parent: VirtualizedFileTreeView
         weak var tableView: NSTableView?
+        var isSyncingSelection: Bool = false
         var cachedItems: [FileItem] = []
         var cachedExpandedPaths: Set<String> = []
         var cachedGitStatusMap: [String: FileDiffStatus] = [:]
@@ -243,6 +248,7 @@ public struct VirtualizedFileTreeView: NSViewRepresentable {
         }
 
         public func tableViewSelectionDidChange(_ notification: Notification) {
+            guard !isSyncingSelection else { return }
             guard let tableView = tableView else { return }
             let selectedRow = tableView.selectedRow
             guard selectedRow >= 0 && selectedRow < parent.items.count else { return }

@@ -16,6 +16,7 @@ public struct SidebarFileListView: View {
     public var onToggleWatchMode: (() -> Void)?
     public var onBack: (() -> Void)?
     public var onSwitchToFiles: (() -> Void)?
+    public var onSwitchToHistory: (() -> Void)?
 
     @State private var searchText: String = ""
     @State private var isSearchVisible: Bool = false
@@ -36,7 +37,8 @@ public struct SidebarFileListView: View {
         onReload: @escaping () -> Void,
         onToggleWatchMode: (() -> Void)? = nil,
         onBack: (() -> Void)? = nil,
-        onSwitchToFiles: (() -> Void)? = nil
+        onSwitchToFiles: (() -> Void)? = nil,
+        onSwitchToHistory: (() -> Void)? = nil
     ) {
         self.fileDiffs = fileDiffs
         self.theme = theme
@@ -52,6 +54,7 @@ public struct SidebarFileListView: View {
         self.onToggleWatchMode = onToggleWatchMode
         self.onBack = onBack
         self.onSwitchToFiles = onSwitchToFiles
+        self.onSwitchToHistory = onSwitchToHistory
     }
 
     private var filteredFiles: [FileDiff] {
@@ -234,8 +237,33 @@ public struct SidebarFileListView: View {
                 .padding(.horizontal, 4)
                 .padding(.vertical, 1)
                 .background(Color.accentColor.opacity(0.12))
-                .cornerRadius(4)
-                .lineLimit(1)
+        case .commit(let hash, _):
+            HStack(spacing: 5) {
+                Text(String(hash.prefix(7)))
+                    .font(.system(size: 9.5, weight: .medium, design: .monospaced))
+                    .foregroundColor(.accentColor)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 1)
+                    .background(Color.accentColor.opacity(0.12))
+                    .cornerRadius(4)
+                    .lineLimit(1)
+
+                let totalAdds = fileDiffs.reduce(0) { $0 + $1.additions }
+                let totalDels = fileDiffs.reduce(0) { $0 + $1.deletions }
+                if totalAdds > 0 {
+                    Text("+\(totalAdds)")
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundColor(Color(theme.diffAddedGutter))
+                        .lineLimit(1)
+                }
+                if totalDels > 0 {
+                    Text("-\(totalDels)")
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundColor(Color(theme.diffDeletedGutter))
+                        .lineLimit(1)
+                }
+            }
+            .fixedSize()
         case .workingTree, .remote:
             let totalAdds = fileDiffs.reduce(0) { $0 + $1.additions }
             let totalDels = fileDiffs.reduce(0) { $0 + $1.deletions }

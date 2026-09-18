@@ -28,10 +28,10 @@ public struct MainWindowView: View {
     @StateObject private var reviewManager = ReviewManager()
     @StateObject private var displayMap: DisplayMap
 
-    @StateObject private var reviewMultiBuffer = MultiBuffer()
-    @StateObject private var reviewDisplayMap: DisplayMap
-    @State private var reviewFileDiffs: [FileDiff] = []
-    @State private var reviewViewStateResetToken: UInt64 = 0
+    @StateObject private var readOnlyMultiBuffer = MultiBuffer()
+    @StateObject private var readOnlyDisplayMap: DisplayMap
+    @State private var readOnlyFileDiffs: [FileDiff] = []
+    @State private var readOnlyViewStateResetToken: UInt64 = 0
     @State private var preparedReviewSummary: AgentEditedFilesSummary? = nil
     @State private var toolcallColorMode = AgentDisplayPreferences.toolcallColorMode
 
@@ -57,7 +57,8 @@ public struct MainWindowView: View {
     @StateObject private var panelLayout = PanelLayoutManager()
     @State private var isAgentSessionsPresented: Bool = false
     @State private var isAgentSessionsHovered: Bool = false
-    @State private var isReviewCloseHovered: Bool = false
+    @State private var isReadOnlyBadgeHovered: Bool = false
+    @State private var isReadOnlyCloseHovered: Bool = false
 
     private var activeAgentManager: AgentSessionManager? {
         agentCoordinator.activeManager
@@ -67,15 +68,15 @@ public struct MainWindowView: View {
         agentCoordinator.isMockAgent
     }
 
-    private var isReviewActive: Bool {
-        agentCoordinator.activeReviewSummary != nil
+    private var isReadOnlyActive: Bool {
+        agentCoordinator.activeReviewSummary != nil || comparisonTarget.isCommit
     }
 
     private var activeMultiBuffer: MultiBuffer {
         if isProjectSearchActive {
             return searchMultiBuffer
-        } else if isReviewActive {
-            return reviewMultiBuffer
+        } else if isReadOnlyActive {
+            return readOnlyMultiBuffer
         }
         return multiBuffer
     }
@@ -83,14 +84,14 @@ public struct MainWindowView: View {
     private var activeDisplayMap: DisplayMap {
         if isProjectSearchActive {
             return searchDisplayMap
-        } else if isReviewActive {
-            return reviewDisplayMap
+        } else if isReadOnlyActive {
+            return readOnlyDisplayMap
         }
         return displayMap
     }
 
     private var activeFileDiffs: [FileDiff] {
-        isReviewActive ? reviewFileDiffs : fileDiffs
+        isReadOnlyActive ? readOnlyFileDiffs : fileDiffs
     }
 
     public enum RepoStatus {
@@ -109,8 +110,10 @@ public struct MainWindowView: View {
     @State private var comparisonTarget: ComparisonTarget = .workingTree
     @State private var repoStatus: RepoStatus = .clean
     @State private var fileDiffs: [FileDiff] = []
+    @State private var selectedCommit: GitCommit? = nil
+    @State private var showCommitDetailPopover: Bool = false
     @State private var selectedFilePath: String? = nil
-    @State private var selectedFilePathBeforeReview: String? = nil
+    @State private var selectedFilePathBeforeReadOnly: String? = nil
     @State private var manuallyOpenedFilePaths: Set<String> = []
     @State private var isWatchModeEnabled: Bool = true
     @State private var folderWatcher: FolderWatcher? = nil
@@ -146,36 +149,36 @@ public struct MainWindowView: View {
         let rm = ReviewManager()
         let dm = DisplayMap(multiBuffer: mb, reviewManager: rm)
 
-        let rmb = MultiBuffer()
-        let rdm = DisplayMap(multiBuffer: rmb, reviewManager: rm)
+        let roMb = MultiBuffer()
+        let roDm = DisplayMap(multiBuffer: roMb, reviewManager: rm)
 
         let smb = MultiBuffer()
         let sdm = DisplayMap(multiBuffer: smb, reviewManager: rm)
 
         let initialLayout = (UserDefaults.standard.string(forKey: "preferredDiffLayoutMode").flatMap(DiffLayoutMode.init)) ?? .unified
         dm.layoutMode = initialLayout
-        rdm.layoutMode = .unified
+        roDm.layoutMode = .unified
         sdm.layoutMode = .unified
 
         self._multiBuffer = StateObject(wrappedValue: mb)
         self._reviewManager = StateObject(wrappedValue: rm)
         self._displayMap = StateObject(wrappedValue: dm)
-        self._reviewMultiBuffer = StateObject(wrappedValue: rmb)
-        self._reviewDisplayMap = StateObject(wrappedValue: rdm)
+        self._readOnlyMultiBuffer = StateObject(wrappedValue: roMb)
+        self._readOnlyDisplayMap = StateObject(wrappedValue: roDm)
         self._searchMultiBuffer = StateObject(wrappedValue: smb)
         self._searchDisplayMap = StateObject(wrappedValue: sdm)
     }
 
     private var diffLayoutMode: DiffLayoutMode {
-        if isReviewActive {
-            return reviewDisplayMap.layoutMode
+        if isReadOnlyActive {
+            return readOnlyDisplayMap.layoutMode
         }
         return DiffLayoutMode(rawValue: preferredDiffLayoutMode) ?? .unified
     }
 
     private func setDiffLayoutMode(_ mode: DiffLayoutMode) {
-        if isReviewActive {
-            reviewDisplayMap.layoutMode = mode
+        if isReadOnlyActive {
+            readOnlyDisplayMap.layoutMode = mode
             return
         }
         preferredDiffLayoutMode = mode.rawValue
@@ -184,9 +187,9 @@ public struct MainWindowView: View {
     }
 
     private func toggleDiffLayoutMode() {
-        if isReviewActive {
-            let nextMode: DiffLayoutMode = (reviewDisplayMap.layoutMode == .unified ? .sideBySide : .unified)
-            reviewDisplayMap.layoutMode = nextMode
+        if isReadOnlyActive {
+            let nextMode: DiffLayoutMode = (readOnlyDisplayMap.layoutMode == .unified ? .sideBySide : .unified)
+            readOnlyDisplayMap.layoutMode = nextMode
         } else {
             setDiffLayoutMode(diffLayoutMode == .unified ? .sideBySide : .unified)
         }
@@ -231,13 +234,13 @@ public struct MainWindowView: View {
             panelView(for: .center)
                 .navigationSplitViewColumnWidth(min: centerColumnMinWidth, ideal: centerColumnIdealWidth, max: centerColumnMaxWidth)
                 .toolbar {
-                    ToolbarItem(placement: .navigation) {
+                    ToolbarItem(id: "mainWindowToolbarNav", placement: .navigation) {
                         toolbarNavigationItems
                     }
-                    ToolbarItem(placement: .automatic) {
+                    ToolbarItem(id: "mainWindowToolbarSpacer", placement: .automatic) {
                         Spacer()
                     }
-                    ToolbarItem(placement: .primaryAction) {
+                    ToolbarItem(id: "mainWindowToolbarTrailing", placement: .primaryAction) {
                         windowToolbarTrailingItems
                     }
                 }
@@ -324,15 +327,15 @@ public struct MainWindowView: View {
                 if preparedReviewSummary == summary {
                     preparedReviewSummary = nil
                 } else {
-                    reviewDisplayMap.layoutMode = .unified
+                    readOnlyDisplayMap.layoutMode = .unified
                     loadReviewDiff(for: summary)
                 }
             } else {
                 preparedReviewSummary = nil
-                clearReviewDiff()
-                if let savedPath = selectedFilePathBeforeReview {
+                clearReadOnlyDiff()
+                if let savedPath = selectedFilePathBeforeReadOnly {
                     selectedFilePath = savedPath
-                    selectedFilePathBeforeReview = nil
+                    selectedFilePathBeforeReadOnly = nil
                 }
                 if multiBuffer.excerpts.isEmpty && fileDiffs.isEmpty {
                     loadCurrentDirectoryDiff()
@@ -478,6 +481,7 @@ public struct MainWindowView: View {
         switch panelLayout.leftContent {
         case .editor: return 360
         case .agent: return 280
+        case .history: return 240
         case .changes, .files, nil: return 200
         }
     }
@@ -486,6 +490,7 @@ public struct MainWindowView: View {
         switch panelLayout.leftContent {
         case .editor: return 500
         case .agent: return 360
+        case .history: return 320
         case .changes, .files, nil: return 280
         }
     }
@@ -494,13 +499,13 @@ public struct MainWindowView: View {
         switch panelLayout.leftContent {
         case .editor: return 1200
         case .agent: return 800
-        case .changes, .files, nil: return 800
+        case .changes, .files, .history, nil: return 800
         }
     }
 
     private var centerColumnMinWidth: CGFloat {
         switch panelLayout.centerContent {
-        case .changes, .files: return 200
+        case .changes, .files, .history: return 200
         case .agent: return 280
         case .editor, nil: return 320
         }
@@ -508,7 +513,7 @@ public struct MainWindowView: View {
 
     private var centerColumnIdealWidth: CGFloat {
         switch panelLayout.centerContent {
-        case .changes, .files: return 280
+        case .changes, .files, .history: return 320
         case .agent: return 560
         case .editor, nil: return 760
         }
@@ -521,7 +526,7 @@ public struct MainWindowView: View {
     private var rightColumnMinWidth: CGFloat {
         guard panelLayout.isRightPanelOpen else { return 0 }
         switch panelLayout.rightContent {
-        case .changes, .files: return 200
+        case .changes, .files, .history: return 220
         case .editor: return 360
         case .agent: return 320
         case nil: return 240
@@ -531,7 +536,7 @@ public struct MainWindowView: View {
     private var rightColumnIdealWidth: CGFloat {
         guard panelLayout.isRightPanelOpen else { return 0 }
         switch panelLayout.rightContent {
-        case .changes, .files: return 280
+        case .changes, .files, .history: return 320
         case .editor: return 600
         case .agent: return 560
         case nil: return 320
@@ -541,7 +546,7 @@ public struct MainWindowView: View {
     private var rightColumnMaxWidth: CGFloat {
         guard panelLayout.isRightPanelOpen else { return 0 }
         switch panelLayout.rightContent {
-        case .changes, .files: return 800
+        case .changes, .files, .history: return 800
         case .editor: return 1400
         case .agent: return 950
         case nil: return 800
@@ -558,6 +563,8 @@ public struct MainWindowView: View {
                 changesPanelView(for: slot)
             case .files:
                 filesPanelView(for: slot)
+            case .history:
+                historyPanelView(for: slot)
             case .editor:
                 editorPanelView(for: slot)
             case .agent:
@@ -582,7 +589,7 @@ public struct MainWindowView: View {
         SidebarFileListView(
             fileDiffs: activeFileDiffs,
             theme: activeTheme,
-            emptyMessage: isReviewActive ? "No files in review" : (repoStatus == .notGitRepository ? "Not a Git repository" : "No changed files"),
+            emptyMessage: isReadOnlyActive ? (comparisonTarget.isCommit ? "No changed files in commit" : "No files in review") : (repoStatus == .notGitRepository ? "Not a Git repository" : "No changed files"),
             isReloading: isReloading,
             isStreaming: isStreaming,
             streamingCount: streamingCount,
@@ -600,6 +607,11 @@ public struct MainWindowView: View {
             onSwitchToFiles: slot == .left ? {
                 withAnimation(.easeInOut(duration: 0.18)) {
                     panelLayout.assign(.files, to: .left)
+                }
+            } : nil,
+            onSwitchToHistory: slot == .left ? {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    panelLayout.assign(.history, to: .left)
                 }
             } : nil
         )
@@ -628,9 +640,107 @@ public struct MainWindowView: View {
                 withAnimation(.easeInOut(duration: 0.18)) {
                     panelLayout.assign(.changes, to: .left)
                 }
+            } : nil,
+            onSwitchToHistory: slot == .left ? {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    panelLayout.assign(.history, to: .left)
+                }
             } : nil
         )
         .id(effectiveWorkingDirectory)
+    }
+
+    @ViewBuilder
+    private func historyPanelView(for slot: PanelSlot) -> some View {
+        HistoryPanelView(
+            directory: effectiveWorkingDirectory,
+            theme: activeTheme,
+            comparisonTarget: comparisonTarget,
+            workingChangesCount: fileDiffs.count,
+            reloadToken: loadGeneration,
+            onSelectCommit: { commit in
+                selectCommit(commit)
+            },
+            onSelectCommitFile: { commit, filePath in
+                selectCommit(commit, targetFilePath: filePath)
+            },
+            onSelectWorkingChanges: {
+                selectWorkingChanges()
+            },
+            onBack: {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    panelLayout.clear(slot)
+                }
+            },
+            onSwitchToChanges: slot == .left ? {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    panelLayout.assign(.changes, to: .left)
+                }
+            } : nil,
+            onSwitchToFiles: slot == .left ? {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    panelLayout.assign(.files, to: .left)
+                }
+            } : nil
+        )
+        .id(effectiveWorkingDirectory)
+    }
+
+    private func selectCommit(_ commit: GitCommit, targetFilePath: String? = nil) {
+        if let target = targetFilePath {
+            selectedFilePath = target
+        }
+        if case .commit(let currentHash, _) = comparisonTarget, currentHash == commit.hash {
+            if let target = targetFilePath {
+                focusFileInMultiBuffer(target)
+            }
+            return
+        }
+        if selectedFilePathBeforeReadOnly == nil {
+            selectedFilePathBeforeReadOnly = selectedFilePath
+        }
+        selectedCommit = commit
+        comparisonTarget = .commit(hash: commit.hash, summary: commit.summary)
+        loadCommitDiff(hash: commit.hash, targetFilePath: targetFilePath)
+    }
+
+    private func focusFileInMultiBuffer(_ filePath: String) {
+        selectedFilePath = filePath
+        let post = {
+            NotificationCenter.default.post(
+                name: .focusFileInEditor,
+                object: FileNavigationRequest(filePath: filePath, lineNumber: nil, endLineNumber: nil)
+            )
+        }
+        post()
+        DispatchQueue.main.async {
+            post()
+        }
+    }
+
+    private func selectWorkingChanges() {
+        guard comparisonTarget != .workingTree else { return }
+        endReadOnlyDiff()
+    }
+
+    private func loadCommitDiff(hash: String, targetFilePath: String? = nil) {
+        let dir = effectiveWorkingDirectory
+        guard !dir.isEmpty else { return }
+        readOnlyMultiBuffer.baseDirectory = dir
+        readOnlyDisplayMap.layoutMode = diffLayoutMode
+        readOnlyViewStateResetToken &+= 1
+        clearReadOnlyDiff()
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            let (files, rawData) = self.fetchGitDiffFiles(at: dir, target: .commit(hash: hash, summary: ""))
+            DispatchQueue.main.async {
+                guard case .commit(let currentHash, _) = self.comparisonTarget, currentHash == hash else { return }
+                self.loadDiff(files: files, rawData: rawData, isReadOnly: true)
+                if let target = targetFilePath {
+                    self.focusFileInMultiBuffer(target)
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -687,7 +797,7 @@ public struct MainWindowView: View {
             ZStack {
                 editorDetailView
 
-                if activeFileDiffs.isEmpty && !isReviewActive && !isProjectSearchActive {
+                if activeFileDiffs.isEmpty && !isReadOnlyActive && !isProjectSearchActive {
                     emptyStateDetailView
                 } else if isProjectSearchActive && hasExecutedSearch && searchMatches.isEmpty && !isSearching && !searchQuery.isEmpty {
                     searchEmptyStateView
@@ -720,7 +830,7 @@ public struct MainWindowView: View {
     private var editorTitlePrefix: String {
         if isProjectSearchActive {
             return "Search"
-        } else if isReviewActive {
+        } else if agentCoordinator.activeReviewSummary != nil {
             return "Review"
         } else if case .baseBranch(let base) = comparisonTarget {
             return base
@@ -728,14 +838,33 @@ public struct MainWindowView: View {
             return branch
         } else if case .remote(let ref) = comparisonTarget {
             return ref.displayTitle
+        } else if case .commit(let hash, _) = comparisonTarget {
+            return String(hash.prefix(7))
         }
         return "Uncommitted"
+    }
+
+    private var commitSummaryTooltip: String {
+        if case .commit(_, let summary) = comparisonTarget, !summary.isEmpty {
+            return summary
+        }
+        return ""
     }
 
     @ViewBuilder
     private func editorHeaderLeadingView(availableWidth: CGFloat = 600) -> some View {
         HStack(spacing: 6) {
-            Image(systemName: isProjectSearchActive ? "magnifyingglass" : "arrow.triangle.branch")
+            let iconName: String = {
+                if isProjectSearchActive {
+                    return "magnifyingglass"
+                } else if case .commit = comparisonTarget {
+                    return "clock.arrow.circlepath"
+                } else {
+                    return "arrow.triangle.branch"
+                }
+            }()
+
+            Image(systemName: iconName)
                 .font(.system(size: 11.5, weight: .medium))
                 .frame(width: 14, height: 14)
                 .foregroundColor(Color(activeTheme.gutterForeground))
@@ -745,6 +874,7 @@ public struct MainWindowView: View {
                 .foregroundColor(Color(activeTheme.foreground))
                 .lineLimit(1)
                 .truncationMode(.tail)
+                .help(commitSummaryTooltip)
 
             // Changed count: hide if available width is tight (< 420 pt)
             if availableWidth >= 420 {
@@ -758,14 +888,49 @@ public struct MainWindowView: View {
             if availableWidth >= 460 || (!isProjectSearchActive && comparisonTarget == .workingTree) {
                 if isProjectSearchActive {
                     globalSearchBadge
-                } else if isReviewActive {
-                    reviewReadOnlyBadge
+                } else if isReadOnlyActive {
+                    readOnlyDiffBadge
                 } else if comparisonTarget != .workingTree {
                     readOnlyBadge
                 }
             }
         }
         .lineLimit(1)
+    }
+
+    @ViewBuilder
+    private func commitDetailPopoverContent(hash: String, summary: String) -> some View {
+        let commit = selectedCommit ?? (effectiveWorkingDirectory.isEmpty ? nil : GitLogReader.shared.readCommit(directory: effectiveWorkingDirectory, hash: hash)) ?? GitCommit(
+            hash: hash,
+            shortHash: String(hash.prefix(7)),
+            parentHashes: [],
+            authorName: "",
+            authorEmail: "",
+            date: Date(),
+            summary: summary
+        )
+        let totalAdds = activeFileDiffs.reduce(0) { $0 + $1.additions }
+        let totalDels = activeFileDiffs.reduce(0) { $0 + $1.deletions }
+        let fileChanges: [CommitFileChange] = activeFileDiffs.map {
+            CommitFileChange(path: $0.displayPath, additions: $0.additions, deletions: $0.deletions)
+        }
+
+        CommitDetailPopoverView(
+            commit: commit,
+            theme: activeTheme,
+            directory: effectiveWorkingDirectory,
+            fileCount: activeFileDiffs.count,
+            additions: totalAdds,
+            deletions: totalDels,
+            files: fileChanges,
+            onSelectFile: { file in
+                focusFileInMultiBuffer(file.path)
+            },
+            onOpen: {
+                selectCommit(commit)
+            },
+            onClose: { showCommitDetailPopover = false }
+        )
     }
 
     @ViewBuilder
@@ -1143,9 +1308,9 @@ public struct MainWindowView: View {
             displayMap: activeDisplayMap,
             theme: activeTheme,
             fontSize: fontSize,
-            isEditable: (!isReviewActive && comparisonTarget == .workingTree),
+            isEditable: (!isReadOnlyActive && comparisonTarget == .workingTree),
             selectedFilePath: selectedFilePath,
-            viewStateResetToken: isReviewActive ? reviewViewStateResetToken : (isProjectSearchActive ? searchViewStateResetToken : nil),
+            viewStateResetToken: isReadOnlyActive ? readOnlyViewStateResetToken : (isProjectSearchActive ? searchViewStateResetToken : nil),
             searchMatches: isProjectSearchActive ? searchMatches : [],
             activeMatchIndex: isProjectSearchActive ? activeMatchIndex : nil,
             searchMatchScrollRequest: isProjectSearchActive ? searchMatchScrollRequest : nil,
@@ -1243,42 +1408,45 @@ public struct MainWindowView: View {
     }
 
     @ViewBuilder
-    private var reviewReadOnlyBadge: some View {
-        HStack(spacing: 5) {
-            Image(systemName: "lock.fill")
-                .font(.system(size: 9.5))
-                .foregroundColor(.secondary)
+    private var readOnlyDiffBadge: some View {
+        Button(action: {
+            endReadOnlyDiff()
+        }) {
+            HStack(spacing: 5) {
+                Image(systemName: "lock.fill")
+                    .font(.system(size: 9.5, weight: .medium))
+                    .foregroundColor(isReadOnlyBadgeHovered ? Color(activeTheme.foreground) : Color(activeTheme.gutterForeground))
 
-            Text("Read-Only Diff")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundColor(.secondary)
+                Text("Read-Only")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(isReadOnlyBadgeHovered ? Color(activeTheme.foreground) : Color(activeTheme.foreground).opacity(0.85))
 
-            Image(systemName: "xmark")
-                .font(.system(size: 8.5, weight: .bold))
-                .foregroundColor(isReviewCloseHovered ? .primary : .secondary.opacity(0.8))
-                .frame(width: 16, height: 16)
-                .background(
-                    RoundedRectangle(cornerRadius: 3, style: .continuous)
-                        .fill(isReviewCloseHovered ? Color.secondary.opacity(0.16) : Color.clear)
-                )
-                .contentShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
-                .help("Exit Review (Esc)")
-                .accessibilityLabel("Exit Review")
-                .accessibilityAddTraits(.isButton)
-                .onTapGesture {
-                    endReview()
-                }
-            .onHover { isReviewCloseHovered = $0 }
+                Image(systemName: "xmark")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundColor(isReadOnlyCloseHovered ? Color(activeTheme.foreground) : Color(activeTheme.gutterForeground))
+                    .frame(width: 15, height: 15)
+                    .background(
+                        Circle()
+                            .fill(isReadOnlyCloseHovered ? Color(activeTheme.foreground).opacity(0.16) : Color(activeTheme.gutterForeground).opacity(0.12))
+                    )
+            }
+            .padding(.leading, 7.5)
+            .padding(.trailing, 4.5)
+            .padding(.vertical, 3)
+            .background(
+                Capsule()
+                    .fill(isReadOnlyBadgeHovered ? Color(activeTheme.gutterForeground).opacity(0.20) : Color(activeTheme.gutterForeground).opacity(0.11))
+            )
+            .overlay(
+                Capsule()
+                    .strokeBorder(isReadOnlyBadgeHovered ? Color(activeTheme.gutterForeground).opacity(0.32) : Color(activeTheme.gutterForeground).opacity(0.18), lineWidth: 0.5)
+            )
         }
-        .padding(.leading, 7)
-        .padding(.trailing, 6)
-        .padding(.vertical, 3.5)
-        .background(Color.secondary.opacity(0.12))
-        .cornerRadius(5)
-        .overlay(
-            RoundedRectangle(cornerRadius: 5)
-                .stroke(Color.secondary.opacity(0.15), lineWidth: 0.5)
-        )
+        .buttonStyle(.plain)
+        .contentShape(Capsule())
+        .help(comparisonTarget.isCommit ? "Return to Working Changes (Esc)" : "Exit Review (Esc)")
+        .accessibilityLabel(comparisonTarget.isCommit ? "Return to Working Changes" : "Exit Review")
+        .onHover { isReadOnlyBadgeHovered = $0 }
         .fixedSize()
     }
 
@@ -1386,6 +1554,12 @@ public struct MainWindowView: View {
             }) {}
                 .keyboardShortcut("2", modifiers: .command)
             Button(action: {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    panelLayout.assign(.history, to: .left)
+                }
+            }) {}
+                .keyboardShortcut("3", modifiers: .command)
+            Button(action: {
                 withAnimation(.easeInOut(duration: 0.15)) {
                     toggleDiffLayoutMode()
                 }
@@ -1436,8 +1610,8 @@ public struct MainWindowView: View {
                     withAnimation(.easeInOut(duration: 0.16)) {
                         closeProjectSearch()
                     }
-                } else if agentCoordinator.activeReviewSummary != nil {
-                    endReview()
+                } else if isReadOnlyActive {
+                    endReadOnlyDiff()
                 }
             }) {}
                 .keyboardShortcut(.cancelAction)
@@ -1662,7 +1836,7 @@ public struct MainWindowView: View {
             loadPlainText(
                 data: summary.rawTextData ?? Data(),
                 filePath: summary.files.first?.path ?? "agent/output.txt",
-                isReview: true
+                isReadOnly: true
             )
             return
         }
@@ -1671,7 +1845,7 @@ public struct MainWindowView: View {
         if let rawData = summary.rawDiffData, !rawData.isEmpty {
             let parsed = GitDiffParser.shared.parseZeroCopy(data: rawData)
             if !parsed.isEmpty {
-                loadDiff(files: parsed, rawData: rawData, isReview: true)
+                loadDiff(files: parsed, rawData: rawData, isReadOnly: true)
                 return
             }
         }
@@ -1685,7 +1859,7 @@ public struct MainWindowView: View {
             ), !diffData.isEmpty {
                 let parsed = GitDiffParser.shared.parseZeroCopy(data: diffData)
                 if !parsed.isEmpty {
-                    loadDiff(files: parsed, rawData: diffData, isReview: true)
+                    loadDiff(files: parsed, rawData: diffData, isReadOnly: true)
                     return
                 }
             }
@@ -1698,7 +1872,7 @@ public struct MainWindowView: View {
             : (files: [], data: nil)
 
         if !files.isEmpty {
-            loadDiff(files: files, rawData: rawData, isReview: true)
+            loadDiff(files: files, rawData: rawData, isReadOnly: true)
         } else {
             var synthText = ""
             for file in summary.files {
@@ -1715,34 +1889,45 @@ public struct MainWindowView: View {
             }
             let data = Data(synthText.utf8)
             let parsed = GitDiffParser.shared.parseZeroCopy(data: data)
-            loadDiff(files: parsed, rawData: data, isReview: true)
+            loadDiff(files: parsed, rawData: data, isReadOnly: true)
         }
     }
 
     private func beginReview(summary: AgentEditedFilesSummary) {
-        selectedFilePathBeforeReview = selectedFilePath
-        reviewViewStateResetToken &+= 1
-        clearReviewDiff()
-        reviewDisplayMap.layoutMode = .unified
+        selectedFilePathBeforeReadOnly = selectedFilePath
+        readOnlyViewStateResetToken &+= 1
+        clearReadOnlyDiff()
+        readOnlyDisplayMap.layoutMode = .unified
         loadReviewDiff(for: summary)
         preparedReviewSummary = summary
         agentCoordinator.startReview(summary: summary)
     }
 
-    private func endReview() {
-        agentCoordinator.exitReview()
-        preparedReviewSummary = nil
-        clearReviewDiff()
-        if let savedPath = selectedFilePathBeforeReview {
+    private func endReadOnlyDiff() {
+        if agentCoordinator.activeReviewSummary != nil {
+            agentCoordinator.exitReview()
+            preparedReviewSummary = nil
+        }
+        if case .commit = comparisonTarget {
+            selectedCommit = nil
+            showCommitDetailPopover = false
+            comparisonTarget = .workingTree
+        }
+        clearReadOnlyDiff()
+        if let savedPath = selectedFilePathBeforeReadOnly {
             selectedFilePath = savedPath
-            selectedFilePathBeforeReview = nil
+            selectedFilePathBeforeReadOnly = nil
         }
     }
 
-    private func clearReviewDiff() {
-        reviewFileDiffs = []
-        reviewMultiBuffer.clear()
-        reviewDisplayMap.clear()
+    private func endReview() {
+        endReadOnlyDiff()
+    }
+
+    private func clearReadOnlyDiff() {
+        readOnlyFileDiffs = []
+        readOnlyMultiBuffer.clear()
+        readOnlyDisplayMap.clear()
     }
 
     private func handleOpenURL(_ url: URL) {
@@ -1850,6 +2035,16 @@ public struct MainWindowView: View {
     }
 
     public func closeFileFromEditor(filePath: String) {
+        if isReadOnlyActive {
+            readOnlyFileDiffs.removeAll { $0.displayPath == filePath }
+            readOnlyMultiBuffer.removeFile(filePath: filePath)
+            readOnlyDisplayMap.rebuild()
+            readOnlyDisplayMap.markContentLoaded()
+            if selectedFilePath == filePath {
+                selectedFilePath = readOnlyFileDiffs.first?.displayPath
+            }
+            return
+        }
         fileDiffs.removeAll { $0.displayPath == filePath }
         multiBuffer.removeFile(filePath: filePath)
         manuallyOpenedFilePaths.remove(filePath)
@@ -2030,6 +2225,10 @@ public struct MainWindowView: View {
             loadReviewDiff(for: reviewSummary)
             return
         }
+        if case .commit(let hash, _) = comparisonTarget {
+            loadCommitDiff(hash: hash)
+            return
+        }
         if case .remote(let ref) = comparisonTarget {
             loadRemoteDiff(reference: ref)
         } else {
@@ -2043,7 +2242,6 @@ public struct MainWindowView: View {
             window.appearance = NSAppearance(named: activeTheme.isDark ? .darkAqua : .aqua)
             window.titlebarAppearsTransparent = true
             window.titlebarSeparatorStyle = .none
-            alignSidebarToggleLeading(in: window)
             updateSplitViewDividers(in: window, color: activeTheme.panelDivider)
         }
     }
@@ -2105,17 +2303,7 @@ public final class WindowLifecycleView: NSView {
         ) { [weak self] _ in
             self?.applyAppearance()
         }
-        let tbObs = center.addObserver(
-            forName: NSToolbar.willAddItemNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] notif in
-            guard let self = self, let tb = notif.object as? NSToolbar, tb === self.window?.toolbar else { return }
-            DispatchQueue.main.async { [weak self] in
-                self?.applyAppearance()
-            }
-        }
-        observers.append(contentsOf: [subviewsObs, resizeObs, tbObs])
+        observers.append(contentsOf: [subviewsObs, resizeObs])
     }
 
     public override func viewDidMoveToWindow() {
@@ -2134,17 +2322,7 @@ public final class WindowLifecycleView: NSView {
         window.appearance = NSAppearance(named: theme.isDark ? .darkAqua : .aqua)
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
-        alignSidebarToggleLeading(in: window)
         updateSplitViewDividers(in: window, color: theme.panelDivider)
-    }
-}
-
-public func alignSidebarToggleLeading(in window: NSWindow) {
-    guard let tb = window.toolbar else { return }
-    if let toggleIdx = tb.items.firstIndex(where: { $0.itemIdentifier.rawValue.contains("toggleSidebar") }),
-       toggleIdx > 0,
-       tb.items[toggleIdx - 1].itemIdentifier == .flexibleSpace {
-        tb.removeItem(at: toggleIdx - 1)
     }
 }
 
@@ -2496,6 +2674,10 @@ extension MainWindowView {
             resetProjectSearch()
             manuallyOpenedFilePaths.removeAll()
             selectedFilePath = nil
+            selectedCommit = nil
+            if case .commit = comparisonTarget {
+                comparisonTarget = .workingTree
+            }
         }
         multiBuffer.baseDirectory = currentDir
         let folderName = (currentDir as NSString).lastPathComponent
@@ -2569,6 +2751,10 @@ extension MainWindowView {
         remoteBranches = []
         repoStatus = .notGitRepository
         selectedFilePath = nil
+        selectedCommit = nil
+        if case .commit = comparisonTarget {
+            comparisonTarget = .workingTree
+        }
         manuallyOpenedFilePaths.removeAll()
         multiBuffer.baseDirectory = nil
         resetProjectSearch()
@@ -2908,6 +3094,10 @@ extension MainWindowView {
             argumentSets = [
                 ["-C", path, "diff", branch]
             ]
+        case .commit(let hash, _):
+            argumentSets = [
+                ["-C", path, "show", "--format=", "--patch", "-m", "--first-parent", hash]
+            ]
         case .remote:
             return (files: [], data: nil)
         }
@@ -2931,8 +3121,8 @@ extension MainWindowView {
         if case .workingTree = target {
             let untracked = fetchUntrackedFiles(at: path, pathFilter: pathFilter)
             allFiles.append(contentsOf: untracked)
+            allFiles = filterIgnoredFiles(allFiles, at: path)
         }
-        allFiles = filterIgnoredFiles(allFiles, at: path)
         return (files: allFiles, data: rawData)
     }
 
@@ -3122,15 +3312,15 @@ extension MainWindowView {
         loadDiff(files: parsedFiles, rawData: data)
     }
 
-    private func loadPlainText(data: Data, filePath: String, isReview: Bool) {
-        let targetMB = isReview ? reviewMultiBuffer : multiBuffer
-        let targetDM = isReview ? reviewDisplayMap : displayMap
+    private func loadPlainText(data: Data, filePath: String, isReadOnly: Bool) {
+        let targetMB = isReadOnly ? readOnlyMultiBuffer : multiBuffer
+        let targetDM = isReadOnly ? readOnlyDisplayMap : displayMap
         let text = String(decoding: data, as: UTF8.self)
         let lines = text.components(separatedBy: "\n")
         let displayPath = filePath.isEmpty ? "agent/output.txt" : filePath
 
-        if isReview {
-            reviewFileDiffs = [FileDiff(oldPath: displayPath, newPath: displayPath)]
+        if isReadOnly {
+            readOnlyFileDiffs = [FileDiff(oldPath: displayPath, newPath: displayPath)]
         } else {
             fileDiffs = [FileDiff(oldPath: displayPath, newPath: displayPath)]
         }
@@ -3168,13 +3358,13 @@ extension MainWindowView {
         selectedFilePath = displayPath
     }
 
-    public func loadDiff(files parsedFiles: [FileDiff], rawData: Data? = nil, isReview: Bool = false) {
-        let targetMB = isReview ? reviewMultiBuffer : multiBuffer
-        let targetDM = isReview ? reviewDisplayMap : displayMap
+    public func loadDiff(files parsedFiles: [FileDiff], rawData: Data? = nil, isReadOnly: Bool = false) {
+        let targetMB = isReadOnly ? readOnlyMultiBuffer : multiBuffer
+        let targetDM = isReadOnly ? readOnlyDisplayMap : displayMap
 
         let collapsedFilePaths = Set(targetMB.excerpts.filter { $0.isCollapsed }.map { $0.filePath })
         var allFiles = parsedFiles
-        if !isReview {
+        if !isReadOnly {
             for cleanPath in manuallyOpenedFilePaths {
                 if !allFiles.contains(where: { $0.displayPath == cleanPath }) {
                     let cleanDiff = FileDiff(oldPath: cleanPath, newPath: cleanPath, status: .unmodified, hunks: [])
@@ -3186,8 +3376,8 @@ extension MainWindowView {
             }
         }
 
-        if isReview {
-            self.reviewFileDiffs = allFiles
+        if isReadOnly {
+            self.readOnlyFileDiffs = allFiles
         } else {
             self.fileDiffs = allFiles
         }

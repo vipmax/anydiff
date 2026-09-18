@@ -37,6 +37,8 @@ public struct BranchPickerView: View {
             return "\(currentBranch) vs \(branch)"
         case .remote(let ref):
             return ref.displayTitle
+        case .commit(let hash, _):
+            return String(hash.prefix(7))
         }
     }
 

@@ -203,6 +203,8 @@ public struct EmptyPanelView: View {
             return Color.orange
         case .files:
             return Color.teal
+        case .history:
+            return Color.indigo
         case .editor:
             return Color.blue
         case .agent:

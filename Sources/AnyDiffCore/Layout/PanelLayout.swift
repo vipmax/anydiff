@@ -20,6 +20,7 @@ public enum PanelSlot: String, CaseIterable, Codable, Hashable, Sendable {
 public enum PanelContent: String, CaseIterable, Codable, Hashable, Identifiable, Sendable {
     case changes
     case files
+    case history
     case editor
     case agent
 
@@ -29,6 +30,7 @@ public enum PanelContent: String, CaseIterable, Codable, Hashable, Identifiable,
         switch self {
         case .changes: return "Changes"
         case .files: return "Files"
+        case .history: return "History"
         case .editor: return "Editor"
         case .agent: return "Agent"
         }
@@ -38,6 +40,7 @@ public enum PanelContent: String, CaseIterable, Codable, Hashable, Identifiable,
         switch self {
         case .changes: return "arrow.triangle.branch"
         case .files: return "folder"
+        case .history: return "clock.arrow.circlepath"
         case .editor: return "doc.text"
         case .agent: return "sparkles"
         }
@@ -47,6 +50,7 @@ public enum PanelContent: String, CaseIterable, Codable, Hashable, Identifiable,
         switch self {
         case .changes: return "Git modified files & diff status"
         case .files: return "Project file tree & workspace explorer"
+        case .history: return "Git commit history & visual graph"
         case .editor: return "Multi-buffer unified & split diff viewer"
         case .agent: return "AI coding sessions & chat"
         }

@@ -37,6 +37,7 @@ public struct FilesPanelView: View {
     public var onOpenExternalIDE: ((String) -> Void)?
     public var onBack: (() -> Void)?
     public var onSwitchToChanges: (() -> Void)?
+    public var onSwitchToHistory: (() -> Void)?
 
     @State private var expandedPaths: Set<String> = []
     @State private var folderChildrenCache: [String: [FileItem]] = [:]
@@ -55,7 +56,8 @@ public struct FilesPanelView: View {
         onOpenFile: @escaping (String) -> Void,
         onOpenExternalIDE: ((String) -> Void)? = nil,
         onBack: (() -> Void)? = nil,
-        onSwitchToChanges: (() -> Void)? = nil
+        onSwitchToChanges: (() -> Void)? = nil,
+        onSwitchToHistory: (() -> Void)? = nil
     ) {
         self.rootDirectory = rootDirectory
         self.fileDiffs = fileDiffs
@@ -66,6 +68,7 @@ public struct FilesPanelView: View {
         self.onOpenExternalIDE = onOpenExternalIDE
         self.onBack = onBack
         self.onSwitchToChanges = onSwitchToChanges
+        self.onSwitchToHistory = onSwitchToHistory
         self._expandedPaths = State(initialValue: rootDirectory.isEmpty ? [] : [rootDirectory])
     }
 
@@ -135,7 +138,7 @@ public struct FilesPanelView: View {
     @ViewBuilder
     private func headerLeadingView(availableWidth: CGFloat) -> some View {
         HStack(spacing: 5) {
-            if let onSwitch = onSwitchToChanges {
+            if let onSwitch = onSwitchToHistory ?? onSwitchToChanges {
                 Button(action: onSwitch) {
                     Text("FILES")
                         .font(.system(size: 10.5, weight: .bold))
@@ -152,7 +155,7 @@ public struct FilesPanelView: View {
                 .onHover { hovering in
                     isTitleHovered = hovering
                 }
-                .help("Switch to Git Changes (Cmd+1)")
+                .help("Switch to Git History (Cmd+3)")
             } else {
                 Text("FILES")
                     .font(.system(size: 10.5, weight: .bold))

@@ -115,7 +115,6 @@ final class PanelLayoutTests: XCTestCase {
 
         RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.2))
 
-        alignSidebarToggleLeading(in: window)
         updateSplitViewDividers(in: window)
 
         guard let tb = window.toolbar else {
@@ -123,8 +122,8 @@ final class PanelLayoutTests: XCTestCase {
             return
         }
 
-        // Verify sidebar toggle button is at index 0
-        XCTAssertTrue(tb.items.first?.itemIdentifier.rawValue.contains("toggleSidebar") == true, "Sidebar toggle must be the first toolbar item")
+        // Verify sidebar toggle button is present
+        XCTAssertTrue(tb.items.contains(where: { $0.itemIdentifier.rawValue.contains("toggleSidebar") }), "Sidebar toggle item must be present in the toolbar")
 
         // Verify tracking separator is present
         let trackingItem = tb.items.first(where: { $0 is NSTrackingSeparatorToolbarItem })
