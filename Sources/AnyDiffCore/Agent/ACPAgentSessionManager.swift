@@ -81,9 +81,6 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
 
     public func prepareAgent(workingDirectory: String, loadSessionId: String?) {
         self.targetLoadSessionId = loadSessionId
-        if let loadSessionId, currentSessionId == nil {
-            self.currentSessionId = loadSessionId
-        }
         self.prepareAgent(workingDirectory: workingDirectory)
     }
 
@@ -92,6 +89,7 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
 
         if initializationState == .ready,
            currentSessionId != nil,
+           targetLoadSessionId == nil,
            currentWorkingDirectory == workingDirectory,
            client.isConnected {
             startPendingPromptIfPossible()
@@ -296,6 +294,7 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
         }.value
     }
 
+    @MainActor
     private func ensureConnectedAndSession(workingDirectory: String) async throws {
         let isReconnecting = !client.isConnected || currentWorkingDirectory != workingDirectory
         let resolvedTitle: String
@@ -303,10 +302,8 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
         if isReconnecting {
             client.stop()
             currentWorkingDirectory = workingDirectory
-            DispatchQueue.main.async {
-                self.status = .connecting
-                self.statusMessage = "Launching \(self.agentCommand)..."
-            }
+            self.status = .connecting
+            self.statusMessage = "Launching \(self.agentCommand)..."
             try await startClient(command: agentCommand, workingDirectory: workingDirectory)
 
             let initResult = try await client.initialize()
@@ -323,17 +320,21 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
             resolvedTitle = self.agentTitle.isEmpty ? "Agent" : self.agentTitle
         }
 
-        guard currentSessionId == nil else { return }
+        guard currentSessionId == nil || targetLoadSessionId != nil else { return }
 
         let sessId: String
         let initialOpts: [ACPConfigOption]?
         let isNewSession = (targetLoadSessionId == nil)
 
         if let targetId = targetLoadSessionId {
+            self.messages.removeAll()
             let loadResult = try await client.loadSession(sessionId: targetId, cwd: workingDirectory)
             sessId = targetId
             initialOpts = loadResult.configOptions
             self.targetLoadSessionId = nil
+            for i in self.messages.indices {
+                self.messages[i].completeRunningToolCalls()
+            }
         } else {
             let sessionResult = try await client.createSessionFull(cwd: workingDirectory)
             sessId = sessionResult.sessionId
@@ -349,20 +350,16 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
             toSync = syncItems
         }
 
-        DispatchQueue.main.async {
-            self.agentTitle = resolvedTitle
-            self.statusMessage = "Connected to \(resolvedTitle)"
-            self.currentSessionId = sessId
-            if !finalOpts.isEmpty {
-                self.applyConfigOptions(finalOpts)
-            }
+        self.agentTitle = resolvedTitle
+        self.statusMessage = "Connected to \(resolvedTitle)"
+        self.currentSessionId = sessId
+        if !finalOpts.isEmpty {
+            self.applyConfigOptions(finalOpts)
         }
 
         for item in toSync {
             if let updated = try? await self.client.setConfigOption(sessionId: sessId, configId: item.configId, value: item.value) {
-                DispatchQueue.main.async {
-                    self.applyConfigOptions(updated)
-                }
+                self.applyConfigOptions(updated)
             }
         }
     }
@@ -493,21 +490,33 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
                         toolName = "replace_file_content"
                     } else if input.keys.contains("TargetFile") || input.keys.contains("CodeContent") || input.keys.contains("new_content") || input.keys.contains("newText") {
                         toolName = "write_to_file"
-                    } else if input.keys.contains("AbsolutePath") || input.keys.contains("path") || input.keys.contains("file_path") {
+                    } else if input.keys.contains("AbsolutePath") || input.keys.contains("absolute_path") || input.keys.contains("path") || input.keys.contains("file_path") || (update.locations?.isEmpty == false) {
                         toolName = "view_file"
                     }
                 }
 
-                let path = Self.extractFirstString(from: input, keys: ["path", "file_path", "filePath", "TargetFile", "target_file", "target_path", "file", "AbsolutePath", "filename", "uri"])
-                let desc = Self.extractFirstString(from: input, keys: ["description", "Description", "Instruction", "instruction", "toolSummary", "summary", "title", "label"])
+                let locationPath = update.locations?.first?.path.trimmingCharacters(in: .whitespacesAndNewlines)
+                let pathFromInput = Self.extractFirstString(from: input, keys: [
+                    "path", "file_path", "filePath", "TargetFile", "target_file", "target_path", "file",
+                    "AbsolutePath", "absolute_path", "filename", "fileName", "uri",
+                    "directory_path", "directoryPath", "directory", "dir", "cwd",
+                    "SearchDirectory", "search_directory", "searchDirectory"
+                ])
+                let path = (locationPath?.isEmpty == false ? locationPath : nil) ?? pathFromInput
+                let desc = Self.extractFirstString(from: input, keys: [
+                    "description", "Description", "Instruction", "instruction",
+                    "toolSummary", "summary", "title", "label", "prompt",
+                    "query", "Query", "pattern", "Pattern", "searchTerm", "search_term"
+                ])
                 let sLineStr = Self.extractFirstString(from: input, keys: ["StartLine", "start_line", "line"])
                 let eLineStr = Self.extractFirstString(from: input, keys: ["EndLine", "end_line"])
-                let sLine = sLineStr.flatMap { Int($0) }
+                let sLine = sLineStr.flatMap { Int($0) } ?? update.locations?.first?.line
                 let eLine = eLineStr.flatMap { Int($0) }
                 let oldContent = Self.extractFirstString(from: input, keys: ["old_content", "oldContent", "oldText", "old_text", "TargetContent", "target_content", "old_string", "old_str", "find", "target", "original_text", "original", "before", "diff", "patch"])
                 let newContent = Self.extractFirstString(from: input, keys: ["new_content", "newContent", "newText", "new_text", "ReplacementContent", "replacement_content", "CodeContent", "new_string", "new_str", "replacement", "content", "text", "insert", "after", "data"])
 
-                let title = path.map { ($0 as NSString).lastPathComponent } ?? update.title ?? desc
+                let cleanedServerTitle = Self.sanitizeServerTitle(update.title)
+                let title = path.map { ($0 as NSString).lastPathComponent } ?? cleanedServerTitle ?? desc ?? update.title
 
                 let isCompleted = update.status == "completed" || update.status == "done" || update.status == "success"
                 let isFailed = update.status == "failed" || update.status == "error"
@@ -518,10 +527,13 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
                     // Update existing tool call
                     _ = self.messages[targetIdx].updateToolCall(id: toolId) { item in
                         if toolName != "tool" { item.toolName = toolName }
+                        if let locs = update.locations, !locs.isEmpty {
+                            item.locations = locs
+                        }
                         if let path {
                             item.path = path
                             item.title = (path as NSString).lastPathComponent
-                        } else if item.title == nil || item.title == "Editing files" {
+                        } else if item.title == nil || item.title == "Editing files" || item.title?.lowercased().hasPrefix("running ") == true {
                             item.title = title
                         }
                         if let desc { item.descriptionText = desc }
@@ -546,6 +558,7 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
                         id: update.toolCallId ?? UUID().uuidString,
                         toolName: toolName,
                         path: path,
+                        locations: update.locations,
                         title: title,
                         descriptionText: desc,
                         startLine: sLine,
@@ -765,5 +778,14 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
             }
         }
         return nil
+    }
+
+    private static func sanitizeServerTitle(_ raw: String?) -> String? {
+        guard let title = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty else { return nil }
+        let lower = title.lowercased()
+        if lower.hasPrefix("running ") || lower.hasPrefix("executing ") {
+            return nil
+        }
+        return title
     }
 }

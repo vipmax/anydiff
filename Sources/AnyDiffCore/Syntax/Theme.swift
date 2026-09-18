@@ -15,6 +15,13 @@ public struct Theme: Identifiable, Sendable {
     public var inputBackground: NSColor {
         isDark ? excerptHeaderBackground : .white
     }
+    /// Accent and focus glow color for controls and inputs derived from the theme palette.
+    public var focusColor: NSColor {
+        if id == "github-dark" {
+            return diffModifiedGutter
+        }
+        return function
+    }
     public let currentLineBackground: NSColor
     public let selectionBackground: NSColor
     public let excerptHeaderBackground: NSColor
@@ -127,7 +134,7 @@ public struct Theme: Identifiable, Sendable {
         gutterBackground: NSColor(red: 0.09, green: 0.10, blue: 0.12, alpha: 1.0),
         currentLineBackground: NSColor(red: 0.15, green: 0.16, blue: 0.19, alpha: 1.0),
         selectionBackground: NSColor(red: 0.22, green: 0.28, blue: 0.40, alpha: 0.7),
-        excerptHeaderBackground: NSColor(red: 0.14, green: 0.15, blue: 0.18, alpha: 1.0),
+        excerptHeaderBackground: NSColor(red: 0.11, green: 0.12, blue: 0.14, alpha: 1.0),
         excerptHeaderBorder: NSColor(red: 0.20, green: 0.22, blue: 0.26, alpha: 1.0),
         foreground: NSColor(red: 0.85, green: 0.87, blue: 0.90, alpha: 1.0),
         gutterForeground: NSColor(red: 0.40, green: 0.44, blue: 0.50, alpha: 1.0),
@@ -159,7 +166,7 @@ public struct Theme: Identifiable, Sendable {
         gutterBackground: NSColor(red: 0.08, green: 0.09, blue: 0.15, alpha: 1.0),
         currentLineBackground: NSColor(red: 0.16, green: 0.18, blue: 0.27, alpha: 1.0),
         selectionBackground: NSColor(red: 0.24, green: 0.28, blue: 0.45, alpha: 0.7),
-        excerptHeaderBackground: NSColor(red: 0.13, green: 0.14, blue: 0.23, alpha: 1.0),
+        excerptHeaderBackground: NSColor(red: 0.10, green: 0.11, blue: 0.18, alpha: 1.0),
         excerptHeaderBorder: NSColor(red: 0.22, green: 0.25, blue: 0.38, alpha: 1.0),
         foreground: NSColor(red: 0.75, green: 0.80, blue: 0.95, alpha: 1.0),
         gutterForeground: NSColor(red: 0.35, green: 0.38, blue: 0.52, alpha: 1.0),
@@ -191,7 +198,7 @@ public struct Theme: Identifiable, Sendable {
         gutterBackground: NSColor(red: 0.04, green: 0.06, blue: 0.08, alpha: 1.0),
         currentLineBackground: NSColor(red: 0.10, green: 0.13, blue: 0.16, alpha: 1.0),
         selectionBackground: NSColor(red: 0.18, green: 0.30, blue: 0.48, alpha: 0.7),
-        excerptHeaderBackground: NSColor(red: 0.09, green: 0.11, blue: 0.14, alpha: 1.0),
+        excerptHeaderBackground: NSColor(red: 0.05, green: 0.07, blue: 0.09, alpha: 1.0),
         excerptHeaderBorder: NSColor(red: 0.18, green: 0.22, blue: 0.26, alpha: 1.0),
         foreground: NSColor(red: 0.90, green: 0.92, blue: 0.95, alpha: 1.0),
         gutterForeground: NSColor(red: 0.40, green: 0.44, blue: 0.50, alpha: 1.0),
@@ -223,7 +230,7 @@ public struct Theme: Identifiable, Sendable {
         gutterBackground: NSColor(red: 0.133, green: 0.137, blue: 0.150, alpha: 1.0),
         currentLineBackground: NSColor(red: 0.190, green: 0.195, blue: 0.215, alpha: 1.0),
         selectionBackground: NSColor(red: 0.280, green: 0.360, blue: 0.500, alpha: 0.65),
-        excerptHeaderBackground: NSColor(red: 0.185, green: 0.192, blue: 0.216, alpha: 1.0),
+        excerptHeaderBackground: NSColor(red: 0.158, green: 0.162, blue: 0.178, alpha: 1.0),
         excerptHeaderBorder: NSColor(red: 0.245, green: 0.255, blue: 0.285, alpha: 1.0),
         foreground: NSColor(red: 0.90, green: 0.92, blue: 0.95, alpha: 1.0),
         gutterForeground: NSColor(red: 0.48, green: 0.52, blue: 0.58, alpha: 1.0),

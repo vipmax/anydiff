@@ -1077,19 +1077,22 @@ public struct ACPPermissionToolCall: Codable, Sendable {
     public let kind: String?
     public let status: String?
     public let rawInput: [String: AnyCodableSendable]?
+    public let locations: [ACPToolCallLocation]?
 
     public init(
         toolCallId: String,
         title: String? = nil,
         kind: String? = nil,
         status: String? = nil,
-        rawInput: [String: AnyCodableSendable]? = nil
+        rawInput: [String: AnyCodableSendable]? = nil,
+        locations: [ACPToolCallLocation]? = nil
     ) {
         self.toolCallId = toolCallId
         self.title = title
         self.kind = kind
         self.status = status
         self.rawInput = rawInput
+        self.locations = locations
     }
 
     enum CodingKeys: String, CodingKey {
@@ -1100,6 +1103,7 @@ public struct ACPPermissionToolCall: Codable, Sendable {
         case status
         case rawInput
         case raw_input
+        case locations
     }
 
     public init(from decoder: Decoder) throws {
@@ -1117,6 +1121,7 @@ public struct ACPPermissionToolCall: Codable, Sendable {
         self.status = try? container.decode(String.self, forKey: .status)
         self.rawInput = (try? container.decode([String: AnyCodableSendable].self, forKey: .rawInput))
             ?? (try? container.decode([String: AnyCodableSendable].self, forKey: .raw_input))
+        self.locations = try? container.decode([ACPToolCallLocation].self, forKey: .locations)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -1126,6 +1131,47 @@ public struct ACPPermissionToolCall: Codable, Sendable {
         try container.encodeIfPresent(kind, forKey: .kind)
         try container.encodeIfPresent(status, forKey: .status)
         try container.encodeIfPresent(rawInput, forKey: .rawInput)
+        try container.encodeIfPresent(locations, forKey: .locations)
+    }
+}
+
+public struct ACPToolCallLocation: Codable, Sendable, Equatable {
+    public let path: String
+    public let line: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case path
+        case uri
+        case file
+        case line
+    }
+
+    public init(path: String, line: Int? = nil) {
+        self.path = path
+        self.line = line
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let p = (try? container.decode(String.self, forKey: .path))
+            ?? (try? container.decode(String.self, forKey: .uri))
+            ?? (try? container.decode(String.self, forKey: .file))
+            ?? ""
+        self.path = p
+
+        if let lInt = try? container.decode(Int.self, forKey: .line) {
+            self.line = lInt
+        } else if let lStr = try? container.decode(String.self, forKey: .line), let lInt = Int(lStr) {
+            self.line = lInt
+        } else {
+            self.line = nil
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(path, forKey: .path)
+        try container.encodeIfPresent(line, forKey: .line)
     }
 }
 
@@ -1188,6 +1234,7 @@ public struct ACPSessionUpdateContent: Codable, Sendable {
     public let used: Int?
     public let status: String?
     public let size: Int?
+    public let locations: [ACPToolCallLocation]?
 
     public var effectiveType: String {
         type ?? "message_chunk"
@@ -1240,6 +1287,7 @@ public struct ACPSessionUpdateContent: Codable, Sendable {
         case state
         case used
         case size
+        case locations
     }
 
     public init(
@@ -1256,7 +1304,8 @@ public struct ACPSessionUpdateContent: Codable, Sendable {
         isError: Bool? = nil,
         status: String? = nil,
         used: Int? = nil,
-        size: Int? = nil
+        size: Int? = nil,
+        locations: [ACPToolCallLocation]? = nil
     ) {
         self.type = type
         self.kind = kind
@@ -1271,6 +1320,7 @@ public struct ACPSessionUpdateContent: Codable, Sendable {
         self.status = status
         self.used = used
         self.size = size
+        self.locations = locations
     }
 
     public init(from decoder: Decoder) throws {
@@ -1288,12 +1338,24 @@ public struct ACPSessionUpdateContent: Codable, Sendable {
 
         self.delta = try? container.decode(String.self, forKey: .delta)
 
+        self.locations = try? container.decode([ACPToolCallLocation].self, forKey: .locations)
+
         // 1. Tool Input decoding
         var extractedInput: [String: AnyCodableSendable] = [:]
         let inputKeys: [CodingKeys] = [.rawInput, .raw_input, .toolInput, .tool_input, .input, .arguments, .parameters, .params]
         for key in inputKeys {
             if let raw = try? container.decode([String: AnyCodableSendable].self, forKey: key) {
                 extractedInput.merge(raw) { (_, new) in new }
+            }
+        }
+
+        // Populate path & line from locations if not already present in input
+        if let firstLoc = self.locations?.first {
+            if extractedInput["path"] == nil && !firstLoc.path.isEmpty {
+                extractedInput["path"] = AnyCodableSendable(firstLoc.path)
+            }
+            if let line = firstLoc.line, extractedInput["line"] == nil {
+                extractedInput["line"] = AnyCodableSendable(line)
             }
         }
 
@@ -1375,6 +1437,7 @@ public struct ACPSessionUpdateContent: Codable, Sendable {
         try container.encodeIfPresent(status, forKey: .status)
         try container.encodeIfPresent(used, forKey: .used)
         try container.encodeIfPresent(size, forKey: .size)
+        try container.encodeIfPresent(locations, forKey: .locations)
     }
 
     private static func extractStringResult(from container: KeyedDecodingContainer<CodingKeys>, keys: [CodingKeys]) -> String? {

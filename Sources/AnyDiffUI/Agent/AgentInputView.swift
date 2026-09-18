@@ -560,17 +560,17 @@ public struct AgentInputView: View {
                     .fill(Color(theme.inputBackground))
                     .overlay(
                         RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .fill(accentColor.opacity(isInputFocused ? 0.035 : 0))
+                            .fill(Color(theme.focusColor).opacity(isInputFocused ? 0.035 : 0))
                     )
                     .overlay(
                         RoundedRectangle(cornerRadius: 18, style: .continuous)
                             .stroke(
-                                isInputFocused ? accentColor.opacity(0.62) : Color(theme.excerptHeaderBorder).opacity(0.8),
+                                isInputFocused ? Color(theme.focusColor).opacity(0.65) : Color(theme.excerptHeaderBorder).opacity(0.80),
                                 lineWidth: isInputFocused ? 1.4 : 1.2
                             )
                     )
                     .shadow(
-                        color: isInputFocused ? accentColor.opacity(0.16) : .clear,
+                        color: isInputFocused ? Color(theme.focusColor).opacity(0.20) : .clear,
                         radius: isInputFocused ? 14 : 0,
                         y: isInputFocused ? 2 : 0
                     )

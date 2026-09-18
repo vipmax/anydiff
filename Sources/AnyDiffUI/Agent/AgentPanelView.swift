@@ -210,8 +210,13 @@ public struct AgentPanelView: View {
     private var messagesArea: some View {
         ZStack {
             if agentManager.messages.isEmpty {
-                emptyStateView
-                    .transition(.opacity)
+                if agentManager.status == .connecting || agentManager.statusMessage == "Loading session..." {
+                    loadingSessionStateView
+                        .transition(.opacity)
+                } else {
+                    emptyStateView
+                        .transition(.opacity)
+                }
             } else {
                 AgentChatScrollRepresentable(
                     messages: agentManager.messages,
@@ -254,6 +259,19 @@ public struct AgentPanelView: View {
             return .systemAction
         })
         .animation(.easeInOut(duration: 0.14), value: agentManager.messages.isEmpty)
+    }
+
+    @ViewBuilder
+    private var loadingSessionStateView: some View {
+        VStack(spacing: 12) {
+            ProgressView()
+                .scaleEffect(0.9)
+
+            Text(agentManager.statusMessage ?? "Loading session...")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(Color(theme.gutterForeground))
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     @ViewBuilder

@@ -375,4 +375,79 @@ final class ACPProtocolTests: XCTestCase {
         XCTAssertFalse(stringOpt.isBoolean)
         XCTAssertTrue(stringOpt.boolValue)
     }
+
+    func testToolCallLocationsDecodingInSessionUpdate() throws {
+        let json = """
+        {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "sess-loc-1",
+                "update": {
+                    "toolCallId": "call_141203",
+                    "title": "Running view_file",
+                    "kind": "read",
+                    "status": "in_progress",
+                    "locations": [
+                        {
+                            "path": "/Users/max/dev/anydiff-swift/Sources/AnyDiffUI/Agent/AgentChatScrollView.swift",
+                            "line": 5970
+                        }
+                    ],
+                    "rawInput": {
+                        "absolute_path": "/Users/max/dev/anydiff-swift/Sources/AnyDiffUI/Agent/AgentChatScrollView.swift",
+                        "start_line": 5970,
+                        "end_line": 6040
+                    },
+                    "sessionUpdate": "tool_call"
+                }
+            }
+        }
+        """.data(using: .utf8)!
+
+        let decoder = JSONDecoder()
+        let notif = try decoder.decode(JSONRPCNotification<ACPSessionUpdateNotificationParams>.self, from: json)
+        let update = try XCTUnwrap(notif.params?.update)
+
+        XCTAssertEqual(update.toolCallId, "call_141203")
+        XCTAssertEqual(update.locations?.count, 1)
+        XCTAssertEqual(update.locations?.first?.path, "/Users/max/dev/anydiff-swift/Sources/AnyDiffUI/Agent/AgentChatScrollView.swift")
+        XCTAssertEqual(update.locations?.first?.line, 5970)
+
+        let item = ToolCallItem(
+            id: update.toolCallId ?? "call-1",
+            toolName: update.kind ?? "read",
+            locations: update.locations,
+            title: update.title,
+            startLine: 5970,
+            endLine: 6040
+        )
+        XCTAssertEqual(item.path, "/Users/max/dev/anydiff-swift/Sources/AnyDiffUI/Agent/AgentChatScrollView.swift")
+        XCTAssertEqual(item.startLine, 5970)
+        XCTAssertEqual(item.endLine, 6040)
+        XCTAssertEqual(item.displayTitle, "AgentChatScrollView.swift:5970-6040")
+    }
+
+    func testPermissionToolCallWithLocations() throws {
+        let json = """
+        {
+            "toolCallId": "call-perm-loc",
+            "title": "Edit AgentMessageRowView",
+            "kind": "edit",
+            "status": "pending",
+            "locations": [
+                {
+                    "path": "/path/to/AgentMessageRowView.swift",
+                    "line": 42
+                }
+            ]
+        }
+        """.data(using: .utf8)!
+
+        let decoded = try JSONDecoder().decode(ACPPermissionToolCall.self, from: json)
+        XCTAssertEqual(decoded.toolCallId, "call-perm-loc")
+        XCTAssertEqual(decoded.locations?.count, 1)
+        XCTAssertEqual(decoded.locations?.first?.path, "/path/to/AgentMessageRowView.swift")
+        XCTAssertEqual(decoded.locations?.first?.line, 42)
+    }
 }

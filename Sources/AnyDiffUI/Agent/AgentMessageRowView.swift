@@ -41,7 +41,7 @@ public struct AgentMessageRowView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 6)
-        .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .overlay {
             if previewImageIndex != nil && !message.images.isEmpty {
                 AgentImagePreviewModalView(
@@ -56,62 +56,54 @@ public struct AgentMessageRowView: View {
 
     @ViewBuilder
     private var userBubble: some View {
-        HStack {
-            Spacer(minLength: 40)
-            VStack(alignment: .trailing, spacing: 6) {
-                if !message.images.isEmpty {
-                    userImagesView
-                }
-                if !message.content.isEmpty {
-                    Text(message.content)
-                        .font(.system(size: 13, weight: .regular))
-                        .foregroundColor(.white)
-                        .lineLimit(isCollapsibleUserText && !isUserTextExpanded ? 8 : nil)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                if isCollapsibleUserText {
-                    Button(action: {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            isUserTextExpanded.toggle()
-                        }
-                    }) {
-                        HStack(spacing: 4) {
-                            Text(isUserTextExpanded ? "Show less" : "Show more")
-                            Image(systemName: isUserTextExpanded ? "chevron.up" : "chevron.down")
-                                .font(.system(size: 9, weight: .semibold))
-                        }
-                        .font(.system(size: 11.5, weight: .medium))
-                        .foregroundColor(.white.opacity(0.95))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(
-                            RoundedRectangle(cornerRadius: 5)
-                                .fill(isHoveringExpandButton ? Color.white.opacity(0.15) : Color.clear)
-                        )
+        VStack(alignment: .leading, spacing: 6) {
+            if !message.images.isEmpty {
+                userImagesView
+            }
+            if !message.content.isEmpty {
+                Text(message.content)
+                    .font(.system(size: 13, weight: .regular))
+                    .foregroundColor(Color(theme.foreground))
+                    .lineLimit(isCollapsibleUserText && !isUserTextExpanded ? 8 : nil)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if isCollapsibleUserText {
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        isUserTextExpanded.toggle()
                     }
-                    .buttonStyle(.plain)
-                    .onHover { hovering in
-                        isHoveringExpandButton = hovering
+                }) {
+                    HStack(spacing: 4) {
+                        Text(isUserTextExpanded ? "Show less" : "Show more")
+                        Image(systemName: isUserTextExpanded ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 9, weight: .semibold))
                     }
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundColor(Color(theme.gutterForeground))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(
+                        RoundedRectangle(cornerRadius: 5)
+                            .fill(isHoveringExpandButton ? Color(theme.foreground).opacity(0.10) : Color.clear)
+                    )
+                }
+                .buttonStyle(.plain)
+                .onHover { hovering in
+                    isHoveringExpandButton = hovering
                 }
             }
-            .padding(.horizontal, message.images.isEmpty ? 14 : 0)
-            .padding(.vertical, message.images.isEmpty ? 9 : 0)
-            .background {
-                if message.images.isEmpty {
-                    RoundedRectangle(cornerRadius: 13)
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    Color(red: 0.10, green: 0.50, blue: 1.0),
-                                    Color(red: 0.05, green: 0.42, blue: 0.94)
-                                ],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                        )
-                        .shadow(color: Color(red: 0.05, green: 0.40, blue: 0.95).opacity(0.40), radius: 6, x: 0, y: 2)
-                }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, message.images.isEmpty ? 14 : 0)
+        .padding(.vertical, message.images.isEmpty ? 9 : 0)
+        .background {
+            if message.images.isEmpty {
+                RoundedRectangle(cornerRadius: 13)
+                    .fill(Color(theme.inputBackground))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 13)
+                            .fill(Color(theme.focusColor).opacity(0.12))
+                    )
             }
         }
     }

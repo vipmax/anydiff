@@ -26,6 +26,7 @@ public struct ToolCallItem: Identifiable, Codable, Sendable, Equatable {
     public let id: String
     public var toolName: String
     public var path: String?
+    public var locations: [ACPToolCallLocation]?
     public var title: String?
     public var descriptionText: String?
     public var startLine: Int?
@@ -42,6 +43,7 @@ public struct ToolCallItem: Identifiable, Codable, Sendable, Equatable {
         id: String = UUID().uuidString,
         toolName: String,
         path: String? = nil,
+        locations: [ACPToolCallLocation]? = nil,
         title: String? = nil,
         descriptionText: String? = nil,
         startLine: Int? = nil,
@@ -56,10 +58,11 @@ public struct ToolCallItem: Identifiable, Codable, Sendable, Equatable {
     ) {
         self.id = id
         self.toolName = toolName
-        self.path = path
+        self.locations = locations
+        self.path = path ?? locations?.first?.path
         self.title = title
         self.descriptionText = descriptionText
-        self.startLine = startLine
+        self.startLine = startLine ?? locations?.first?.line
         self.endLine = endLine
         self.oldContent = oldContent
         self.newContent = newContent
@@ -139,12 +142,24 @@ public struct ToolCallItem: Identifiable, Codable, Sendable, Equatable {
         if shortToolName == "Run" && (toolName.starts(with: "git ") || toolName.contains(" ") || toolName.contains("-") || ["just", "make", "xcodebuild", "swift", "swiftc", "cargo", "npm", "pnpm", "yarn", "rg", "grep", "find", "bash", "sh", "zsh", "python", "python3"].contains(toolName.lowercased())) {
             return toolName
         }
+        if shortToolName == "Search", let desc = descriptionText, !desc.isEmpty {
+            return desc
+        }
         if let p = path, !p.isEmpty {
-            return (p as NSString).lastPathComponent
+            let filename = (p as NSString).lastPathComponent
+            if let s = startLine {
+                if let e = endLine, e > s {
+                    return "\(filename):\(s)-\(e)"
+                }
+                return "\(filename):\(s)"
+            }
+            return filename
         }
         if let t = title,
            !t.isEmpty,
            t != toolName,
+           !t.lowercased().hasPrefix("running "),
+           !t.lowercased().hasPrefix("executing "),
            !(shortToolName == "Run" && t.lowercased().hasPrefix("exit_code:")) {
             return t
         }

@@ -565,12 +565,20 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
         workingDirectory: String
     ) -> AgentSessionItem {
         if let existing = sessions.first(where: {
-            if let acp = $0.manager as? ACPAgentSessionManager, acp.currentSessionId == savedSession.sessionId {
+            if let acp = $0.manager as? ACPAgentSessionManager,
+               (acp.currentSessionId == savedSession.sessionId || acp.targetLoadSessionId == savedSession.sessionId) {
                 return true
             }
             return false
         }) {
+            if existing.manager.messages.isEmpty, let acp = existing.manager as? ACPAgentSessionManager {
+                acp.prepareAgent(
+                    workingDirectory: normalizedWorkingDirectory(workingDirectory),
+                    loadSessionId: savedSession.sessionId
+                )
+            }
             selectSession(id: existing.id)
+            showStartScreen = false
             return existing
         }
 

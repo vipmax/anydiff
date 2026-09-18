@@ -2652,7 +2652,7 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
     public var onToggle: (() -> Void)?
     public var onReview: ((AgentEditedFilesSummary) -> Void)?
     private weak var parentCell: AgentNativeMessageCell?
-    private var cachedParentHunk: DiffHunk?
+    private var cachedParentHunks: [DiffHunk]?
     private var cachedParentHunkDataCount: Int = -1
     private let headerContainer = AgentNativeFlippedView()
     private let headerButton = NSButton()
@@ -2706,7 +2706,7 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    private func hunkFromParentMessage(for item: ToolCallItem) -> DiffHunk? {
+    private func hunksFromParentMessage(for item: ToolCallItem) -> [DiffHunk]? {
         guard let rawData = parentCell?.message.editedFilesSummary?.rawDiffData,
               !rawData.isEmpty,
               let itemPath = item.path ?? (item.shortToolName == "Edit" || item.shortToolName == "Create" ? (item.displayTitle.isEmpty ? nil : item.displayTitle) : nil),
@@ -2714,51 +2714,44 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
             return nil
         }
         if rawData.count == cachedParentHunkDataCount {
-            return cachedParentHunk
+            return cachedParentHunks
         }
         let parsedFiles = GitDiffParser.shared.parse(data: rawData)
         guard let matchedFile = parsedFiles.first(where: {
             let p = $0.displayPath
             return p == itemPath || p.hasSuffix(itemPath) || itemPath.hasSuffix(p)
         }), !matchedFile.hunks.isEmpty else {
-            cachedParentHunk = nil
+            cachedParentHunks = nil
             cachedParentHunkDataCount = rawData.count
             return nil
         }
-        let resultHunk: DiffHunk
-        if matchedFile.hunks.count == 1 {
-            resultHunk = matchedFile.hunks[0]
-        } else {
-            let allLines = matchedFile.hunks.flatMap(\.lines)
-            let totalAdds = matchedFile.hunks.reduce(0) { $0 + $1.addedLineCount }
-            let totalDels = matchedFile.hunks.reduce(0) { $0 + $1.deletedLineCount }
-            resultHunk = DiffHunk(
-                oldRange: 1..<(totalDels + 1),
-                newRange: 1..<(totalAdds + 1),
-                header: "@@ -1,\(totalDels) +1,\(totalAdds) @@",
-                lines: allLines,
-                status: .modified
-            )
-        }
-        cachedParentHunk = resultHunk
+        cachedParentHunks = matchedFile.hunks
         cachedParentHunkDataCount = rawData.count
-        return resultHunk
+        return matchedFile.hunks
+    }
+
+    private func hunkFromParentMessage(for item: ToolCallItem) -> DiffHunk? {
+        hunksFromParentMessage(for: item)?.first
     }
 
     private var effectiveAdditionsCount: Int? {
+        if let files = parentCell?.message.editedFilesSummary?.files,
+           let itemPath = item.path ?? (item.displayTitle.isEmpty ? nil : item.displayTitle),
+           let file = files.first(where: { $0.path == itemPath || $0.path.hasSuffix(itemPath) || itemPath.hasSuffix($0.path) }) {
+            return file.additions
+        }
         if let adds = item.additionsCount { return adds }
-        guard item.shortToolName == "Edit" || item.shortToolName == "Create",
-              let itemPath = item.path ?? (item.displayTitle.isEmpty ? nil : item.displayTitle),
-              let files = parentCell?.message.editedFilesSummary?.files else { return nil }
-        return files.first(where: { $0.path == itemPath || $0.path.hasSuffix(itemPath) || itemPath.hasSuffix($0.path) })?.additions
+        return nil
     }
 
     private var effectiveDeletionsCount: Int? {
+        if let files = parentCell?.message.editedFilesSummary?.files,
+           let itemPath = item.path ?? (item.displayTitle.isEmpty ? nil : item.displayTitle),
+           let file = files.first(where: { $0.path == itemPath || $0.path.hasSuffix(itemPath) || itemPath.hasSuffix($0.path) }) {
+            return file.deletions
+        }
         if let dels = item.deletionsCount { return dels }
-        guard item.shortToolName == "Edit" || item.shortToolName == "Create",
-              let itemPath = item.path ?? (item.displayTitle.isEmpty ? nil : item.displayTitle),
-              let files = parentCell?.message.editedFilesSummary?.files else { return nil }
-        return files.first(where: { $0.path == itemPath || $0.path.hasSuffix(itemPath) || itemPath.hasSuffix($0.path) })?.deletions
+        return nil
     }
 
     public var hasExpandableContent: Bool {
@@ -2768,7 +2761,7 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
     private func hasExpandableContent(for item: ToolCallItem) -> Bool {
         if item.oldContent != nil || item.newContent != nil { return true }
         if item.shortToolName == "Edit" || item.shortToolName == "Create" {
-            return hunkFromParentMessage(for: item) != nil
+            return hunksFromParentMessage(for: item) != nil
         }
         if item.shortToolName == "Run" { return true }
         if let cmd = item.command, !cmd.isEmpty { return true }
@@ -2840,7 +2833,7 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
         theme = newTheme
 
         cachedParentHunkDataCount = -1
-        cachedParentHunk = nil
+        cachedParentHunks = nil
         cachedLayoutWidth = -1
         cachedLayoutHeight = 0
         cachedDescriptionHeightWidth = -1
@@ -3207,27 +3200,110 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
     private func installVirtualizedDetailView() {
         guard virtualizedDetailView == nil else { return }
 
-        let content = virtualizedDetailContent()
-        let lines = content.lines
-        let buffer = Buffer(
-            filePath: item.path ?? item.displayTitle,
-            lines: lines,
-            language: Buffer.detectLanguage(for: item.path ?? item.displayTitle),
-            baselineLines: content.hunk == nil ? [] : nil,
-            startLineNumber: 1,
-            diskFileLineCount: lines.count
-        )
         let multiBuffer = MultiBuffer()
-        multiBuffer.setContentMode(content.hunk == nil ? .text : .diff)
-        multiBuffer.addBuffer(buffer)
-        multiBuffer.addExcerpt(Excerpt(
-            bufferId: buffer.id,
-            filePath: buffer.filePath,
-            fileStatus: .modified,
-            bufferRange: 0..<buffer.lineCount,
-            hunk: content.hunk,
-            isFileStart: true
-        ))
+        let editorPath = item.path ?? item.displayTitle
+        let language = Buffer.detectLanguage(for: editorPath)
+
+        // 1. Prefer Git diff hunks from parent message if available (exact match with main review diff)
+        if (item.shortToolName == "Edit" || item.shortToolName == "Create"),
+           let parentHunks = hunksFromParentMessage(for: item), !parentHunks.isEmpty {
+            multiBuffer.setContentMode(.diff)
+            for (hIdx, hunk) in parentHunks.enumerated() {
+                let startLine = hunk.newRange.lowerBound
+                let newFileLines = hunk.lines.filter { $0.kind == .added || $0.kind == .unchanged }.map(\.text)
+                let oldBaselineLines = hunk.lines.filter { $0.kind == .deleted || $0.kind == .unchanged }.map(\.text)
+                let buffer = Buffer(
+                    filePath: editorPath,
+                    lines: newFileLines,
+                    language: language,
+                    baselineLines: oldBaselineLines,
+                    startLineNumber: startLine,
+                    diskFileLineCount: newFileLines.count
+                )
+                multiBuffer.addBuffer(buffer)
+                multiBuffer.addExcerpt(Excerpt(
+                    bufferId: buffer.id,
+                    filePath: buffer.filePath,
+                    fileStatus: .modified,
+                    bufferRange: 0..<buffer.lineCount,
+                    hunk: hunk,
+                    isFileStart: hIdx == 0
+                ))
+            }
+        } else if let new = item.newContent, let old = item.oldContent {
+            // 2. Diff old and new content with real hunks and context lines
+            let oLines = old.components(separatedBy: "\n")
+            let nLines = new.components(separatedBy: "\n")
+            let hunks = LineDiffEngine.shared.diff(oldLines: oLines, newLines: nLines, contextLines: 3, enablePrefixSuffixPruning: false)
+            if !hunks.isEmpty {
+                multiBuffer.setContentMode(.diff)
+                for (hIdx, hunk) in hunks.enumerated() {
+                    let startLine = hunk.newRange.lowerBound
+                    let newFileLines = hunk.lines.filter { $0.kind == .added || $0.kind == .unchanged }.map(\.text)
+                    let oldBaselineLines = hunk.lines.filter { $0.kind == .deleted || $0.kind == .unchanged }.map(\.text)
+                    let buffer = Buffer(
+                        filePath: editorPath,
+                        lines: newFileLines,
+                        language: language,
+                        baselineLines: oldBaselineLines,
+                        startLineNumber: startLine,
+                        diskFileLineCount: newFileLines.count
+                    )
+                    multiBuffer.addBuffer(buffer)
+                    multiBuffer.addExcerpt(Excerpt(
+                        bufferId: buffer.id,
+                        filePath: buffer.filePath,
+                        fileStatus: .modified,
+                        bufferRange: 0..<buffer.lineCount,
+                        hunk: hunk,
+                        isFileStart: hIdx == 0
+                    ))
+                }
+            } else {
+                // When there are no differences (e.g. identical content / no-op edit),
+                // display the file as normal plain text without diff markings
+                let lines = nLines.isEmpty ? [""] : nLines
+                let buffer = Buffer(
+                    filePath: editorPath,
+                    lines: lines,
+                    language: language,
+                    baselineLines: [],
+                    startLineNumber: 1,
+                    diskFileLineCount: lines.count
+                )
+                multiBuffer.setContentMode(.text)
+                multiBuffer.addBuffer(buffer)
+                multiBuffer.addExcerpt(Excerpt(
+                    bufferId: buffer.id,
+                    filePath: buffer.filePath,
+                    fileStatus: .unmodified,
+                    bufferRange: 0..<buffer.lineCount,
+                    hunk: nil,
+                    isFileStart: true
+                ))
+            }
+        } else {
+            // 3. Fallback for command outputs, tool summaries, single texts
+            let content = virtualizedDetailContent()
+            let buffer = Buffer(
+                filePath: editorPath,
+                lines: content.lines,
+                language: language,
+                baselineLines: content.hunk == nil ? [] : nil,
+                startLineNumber: 1,
+                diskFileLineCount: content.lines.count
+            )
+            multiBuffer.setContentMode(content.hunk == nil ? .text : .diff)
+            multiBuffer.addBuffer(buffer)
+            multiBuffer.addExcerpt(Excerpt(
+                bufferId: buffer.id,
+                filePath: buffer.filePath,
+                fileStatus: .modified,
+                bufferRange: 0..<buffer.lineCount,
+                hunk: content.hunk,
+                isFileStart: true
+            ))
+        }
 
         let displayMap = DisplayMap(
             multiBuffer: multiBuffer,
@@ -3252,66 +3328,30 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
     }
 
     private func virtualizedDetailContent() -> (lines: [String], hunk: DiffHunk?) {
+        if (item.shortToolName == "Edit" || item.shortToolName == "Create"),
+           let parentHunks = hunksFromParentMessage(for: item), let firstHunk = parentHunks.first {
+            let lines = firstHunk.lines.filter { $0.kind != .deleted }.map(\.text)
+            return (lines.isEmpty ? [""] : lines, firstHunk)
+        }
+
         if let new = item.newContent, let old = item.oldContent {
             let oLines = old.components(separatedBy: "\n")
             let nLines = new.components(separatedBy: "\n")
-            let diff = LineDiffEngine.shared.diffLines(oldLines: oLines, newLines: nLines)
-            let changedDiff = diff.filter { $0.kind != .unchanged }
-            if !changedDiff.isEmpty {
-                let adds = changedDiff.filter { $0.kind == .added }.count
-                let dels = changedDiff.filter { $0.kind == .deleted }.count
-                let hunk = DiffHunk(
-                    oldRange: 1..<(dels + 1),
-                    newRange: 1..<(adds + 1),
-                    header: "@@ -1,\(dels) +1,\(adds) @@",
-                    lines: changedDiff,
-                    status: .modified
-                )
-                let nonDeleted = changedDiff.filter { $0.kind != .deleted }.map(\.text)
-                return (nonDeleted.isEmpty ? [""] : nonDeleted, hunk)
+            let hunks = LineDiffEngine.shared.diff(oldLines: oLines, newLines: nLines, contextLines: 3, enablePrefixSuffixPruning: false)
+            if let firstHunk = hunks.first {
+                let lines = firstHunk.lines.filter { $0.kind != .deleted }.map(\.text)
+                return (lines.isEmpty ? [""] : lines, firstHunk)
             }
+            return (nLines.isEmpty ? [""] : nLines, nil)
         }
 
-        var diffLines: [DiffLine] = []
-
-        if let old = item.oldContent, !old.isEmpty {
-            diffLines.append(contentsOf: old
-                .split(separator: "\n", omittingEmptySubsequences: false)
-                .prefix(10_000)
-                .enumerated()
-                .map { index, line in
-                    DiffLine(kind: .deleted, text: String(line), oldLineNumber: index + 1)
-                })
+        if let new = item.newContent {
+            let lines = new.components(separatedBy: "\n")
+            return (lines.isEmpty ? [""] : lines, nil)
         }
-        if let new = item.newContent, !new.isEmpty {
-            diffLines.append(contentsOf: new
-                .split(separator: "\n", omittingEmptySubsequences: false)
-                .prefix(10_000)
-                .enumerated()
-                .map { index, line in
-                    DiffLine(kind: .added, text: String(line), newLineNumber: index + 1)
-                })
-        }
-
-        if !diffLines.isEmpty {
-            let oldCount = diffLines.reduce(into: 0) { count, line in
-                if line.kind == .deleted { count += 1 }
-            }
-            let newCount = diffLines.reduce(into: 0) { count, line in
-                if line.kind != .deleted { count += 1 }
-            }
-            let hunk = DiffHunk(
-                oldRange: 1..<(oldCount + 1),
-                newRange: 1..<(newCount + 1),
-                header: "@@ -1,\(oldCount) +1,\(newCount) @@",
-                lines: diffLines,
-                status: .modified
-            )
-            let nonDeleted = diffLines.filter { $0.kind != .deleted }.map(\.text)
-            return (
-                nonDeleted.isEmpty ? [""] : nonDeleted,
-                hunk
-            )
+        if let old = item.oldContent {
+            let lines = old.components(separatedBy: "\n")
+            return (lines.isEmpty ? [""] : lines, nil)
         }
 
         // Fallback for file edits when old/new content wasn't captured directly:
@@ -4378,10 +4418,8 @@ public final class AgentNativeMessageCell: NSView {
         userBubbleView.layer?.cornerRadius = 13
         userBubbleView.layer?.borderWidth = 0.0
         userBubbleView.layer?.masksToBounds = false
-        userBubbleView.layer?.shadowColor = NSColor(srgbRed: 0.05, green: 0.42, blue: 0.96, alpha: 0.50).cgColor
-        userBubbleView.layer?.shadowOpacity = 0.55
-        userBubbleView.layer?.shadowOffset = CGSize(width: 0, height: -2)
-        userBubbleView.layer?.shadowRadius = 8
+        userBubbleView.layer?.shadowColor = nil
+        userBubbleView.layer?.shadowOpacity = 0.0
 
         userTextView.parentCell = self
         userTextView.wantsLayer = true
@@ -4432,15 +4470,17 @@ public final class AgentNativeMessageCell: NSView {
 
         let style = NSMutableParagraphStyle()
         style.alignment = .center
+        let textColor = NSColor(cgColor: theme.gutterForeground.cgColor) ?? .secondaryLabelColor
         let attr = NSAttributedString(
             string: title + " ",
             attributes: [
                 .font: NSFont.systemFont(ofSize: 11.5, weight: .medium),
-                .foregroundColor: NSColor.white.withAlphaComponent(0.95),
+                .foregroundColor: textColor.withAlphaComponent(0.9),
                 .paragraphStyle: style
             ]
         )
         userExpandButton.attributedTitle = attr
+        userExpandButton.contentTintColor = textColor.withAlphaComponent(0.9)
     }
 
     public func configure(
@@ -4478,9 +4518,16 @@ public final class AgentNativeMessageCell: NSView {
             userBubbleView.isHidden = false
             thoughtHeaderButton.isHidden = true
             thoughtTextView.isHidden = true
-            userBubbleView.layer?.backgroundColor = NSColor(srgbRed: 0.07, green: 0.46, blue: 0.96, alpha: 0.94).cgColor
+
+            let focusCol = theme.focusColor.usingColorSpace(.deviceRGB) ?? theme.focusColor
+            let inputBg = theme.inputBackground.usingColorSpace(.deviceRGB) ?? theme.inputBackground
+            let bg = inputBg.blended(withFraction: 0.12, of: focusCol) ?? inputBg
+
+            userBubbleView.layer?.backgroundColor = bg.cgColor
             userBubbleView.layer?.borderWidth = 0.0
             userBubbleView.layer?.borderColor = nil
+            userBubbleView.layer?.shadowColor = nil
+            userBubbleView.layer?.shadowOpacity = 0.0
 
             userImageViews.forEach { $0.removeFromSuperview() }
             userImageViews.removeAll()
@@ -4495,7 +4542,7 @@ public final class AgentNativeMessageCell: NSView {
                     btn.layer?.cornerRadius = 8
                     btn.layer?.masksToBounds = true
                     btn.layer?.borderWidth = 1
-                    btn.layer?.borderColor = NSColor.white.withAlphaComponent(0.35).cgColor
+                    btn.layer?.borderColor = (NSColor(cgColor: theme.excerptHeaderBorder.cgColor) ?? NSColor.separatorColor).withAlphaComponent(0.6).cgColor
                     btn.target = self
                     btn.action = #selector(handleImageClick(_:))
                     btn.tag = index
@@ -4507,13 +4554,15 @@ public final class AgentNativeMessageCell: NSView {
             let style = NSMutableParagraphStyle()
             style.lineSpacing = 3
             style.alignment = .left
+            let textColor = NSColor(cgColor: theme.foreground.cgColor) ?? .textColor
             let attr = NSAttributedString(string: message.content, attributes: [
                 .font: NSFont.systemFont(ofSize: 13, weight: .regular),
-                .foregroundColor: NSColor.white,
+                .foregroundColor: textColor,
                 .paragraphStyle: style
             ])
             userTextView.textStorage?.setAttributedString(attr)
             userTextView.isHidden = message.content.isEmpty
+            updateUserExpandButtonAppearance()
             clearAssistantViews()
         } else {
             thoughtTextView.cellId = message.id
@@ -5892,14 +5941,14 @@ public final class AgentNativeMessageCell: NSView {
         let height: CGFloat
 
         if message.role == .user {
-            let maxBubbleWidth = min(contentWidth * 0.85, 480)
+            let bubbleWidth = contentWidth
             let hasImages = !userImageViews.isEmpty
             let imagesHeight: CGFloat = hasImages ? (userImageViews.count == 1 ? 140 : 54) : 0
             let hasText = !message.content.isEmpty
             let fullTextHeight = hasText ? measuredTextHeight(
                 for: userTextView,
                 attributedString: userTextView.attributedString(),
-                width: maxBubbleWidth - 28
+                width: bubbleWidth - 28
             ) : 0
 
             let isCollapsible = fullTextHeight > userTextCollapseThreshold
@@ -5951,15 +6000,14 @@ public final class AgentNativeMessageCell: NSView {
         let contentWidth = max(50, width - (horizontalPadding * 2))
 
         if message.role == .user {
-            let maxBubbleWidth = min(contentWidth * 0.85, 480)
+            let bubbleWidth = contentWidth
             let hasImages = !userImageViews.isEmpty
             let imagesHeight: CGFloat = hasImages ? (userImageViews.count == 1 ? 140 : 54) : 0
-            let imagesWidth: CGFloat = hasImages ? (userImageViews.count == 1 ? 180 : min(maxBubbleWidth - 28, CGFloat(userImageViews.count) * 54 + CGFloat(max(0, userImageViews.count - 1)) * 6)) : 0
             let hasText = !message.content.isEmpty
             let fullTextHeight = hasText ? measuredTextHeight(
                 for: userTextView,
                 attributedString: userTextView.attributedString(),
-                width: maxBubbleWidth - 28
+                width: bubbleWidth - 28
             ) : 0
 
             let isCollapsible = fullTextHeight > userTextCollapseThreshold
@@ -5967,13 +6015,10 @@ public final class AgentNativeMessageCell: NSView {
             let buttonHeight: CGFloat = isCollapsible ? 22 : 0
             let buttonSpacing: CGFloat = isCollapsible ? 4 : 0
 
-            let textWidth = hasText ? measureTextWidth(userTextView.attributedString().string, font: NSFont.systemFont(ofSize: 13)) : 0
-            let minWidthForButton: CGFloat = isCollapsible ? 110 : 0
-            let bubbleWidth = min(maxBubbleWidth, max(max(textWidth, imagesWidth), minWidthForButton) + 28)
             let bubbleHeight = 9 + imagesHeight + (hasImages && hasText ? 8 : 0) + displayedTextHeight + (isCollapsible ? (buttonSpacing + buttonHeight) : 0) + 9
 
             let bubbleFrame = NSRect(
-                x: width - horizontalPadding - bubbleWidth,
+                x: horizontalPadding,
                 y: 4,
                 width: bubbleWidth,
                 height: bubbleHeight
@@ -6021,7 +6066,7 @@ public final class AgentNativeMessageCell: NSView {
 
                     let btnWidth: CGFloat = 92
                     let btnFrame = NSRect(
-                        x: bubbleWidth - 14 - btnWidth,
+                        x: 14,
                         y: currentInsideY + displayedTextHeight + buttonSpacing,
                         width: btnWidth,
                         height: buttonHeight
