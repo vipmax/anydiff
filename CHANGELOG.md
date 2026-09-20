@@ -5,6 +5,54 @@ All notable changes to **AnyDiff** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2026-09-20
+
+### 🌲 Git Commit Graph & History Inspector
+- **Interactive Visual Commit Graph**:
+  - Native multi-lane Git commit graph with zero-alloc branch and merge line rendering directly in the history list.
+  - Detail popover displaying author metadata, relative and exact timestamps, and a copy button for the full commit SHA (visible on hover).
+  - Compact file count badge with tooltip summary.
+  - Live watcher integration: commit history automatically reloads when git repository references or HEAD change.
+- **Fast & Responsive History Search**:
+  - Debounced search queries with background graph layout offloading to keep the UI at 120 FPS.
+  - Lane leak and stair-stepping prevention when rendering filtered search results.
+  - Quick dismiss and clear search on `Escape` key press.
+  - Seamless commit diff viewing: eliminated black screen flash when switching between commits by avoiding eager buffer clears.
+
+### 📁 Virtualized File Tree & Standalone File Editing
+- **High-Performance File Tree (`FilesPanel`)**:
+  - Virtualized workspace file tree capable of smoothly navigating large repositories.
+  - Added dedicated `Files` panel support to the flexible 3-panel layout system.
+  - Standalone file viewing and direct editing of non-modified workspace files directly from the tree.
+
+### 🤖 AI Agent & Chat Navigation Enhancements
+- **Direct Chat-to-Editor File Navigation**:
+  - Interactive file paths and line anchor links in agent messages jump directly to corresponding editor lines.
+  - Robust `FileLinkParser` supporting custom schemes and markdown anchor formats.
+- **Live Diff & Tool Call Improvements**:
+  - Asynchronous live diff calculation with debouncing during agent tool execution.
+  - Fallback to parent message `rawDiffData` for edit/create tool cards with reactive updates.
+  - Agent tool call location previews, theme focus accent, and header background alignment.
+- **Attachments & Session Persistence**:
+  - Deduplicated macOS screenshot drops and broadened drag-and-drop file type support.
+  - Model, mode, and effort configuration persisted across sessions with boolean toggle controls.
+  - ACP protocol fixes handling client capabilities duality and pagination in `fs/read_text_file`.
+- **Chat Scrolling & Cursor Fixes**:
+  - Eliminated cursor flickering between I-beam and arrow during scrolling by intercepting tracking areas.
+  - Eliminated view hierarchy churn and drag region recalculation during rapid chat scrolling.
+
+### 🎛️ Editor & Window Polish
+- **Scroll Anchor Preservation**:
+  - Preserved scroll anchor position across external file modifications and filesystem watcher reloads.
+- **Window Layout & Controls**:
+  - Left sidebar toggle button aligned to the leading edge next to macOS window traffic lights.
+  - Restored and reinforced crisp vertical dividers between panels across dynamic window appearance changes.
+
+### 🧪 Tests & Quality
+- Expanded automated test suite to **310 passing unit & integration tests**.
+
+---
+
 ## [1.5.1] - 2026-09-12
 
 ### 🖥️ Native Intel (x86_64) Architecture Support
