@@ -159,6 +159,7 @@ public struct AgentMessageRowView: View {
                         AgentToolCallCard(item: toolItem, theme: theme, onReview: onReview)
                     }
                 }
+                .padding(.top, (message.thought != nil && !message.thought!.isEmpty) ? 6 : 0)
                 .padding(.bottom, !message.content.isEmpty || message.editedFilesSummary != nil ? 6 : 0)
             }
 

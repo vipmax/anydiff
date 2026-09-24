@@ -5984,6 +5984,7 @@ public final class AgentNativeMessageCell: NSView {
         } else {
             var currentY: CGFloat = 4
 
+            let firstViewIsTool = isToolCallView(firstVisibleAssistantView() ?? NSView())
             if !thoughtHeaderButton.isHidden {
                 currentY += 22
                 if isThoughtExpanded && !hasInlineThoughtParts {
@@ -5992,7 +5993,9 @@ public final class AgentNativeMessageCell: NSView {
                         attributedString: thoughtTextView.attributedString(),
                         width: contentWidth - 10
                     )
-                    currentY += h + 8
+                    currentY += h + (firstViewIsTool ? 14 : 8)
+                } else if firstViewIsTool {
+                    currentY += 8
                 }
             } else if hasCompactTopThought {
                 let h = measuredTextHeight(
@@ -6000,7 +6003,7 @@ public final class AgentNativeMessageCell: NSView {
                     attributedString: thoughtTextView.attributedString(),
                     width: contentWidth
                 )
-                currentY += h + 8
+                currentY += h + (firstViewIsTool ? 14 : 8)
             }
 
             for (index, view) in orderedAssistantViews.enumerated() {
@@ -6111,6 +6114,7 @@ public final class AgentNativeMessageCell: NSView {
         } else {
             var currentY: CGFloat = 4
 
+            let firstViewIsTool = isToolCallView(firstVisibleAssistantView() ?? NSView())
             if !thoughtHeaderButton.isHidden {
                 let thFrame = NSRect(x: horizontalPadding, y: currentY, width: contentWidth, height: 20)
                 if animated {
@@ -6131,7 +6135,9 @@ public final class AgentNativeMessageCell: NSView {
                     } else {
                         thoughtTextView.frame = tvFrame
                     }
-                    currentY += h + 8
+                    currentY += h + (firstViewIsTool ? 14 : 8)
+                } else if firstViewIsTool {
+                    currentY += 8
                 }
             } else if hasCompactTopThought {
                 let h = measuredTextHeight(
@@ -6146,7 +6152,7 @@ public final class AgentNativeMessageCell: NSView {
                 } else {
                     thoughtTextView.frame = tvFrame
                 }
-                currentY += h + 8
+                currentY += h + (firstViewIsTool ? 14 : 8)
             }
 
             for (index, view) in orderedAssistantViews.enumerated() {
@@ -6177,6 +6183,15 @@ public final class AgentNativeMessageCell: NSView {
         view is AgentNativeToolCardView || view is AgentNativeSimpleToolCallView
     }
 
+    private func firstVisibleAssistantView() -> NSView? {
+        for view in orderedAssistantViews {
+            if !view.isHidden && view.alphaValue > 0.01 {
+                return view
+            }
+        }
+        return nil
+    }
+
     private func nextVisibleAssistantView(after index: Int) -> NSView? {
         for nextIdx in (index + 1)..<orderedAssistantViews.count {
             let nextView = orderedAssistantViews[nextIdx]
@@ -6201,6 +6216,14 @@ public final class AgentNativeMessageCell: NSView {
                 }
             }
             return 6
+        }
+
+        // view is NOT a tool call view
+        if let nextView = nextVisibleAssistantView(after: index) {
+            if isToolCallView(nextView) {
+                // Next view is the first tool call in a sequence: add extra space before it
+                return 14
+            }
         }
 
         if view is AgentNativeThoughtBlockView {
