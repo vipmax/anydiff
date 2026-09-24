@@ -70,6 +70,12 @@ Or download directly from [Releases](https://github.com/vipmax/anydiff/releases/
 - **Minimalist macOS Titlebar & Dark Themes**:
   - Curated themes: `Vesper` (Default), `macOS Dark`, `Tokyo Night`, `GitHub Dark`, `Zed Slate Gray`, `Zed Dark`, and `macOS Light`.
   - Tokenized syntax highlighting for Swift, Rust, TypeScript, JavaScript, Python, C++, Go, and JSON.
+- **Native In-App Markdown Document Viewer**:
+  - Open and preview `.md` documentation directly in AnyDiff with a dedicated tab badge in the header (`[ 📄 README.md ✕ ]`).
+  - Rich document typography: H1–H6 headers, GitHub-flavored Markdown tables, checklist task items (`[x]` / `[ ]`), blockquotes, and fenced code blocks with syntax highlighting and copy buttons.
+  - Interactive Outline menu for instant smooth scrolling to any document section.
+  - Live Disk Watching: automatically reloads preview when files are modified on disk.
+  - 1-click transition between rendered preview and MultiBuffer editor (`Cmd + E`).
 
 ---
 
@@ -103,6 +109,8 @@ Or download directly from [Releases](https://github.com/vipmax/anydiff/releases/
 | **Option + Click** | Expand all hidden context lines |
 | **Cmd + Ctrl + S** | Toggle Left Panel (File Sidebar) |
 | **Cmd + Option + A** | Toggle Right Panel (ACP AI Agent) |
+| **Cmd + E** | Switch between Markdown Preview and Editor |
+| **Esc** | Close Markdown Preview tab or Global Search |
 
 ---
 
@@ -202,6 +210,19 @@ just release ~/dev/my-project
 
 ---
 
+## 🗺️ Roadmap & Feature Status
+
+- [x] High-performance MultiBuffer diff engine with 120 FPS virtualization
+- [x] Side-by-Side (Split) & Unified diff layouts
+- [x] Embedded AI Agent with ACP Protocol support
+- [x] Fast full-text project search with batch streaming
+- [x] Native in-app Markdown document viewer with Outline navigation
+- [ ] Visual Rich Diff for Markdown documentation
+- [ ] Custom user keymap configuration
+
+---
+
 ## 📄 License
 
 Released under the MIT License.
+

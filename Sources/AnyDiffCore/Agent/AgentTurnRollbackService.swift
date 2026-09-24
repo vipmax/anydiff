@@ -68,7 +68,29 @@ public enum AgentTurnRollbackService {
             }
         }
 
-        // 4. Restore modified and deleted files from baseRef
+        // 4. Restore modified untracked files from preTurnUntrackedBlobs
+        if let blobs = summary.preTurnUntrackedBlobs {
+            for (relativePath, blobSha) in blobs {
+                if toRestore.contains(relativePath) {
+                    let fullURL = URL(fileURLWithPath: resolvedWorkingDir).appendingPathComponent(relativePath)
+                    if FileManager.default.fileExists(atPath: fullURL.path),
+                       let currentContent = try? String(contentsOf: fullURL, encoding: .utf8) {
+                        savedCreated[relativePath] = currentContent
+                    }
+                    if let restoredData = runGitData(arguments: ["-C", resolvedWorkingDir, "cat-file", "blob", blobSha]) {
+                        do {
+                            try restoredData.write(to: fullURL)
+                            toRestore.remove(relativePath)
+                        } catch {
+                            allSucceeded = false
+                        }
+                    }
+                }
+            }
+            summary.savedCreatedFiles = savedCreated
+        }
+
+        // 5. Restore modified and deleted files from baseRef
         if !toRestore.isEmpty {
             let sortedRestore = Array(toRestore).sorted()
             var args = ["-C", resolvedWorkingDir, "checkout", baseRef, "--"]
@@ -114,7 +136,8 @@ public enum AgentTurnRollbackService {
 
         // 2. Checkout modified files from postTurnCommitHash
         if let postHash = summary.postTurnCommitHash, !postHash.isEmpty {
-            let modifiedFiles = summary.modifiedFiles.filter { !summary.createdFiles.contains($0) }
+            let untrackedModified = Set(summary.preTurnUntrackedBlobs?.keys ?? [:].keys)
+            let modifiedFiles = summary.modifiedFiles.filter { !summary.createdFiles.contains($0) && !untrackedModified.contains($0) }
             if !modifiedFiles.isEmpty {
                 var args = ["-C", resolvedWorkingDir, "checkout", postHash, "--"]
                 args.append(contentsOf: modifiedFiles)
@@ -127,8 +150,9 @@ public enum AgentTurnRollbackService {
             return true
         }
 
-        // 3. Fallback: apply rawDiffData
-        if let rawDiff = summary.rawDiffData, !rawDiff.isEmpty {
+        // 3. Fallback: apply rawDiffData if neither postHash nor savedCreatedFiles were present
+        if (summary.savedCreatedFiles == nil || summary.savedCreatedFiles!.isEmpty),
+           let rawDiff = summary.rawDiffData, !rawDiff.isEmpty {
             return applyDiffData(rawDiff, workingDirectory: resolvedWorkingDir)
         }
 
@@ -170,6 +194,26 @@ public enum AgentTurnRollbackService {
             } catch {
                 break
             }
+        }
+    }
+
+    private static func runGitData(arguments: [String]) -> Data? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        var fullArgs = ["-c", "user.name=AnyDiff", "-c", "user.email=anydiff@local"]
+        fullArgs.append(contentsOf: arguments)
+        process.arguments = fullArgs
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0, !data.isEmpty else { return nil }
+            return data
+        } catch {
+            return nil
         }
     }
 

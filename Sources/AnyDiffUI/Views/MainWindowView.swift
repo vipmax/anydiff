@@ -39,6 +39,7 @@ public struct MainWindowView: View {
     @StateObject private var searchDisplayMap: DisplayMap
     @State private var isProjectSearchActive: Bool = false
     @State private var isProjectSearchHovered: Bool = false
+    @State private var isProjectSearchCloseHovered: Bool = false
     @State private var searchQuery = ProjectSearchQuery()
     @State private var searchMatches: [ProjectSearchMatch] = []
     @State private var activeMatchIndex: Int? = nil
@@ -58,6 +59,9 @@ public struct MainWindowView: View {
     @State private var isAgentSessionsPresented: Bool = false
     @State private var isAgentSessionsHovered: Bool = false
     @State private var isReadOnlyBadgeHovered: Bool = false
+    @State private var activeMarkdownPreviewPath: String? = nil
+    @State private var isMarkdownPreviewBadgeHovered: Bool = false
+    @State private var isMarkdownPreviewCloseHovered: Bool = false
     @State private var isReadOnlyCloseHovered: Bool = false
 
     private var activeAgentManager: AgentSessionManager? {
@@ -626,10 +630,22 @@ public struct MainWindowView: View {
             theme: activeTheme,
             selectedFilePath: $selectedFilePath,
             onOpenFile: { path in
+                if activeMarkdownPreviewPath != nil {
+                    let isMd = path.hasSuffix(".md") || path.hasSuffix(".markdown") || path.hasSuffix(".mdx")
+                    if isMd {
+                        openMarkdownPreview(path: path)
+                        return
+                    } else {
+                        closeMarkdownPreview()
+                    }
+                }
                 openFileInEditor(path: path)
             },
             onOpenExternalIDE: { path in
                 openInExternalIDE(filePath: path)
+            },
+            onPreviewMarkdown: { path in
+                openMarkdownPreview(path: path)
             },
             onBack: {
                 withAnimation(.easeInOut(duration: 0.18)) {
@@ -794,12 +810,29 @@ public struct MainWindowView: View {
             }
 
             ZStack {
-                editorDetailView
+                if let mdPath = activeMarkdownPreviewPath {
+                    MarkdownDocumentView(
+                        filePath: mdPath,
+                        rootDirectory: effectiveWorkingDirectory,
+                        theme: activeTheme,
+                        onClose: {
+                            closeMarkdownPreview()
+                        },
+                        onOpenInEditor: {
+                            let path = mdPath
+                            closeMarkdownPreview()
+                            openFileInEditor(path: path)
+                        }
+                    )
+                    .id(mdPath)
+                } else {
+                    editorDetailView
 
-                if activeFileDiffs.isEmpty && !isReadOnlyActive && !isProjectSearchActive {
-                    emptyStateDetailView
-                } else if isProjectSearchActive && hasExecutedSearch && searchMatches.isEmpty && !isSearching && !searchQuery.isEmpty {
-                    searchEmptyStateView
+                    if activeFileDiffs.isEmpty && !isReadOnlyActive && !isProjectSearchActive {
+                        emptyStateDetailView
+                    } else if isProjectSearchActive && hasExecutedSearch && searchMatches.isEmpty && !isSearching && !searchQuery.isEmpty {
+                        searchEmptyStateView
+                    }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -827,7 +860,9 @@ public struct MainWindowView: View {
     }
 
     private var editorTitlePrefix: String {
-        if isProjectSearchActive {
+        if activeMarkdownPreviewPath != nil {
+            return "Preview"
+        } else if isProjectSearchActive {
             return "Search"
         } else if agentCoordinator.activeReviewSummary != nil {
             return "Review"
@@ -854,7 +889,9 @@ public struct MainWindowView: View {
     private func editorHeaderLeadingView(availableWidth: CGFloat = 600) -> some View {
         HStack(spacing: 6) {
             let iconName: String = {
-                if isProjectSearchActive {
+                if activeMarkdownPreviewPath != nil {
+                    return "doc.text"
+                } else if isProjectSearchActive {
                     return "magnifyingglass"
                 } else if case .commit = comparisonTarget {
                     return "clock.arrow.circlepath"
@@ -875,8 +912,8 @@ public struct MainWindowView: View {
                 .truncationMode(.tail)
                 .help(commitSummaryTooltip)
 
-            // Changed count: hide if available width is tight (< 420 pt)
-            if availableWidth >= 420 {
+            // Changed count: hide if available width is tight (< 420 pt) or if markdown preview is active
+            if availableWidth >= 420 && activeMarkdownPreviewPath == nil {
                 Text("\(activeFileDiffs.count) \(activeFileDiffs.count == 1 ? "change" : "changes")")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundColor(Color(activeTheme.gutterForeground))
@@ -884,7 +921,9 @@ public struct MainWindowView: View {
             }
 
             // Badges moved from window toolbar into the editor header
-            if availableWidth >= 460 || (!isProjectSearchActive && comparisonTarget == .workingTree) {
+            if let mdPath = activeMarkdownPreviewPath {
+                markdownPreviewBadge(for: mdPath)
+            } else if availableWidth >= 460 || (!isProjectSearchActive && comparisonTarget == .workingTree) {
                 if isProjectSearchActive {
                     globalSearchBadge
                 } else if isReadOnlyActive {
@@ -1331,6 +1370,9 @@ public struct MainWindowView: View {
             },
             onOpenExternalIDERequest: { path, line in
                 openInExternalIDE(filePath: path, line: line)
+            },
+            onPreviewMarkdownRequest: { path in
+                openMarkdownPreview(path: path)
             }
         )
         .clipped()
@@ -1365,44 +1407,96 @@ public struct MainWindowView: View {
     }
 
     @ViewBuilder
-    private var globalSearchBadge: some View {
-        HStack(spacing: 5) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(.accentColor)
+    private func markdownPreviewBadge(for path: String) -> some View {
+        let fileName = (path as NSString).lastPathComponent
+        Button(action: {
+            withAnimation(.easeInOut(duration: 0.16)) {
+                closeMarkdownPreview()
+            }
+        }) {
+            HStack(spacing: 5) {
+                Image(systemName: "doc.richtext")
+                    .font(.system(size: 9.5, weight: .medium))
+                    .foregroundColor(.accentColor)
 
-            Text("Global Search")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundColor(.primary)
+                Text(fileName)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(isMarkdownPreviewBadgeHovered ? Color(activeTheme.foreground) : Color(activeTheme.foreground).opacity(0.85))
+                    .lineLimit(1)
 
-            Image(systemName: "xmark")
-                .font(.system(size: 8.5, weight: .bold))
-                .foregroundColor(isProjectSearchHovered ? .primary : .secondary.opacity(0.8))
-                .frame(width: 16, height: 16)
-                .background(
-                    RoundedRectangle(cornerRadius: 3, style: .continuous)
-                        .fill(isProjectSearchHovered ? Color.secondary.opacity(0.16) : Color.clear)
-                )
-                .contentShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
-                .help("Exit Search (Esc)")
-                .accessibilityLabel("Exit Search")
-                .accessibilityAddTraits(.isButton)
-                .onTapGesture {
-                    withAnimation(.easeInOut(duration: 0.16)) {
-                        closeProjectSearch()
-                    }
-                }
-                .onHover { isProjectSearchHovered = $0 }
+                Image(systemName: "xmark")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundColor(isMarkdownPreviewCloseHovered ? Color.accentColor : Color.accentColor.opacity(0.85))
+                    .frame(width: 15, height: 15)
+                    .background(
+                        Circle()
+                            .fill(isMarkdownPreviewCloseHovered ? Color.accentColor.opacity(0.25) : Color.accentColor.opacity(0.14))
+                    )
+                    .onHover { isMarkdownPreviewCloseHovered = $0 }
+            }
+            .padding(.leading, 7.5)
+            .padding(.trailing, 4.5)
+            .padding(.vertical, 3)
+            .background(
+                Capsule()
+                    .fill(isMarkdownPreviewBadgeHovered ? Color.accentColor.opacity(0.18) : Color.accentColor.opacity(0.11))
+            )
+            .overlay(
+                Capsule()
+                    .strokeBorder(isMarkdownPreviewBadgeHovered ? Color.accentColor.opacity(0.32) : Color.accentColor.opacity(0.20), lineWidth: 0.5)
+            )
         }
-        .padding(.leading, 7)
-        .padding(.trailing, 6)
-        .padding(.vertical, 3.5)
-        .background(Color.accentColor.opacity(0.12))
-        .cornerRadius(5)
-        .overlay(
-            RoundedRectangle(cornerRadius: 5)
-                .stroke(Color.accentColor.opacity(0.25), lineWidth: 0.5)
-        )
+        .buttonStyle(.plain)
+        .contentShape(Capsule())
+        .help("Close Preview (Esc)")
+        .accessibilityLabel("Close Preview")
+        .onHover { isMarkdownPreviewBadgeHovered = $0 }
+        .fixedSize()
+    }
+
+    @ViewBuilder
+    private var globalSearchBadge: some View {
+        Button(action: {
+            withAnimation(.easeInOut(duration: 0.16)) {
+                closeProjectSearch()
+            }
+        }) {
+            HStack(spacing: 5) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 9.5, weight: .medium))
+                    .foregroundColor(.accentColor)
+
+                Text("Global Search")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(isProjectSearchHovered ? Color(activeTheme.foreground) : Color(activeTheme.foreground).opacity(0.85))
+
+                Image(systemName: "xmark")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundColor(isProjectSearchCloseHovered ? Color.accentColor : Color.accentColor.opacity(0.85))
+                    .frame(width: 15, height: 15)
+                    .background(
+                        Circle()
+                            .fill(isProjectSearchCloseHovered ? Color.accentColor.opacity(0.25) : Color.accentColor.opacity(0.14))
+                    )
+                    .onHover { isProjectSearchCloseHovered = $0 }
+            }
+            .padding(.leading, 7.5)
+            .padding(.trailing, 4.5)
+            .padding(.vertical, 3)
+            .background(
+                Capsule()
+                    .fill(isProjectSearchHovered ? Color.accentColor.opacity(0.18) : Color.accentColor.opacity(0.11))
+            )
+            .overlay(
+                Capsule()
+                    .strokeBorder(isProjectSearchHovered ? Color.accentColor.opacity(0.32) : Color.accentColor.opacity(0.20), lineWidth: 0.5)
+            )
+        }
+        .buttonStyle(.plain)
+        .contentShape(Capsule())
+        .help("Exit Search (Esc)")
+        .accessibilityLabel("Exit Search")
+        .onHover { isProjectSearchHovered = $0 }
         .fixedSize()
     }
 
@@ -1428,6 +1522,7 @@ public struct MainWindowView: View {
                         Circle()
                             .fill(isReadOnlyCloseHovered ? Color(activeTheme.foreground).opacity(0.16) : Color(activeTheme.gutterForeground).opacity(0.12))
                     )
+                    .onHover { isReadOnlyCloseHovered = $0 }
             }
             .padding(.leading, 7.5)
             .padding(.trailing, 4.5)
@@ -1605,10 +1700,22 @@ public struct MainWindowView: View {
             }) {}
                 .keyboardShortcut("a", modifiers: [.command, .option])
             Button(action: {
+                if let mdPath = activeMarkdownPreviewPath {
+                    closeMarkdownPreview()
+                    openFileInEditor(path: mdPath)
+                } else if let selectedPath = selectedFilePath,
+                          (selectedPath.hasSuffix(".md") || selectedPath.hasSuffix(".markdown") || selectedPath.hasSuffix(".mdx")) {
+                    openMarkdownPreview(path: selectedPath)
+                }
+            }) {}
+                .keyboardShortcut("e", modifiers: .command)
+            Button(action: {
                 if isProjectSearchActive {
                     withAnimation(.easeInOut(duration: 0.16)) {
                         closeProjectSearch()
                     }
+                } else if activeMarkdownPreviewPath != nil {
+                    closeMarkdownPreview()
                 } else if isReadOnlyActive {
                     endReadOnlyDiff()
                 }
@@ -1929,6 +2036,21 @@ public struct MainWindowView: View {
         readOnlyDisplayMap.clear()
     }
 
+    public func openMarkdownPreview(path: String) {
+        if panelLayout.slot(for: .editor) == nil {
+            panelLayout.assign(.editor, to: .center)
+        }
+        withAnimation(.easeInOut(duration: 0.16)) {
+            activeMarkdownPreviewPath = path
+        }
+    }
+
+    public func closeMarkdownPreview() {
+        withAnimation(.easeInOut(duration: 0.16)) {
+            activeMarkdownPreviewPath = nil
+        }
+    }
+
     private func handleOpenURL(_ url: URL) {
         let target = FileLinkParser.parse(url: url, workingDirectory: effectiveWorkingDirectory)
         switch target.targetType {
@@ -1948,6 +2070,9 @@ public struct MainWindowView: View {
     }
 
     public func openFileInEditor(path: String, line: Int? = nil, endLine: Int? = nil) {
+        if activeMarkdownPreviewPath != nil {
+            closeMarkdownPreview()
+        }
         if panelLayout.slot(for: .editor) == nil {
             panelLayout.assign(.editor, to: .center)
         }

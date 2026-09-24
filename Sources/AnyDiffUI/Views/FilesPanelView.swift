@@ -35,6 +35,7 @@ public struct FilesPanelView: View {
     @Binding public var selectedFilePath: String?
     public var onOpenFile: (String) -> Void
     public var onOpenExternalIDE: ((String) -> Void)?
+    public var onPreviewMarkdown: ((String) -> Void)?
     public var onBack: (() -> Void)?
     public var onSwitchToChanges: (() -> Void)?
     public var onSwitchToHistory: (() -> Void)?
@@ -55,6 +56,7 @@ public struct FilesPanelView: View {
         selectedFilePath: Binding<String?>,
         onOpenFile: @escaping (String) -> Void,
         onOpenExternalIDE: ((String) -> Void)? = nil,
+        onPreviewMarkdown: ((String) -> Void)? = nil,
         onBack: (() -> Void)? = nil,
         onSwitchToChanges: (() -> Void)? = nil,
         onSwitchToHistory: (() -> Void)? = nil
@@ -66,6 +68,7 @@ public struct FilesPanelView: View {
         self._selectedFilePath = selectedFilePath
         self.onOpenFile = onOpenFile
         self.onOpenExternalIDE = onOpenExternalIDE
+        self.onPreviewMarkdown = onPreviewMarkdown
         self.onBack = onBack
         self.onSwitchToChanges = onSwitchToChanges
         self.onSwitchToHistory = onSwitchToHistory
@@ -310,7 +313,8 @@ public struct FilesPanelView: View {
                     selectedFilePath = path
                     onOpenFile(path)
                 },
-                onOpenExternalIDE: onOpenExternalIDE
+                onOpenExternalIDE: onOpenExternalIDE,
+                onPreviewMarkdown: onPreviewMarkdown
             )
             .background(Color(theme.background))
         }

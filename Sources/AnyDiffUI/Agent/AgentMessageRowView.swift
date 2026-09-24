@@ -159,6 +159,7 @@ public struct AgentMessageRowView: View {
                         AgentToolCallCard(item: toolItem, theme: theme, onReview: onReview)
                     }
                 }
+                .padding(.bottom, !message.content.isEmpty || message.editedFilesSummary != nil ? 6 : 0)
             }
 
             // 3. Assistant Message Text Content

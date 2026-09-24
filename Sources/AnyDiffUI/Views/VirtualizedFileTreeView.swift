@@ -14,6 +14,7 @@ public struct VirtualizedFileTreeView: NSViewRepresentable {
     public var onToggleExpand: (String) -> Void
     public var onOpenFile: (String) -> Void
     public var onOpenExternalIDE: ((String) -> Void)?
+    public var onPreviewMarkdown: ((String) -> Void)?
 
     public init(
         items: [FileItem],
@@ -24,7 +25,8 @@ public struct VirtualizedFileTreeView: NSViewRepresentable {
         selectedFilePath: Binding<String?>,
         onToggleExpand: @escaping (String) -> Void,
         onOpenFile: @escaping (String) -> Void,
-        onOpenExternalIDE: ((String) -> Void)? = nil
+        onOpenExternalIDE: ((String) -> Void)? = nil,
+        onPreviewMarkdown: ((String) -> Void)? = nil
     ) {
         self.items = items
         self.expandedPaths = expandedPaths
@@ -35,6 +37,7 @@ public struct VirtualizedFileTreeView: NSViewRepresentable {
         self.onToggleExpand = onToggleExpand
         self.onOpenFile = onOpenFile
         self.onOpenExternalIDE = onOpenExternalIDE
+        self.onPreviewMarkdown = onPreviewMarkdown
     }
 
     public func makeCoordinator() -> Coordinator {
@@ -270,6 +273,14 @@ public struct VirtualizedFileTreeView: NSViewRepresentable {
                 openItem.representedObject = item
                 menu.addItem(openItem)
 
+                let isMarkdown = item.name.hasSuffix(".md") || item.name.hasSuffix(".markdown") || item.name.hasSuffix(".mdx")
+                if isMarkdown && parent.onPreviewMarkdown != nil {
+                    let previewItem = NSMenuItem(title: "Preview Markdown", action: #selector(contextPreviewMarkdown(_:)), keyEquivalent: "")
+                    previewItem.target = self
+                    previewItem.representedObject = item
+                    menu.addItem(previewItem)
+                }
+
                 if parent.onOpenExternalIDE != nil {
                     let externalItem = NSMenuItem(title: "Open in External IDE", action: #selector(contextOpenInExternalIDE(_:)), keyEquivalent: "")
                     externalItem.target = self
@@ -302,6 +313,12 @@ public struct VirtualizedFileTreeView: NSViewRepresentable {
             guard let item = sender.representedObject as? FileItem else { return }
             parent.selectedFilePath = item.relativePath
             parent.onOpenFile(item.relativePath)
+        }
+
+        @objc private func contextPreviewMarkdown(_ sender: NSMenuItem) {
+            guard let item = sender.representedObject as? FileItem else { return }
+            parent.selectedFilePath = item.relativePath
+            parent.onPreviewMarkdown?(item.relativePath)
         }
 
         @objc private func contextOpenInExternalIDE(_ sender: NSMenuItem) {

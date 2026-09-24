@@ -11,6 +11,7 @@ public protocol CustomMultiBufferEditorDelegate: AnyObject {
     func editorDidChangeContent()
     func editorDidRequestCloseFile(filePath: String)
     func editorDidRequestOpenExternalIDE(filePath: String, lineNumber: Int?)
+    func editorDidRequestPreviewMarkdown(filePath: String)
 }
 
 public extension CustomMultiBufferEditorDelegate {
@@ -18,6 +19,7 @@ public extension CustomMultiBufferEditorDelegate {
     func editorDidChangeContent() {}
     func editorDidRequestCloseFile(filePath: String) {}
     func editorDidRequestOpenExternalIDE(filePath: String, lineNumber: Int?) {}
+    func editorDidRequestPreviewMarkdown(filePath: String) {}
 }
 
 /// A high-performance, virtualized MultiBuffer Code Reviewer & Editor View built with CoreText
@@ -248,6 +250,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     // Hover State
     private var hoveredGutterLineIndex: Int? = nil
     private var hoveredCloseFilePath: String? = nil
+    private var hoveredPreviewFilePath: String? = nil
     private var trackingArea: NSTrackingArea?
 
     // Scrollbar Auto-Hide Animation
@@ -1676,6 +1679,13 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         return CGRect(x: x, y: y, width: size, height: size)
     }
 
+    func previewButtonRect(in headerRect: CGRect) -> CGRect {
+        let size: CGFloat = 18
+        let x: CGFloat = bounds.width - 32
+        let y = headerRect.minY + (headerRect.height - size) / 2.0
+        return CGRect(x: x, y: y, width: size, height: size)
+    }
+
     public func currentFocusedFilePath() -> String? {
         guard let dm = displayMap else { return nil }
         if let loc = dm.excerptLocation(for: cursorPoint) {
@@ -1851,7 +1861,8 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             addLine = line
         }
 
-        let badgeRightMargin: CGFloat = 16
+        let isMarkdown = info.filePath.hasSuffix(".md") || info.filePath.hasSuffix(".markdown") || info.filePath.hasSuffix(".mdx")
+        let badgeRightMargin: CGFloat = isMarkdown ? 38 : 16
         let badgeSpacing: CGFloat = 10
         var totalBadgeWidth: CGFloat = 0
         if delLine != nil { totalBadgeWidth += delWidth }
@@ -1893,6 +1904,26 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                 context.scaleBy(x: 1.0, y: -1.0)
                 CTLineDraw(addLine, context)
                 context.restoreGState()
+            }
+        }
+
+        if isMarkdown {
+            let prevRect = previewButtonRect(in: headerRect)
+            let isPrevHovered = (hoveredPreviewFilePath == info.filePath)
+            if isPrevHovered {
+                let bgRect = prevRect.insetBy(dx: 1, dy: 1)
+                context.saveGState()
+                context.setFillColor(theme.gutterForeground.withAlphaComponent(0.18).cgColor)
+                let path = CGPath(roundedRect: bgRect, cornerWidth: 3.5, cornerHeight: 3.5, transform: nil)
+                context.addPath(path)
+                context.fillPath()
+                context.restoreGState()
+            }
+
+            if let img = NSImage(systemSymbolName: "doc.richtext", accessibilityDescription: "Preview Markdown") ?? NSImage(systemSymbolName: "eye", accessibilityDescription: "Preview Markdown") {
+                let imgSize: CGFloat = 12
+                let imgRect = CGRect(x: prevRect.midX - imgSize / 2.0, y: prevRect.midY - imgSize / 2.0, width: imgSize, height: imgSize)
+                img.draw(in: imgRect, from: .zero, operation: .sourceOver, fraction: isPrevHovered ? 1.0 : 0.65, respectFlipped: true, hints: nil)
             }
         }
 
@@ -2572,6 +2603,11 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
         // 1. Check if user clicked on Sticky Excerpt Header
         if let (stickyInfo, stickyFrame) = currentStickyHeader(), stickyFrame.contains(screenPoint) {
+            let isMd = stickyInfo.filePath.hasSuffix(".md") || stickyInfo.filePath.hasSuffix(".markdown") || stickyInfo.filePath.hasSuffix(".mdx")
+            if isMd && previewButtonRect(in: stickyFrame).contains(screenPoint) {
+                delegate?.editorDidRequestPreviewMarkdown(filePath: stickyInfo.filePath)
+                return
+            }
             let closeRect = closeButtonRect(in: stickyFrame)
             if closeRect.contains(screenPoint) {
                 delegate?.editorDidRequestCloseFile(filePath: stickyInfo.filePath)
@@ -2601,8 +2637,13 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             switch line {
             case .excerptHeader(let header):
                 let headerRect = CGRect(x: 0, y: lineMinY, width: bounds.width, height: height)
-                let closeRect = closeButtonRect(in: headerRect)
+                let isMd = header.filePath.hasSuffix(".md") || header.filePath.hasSuffix(".markdown") || header.filePath.hasSuffix(".mdx")
                 let clickPoint = CGPoint(x: screenPoint.x, y: docY)
+                if isMd && previewButtonRect(in: headerRect).contains(clickPoint) {
+                    delegate?.editorDidRequestPreviewMarkdown(filePath: header.filePath)
+                    return
+                }
+                let closeRect = closeButtonRect(in: headerRect)
                 if closeRect.contains(clickPoint) {
                     delegate?.editorDidRequestCloseFile(filePath: header.filePath)
                     return
@@ -3019,8 +3060,14 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     private func updateCloseHoverState(at screenPoint: CGPoint) -> Bool {
         var shouldHandCursor = false
         var hoveredFilePath: String? = nil
+        var hoveredPrevPath: String? = nil
 
         if let (stickyInfo, stickyFrame) = currentStickyHeader(), stickyFrame.contains(screenPoint) {
+            let isMd = stickyInfo.filePath.hasSuffix(".md") || stickyInfo.filePath.hasSuffix(".markdown") || stickyInfo.filePath.hasSuffix(".mdx")
+            if isMd && previewButtonRect(in: stickyFrame).contains(screenPoint) {
+                shouldHandCursor = true
+                hoveredPrevPath = stickyInfo.filePath
+            }
             let closeRect = closeButtonRect(in: stickyFrame)
             if closeRect.contains(screenPoint) {
                 shouldHandCursor = true
@@ -3033,8 +3080,13 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                 let lineMinY = yOffset(forDisplayLineIndex: lineIdx)
                 let height = lineHeight(forDisplayLineIndex: lineIdx)
                 let headerRect = CGRect(x: 0, y: lineMinY, width: bounds.width, height: height)
-                let closeRect = closeButtonRect(in: headerRect)
                 let pt = CGPoint(x: screenPoint.x, y: docY)
+                let isMd = header.filePath.hasSuffix(".md") || header.filePath.hasSuffix(".markdown") || header.filePath.hasSuffix(".mdx")
+                if isMd && previewButtonRect(in: headerRect).contains(pt) {
+                    shouldHandCursor = true
+                    hoveredPrevPath = header.filePath
+                }
+                let closeRect = closeButtonRect(in: headerRect)
                 if closeRect.contains(pt) {
                     shouldHandCursor = true
                     hoveredFilePath = header.filePath
@@ -3042,8 +3094,16 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             }
         }
 
+        var didChange = false
         if hoveredFilePath != hoveredCloseFilePath {
             hoveredCloseFilePath = hoveredFilePath
+            didChange = true
+        }
+        if hoveredPrevPath != hoveredPreviewFilePath {
+            hoveredPreviewFilePath = hoveredPrevPath
+            didChange = true
+        }
+        if didChange {
             needsDisplay = true
         }
 
@@ -3061,8 +3121,16 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
     public override func mouseExited(with event: NSEvent) {
         super.mouseExited(with: event)
+        var didChange = false
         if hoveredCloseFilePath != nil {
             hoveredCloseFilePath = nil
+            didChange = true
+        }
+        if hoveredPreviewFilePath != nil {
+            hoveredPreviewFilePath = nil
+            didChange = true
+        }
+        if didChange {
             needsDisplay = true
         }
     }

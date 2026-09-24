@@ -423,6 +423,154 @@ final class AgentSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(turn2Summary?.displayTitle, "Edited 1 file")
     }
 
+    func testPreExistingUntrackedFileModifiedDuringTurnProducesExactDiffAndRevertsCleanly() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("anydiff_untracked_turn_test_\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        func runProcess(_ args: [String]) {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+            p.currentDirectoryURL = tempDir
+            p.arguments = ["-c", "user.name=Test", "-c", "user.email=test@test.com"] + args
+            try? p.run()
+            p.waitUntilExit()
+        }
+
+        runProcess(["init"])
+        let trackedURL = tempDir.appendingPathComponent("tracked.txt")
+        try "initial tracked\n".write(to: trackedURL, atomically: true, encoding: .utf8)
+        runProcess(["add", "tracked.txt"])
+        runProcess(["commit", "-m", "Initial commit"])
+
+        // 1. Create a 100-line pre-existing untracked file
+        let untrackedURL = tempDir.appendingPathComponent("untracked.txt")
+        var originalLines: [String] = []
+        for i in 1...100 {
+            originalLines.append("Original Line \(i)")
+        }
+        let originalContent = originalLines.joined(separator: "\n") + "\n"
+        try originalContent.write(to: untrackedURL, atomically: true, encoding: .utf8)
+
+        // 2. Capture snapshot before turn starts
+        let snapshot = AgentGitChangesDetector.capturePreTurnSnapshot(workingDirectory: tempDir.path)
+        XCTAssertTrue(snapshot.isGitRepository)
+        XCTAssertTrue(snapshot.untrackedFiles.contains("untracked.txt"))
+        XCTAssertNotNil(snapshot.untrackedBlobHashes["untracked.txt"])
+
+        // 3. During turn: Agent modifies line 50 and adds 2 lines (3 additions, 1 deletion)
+        Thread.sleep(forTimeInterval: 0.6)
+        var modifiedLines = originalLines
+        modifiedLines[49] = "Modified Line 50 by Agent"
+        modifiedLines.insert("New Line A", at: 50)
+        modifiedLines.insert("New Line B", at: 51)
+        let modifiedContent = modifiedLines.joined(separator: "\n") + "\n"
+        try modifiedContent.write(to: untrackedURL, atomically: true, encoding: .utf8)
+
+        // 4. Compute turn summary
+        let (turnSummary, rawDiffData) = AgentGitChangesDetector.computeTurnSummary(workingDirectory: tempDir.path, snapshot: snapshot)
+        XCTAssertNotNil(turnSummary)
+        guard var summary = turnSummary else { return }
+
+        // Must show EXACT diff stats, NOT the entire file length (102 lines)!
+        XCTAssertEqual(summary.files.count, 1)
+        XCTAssertEqual(summary.files.first?.path, "untracked.txt")
+        XCTAssertEqual(summary.files.first?.additions, 3)
+        XCTAssertEqual(summary.files.first?.deletions, 1)
+
+        // Raw unified diff must be generated for MultiBuffer
+        XCTAssertNotNil(rawDiffData)
+        let diffStr = String(data: rawDiffData ?? Data(), encoding: .utf8) ?? ""
+        XCTAssertTrue(diffStr.contains("diff --git a/untracked.txt b/untracked.txt"))
+        XCTAssertTrue(diffStr.contains("+Modified Line 50 by Agent"))
+
+        // 5. Test Revert: Untracked file must be restored back to exact original content
+        let revertSuccess = AgentTurnRollbackService.revertTurn(workingDirectory: tempDir.path, summary: &summary)
+        XCTAssertTrue(revertSuccess)
+        let revertedContent = try String(contentsOf: untrackedURL, encoding: .utf8)
+        XCTAssertEqual(revertedContent, originalContent)
+
+        // 6. Test Restore (Redo): Untracked file must be restored back to modified content
+        let restoreSuccess = AgentTurnRollbackService.restoreTurn(workingDirectory: tempDir.path, summary: summary)
+        XCTAssertTrue(restoreSuccess)
+        let restoredContent = try String(contentsOf: untrackedURL, encoding: .utf8)
+        XCTAssertEqual(restoredContent, modifiedContent)
+    }
+
+    func testMultiTurnUntrackedFileModificationsUndoRedoSequence() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("anydiff_multiturn_untracked_test_\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        func runProcess(_ args: [String]) {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+            p.currentDirectoryURL = tempDir
+            p.arguments = ["-c", "user.name=Test", "-c", "user.email=test@test.com"] + args
+            try? p.run()
+            p.waitUntilExit()
+        }
+
+        runProcess(["init"])
+        let trackedURL = tempDir.appendingPathComponent("tracked.txt")
+        try "initial\n".write(to: trackedURL, atomically: true, encoding: .utf8)
+        runProcess(["add", "tracked.txt"])
+        runProcess(["commit", "-m", "Initial commit"])
+
+        let untrackedURL = tempDir.appendingPathComponent("untracked.swift")
+        let v0Content = "// Version 0: original untracked content\nlet initial = true\n"
+        try v0Content.write(to: untrackedURL, atomically: true, encoding: .utf8)
+
+        // --- Turn 1 ---
+        let snap1 = AgentGitChangesDetector.capturePreTurnSnapshot(workingDirectory: tempDir.path)
+        XCTAssertEqual(snap1.untrackedFiles, ["untracked.swift"])
+
+        Thread.sleep(forTimeInterval: 0.6)
+        let v1Content = "// Version 1: after Turn 1\nlet initial = true\nfunc turnOneFeature() {}\n"
+        try v1Content.write(to: untrackedURL, atomically: true, encoding: .utf8)
+
+        let (t1Sum, _) = AgentGitChangesDetector.computeTurnSummary(workingDirectory: tempDir.path, snapshot: snap1)
+        XCTAssertNotNil(t1Sum)
+        guard var summary1 = t1Sum else { return }
+        XCTAssertEqual(summary1.files.first?.path, "untracked.swift")
+
+        // --- Turn 2 ---
+        let snap2 = AgentGitChangesDetector.capturePreTurnSnapshot(workingDirectory: tempDir.path)
+        XCTAssertEqual(snap2.untrackedFiles, ["untracked.swift"])
+
+        Thread.sleep(forTimeInterval: 0.6)
+        let v2Content = "// Version 2: after Turn 2\nlet initial = true\nfunc turnOneFeature() {}\nfunc turnTwoFeature() {}\n"
+        try v2Content.write(to: untrackedURL, atomically: true, encoding: .utf8)
+
+        let (t2Sum, _) = AgentGitChangesDetector.computeTurnSummary(workingDirectory: tempDir.path, snapshot: snap2)
+        XCTAssertNotNil(t2Sum)
+        guard var summary2 = t2Sum else { return }
+        XCTAssertEqual(summary2.files.first?.path, "untracked.swift")
+
+        // Verify current state on disk is V2
+        XCTAssertEqual(try String(contentsOf: untrackedURL, encoding: .utf8), v2Content)
+
+        // 1. Revert Turn 2 -> Must restore intermediate state V1!
+        let rev2 = AgentTurnRollbackService.revertTurn(workingDirectory: tempDir.path, summary: &summary2)
+        XCTAssertTrue(rev2)
+        XCTAssertEqual(try String(contentsOf: untrackedURL, encoding: .utf8), v1Content)
+
+        // 2. Revert Turn 1 -> Must restore initial state V0!
+        let rev1 = AgentTurnRollbackService.revertTurn(workingDirectory: tempDir.path, summary: &summary1)
+        XCTAssertTrue(rev1)
+        XCTAssertEqual(try String(contentsOf: untrackedURL, encoding: .utf8), v0Content)
+
+        // 3. Restore (Redo) Turn 1 -> Must restore state V1!
+        let rest1 = AgentTurnRollbackService.restoreTurn(workingDirectory: tempDir.path, summary: summary1)
+        XCTAssertTrue(rest1)
+        XCTAssertEqual(try String(contentsOf: untrackedURL, encoding: .utf8), v1Content)
+
+        // 4. Restore (Redo) Turn 2 -> Must restore state V2!
+        let rest2 = AgentTurnRollbackService.restoreTurn(workingDirectory: tempDir.path, summary: summary2)
+        XCTAssertTrue(rest2)
+        XCTAssertEqual(try String(contentsOf: untrackedURL, encoding: .utf8), v2Content)
+    }
+
     func testToolCallItemCreateEditedFilesSummary() {
         let editTool = ToolCallItem(
             toolName: "replace_file_content",

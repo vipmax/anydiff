@@ -2,192 +2,8 @@ import SwiftUI
 import AppKit
 import AnyDiffCore
 
-public enum MarkdownBlock: Identifiable, Equatable {
-    public var id: String {
-        switch self {
-        case .header(let level, let text):
-            return "h_\(level)_\(text.hashValue)"
-        case .bulletItem(let text):
-            return "b_\(text.hashValue)"
-        case .numberedItem(let number, let text):
-            return "n_\(number)_\(text.hashValue)"
-        case .paragraph(let text):
-            return "p_\(text.hashValue)"
-        case .codeBlock(let lang, let code):
-            return "c_\(lang ?? "")_\(code.hashValue)"
-        case .quote(let text):
-            return "q_\(text.hashValue)"
-        case .divider:
-            return "d"
-        }
-    }
+public typealias AgentMarkdownParser = MarkdownParser
 
-    case header(level: Int, text: String)
-    case bulletItem(String)
-    case numberedItem(number: String, text: String)
-    case paragraph(String)
-    case codeBlock(language: String?, code: String)
-    case quote(String)
-    case divider
-}
-
-public enum AgentMarkdownParser {
-    public static func parse(_ markdown: String) -> [MarkdownBlock] {
-        var blocks: [MarkdownBlock] = []
-        let lines = markdown.components(separatedBy: "\n")
-        var inCodeBlock = false
-        var currentLanguage: String? = nil
-        var currentCodeLines: [String] = []
-        var currentParagraphLines: [String] = []
-        var currentQuoteLines: [String] = []
-
-        func flushParagraph() {
-            if !currentParagraphLines.isEmpty {
-                let text = currentParagraphLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-                if !text.isEmpty {
-                    blocks.append(.paragraph(text))
-                }
-                currentParagraphLines.removeAll()
-            }
-        }
-
-        func flushQuote() {
-            if !currentQuoteLines.isEmpty {
-                let text = currentQuoteLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-                if !text.isEmpty {
-                    blocks.append(.quote(text))
-                }
-                currentQuoteLines.removeAll()
-            }
-        }
-
-        for line in lines {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-
-            // 1. Code Block Fence (``` or ~~~)
-            if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
-                if inCodeBlock {
-                    let code = currentCodeLines.joined(separator: "\n")
-                    blocks.append(.codeBlock(language: currentLanguage, code: code))
-                    currentCodeLines.removeAll()
-                    currentLanguage = nil
-                    inCodeBlock = false
-                } else {
-                    flushParagraph()
-                    flushQuote()
-                    let lang = String(trimmed.dropFirst(3)).trimmingCharacters(in: .whitespaces)
-                    currentLanguage = lang.isEmpty ? nil : lang
-                    currentCodeLines.removeAll()
-                    inCodeBlock = true
-                }
-                continue
-            }
-
-            if inCodeBlock {
-                currentCodeLines.append(line)
-                continue
-            }
-
-            // 2. Quote
-            if trimmed.hasPrefix(">") {
-                flushParagraph()
-                if let gtIdx = line.firstIndex(of: ">") {
-                    let afterGt = line[line.index(after: gtIdx)...]
-                    currentQuoteLines.append(String(afterGt).trimmingCharacters(in: .whitespaces))
-                }
-                continue
-            } else if !currentQuoteLines.isEmpty {
-                flushQuote()
-            }
-
-            // 3. Thematic break / Divider (---, ***, ___)
-            if isDivider(trimmed) {
-                flushParagraph()
-                blocks.append(.divider)
-                continue
-            }
-
-            // 4. Headers (#, ##, ###, ####, #####, ######)
-            if trimmed.hasPrefix("#") {
-                var level = 0
-                for char in trimmed {
-                    if char == "#" {
-                        level += 1
-                    } else {
-                        break
-                    }
-                }
-                if level >= 1 && level <= 6 {
-                    let afterHashes = trimmed.dropFirst(level)
-                    if afterHashes.hasPrefix(" ") || afterHashes.hasPrefix("\t") {
-                        flushParagraph()
-                        let headerText = afterHashes.trimmingCharacters(in: .whitespaces)
-                        blocks.append(.header(level: level, text: headerText))
-                        continue
-                    }
-                }
-            }
-
-            // 5. Bullet Items (- , * , + )
-            if trimmed.hasPrefix("- ") || trimmed.hasPrefix("* ") || trimmed.hasPrefix("+ ") {
-                flushParagraph()
-                var itemText = String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespaces)
-                if itemText.hasPrefix("[ ] ") {
-                    itemText = "☐ " + itemText.dropFirst(4)
-                } else if itemText.hasPrefix("[x] ") || itemText.hasPrefix("[X] ") {
-                    itemText = "☑ " + itemText.dropFirst(4)
-                }
-                if !itemText.isEmpty {
-                    blocks.append(.bulletItem(itemText))
-                }
-                continue
-            }
-
-            // 6. Numbered list items (e.g. "1. ", "2) ")
-            if let match = trimmed.range(of: #"^\d+[\.\)]\s+"#, options: .regularExpression) {
-                flushParagraph()
-                let prefix = String(trimmed[match])
-                let number = prefix.trimmingCharacters(in: CharacterSet(charactersIn: ".) \t"))
-                var itemText = String(trimmed[match.upperBound...]).trimmingCharacters(in: .whitespaces)
-                if itemText.hasPrefix("[ ] ") {
-                    itemText = "☐ " + itemText.dropFirst(4)
-                } else if itemText.hasPrefix("[x] ") || itemText.hasPrefix("[X] ") {
-                    itemText = "☑ " + itemText.dropFirst(4)
-                }
-                if !itemText.isEmpty {
-                    blocks.append(.numberedItem(number: number, text: itemText))
-                }
-                continue
-            }
-
-            // 7. Empty lines
-            if trimmed.isEmpty {
-                flushParagraph()
-                continue
-            }
-
-            currentParagraphLines.append(line)
-        }
-
-        if inCodeBlock {
-            let code = currentCodeLines.joined(separator: "\n")
-            blocks.append(.codeBlock(language: currentLanguage, code: code))
-        }
-        flushParagraph()
-        flushQuote()
-
-        return blocks
-    }
-
-    private static func isDivider(_ trimmed: String) -> Bool {
-        guard trimmed.count >= 3 else { return false }
-        let nonSpace = trimmed.filter { !$0.isWhitespace }
-        guard nonSpace.count >= 3 else { return false }
-        return nonSpace.allSatisfy({ $0 == "-" }) ||
-               nonSpace.allSatisfy({ $0 == "*" }) ||
-               nonSpace.allSatisfy({ $0 == "_" })
-    }
-}
 
 public struct AgentMarkdownView: View {
     public let content: String
@@ -287,10 +103,24 @@ public struct AgentMarkdownView: View {
                             alignment: .leading
                         )
 
+                case .table(let headers, let rows):
+                    MarkdownTableView(headers: headers, rows: rows, theme: theme)
+
                 case .divider:
                     Divider()
                         .overlay(Color(theme.excerptHeaderBorder).opacity(0.4))
                         .padding(.vertical, 4)
+
+                case .image(let alt, let path):
+                    HStack(spacing: 6) {
+                        Image(systemName: "photo")
+                            .font(.system(size: 12))
+                            .foregroundColor(.accentColor)
+                        Text(alt.isEmpty ? path : alt)
+                            .font(.system(size: 12))
+                            .foregroundColor(Color(theme.foreground))
+                    }
+                    .padding(.vertical, 2)
                 }
             }
         }

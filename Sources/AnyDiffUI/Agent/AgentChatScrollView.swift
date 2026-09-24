@@ -2706,10 +2706,15 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
         fatalError("init(coder:) has not been implemented")
     }
 
+    private var isEditToolCall: Bool {
+        item.isEditToolCall
+    }
+
     private func hunksFromParentMessage(for item: ToolCallItem) -> [DiffHunk]? {
+        guard isEditToolCall else { return nil }
         guard let rawData = parentCell?.message.editedFilesSummary?.rawDiffData,
               !rawData.isEmpty,
-              let itemPath = item.path ?? (item.shortToolName == "Edit" || item.shortToolName == "Create" ? (item.displayTitle.isEmpty ? nil : item.displayTitle) : nil),
+              let itemPath = item.path ?? (!item.displayTitle.isEmpty ? item.displayTitle : nil),
               !itemPath.isEmpty else {
             return nil
         }
@@ -2735,8 +2740,9 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
     }
 
     private var effectiveAdditionsCount: Int? {
+        guard isEditToolCall else { return nil }
         if let files = parentCell?.message.editedFilesSummary?.files,
-           let itemPath = item.path ?? (item.displayTitle.isEmpty ? nil : item.displayTitle),
+           let itemPath = item.path ?? (!item.displayTitle.isEmpty ? item.displayTitle : nil),
            let file = files.first(where: { $0.path == itemPath || $0.path.hasSuffix(itemPath) || itemPath.hasSuffix($0.path) }) {
             return file.additions
         }
@@ -2745,8 +2751,9 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
     }
 
     private var effectiveDeletionsCount: Int? {
+        guard isEditToolCall else { return nil }
         if let files = parentCell?.message.editedFilesSummary?.files,
-           let itemPath = item.path ?? (item.displayTitle.isEmpty ? nil : item.displayTitle),
+           let itemPath = item.path ?? (!item.displayTitle.isEmpty ? item.displayTitle : nil),
            let file = files.first(where: { $0.path == itemPath || $0.path.hasSuffix(itemPath) || itemPath.hasSuffix($0.path) }) {
             return file.deletions
         }
@@ -5484,9 +5491,24 @@ public final class AgentNativeMessageCell: NSView {
                     sections.append(.codeBlock(language: lang, code: code))
                 }
 
+            case .table(let headers, let rows):
+                flushRichText()
+                let headerLine = headers.joined(separator: "  |  ")
+                let sepLine = String(repeating: "-", count: max(10, headerLine.count))
+                let rowLines = rows.map { $0.joined(separator: "  |  ") }.joined(separator: "\n")
+                sections.append(.codeBlock(language: nil, code: "\(headerLine)\n\(sepLine)\n\(rowLines)"))
+
             case .divider:
                 flushRichText()
                 sections.append(.divider)
+
+            case .image(let alt, let path):
+                let label = alt.isEmpty ? path : alt
+                currentRichText.append(NSAttributedString(string: "[\(label)](\(path))\n", attributes: [
+                    .font: NSFont.systemFont(ofSize: 13),
+                    .foregroundColor: NSColor.controlAccentColor
+                ]))
+                finishRichTextBlock()
             }
         }
 
@@ -5848,7 +5870,7 @@ public final class AgentNativeMessageCell: NSView {
     }
 
     @discardableResult
-    private func applyAssistantViewLayout(_ view: NSView, width: CGFloat, currentY: CGFloat, animated: Bool) -> CGFloat {
+    private func applyAssistantViewLayout(_ view: NSView, width: CGFloat, currentY: CGFloat, animated: Bool, spacing: CGFloat? = nil) -> CGFloat {
         guard !view.isHidden, view.alphaValue > 0.01 else { return 0 }
         let horizontalPadding: CGFloat = 16
         let contentWidth = max(50, width - (horizontalPadding * 2))
@@ -5928,7 +5950,8 @@ public final class AgentNativeMessageCell: NSView {
             }
         }
 
-        return height + (view is AgentNativeThoughtBlockView ? 2 : 6)
+        let defaultSpacing: CGFloat = (view is AgentNativeThoughtBlockView ? 2 : 6)
+        return height + (spacing ?? defaultSpacing)
     }
 
     public func measureHeight(for width: CGFloat) -> CGFloat {
@@ -5980,11 +6003,13 @@ public final class AgentNativeMessageCell: NSView {
                 currentY += h + 8
             }
 
-            for view in orderedAssistantViews {
+            for (index, view) in orderedAssistantViews.enumerated() {
+                guard !view.isHidden, view.alphaValue > 0.01 else { continue }
                 if isEditedFilesCardView(view) {
                     currentY += 8
                 }
-                currentY += assistantViewHeight(view, contentWidth: contentWidth) + 6
+                let spacing = spacingAfterAssistantView(at: index)
+                currentY += assistantViewHeight(view, contentWidth: contentWidth) + spacing
             }
 
             height = currentY + 4
@@ -6124,15 +6149,18 @@ public final class AgentNativeMessageCell: NSView {
                 currentY += h + 8
             }
 
-            for view in orderedAssistantViews {
+            for (index, view) in orderedAssistantViews.enumerated() {
+                guard !view.isHidden, view.alphaValue > 0.01 else { continue }
                 if isEditedFilesCardView(view) {
                     currentY += 8
                 }
+                let spacing = spacingAfterAssistantView(at: index)
                 currentY += applyAssistantViewLayout(
                     view,
                     width: width,
                     currentY: currentY,
-                    animated: animated
+                    animated: animated,
+                    spacing: spacing
                 )
             }
         }
@@ -6143,6 +6171,43 @@ public final class AgentNativeMessageCell: NSView {
     private func isEditedFilesCardView(_ view: NSView) -> Bool {
         guard let editedFilesCardView else { return false }
         return editedFilesCardView === view
+    }
+
+    private func isToolCallView(_ view: NSView) -> Bool {
+        view is AgentNativeToolCardView || view is AgentNativeSimpleToolCallView
+    }
+
+    private func nextVisibleAssistantView(after index: Int) -> NSView? {
+        for nextIdx in (index + 1)..<orderedAssistantViews.count {
+            let nextView = orderedAssistantViews[nextIdx]
+            if !nextView.isHidden && nextView.alphaValue > 0.01 {
+                return nextView
+            }
+        }
+        return nil
+    }
+
+    private func spacingAfterAssistantView(at index: Int) -> CGFloat {
+        let view = orderedAssistantViews[index]
+        guard !view.isHidden, view.alphaValue > 0.01 else { return 0 }
+
+        if isToolCallView(view) {
+            if let nextView = nextVisibleAssistantView(after: index) {
+                if !isToolCallView(nextView) {
+                    if isEditedFilesCardView(nextView) {
+                        return 6
+                    }
+                    return 14
+                }
+            }
+            return 6
+        }
+
+        if view is AgentNativeThoughtBlockView {
+            return 2
+        }
+
+        return 6
     }
 
     public func finishVisibilityAnimation() {

@@ -103,7 +103,12 @@ public struct ToolCallItem: Identifiable, Codable, Sendable, Equatable {
         return toolName
     }
 
+    public var isEditToolCall: Bool {
+        shortToolName == "Edit" || shortToolName == "Create" || shortToolName == "Write"
+    }
+
     public var diffStats: (additions: Int, deletions: Int)? {
+        guard isEditToolCall else { return nil }
         guard let new = newContent else {
             if let old = oldContent, !old.isEmpty {
                 return (0, old.components(separatedBy: "\n").count)
@@ -177,7 +182,8 @@ public struct ToolCallItem: Identifiable, Codable, Sendable, Equatable {
     }
 
     public func createEditedFilesSummary() -> AgentEditedFilesSummary? {
-        guard let p = path ?? (shortToolName == "Edit" ? (displayTitle.isEmpty ? nil : displayTitle) : nil), !p.isEmpty else {
+        guard isEditToolCall else { return nil }
+        guard let p = path ?? (!displayTitle.isEmpty ? displayTitle : nil), !p.isEmpty else {
             return nil
         }
         let adds = additionsCount ?? 0

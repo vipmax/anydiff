@@ -1296,4 +1296,99 @@ final class ReadOnlyEditorTests: XCTestCase {
         let maxScrollY = max(0, editor.totalDocumentHeight - editor.bounds.height)
         XCTAssertEqual(editor.scrollOffsetY, min(bLine1Y, maxScrollY))
     }
+
+    func testScrollNotResetOnAgentRerender() {
+        let multiBuffer = MultiBuffer()
+        let bufA = Buffer(filePath: "FileA.swift", text: (1...50).map { "A\($0)" }.joined(separator: "\n"))
+        let bufB = Buffer(filePath: "FileB.swift", text: (1...50).map { "B\($0)" }.joined(separator: "\n"))
+        multiBuffer.addBuffer(bufA)
+        multiBuffer.addBuffer(bufB)
+        multiBuffer.setExcerpts([
+            Excerpt(bufferId: bufA.id, filePath: "FileA.swift", bufferRange: 0..<50),
+            Excerpt(bufferId: bufB.id, filePath: "FileB.swift", bufferRange: 0..<50)
+        ])
+        let dm = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
+        dm.rebuild()
+
+        let host = EditorHostView(
+            displayMap: dm,
+            theme: .unifiedDark,
+            selectedFilePath: "FileA.swift",
+            onCursorChange: { _, _ in },
+            onAddCommentRequest: { _, _ in }
+        )
+        let coordinator = host.makeCoordinator()
+        let editor = CustomMultiBufferEditorView(displayMap: dm, theme: .unifiedDark)
+        editor.frame = CGRect(x: 0, y: 0, width: 800, height: 200)
+        editor.delegate = coordinator
+        coordinator.editorView = editor
+        let displayMapID = ObjectIdentifier(dm)
+        coordinator.activeDisplayMapID = displayMapID
+        coordinator.lastLoadRevisions[displayMapID] = dm.loadRevision
+        coordinator.lastLayoutModes[displayMapID] = dm.effectiveLayoutMode
+        coordinator.lastSelectedFilePaths[displayMapID] = "FileA.swift"
+
+        // Simulate user scrolling down into FileB
+        guard let bLine10Idx = dm.displayLineIndex(forFilePath: "FileB.swift", lineNumber: 10) else {
+            XCTFail("FileB line 10 display line not found")
+            return
+        }
+        let bLine10Y = editor.yOffset(forDisplayLineIndex: bLine10Idx)
+        editor.scrollOffsetY = bLine10Y
+        coordinator.editorDidScroll()
+
+        XCTAssertEqual(editor.scrollOffsetY, bLine10Y)
+
+        // 1. Simulating sending a message in the agent:
+        // SwiftUI re-evaluates MainWindowView body, calling updateView.
+        // The user is typing/focused in chat, so editor is NOT first responder.
+        // selectedFilePath is still "FileA.swift" because user only scrolled without changing selection.
+        let msgSentHost = EditorHostView(
+            displayMap: dm,
+            theme: .unifiedDark,
+            selectedFilePath: "FileA.swift",
+            onCursorChange: { _, _ in },
+            onAddCommentRequest: { _, _ in }
+        )
+        msgSentHost.updateView(editor, coordinator: coordinator)
+
+        // Drain runloop for any pending async tasks
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+
+        // Scroll MUST remain at FileB line 10, NOT reset to FileA (0)
+        XCTAssertEqual(editor.scrollOffsetY, bLine10Y, "Sending a prompt in agent chat must not reset editor scroll position")
+
+        // 2. Simulating a toolcall being added in the agent:
+        // Another SwiftUI re-render occurs while streaming.
+        let toolCallHost = EditorHostView(
+            displayMap: dm,
+            theme: .unifiedDark,
+            selectedFilePath: "FileA.swift",
+            onCursorChange: { _, _ in },
+            onAddCommentRequest: { _, _ in }
+        )
+        toolCallHost.updateView(editor, coordinator: coordinator)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+
+        XCTAssertEqual(editor.scrollOffsetY, bLine10Y, "Adding a toolcall in agent chat must not reset editor scroll position")
+
+        // 3. Simulating explicit sidebar click on FileB:
+        // When selectedFilePath changes from FileA to FileB, it SHOULD scroll to FileB
+        let sidebarClickHost = EditorHostView(
+            displayMap: dm,
+            theme: .unifiedDark,
+            selectedFilePath: "FileB.swift",
+            onCursorChange: { _, _ in },
+            onAddCommentRequest: { _, _ in }
+        )
+        sidebarClickHost.updateView(editor, coordinator: coordinator)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+
+        guard let bHeaderIdx = dm.displayLineIndex(forFilePath: "FileB.swift", lineNumber: nil, isHeader: true) else {
+            XCTFail("FileB header display line not found")
+            return
+        }
+        let bHeaderY = editor.yOffset(forDisplayLineIndex: bHeaderIdx)
+        XCTAssertEqual(editor.scrollOffsetY, bHeaderY, "Explicit file selection in sidebar must scroll to the selected file")
+    }
 }

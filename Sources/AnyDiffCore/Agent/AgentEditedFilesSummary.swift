@@ -28,6 +28,7 @@ public struct AgentEditedFilesSummary: Codable, Sendable, Equatable {
     public let baseCommitHash: String?
     public var postTurnCommitHash: String?
     public var savedCreatedFiles: [String: String]?
+    public var preTurnUntrackedBlobs: [String: String]?
     public let rawDiffData: Data?
     public let rawTextData: Data?
     public let contentMode: ContentMode
@@ -41,6 +42,7 @@ public struct AgentEditedFilesSummary: Codable, Sendable, Equatable {
         baseCommitHash: String? = nil,
         postTurnCommitHash: String? = nil,
         savedCreatedFiles: [String: String]? = nil,
+        preTurnUntrackedBlobs: [String: String]? = nil,
         rawDiffData: Data? = nil,
         rawTextData: Data? = nil,
         contentMode: ContentMode = .diff,
@@ -53,6 +55,7 @@ public struct AgentEditedFilesSummary: Codable, Sendable, Equatable {
         self.baseCommitHash = baseCommitHash
         self.postTurnCommitHash = postTurnCommitHash
         self.savedCreatedFiles = savedCreatedFiles
+        self.preTurnUntrackedBlobs = preTurnUntrackedBlobs
         self.rawDiffData = rawDiffData
         self.rawTextData = rawTextData
         self.contentMode = contentMode
@@ -63,7 +66,7 @@ public struct AgentEditedFilesSummary: Codable, Sendable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case files, baseCommitHash, postTurnCommitHash, savedCreatedFiles, rawDiffData, rawTextData, contentMode, isReverted, createdFiles, modifiedFiles, deletedFiles
+        case files, baseCommitHash, postTurnCommitHash, savedCreatedFiles, preTurnUntrackedBlobs, rawDiffData, rawTextData, contentMode, isReverted, createdFiles, modifiedFiles, deletedFiles
     }
 
     public init(from decoder: Decoder) throws {
@@ -72,6 +75,7 @@ public struct AgentEditedFilesSummary: Codable, Sendable, Equatable {
         baseCommitHash = try container.decodeIfPresent(String.self, forKey: .baseCommitHash)
         postTurnCommitHash = try container.decodeIfPresent(String.self, forKey: .postTurnCommitHash)
         savedCreatedFiles = try container.decodeIfPresent([String: String].self, forKey: .savedCreatedFiles)
+        preTurnUntrackedBlobs = try container.decodeIfPresent([String: String].self, forKey: .preTurnUntrackedBlobs)
         rawDiffData = try container.decodeIfPresent(Data.self, forKey: .rawDiffData)
         rawTextData = try container.decodeIfPresent(Data.self, forKey: .rawTextData)
         contentMode = try container.decodeIfPresent(ContentMode.self, forKey: .contentMode) ?? .diff
@@ -87,6 +91,7 @@ public struct AgentEditedFilesSummary: Codable, Sendable, Equatable {
         try container.encodeIfPresent(baseCommitHash, forKey: .baseCommitHash)
         try container.encodeIfPresent(postTurnCommitHash, forKey: .postTurnCommitHash)
         try container.encodeIfPresent(savedCreatedFiles, forKey: .savedCreatedFiles)
+        try container.encodeIfPresent(preTurnUntrackedBlobs, forKey: .preTurnUntrackedBlobs)
         try container.encodeIfPresent(rawDiffData, forKey: .rawDiffData)
         try container.encodeIfPresent(rawTextData, forKey: .rawTextData)
         try container.encode(contentMode, forKey: .contentMode)
@@ -121,6 +126,7 @@ public struct PreTurnGitSnapshot: Sendable {
     public let baseCommitHash: String?
     public let untrackedFiles: Set<String>
     public let untrackedModTimes: [String: TimeInterval]
+    public let untrackedBlobHashes: [String: String]
     public let isGitRepository: Bool
 
     public var stashCommitHash: String? { baseCommitHash }
@@ -130,11 +136,13 @@ public struct PreTurnGitSnapshot: Sendable {
         baseCommitHash: String? = nil,
         untrackedFiles: Set<String> = [],
         untrackedModTimes: [String: TimeInterval] = [:],
+        untrackedBlobHashes: [String: String] = [:],
         isGitRepository: Bool = true
     ) {
         self.baseCommitHash = baseCommitHash ?? stashCommitHash
         self.untrackedFiles = untrackedFiles
         self.untrackedModTimes = untrackedModTimes
+        self.untrackedBlobHashes = untrackedBlobHashes
         self.isGitRepository = isGitRepository
     }
 }
@@ -170,17 +178,34 @@ public enum AgentGitChangesDetector {
         }
 
         var untracked = Set<String>()
+        var untrackedList: [String] = []
         var modTimes: [String: TimeInterval] = [:]
+        var blobHashes: [String: String] = [:]
 
         if let output = runGit(arguments: ["-C", workingDirectory, "ls-files", "--others", "--exclude-standard"]) {
             for line in output.components(separatedBy: "\n") {
                 let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty else { continue }
                 untracked.insert(trimmed)
+                untrackedList.append(trimmed)
                 let fullPath = URL(fileURLWithPath: workingDirectory).appendingPathComponent(trimmed).path
                 if let attrs = try? FileManager.default.attributesOfItem(atPath: fullPath),
                    let modDate = attrs[.modificationDate] as? Date {
                     modTimes[trimmed] = modDate.timeIntervalSince1970
+                }
+            }
+            if !untrackedList.isEmpty {
+                var hashArgs = ["-C", workingDirectory, "hash-object", "-w", "--"]
+                hashArgs.append(contentsOf: untrackedList)
+                if let shasOutput = runGit(arguments: hashArgs) {
+                    let shas = shasOutput.components(separatedBy: "\n")
+                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                        .filter { !$0.isEmpty }
+                    if shas.count == untrackedList.count {
+                        for (idx, sha) in shas.enumerated() {
+                            blobHashes[untrackedList[idx]] = sha
+                        }
+                    }
                 }
             }
         }
@@ -189,6 +214,7 @@ public enum AgentGitChangesDetector {
             baseCommitHash: baseRef,
             untrackedFiles: untracked,
             untrackedModTimes: modTimes,
+            untrackedBlobHashes: blobHashes,
             isGitRepository: true
         )
     }
@@ -289,6 +315,7 @@ public enum AgentGitChangesDetector {
         }
 
         // 2. Untracked files created or modified during THIS turn
+        var preTurnBlobsForSummary: [String: String] = [:]
         if snapshot.isGitRepository,
            let untrackedOutput = runGit(arguments: ["-C", workingDirectory, "ls-files", "--others", "--exclude-standard"]) {
             let existingTrackedPaths = Set(items.map(\.path))
@@ -311,10 +338,20 @@ public enum AgentGitChangesDetector {
                     }
                 } else if isModified {
                     modifiedList.append(trimmed)
-                    if let contents = try? String(contentsOfFile: fullPath, encoding: .utf8) {
-                        let lineCount = contents.components(separatedBy: "\n").count
-                        items.append(AgentEditedFileItem(path: trimmed, additions: lineCount, deletions: 0))
+                    var adds = 0
+                    var dels = 0
+                    if let oldBlobSha = snapshot.untrackedBlobHashes[trimmed],
+                       let numstat = runGit(arguments: ["-C", workingDirectory, "diff", "--numstat", oldBlobSha, "--", trimmed]) {
+                        preTurnBlobsForSummary[trimmed] = oldBlobSha
+                        let parts = numstat.trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: "\t")
+                        if parts.count >= 2 {
+                            adds = Int(parts[0]) ?? 0
+                            dels = Int(parts[1]) ?? 0
+                        }
+                    } else if let contents = try? String(contentsOfFile: fullPath, encoding: .utf8) {
+                        adds = contents.components(separatedBy: "\n").count
                     }
+                    items.append(AgentEditedFileItem(path: trimmed, additions: adds, deletions: dels))
                 }
             }
         }
@@ -323,20 +360,48 @@ public enum AgentGitChangesDetector {
 
         // 3. Capture raw unified diff data for fast MultiBuffer rendering
         var rawData: Data? = nil
+        var diffChunks: [Data] = []
+
         if let baseRef = snapshot.baseCommitHash {
-            let filterPaths = Set(items.map(\.path))
-            if !filterPaths.isEmpty {
+            let trackedFilterPaths = Set(items.map(\.path)).subtracting(snapshot.untrackedFiles)
+            if !trackedFilterPaths.isEmpty {
                 var diffArgs = ["-C", workingDirectory, "diff", "-U3", baseRef, "--"]
-                diffArgs.append(contentsOf: filterPaths.sorted())
+                diffArgs.append(contentsOf: trackedFilterPaths.sorted())
                 if let diffData = runGitData(arguments: diffArgs) {
-                    rawData = diffData
+                    diffChunks.append(diffData)
                 }
             }
+        }
+
+        // Include diffs for untracked files
+        for item in items {
+            if snapshot.untrackedFiles.contains(item.path) {
+                if let oldBlobSha = snapshot.untrackedBlobHashes[item.path],
+                   let fileDiffData = runGitData(arguments: ["-C", workingDirectory, "diff", "-U3", oldBlobSha, "--", item.path]) {
+                    diffChunks.append(fileDiffData)
+                }
+            } else if createdList.contains(item.path) {
+                if let fileDiffData = runGitData(arguments: ["-C", workingDirectory, "diff", "-U3", "--no-index", "/dev/null", item.path]) {
+                    diffChunks.append(fileDiffData)
+                }
+            }
+        }
+
+        if !diffChunks.isEmpty {
+            var combined = Data()
+            for chunk in diffChunks {
+                combined.append(chunk)
+                if chunk.last != 0x0A {
+                    combined.append(0x0A)
+                }
+            }
+            rawData = combined
         }
 
         let summary = AgentEditedFilesSummary(
             files: items,
             baseCommitHash: snapshot.baseCommitHash,
+            preTurnUntrackedBlobs: preTurnBlobsForSummary.isEmpty ? nil : preTurnBlobsForSummary,
             rawDiffData: rawData,
             isReverted: false,
             createdFiles: createdList,
@@ -393,7 +458,8 @@ public enum AgentGitChangesDetector {
             try process.run()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
-            guard process.terminationStatus == 0, !data.isEmpty else { return nil }
+            let allowedStatuses: Set<Int32> = arguments.contains("--no-index") ? [0, 1] : [0]
+            guard allowedStatuses.contains(process.terminationStatus), !data.isEmpty else { return nil }
             return data
         } catch {
             return nil
