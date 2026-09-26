@@ -17,6 +17,7 @@ public struct EditorHostView: NSViewRepresentable {
     public var theme: Theme
     public var fontSize: CGFloat
     public var isEditable: Bool
+    public var topContentInset: CGFloat
     public var selectedFilePath: String?
     public var viewStateResetToken: UInt64?
     public var searchMatches: [ProjectSearchMatch]
@@ -34,6 +35,7 @@ public struct EditorHostView: NSViewRepresentable {
         theme: Theme,
         fontSize: CGFloat = 13,
         isEditable: Bool = true,
+        topContentInset: CGFloat = 0,
         selectedFilePath: String? = nil,
         viewStateResetToken: UInt64? = nil,
         searchMatches: [ProjectSearchMatch] = [],
@@ -50,6 +52,7 @@ public struct EditorHostView: NSViewRepresentable {
         self.theme = theme
         self.fontSize = fontSize
         self.isEditable = isEditable
+        self.topContentInset = topContentInset
         self.selectedFilePath = selectedFilePath
         self.viewStateResetToken = viewStateResetToken
         self.searchMatches = searchMatches
@@ -71,6 +74,7 @@ public struct EditorHostView: NSViewRepresentable {
         let editorView = CustomMultiBufferEditorView(displayMap: displayMap, theme: theme)
         editorView.font = .monospacedSystemFont(ofSize: fontSize, weight: .regular)
         editorView.isEditable = isEditable
+        editorView.topContentInset = topContentInset
         editorView.delegate = context.coordinator
         context.coordinator.editorView = editorView
         let displayMapID = ObjectIdentifier(displayMap)
@@ -170,6 +174,9 @@ public struct EditorHostView: NSViewRepresentable {
         }
         if editorView.isEditable != isEditable {
             editorView.isEditable = isEditable
+        }
+        if editorView.topContentInset != topContentInset {
+            editorView.topContentInset = topContentInset
         }
 
         if editorView.searchMatches != searchMatches {

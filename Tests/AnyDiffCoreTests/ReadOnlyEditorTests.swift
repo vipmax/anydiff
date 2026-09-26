@@ -1391,4 +1391,75 @@ final class ReadOnlyEditorTests: XCTestCase {
         let bHeaderY = editor.yOffset(forDisplayLineIndex: bHeaderIdx)
         XCTAssertEqual(editor.scrollOffsetY, bHeaderY, "Explicit file selection in sidebar must scroll to the selected file")
     }
+
+    func testTopContentInsetClearanceAndScrolling() {
+        let multiBuffer = MultiBuffer()
+        let buf = Buffer(filePath: "FileA.swift", text: (1...50).map { "line \($0)" }.joined(separator: "\n"))
+        multiBuffer.addBuffer(buf)
+        multiBuffer.setExcerpts([
+            Excerpt(bufferId: buf.id, filePath: "FileA.swift", bufferRange: 0..<50)
+        ])
+        let dm = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
+        dm.rebuild()
+
+        let editor = CustomMultiBufferEditorView(displayMap: dm, theme: .unifiedDark)
+        editor.frame = CGRect(x: 0, y: 0, width: 800, height: 400)
+        editor.topContentInset = 52
+
+        // First item (file header) must start at topContentInset
+        let headerY = editor.yOffset(forDisplayLineIndex: 0)
+        XCTAssertEqual(headerY, 52, "First item in editor should start after topContentInset")
+
+        // Total document height must include topContentInset
+        XCTAssertGreaterThan(editor.totalDocumentHeight, 52)
+
+        // lineIndex at y <= 52 should map to index 0
+        XCTAssertEqual(editor.lineIndex(atY: 0), 0)
+        XCTAssertEqual(editor.lineIndex(atY: 52), 0)
+
+        // scrollToFilePath should position first file at scrollOffsetY = 0 (top of viewport)
+        editor.scrollToFilePath("FileA.swift")
+        XCTAssertEqual(editor.scrollOffsetY, 0)
+    }
+
+    func testFloatingGlassPillExcerptHeaderGeometryAndHitTesting() {
+        let multiBuffer = MultiBuffer()
+        let buf = Buffer(filePath: "README.md", text: "# Hello World\nLine 2\n")
+        multiBuffer.addBuffer(buf)
+        multiBuffer.setExcerpts([
+            Excerpt(bufferId: buf.id, filePath: "README.md", bufferRange: 0..<2)
+        ])
+        let dm = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
+        dm.rebuild()
+
+        let editor = CustomMultiBufferEditorView(displayMap: dm, theme: .vesper)
+        editor.frame = CGRect(x: 0, y: 0, width: 800, height: 600)
+        editor.topContentInset = 52
+
+        let headerRect = CGRect(x: 0, y: 52, width: 800, height: editor.excerptHeaderHeight)
+        let pill = editor.pillRect(for: headerRect)
+
+        // Floating pill must be horizontally and vertically inset
+        XCTAssertEqual(pill.minX, 12)
+        XCTAssertEqual(pill.maxX, 800 - 12)
+        XCTAssertEqual(pill.width, 800 - 24)
+        XCTAssertEqual(pill.minY, 52 + 3)
+        XCTAssertEqual(pill.height, editor.excerptHeaderHeight - 6)
+        XCTAssertTrue(headerRect.contains(pill))
+
+        // Close button and Markdown preview button must reside inside the pill
+        let closeRect = editor.closeButtonRect(in: headerRect)
+        XCTAssertTrue(pill.contains(closeRect))
+        XCTAssertEqual(closeRect.width, 18)
+        XCTAssertEqual(closeRect.height, 18)
+
+        let previewRect = editor.previewButtonRect(in: headerRect)
+        XCTAssertTrue(pill.contains(previewRect))
+        XCTAssertEqual(previewRect.width, 18)
+        XCTAssertEqual(previewRect.height, 18)
+
+        // Close button on leading side, preview on trailing side
+        XCTAssertLessThan(closeRect.maxX, previewRect.minX)
+        XCTAssertGreaterThan(previewRect.minX, pill.maxX - 30)
+    }
 }

@@ -569,11 +569,6 @@ public struct AgentInputView: View {
                                 lineWidth: isInputFocused ? 1.4 : 1.2
                             )
                     )
-                    .shadow(
-                        color: isInputFocused ? Color(theme.focusColor).opacity(0.20) : .clear,
-                        radius: isInputFocused ? 14 : 0,
-                        y: isInputFocused ? 2 : 0
-                    )
             )
             .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
             .onTapGesture {

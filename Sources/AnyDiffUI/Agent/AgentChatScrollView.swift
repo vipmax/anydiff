@@ -424,7 +424,7 @@ public final class AgentNativeStandardChatScrollView: NSScrollView {
         }
     }
 
-    public override var isOpaque: Bool { true }
+    public override var isOpaque: Bool { false }
     public override var mouseDownCanMoveWindow: Bool { false }
 
     public override init(frame frameRect: NSRect) {
@@ -441,8 +441,8 @@ public final class AgentNativeStandardChatScrollView: NSScrollView {
         hasVerticalScroller = true
         hasHorizontalScroller = false
         autohidesScrollers = true
-        drawsBackground = true
-        backgroundColor = NSColor(cgColor: Theme.zedDark.background.cgColor) ?? .windowBackgroundColor
+        drawsBackground = false
+        backgroundColor = .clear
         borderType = .noBorder
         scrollsDynamically = true
         wantsLayer = true
@@ -552,10 +552,6 @@ public final class AgentNativeStandardChatScrollView: NSScrollView {
         lastScrollToBottomTrigger = pendingScrollToBottomTrigger
         if shouldScrollToBottom {
             followsBottom = true
-        }
-        let themeBgColor = NSColor(cgColor: theme.background.cgColor) ?? .windowBackgroundColor
-        if backgroundColor != themeBgColor {
-            backgroundColor = themeBgColor
         }
         documentViewCustom.setBottomInset(pendingBottomInset)
         documentViewCustom.updateMessages(
@@ -804,7 +800,7 @@ public final class AgentNativeStandardChatDocumentView: NSView {
         let contentWidth = max(100, width)
         lastLayoutWidth = contentWidth
 
-        var currentY: CGFloat = 8
+        var currentY: CGFloat = 60
 
         for i in 0..<orderedCells.count {
             let cell = orderedCells[i].cell
@@ -1501,7 +1497,7 @@ public final class AgentNativeChatDocumentView: NSView {
     private var lastMessageIds: [UUID] = []
 
     private let verticalSpacing: CGFloat = 10
-    private let topPadding: CGFloat = 8
+    private let topPadding: CGFloat = 60
     private let bottomPadding: CGFloat = 16
     private var bottomInset: CGFloat = 0
 

@@ -54,11 +54,6 @@ public struct AgentPanelView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            // Reserve space for window toolbar
-            Rectangle()
-                .fill(Color(theme.background))
-                .frame(height: 5)
-
             ZStack(alignment: .bottomTrailing) {
                 messagesArea
                     .frame(maxWidth: .infinity, maxHeight: .infinity)

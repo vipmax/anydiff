@@ -230,28 +230,68 @@ public struct MainWindowView: View {
         )
     }
 
+    private func shouldIgnoreTopSafeArea(for slot: PanelSlot) -> Bool {
+        let content = panelLayout.content(for: slot)
+        return content == .agent || content == .editor
+    }
+
     public var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             panelView(for: .left)
                 .navigationSplitViewColumnWidth(min: leftColumnMinWidth, ideal: leftColumnIdealWidth, max: leftColumnMaxWidth)
+                .ignoresSafeArea(.all, edges: shouldIgnoreTopSafeArea(for: .left) ? .top : [])
+                .toolbar {
+                    if hasSlotToolbarItem(for: .left) {
+                        ToolbarItem(id: "slotToolbarLeft", placement: .automatic) {
+                            slotToolbarItem(for: .left)
+                        }
+                    }
+                }
         } content: {
             panelView(for: .center)
                 .navigationSplitViewColumnWidth(min: centerColumnMinWidth, ideal: centerColumnIdealWidth, max: centerColumnMaxWidth)
+                .ignoresSafeArea(.all, edges: shouldIgnoreTopSafeArea(for: .center) ? .top : [])
                 .toolbar {
-                    ToolbarItem(id: "mainWindowToolbarNav", placement: .navigation) {
+                    ToolbarItem(id: "mainWindowRepoBranch", placement: .automatic) {
                         toolbarNavigationItems
                     }
-                    ToolbarItem(id: "mainWindowToolbarSpacer", placement: .automatic) {
-                        Spacer()
-                    }
-                    ToolbarItem(id: "mainWindowToolbarTrailing", placement: .primaryAction) {
-                        windowToolbarTrailingItems
+                    if hasSlotToolbarItem(for: .center) {
+                        ToolbarItem(id: "slotToolbarCenter", placement: .automatic) {
+                            slotToolbarItem(for: .center)
+                        }
                     }
                 }
                 .background(hiddenKeyboardShortcuts)
         } detail: {
             panelView(for: .right)
                 .navigationSplitViewColumnWidth(min: rightColumnMinWidth, ideal: rightColumnIdealWidth, max: rightColumnMaxWidth)
+                .ignoresSafeArea(.all, edges: shouldIgnoreTopSafeArea(for: .right) ? .top : [])
+                .toolbar {
+                    if #available(macOS 26.0, *) {
+                        ToolbarSpacer(.flexible)
+                        if hasSlotToolbarItem(for: .right) {
+                            ToolbarItem(id: "slotToolbarRight", placement: .automatic) {
+                                slotToolbarItem(for: .right)
+                            }
+                        }
+                        ToolbarSpacer(.fixed)
+                        ToolbarItem(id: "mainWindowToolbarTrailing", placement: .primaryAction) {
+                            rightPanelToggleButton(isOpen: panelLayout.isRightPanelOpen)
+                        }
+                    } else {
+                        ToolbarItem(id: "slotToolbarRightSpacer", placement: .automatic) {
+                            Spacer()
+                        }
+                        if hasSlotToolbarItem(for: .right) {
+                            ToolbarItem(id: "slotToolbarRight", placement: .automatic) {
+                                slotToolbarItem(for: .right)
+                            }
+                        }
+                        ToolbarItem(id: "mainWindowToolbarTrailing", placement: .primaryAction) {
+                            rightPanelToggleButton(isOpen: panelLayout.isRightPanelOpen)
+                        }
+                    }
+                }
         }
         .onChange(of: columnVisibility) { newVisibility in
             let isOpen = (newVisibility == .all)
@@ -761,23 +801,6 @@ public struct MainWindowView: View {
     @ViewBuilder
     private func editorPanelView(for slot: PanelSlot) -> some View {
         VStack(spacing: 0) {
-            GeometryReader { headerGeo in
-                PanelHeaderView(
-                    theme: activeTheme,
-                    onBack: {
-                        withAnimation(.easeInOut(duration: 0.18)) {
-                            panelLayout.clear(slot)
-                        }
-                    }
-                ) {
-                    editorHeaderLeadingView(availableWidth: headerGeo.size.width)
-                } actions: {
-                    editorHeaderActions(availableWidth: headerGeo.size.width)
-                }
-                .frame(width: headerGeo.size.width, height: 28, alignment: .leading)
-            }
-            .frame(height: 28)
-
             if isProjectSearchActive {
                 ProjectSearchBarView(
                     query: $searchQuery,
@@ -806,6 +829,7 @@ public struct MainWindowView: View {
                         }
                     }
                 )
+                .padding(.top, 52)
                 .transition(.move(edge: .top).combined(with: .opacity))
             }
 
@@ -824,6 +848,7 @@ public struct MainWindowView: View {
                             openFileInEditor(path: path)
                         }
                     )
+                    .padding(.top, 52)
                     .id(mdPath)
                 } else {
                     editorDetailView
@@ -885,56 +910,6 @@ public struct MainWindowView: View {
         return ""
     }
 
-    @ViewBuilder
-    private func editorHeaderLeadingView(availableWidth: CGFloat = 600) -> some View {
-        HStack(spacing: 6) {
-            let iconName: String = {
-                if activeMarkdownPreviewPath != nil {
-                    return "doc.text"
-                } else if isProjectSearchActive {
-                    return "magnifyingglass"
-                } else if case .commit = comparisonTarget {
-                    return "clock.arrow.circlepath"
-                } else {
-                    return "arrow.triangle.branch"
-                }
-            }()
-
-            Image(systemName: iconName)
-                .font(.system(size: 11.5, weight: .medium))
-                .frame(width: 14, height: 14)
-                .foregroundColor(Color(activeTheme.gutterForeground))
-
-            Text(editorTitlePrefix)
-                .font(.system(size: 11, weight: .bold))
-                .foregroundColor(Color(activeTheme.foreground))
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .help(commitSummaryTooltip)
-
-            // Changed count: hide if available width is tight (< 420 pt) or if markdown preview is active
-            if availableWidth >= 420 && activeMarkdownPreviewPath == nil {
-                Text("\(activeFileDiffs.count) \(activeFileDiffs.count == 1 ? "change" : "changes")")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(Color(activeTheme.gutterForeground))
-                    .lineLimit(1)
-            }
-
-            // Badges moved from window toolbar into the editor header
-            if let mdPath = activeMarkdownPreviewPath {
-                markdownPreviewBadge(for: mdPath)
-            } else if availableWidth >= 460 || (!isProjectSearchActive && comparisonTarget == .workingTree) {
-                if isProjectSearchActive {
-                    globalSearchBadge
-                } else if isReadOnlyActive {
-                    readOnlyDiffBadge
-                } else if comparisonTarget != .workingTree {
-                    readOnlyBadge
-                }
-            }
-        }
-        .lineLimit(1)
-    }
 
     @ViewBuilder
     private func commitDetailPopoverContent(hash: String, summary: String) -> some View {
@@ -971,253 +946,384 @@ public struct MainWindowView: View {
         )
     }
 
+
+
     @ViewBuilder
-    private func editorHeaderActions(availableWidth: CGFloat = 600) -> some View {
-        HStack(spacing: 2) {
-            // Next / Previous Hunk stepper buttons
-            HStack(spacing: 1) {
-                Button(action: {
-                    NotificationCenter.default.post(name: .goToPreviousHunk, object: nil)
-                }) {
-                    Image(systemName: "arrow.up")
-                        .font(.system(size: 10.5, weight: .semibold))
-                        .frame(width: 14, height: 14)
-                        .foregroundColor(activeFileDiffs.isEmpty ? Color(activeTheme.gutterForeground).opacity(0.35) : Color(activeTheme.gutterForeground))
-                }
-                .buttonStyle(ToolbarHoverButtonStyle())
-                .disabled(activeFileDiffs.isEmpty)
-                .help("Go to Previous Hunk (⇧⌘F8 / ⇧F7)")
-
-                Button(action: {
-                    NotificationCenter.default.post(name: .goToNextHunk, object: nil)
-                }) {
-                    Image(systemName: "arrow.down")
-                        .font(.system(size: 10.5, weight: .semibold))
-                        .frame(width: 14, height: 14)
-                        .foregroundColor(activeFileDiffs.isEmpty ? Color(activeTheme.gutterForeground).opacity(0.35) : Color(activeTheme.gutterForeground))
-                }
-                .buttonStyle(ToolbarHoverButtonStyle())
-                .disabled(activeFileDiffs.isEmpty)
-                .help("Go to Next Hunk (⌘F8 / F7)")
+    private func agentPanelView(for slot: PanelSlot) -> some View {
+        Group {
+            if !agentCoordinator.showStartScreen, let activeSession = agentCoordinator.activeSession {
+                AgentPanelView(
+                    agentManager: activeSession.manager,
+                    theme: activeTheme,
+                    workingDirectory: effectiveWorkingDirectory,
+                    currentSelectedFile: selectedFilePath,
+                    fileDiffsSummary: currentDiffSummary,
+                    agentAccentColor: activeSession.preset.color,
+                    agentIcon: activeSession.preset.iconName,
+                    toolcallColorMode: toolcallColorMode,
+                    onReview: { summary in
+                        beginReview(summary: summary)
+                    },
+                    onPreviewImages: { imgs, idx, isDraft in
+                        agentCoordinator.showImagePreview(images: imgs, selectedIndex: idx, isDraft: isDraft)
+                    },
+                    onOpenURL: { url in
+                        handleOpenURL(url)
+                    }
+                )
+                .id(activeSession.id)
+            } else {
+                AgentStartScreenView(
+                    coordinator: agentCoordinator,
+                    theme: activeTheme,
+                    workingDirectory: effectiveWorkingDirectory
+                )
             }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
 
-            Rectangle()
-                .fill(Color(activeTheme.gutterForeground).opacity(0.2))
-                .frame(width: 1, height: 12)
-                .padding(.horizontal, 3)
+    private func isSlotVisible(_ slot: PanelSlot) -> Bool {
+        switch slot {
+        case .left:
+            return columnVisibility == .all
+        case .center:
+            return true
+        case .right:
+            return panelLayout.isRightPanelOpen
+        }
+    }
 
-            // Toggle/collapse all files in MultiBuffer button (перед switch side by side)
+    private func hasSlotToolbarItem(for slot: PanelSlot) -> Bool {
+        guard isSlotVisible(slot) else { return false }
+        switch panelLayout.content(for: slot) {
+        case .agent, .editor:
+            return true
+        case .changes, .files, .history, nil:
+            return false
+        }
+    }
+
+    @ViewBuilder
+    private func slotToolbarItem(for slot: PanelSlot) -> some View {
+        if isSlotVisible(slot) {
+            switch panelLayout.content(for: slot) {
+            case .agent:
+                agentPanelToolbarCapsule(for: slot)
+            case .editor:
+                editorPanelToolbarCapsule(for: slot)
+            case .changes, .files, .history, nil:
+                EmptyView()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func editorPanelToolbarCapsule(for slot: PanelSlot) -> some View {
+        HStack(spacing: 0) {
+            editorTargetToolbarItem(for: slot)
+
+            CapsuleDivider()
+                .padding(.horizontal, 2)
+
+            editorActionsToolbarItem(for: slot)
+        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    @ViewBuilder
+    private func editorTargetToolbarItem(for slot: PanelSlot) -> some View {
+        if let mdPath = activeMarkdownPreviewPath {
+            markdownPreviewBadge(for: mdPath)
+        } else if case .commit(let hash, let summary) = comparisonTarget {
+            Button(action: { showCommitDetailPopover.toggle() }) {
+                HStack(spacing: 5) {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(Color(nsColor: .secondaryLabelColor))
+                    Text(String(hash.prefix(7)))
+                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                        .foregroundColor(Color(nsColor: .labelColor))
+                        .lineLimit(1)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundColor(Color(nsColor: .secondaryLabelColor))
+                }
+                .padding(.horizontal, 4)
+            }
+            .buttonStyle(.plain)
+            .help(summary.isEmpty ? "Commit details" : summary)
+            .popover(isPresented: $showCommitDetailPopover, arrowEdge: .bottom) {
+                commitDetailPopoverContent(hash: hash, summary: summary)
+            }
+        } else if isReadOnlyActive {
+            readOnlyDiffBadge
+        } else if isProjectSearchActive {
+            globalSearchBadge
+        } else {
+            HStack(spacing: 5) {
+                Image(systemName: "arrow.triangle.branch")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(Color(nsColor: .secondaryLabelColor))
+                Text(editorTitlePrefix)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(Color(nsColor: .labelColor))
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 4)
+        }
+    }
+
+    @ViewBuilder
+    private func editorActionsToolbarItem(for slot: PanelSlot) -> some View {
+        HStack(spacing: 0) {
+            // Close button (xmark) - first button
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    panelLayout.clear(slot)
+                }
+            }) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .semibold))
+                    .frame(width: 22, height: 18)
+                    .foregroundColor(Color(nsColor: .secondaryLabelColor))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Close panel (choose different view)")
+
+            CapsuleDivider()
+
+            // Next / Previous Hunk stepper buttons
+            Button(action: {
+                NotificationCenter.default.post(name: .goToPreviousHunk, object: nil)
+            }) {
+                Image(systemName: "arrow.up")
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 22, height: 18)
+                    .foregroundColor(activeFileDiffs.isEmpty ? Color(nsColor: .disabledControlTextColor) : Color(nsColor: .secondaryLabelColor))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(activeFileDiffs.isEmpty)
+            .help("Go to Previous Hunk (⇧⌘F8 / ⇧F7)")
+
+            Button(action: {
+                NotificationCenter.default.post(name: .goToNextHunk, object: nil)
+            }) {
+                Image(systemName: "arrow.down")
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 22, height: 18)
+                    .foregroundColor(activeFileDiffs.isEmpty ? Color(nsColor: .disabledControlTextColor) : Color(nsColor: .secondaryLabelColor))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(activeFileDiffs.isEmpty)
+            .help("Go to Next Hunk (⌘F8 / F7)")
+
+            CapsuleDivider()
+
+            // Toggle/collapse all files in MultiBuffer button
             Button(action: toggleCollapseAllFiles) {
                 Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 10.5, weight: .semibold))
-                    .frame(width: 14, height: 14)
-                    .foregroundColor(hasAnyCollapsedFiles ? Color(activeTheme.foreground) : Color(activeTheme.gutterForeground))
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 24, height: 18)
+                    .foregroundColor(hasAnyCollapsedFiles ? Color(nsColor: .labelColor) : Color(nsColor: .secondaryLabelColor))
+                    .contentShape(Rectangle())
             }
-            .buttonStyle(ToolbarHoverButtonStyle())
+            .buttonStyle(.plain)
             .help(hasAnyCollapsedFiles ? "Expand All Files in MultiBuffer" : "Collapse All Files in MultiBuffer")
 
-            // Single toggle icon switching between Unified and Side-by-Side
+            CapsuleDivider()
+
+            // Unified and Side-by-Side toggle
             Button(action: {
                 withAnimation(.easeInOut(duration: 0.16)) {
                     toggleDiffLayoutMode()
                 }
             }) {
                 DiffLayoutToggleIcon(mode: diffLayoutMode)
+                    .frame(width: 24, height: 18)
+                    .contentShape(Rectangle())
             }
-            .buttonStyle(ToolbarHoverButtonStyle())
+            .buttonStyle(.plain)
             .help(diffLayoutMode == .unified ? "Switch to Side-by-Side Diff (⌘D)" : "Switch to Unified Diff (⌘D)")
 
-            // Search button (hide if width < 290 pt unless search is active)
-            if availableWidth >= 290 || isProjectSearchActive {
-                Button(action: {
-                    withAnimation(.easeInOut(duration: 0.16)) {
-                        toggleProjectSearch()
-                    }
-                }) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.system(size: 10.5, weight: .medium))
-                        .foregroundColor(isProjectSearchActive ? Color(activeTheme.foreground) : Color(activeTheme.gutterForeground))
-                }
-                .buttonStyle(ToolbarHoverButtonStyle())
-                .help("Find in Project (Cmd+Shift+F)")
-            }
+            CapsuleDivider()
 
-            // Global diff stats (+- глобальный справа в самом конце)
-            // Gracefully hidden when available width is tight (< 360 pt)
+            // Find in Project search button
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.16)) {
+                    toggleProjectSearch()
+                }
+            }) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 11, weight: .medium))
+                    .frame(width: 24, height: 18)
+                    .foregroundColor(isProjectSearchActive ? Color(nsColor: .labelColor) : Color(nsColor: .secondaryLabelColor))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Find in Project (⌘⇧F)")
+
+            // Diff stats (+X -Y)
             let totalAdds = activeFileDiffs.reduce(0) { $0 + $1.additions }
             let totalDels = activeFileDiffs.reduce(0) { $0 + $1.deletions }
-            if availableWidth >= 360 && (totalAdds > 0 || totalDels > 0) {
-                HStack(spacing: 5) {
+            if totalAdds > 0 || totalDels > 0 {
+                CapsuleDivider()
+
+                HStack(spacing: 4) {
                     if totalAdds > 0 {
                         Text("+\(totalAdds)")
                             .font(.system(size: 10, weight: .bold, design: .monospaced))
                             .foregroundColor(Color(activeTheme.diffAddedGutter))
                             .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
                     }
                     if totalDels > 0 {
                         Text("-\(totalDels)")
                             .font(.system(size: 10, weight: .bold, design: .monospaced))
                             .foregroundColor(Color(activeTheme.diffDeletedGutter))
                             .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
                     }
                 }
-                .lineLimit(1)
-                .fixedSize()
-                .padding(.leading, 6)
+                .fixedSize(horizontal: true, vertical: false)
+                .padding(.horizontal, 4)
             }
-        }
-        .lineLimit(1)
-        .fixedSize(horizontal: true, vertical: false)
-    }
-
-    @ViewBuilder
-    private func agentPanelView(for slot: PanelSlot) -> some View {
-        VStack(spacing: 0) {
-            PanelHeaderView(
-                theme: activeTheme,
-                onBack: {
-                    withAnimation(.easeInOut(duration: 0.18)) {
-                        panelLayout.clear(slot)
-                    }
-                }
-            ) {
-                EmptyView()
-            } actions: {
-                agentHeaderActions(for: slot)
-            }
-
-            Group {
-                if !agentCoordinator.showStartScreen, let activeSession = agentCoordinator.activeSession {
-                    AgentPanelView(
-                        agentManager: activeSession.manager,
-                        theme: activeTheme,
-                        workingDirectory: effectiveWorkingDirectory,
-                        currentSelectedFile: selectedFilePath,
-                        fileDiffsSummary: currentDiffSummary,
-                        agentAccentColor: activeSession.preset.color,
-                        agentIcon: activeSession.preset.iconName,
-                        toolcallColorMode: toolcallColorMode,
-                        onReview: { summary in
-                            beginReview(summary: summary)
-                        },
-                        onPreviewImages: { imgs, idx, isDraft in
-                            agentCoordinator.showImagePreview(images: imgs, selectedIndex: idx, isDraft: isDraft)
-                        },
-                        onOpenURL: { url in
-                            handleOpenURL(url)
-                        }
-                    )
-                    .id(activeSession.id)
-                } else {
-                    AgentStartScreenView(
-                        coordinator: agentCoordinator,
-                        theme: activeTheme,
-                        workingDirectory: effectiveWorkingDirectory
-                    )
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
     @ViewBuilder
-    private func agentHeaderActions(for slot: PanelSlot) -> some View {
-        HStack(alignment: .center, spacing: 4) {
-            if let activeSession = agentCoordinator.activeSession {
-                Button(action: { isAgentSessionsPresented.toggle() }) {
-                    Text(activeSession.preset.name)
+    private func agentPanelToolbarCapsule(for slot: PanelSlot) -> some View {
+        HStack(spacing: 0) {
+            agentSessionToolbarItem
+
+            CapsuleDivider()
+                .padding(.horizontal, 2)
+
+            agentActionsToolbarItem(for: slot)
+        }
+    }
+
+    @ViewBuilder
+    private var agentSessionToolbarItem: some View {
+        if let activeSession = agentCoordinator.activeSession {
+            Button(action: { isAgentSessionsPresented.toggle() }) {
+                HStack(spacing: 5) {
+                    Image(systemName: activeSession.preset.iconName)
                         .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(isAgentSessionsHovered || isAgentSessionsPresented
-                            ? Color(nsColor: .labelColor)
-                            : Color(nsColor: .labelColor).opacity(0.92))
+                        .foregroundColor(agentAccentColor)
+                    Text(activeSession.preset.name)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(Color(nsColor: .labelColor))
                         .lineLimit(1)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 3)
-                        .frame(minHeight: 20)
-                        .background(Color.clear, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(agentAccentColor.opacity(
-                                    isAgentSessionsHovered || isAgentSessionsPresented ? 0.08 : 0
-                                ))
-                        )
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundColor(Color(nsColor: .secondaryLabelColor))
                 }
-                .buttonStyle(.plain)
-                .help("Sessions")
-                .popover(isPresented: $isAgentSessionsPresented, arrowEdge: .bottom) {
-                    AgentSettingsPopoverView(
-                        coordinator: agentCoordinator,
-                        theme: activeTheme,
-                        workingDirectory: effectiveWorkingDirectory,
-                        onClose: { isAgentSessionsPresented = false }
-                    )
+                .padding(.horizontal, 4)
+            }
+            .help("Agent Sessions")
+            .popover(isPresented: $isAgentSessionsPresented, arrowEdge: .bottom) {
+                AgentSettingsPopoverView(
+                    coordinator: agentCoordinator,
+                    theme: activeTheme,
+                    workingDirectory: effectiveWorkingDirectory,
+                    onClose: { isAgentSessionsPresented = false }
+                )
+            }
+        } else {
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    _ = agentCoordinator.createNewSession(workingDirectory: effectiveWorkingDirectory)
                 }
-                .onHover { isAgentSessionsHovered = $0 }
+            }) {
+                HStack(spacing: 5) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text("New Session")
+                        .font(.system(size: 11, weight: .semibold))
+                }
+                .foregroundColor(Color(nsColor: .labelColor))
+                .padding(.horizontal, 4)
+            }
+            .help("New Agent Session")
+        }
+    }
+
+    @ViewBuilder
+    private func agentActionsToolbarItem(for slot: PanelSlot) -> some View {
+        HStack(spacing: 0) {
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    panelLayout.clear(slot)
+                }
+            }) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .semibold))
+                    .frame(width: 22, height: 18)
+                    .foregroundColor(Color(nsColor: .secondaryLabelColor))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Close panel (choose different view)")
+
+            if let activeSession = agentCoordinator.activeSession {
+                CapsuleDivider()
 
                 Button(action: {
                     activeSession.isNotificationsEnabled.toggle()
                 }) {
                     Image(systemName: activeSession.isNotificationsEnabled ? "bell.fill" : "bell.slash")
                         .font(.system(size: 11, weight: .medium))
-                        .frame(width: 16, height: 16)
+                        .frame(width: 24, height: 18)
                         .foregroundColor(activeSession.isNotificationsEnabled
                             ? agentAccentColor
-                            : Color(nsColor: .secondaryLabelColor).opacity(0.85))
+                            : Color(nsColor: .secondaryLabelColor))
+                        .contentShape(Rectangle())
                 }
-                .buttonStyle(AgentToolbarActionButtonStyle(
-                    accentColor: agentAccentColor,
-                    isActive: activeSession.isNotificationsEnabled
-                ))
+                .buttonStyle(.plain)
                 .help(activeSession.isNotificationsEnabled
                     ? "Sound notifications enabled (Click to mute)"
                     : "Sound notifications disabled (Click to enable)")
-            }
 
-            if hasActiveAgentSession {
+                CapsuleDivider()
+
                 Button(action: {
                     withAnimation(.easeInOut(duration: 0.15)) {
                         _ = agentCoordinator.createNewSession(workingDirectory: effectiveWorkingDirectory)
                     }
                 }) {
                     Image(systemName: "plus")
-                        .font(.system(size: 12, weight: .medium))
-                        .frame(width: 16, height: 16)
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 24, height: 18)
                         .foregroundColor(Color(nsColor: .secondaryLabelColor))
+                        .contentShape(Rectangle())
                 }
-                .buttonStyle(AgentToolbarActionButtonStyle(accentColor: agentAccentColor))
-                .help("New Agent Session (Cmd+N)")
-            }
+                .buttonStyle(.plain)
+                .help("New Agent Session")
 
-            if hasActiveAgentSession {
+                CapsuleDivider()
+
                 Button(action: {
                     withAnimation(.easeInOut(duration: 0.18)) {
                         if isShowingAgentStartScreen {
-                            if let active = agentCoordinator.activeSession {
-                                agentCoordinator.selectSession(id: active.id)
-                            }
+                            agentCoordinator.selectSession(id: activeSession.id)
                         } else {
                             agentCoordinator.openStartScreen()
                         }
                     }
                 }) {
                     Image(systemName: isShowingAgentStartScreen ? "chevron.right" : "chevron.left")
-                        .font(.system(size: 11, weight: .medium))
-                        .frame(width: 16, height: 16)
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 24, height: 18)
                         .foregroundColor(isShowingAgentStartScreen ? agentAccentColor : Color(nsColor: .secondaryLabelColor))
+                        .contentShape(Rectangle())
                 }
-                .buttonStyle(AgentToolbarActionButtonStyle(
-                    accentColor: agentAccentColor,
-                    isActive: isShowingAgentStartScreen
-                ))
+                .buttonStyle(.plain)
                 .help(isShowingAgentStartScreen ? "Back to Chat" : "Choose Agent / All Agents")
             }
-        }
-    }
-
-    @ViewBuilder
-    private var windowToolbarTrailingItems: some View {
-        HStack(spacing: 6) {
-            rightPanelToggleButton(isOpen: panelLayout.isRightPanelOpen)
         }
     }
 
@@ -1347,6 +1453,7 @@ public struct MainWindowView: View {
             theme: activeTheme,
             fontSize: fontSize,
             isEditable: (!isReadOnlyActive && comparisonTarget == .workingTree),
+            topContentInset: isProjectSearchActive ? 0 : 52,
             selectedFilePath: selectedFilePath,
             viewStateResetToken: isReadOnlyActive ? readOnlyViewStateResetToken : (isProjectSearchActive ? searchViewStateResetToken : nil),
             searchMatches: isProjectSearchActive ? searchMatches : [],
@@ -3822,6 +3929,14 @@ private struct DiffLayoutToggleIcon: View {
             }
         }
         .animation(.easeInOut(duration: 0.16), value: mode)
+    }
+}
+
+private struct CapsuleDivider: View {
+    var body: some View {
+        Rectangle()
+            .fill(Color(nsColor: .separatorColor).opacity(0.35))
+            .frame(width: 1, height: 12)
     }
 }
 

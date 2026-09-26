@@ -30,50 +30,48 @@ public struct AgentStartScreenView: View {
     }
 
     public var body: some View {
-        if isViewingRegistry {
-            ACPRegistryView(
-                coordinator: coordinator,
-                theme: theme,
-                workingDirectory: workingDirectory,
-                onBack: {
-                    withAnimation(.easeInOut(duration: 0.18)) {
-                        isViewingRegistry = false
+        Group {
+            if isViewingRegistry {
+                ACPRegistryView(
+                    coordinator: coordinator,
+                    theme: theme,
+                    workingDirectory: workingDirectory,
+                    onBack: {
+                        withAnimation(.easeInOut(duration: 0.18)) {
+                            isViewingRegistry = false
+                        }
                     }
-                }
-            )
-        } else if let preset = viewingSessionsPreset {
-            AgentSavedSessionsView(
-                preset: preset,
-                coordinator: coordinator,
-                workingDirectory: workingDirectory,
-                theme: theme,
-                onBack: {
-                    withAnimation(.easeInOut(duration: 0.18)) {
-                        viewingSessionsPreset = nil
+                )
+            } else if let preset = viewingSessionsPreset {
+                AgentSavedSessionsView(
+                    preset: preset,
+                    coordinator: coordinator,
+                    workingDirectory: workingDirectory,
+                    theme: theme,
+                    onBack: {
+                        withAnimation(.easeInOut(duration: 0.18)) {
+                            viewingSessionsPreset = nil
+                        }
+                    },
+                    onStartNew: {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            viewingSessionsPreset = nil
+                            _ = coordinator.createNewSession(
+                                workingDirectory: workingDirectory,
+                                preset: preset
+                            )
+                        }
                     }
-                },
-                onStartNew: {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        viewingSessionsPreset = nil
-                        _ = coordinator.createNewSession(
-                            workingDirectory: workingDirectory,
-                            preset: preset
-                        )
-                    }
-                }
-            )
-        } else {
-            mainStartScreenView
+                )
+            } else {
+                mainStartScreenView
+            }
         }
+        .padding(.top, 52)
     }
 
     private var mainStartScreenView: some View {
         VStack(spacing: 0) {
-            // Reserve space for window toolbar
-            Rectangle()
-                .fill(Color(theme.background))
-                .frame(height: 10)
-
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(spacing: 20) {
                     // If there are existing sessions, show running sessions list
