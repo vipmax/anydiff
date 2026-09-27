@@ -56,10 +56,11 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || !images.isEmpty else { return }
 
-        // Never let two lifecycle tasks mutate the same ACP client. A prompt
-        // can be staged while the process is starting, then drained after the
-        // initialize + session/new handshake completes.
-        guard currentStreamMessageId == nil, promptTask == nil, pendingPrompt == nil else { return }
+        // If busy, streaming, or running a prompt, stage it in the backend queue.
+        if isBusyOrStreaming || currentStreamMessageId != nil || promptTask != nil || pendingPrompt != nil {
+            _ = enqueuePrompt(trimmed, images: images, workingDirectory: workingDirectory)
+            return
+        }
 
         let userMsg = AgentMessage(role: .user, content: trimmed, images: images)
         messages.append(userMsg)
@@ -194,6 +195,8 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
                 self.liveEditedSummary = nil
                 self.preTurnSnapshot = nil
                 self.markCurrentStreamComplete()
+                self.promptTask = nil
+                self.drainQueueIfPossible(workingDirectory: workingDir)
             } catch {
                 guard !Task.isCancelled else { return }
                 self.liveGitDiffTask?.cancel()
@@ -205,9 +208,15 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
                 self.liveEditedSummary = nil
                 self.preTurnSnapshot = nil
                 self.markCurrentStreamComplete()
+                self.promptTask = nil
             }
-            self.promptTask = nil
         }
+    }
+
+    private func drainQueueIfPossible(workingDirectory: String) {
+        guard !promptQueue.isEmpty else { return }
+        guard status == .idle, promptTask == nil, currentStreamMessageId == nil, pendingPrompt == nil else { return }
+        runNextQueuedPrompt(workingDirectory: workingDirectory)
     }
 
     public override func cancel() {

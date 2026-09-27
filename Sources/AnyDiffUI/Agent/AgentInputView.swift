@@ -544,6 +544,40 @@ public struct AgentInputView: View {
             }
             .animation(.easeInOut(duration: 0.14), value: shouldShowLiveEditedSummary)
 
+            if !agentManager.promptQueue.isEmpty {
+                AgentPromptQueueView(
+                    queue: agentManager.promptQueue,
+                    theme: theme,
+                    accentColor: accentColor,
+                    isAgentBusy: isBusy,
+                    onEdit: { id, newText in
+                        agentManager.updateQueuedPrompt(id: id, text: newText)
+                    },
+                    onDelete: { id in
+                        withAnimation(.easeInOut(duration: 0.18)) {
+                            agentManager.removeQueuedPrompt(id: id)
+                        }
+                    },
+                    onMove: { id, direction in
+                        withAnimation(.easeInOut(duration: 0.18)) {
+                            agentManager.moveQueuedPrompt(id: id, direction: direction)
+                        }
+                    },
+                    onRunNow: { id in
+                        agentManager.runQueuedPrompt(id: id, workingDirectory: "")
+                    },
+                    onClearQueue: {
+                        withAnimation(.easeInOut(duration: 0.18)) {
+                            agentManager.clearQueue()
+                        }
+                    }
+                )
+                .transition(.asymmetric(
+                    insertion: .opacity.combined(with: .move(edge: .bottom)),
+                    removal: .opacity.combined(with: .scale(scale: 0.95))
+                ))
+            }
+
             VStack(spacing: 8) {
                 // Attached images miniature strip
                 if !attachedImages.isEmpty {
@@ -1041,52 +1075,50 @@ public struct AgentInputView: View {
         }
         let hasQuotes = self.hasQuotes
         let hasImages = !attachedImages.isEmpty
-        return (hasText || hasQuotes || hasImages) && agentManager.canAcceptPrompt && !isBusy
+        return (hasText || hasQuotes || hasImages) && agentManager.canAcceptPrompt
     }
 
     private var sendButton: some View {
         let canSend = canSubmitPrompt
 
-        return ZStack {
-            Button(action: onCancel) {
-                Image(systemName: "stop.circle.fill")
-                    .font(.system(size: 24))
-                    .foregroundColor(Color(theme.gutterForeground).opacity(0.82))
-            }
-            .buttonStyle(.plain)
-            .help("Stop Generation")
-            .opacity(isBusy ? 1 : 0)
-            .scaleEffect(isBusy ? 1 : 0.82)
-            .allowsHitTesting(isBusy)
-            .accessibilityHidden(!isBusy)
-
-            Button(action: handleSend) {
-                ZStack {
-                    Circle()
-                        .fill(canSend ? accentColor : Color.secondary.opacity(0.18))
+        return HStack(spacing: 5) {
+            if isBusy {
+                Button(action: onCancel) {
+                    Image(systemName: "stop.circle.fill")
+                        .font(.system(size: 24))
+                        .foregroundColor(Color(theme.gutterForeground).opacity(0.82))
                         .frame(width: 26, height: 26)
+                }
+                .buttonStyle(.plain)
+                .help("Stop Generation")
+                .agentInputInteractiveHover(cornerRadius: 13)
+            }
 
-                    Image(systemName: "arrow.up")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundColor(canSend ? .white : Color(theme.gutterForeground).opacity(0.6))
+            if !isBusy || canSend {
+                Button(action: handleSend) {
+                    ZStack {
+                        Circle()
+                            .fill(canSend ? accentColor : Color.secondary.opacity(0.18))
+                            .frame(width: 26, height: 26)
+
+                        Image(systemName: isBusy ? "text.badge.plus" : "arrow.up")
+                            .font(.system(size: isBusy ? 11 : 12, weight: .bold))
+                            .foregroundColor(canSend ? .white : Color(theme.gutterForeground).opacity(0.6))
+                    }
+                }
+                .buttonStyle(.plain)
+                .disabled(!canSend)
+                .help(isBusy ? "Add to Queue (Enter)" : (agentManager.initializationState == .starting ? "Starting agent…" : "Send Prompt (Enter)"))
+                .agentInputInteractiveHover(cornerRadius: 13)
+                .scaleEffect(isSendButtonHovered ? 1.08 : 1)
+                .animation(.easeOut(duration: 0.12), value: isSendButtonHovered)
+                .onHover { hovering in
+                    isSendButtonHovered = hovering
                 }
             }
-            .buttonStyle(.plain)
-            .disabled(!canSend)
-            .help(agentManager.initializationState == .starting ? "Starting agent…" : "Send Prompt (Enter)")
-            .opacity(isBusy ? 0 : 1)
-            .scaleEffect(isBusy ? 0.82 : 1)
-            .allowsHitTesting(!isBusy)
-            .accessibilityHidden(isBusy)
         }
-        .frame(width: 26, height: 26)
         .animation(.easeInOut(duration: 0.18), value: isBusy)
-        .agentInputInteractiveHover(cornerRadius: 13)
-        .scaleEffect(isSendButtonHovered ? 1.08 : 1)
-        .animation(.easeOut(duration: 0.12), value: isSendButtonHovered)
-        .onHover { hovering in
-            isSendButtonHovered = hovering
-        }
+        .animation(.easeInOut(duration: 0.18), value: canSend)
     }
 
     @ViewBuilder
@@ -1096,18 +1128,31 @@ public struct AgentInputView: View {
                 isCollapsed = false
             }
         }) {
-            Image(systemName: "chevron.up")
-                .font(.system(size: 11, weight: .bold))
-                .foregroundColor(Color(theme.foreground).opacity(0.9))
-                .frame(width: 32, height: 32)
-                .background(
-                    Circle()
-                        .fill(.ultraThinMaterial)
-                )
-                .overlay(
-                    Circle()
-                        .stroke(Color(theme.excerptHeaderBorder).opacity(0.85), lineWidth: 1)
-                )
+            HStack(spacing: 6) {
+                Image(systemName: "chevron.up")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(Color(theme.foreground).opacity(0.9))
+
+                if !agentManager.promptQueue.isEmpty {
+                    Text("\(agentManager.promptQueue.count) queued")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(accentColor)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(accentColor.opacity(0.15))
+                        .clipShape(Capsule())
+                }
+            }
+            .frame(height: 32)
+            .padding(.horizontal, agentManager.promptQueue.isEmpty ? 10 : 12)
+            .background(
+                Capsule()
+                    .fill(.ultraThinMaterial)
+            )
+            .overlay(
+                Capsule()
+                    .stroke(Color(theme.excerptHeaderBorder).opacity(0.85), lineWidth: 1)
+            )
         }
         .buttonStyle(.plain)
         .help("Expand Input")
@@ -1338,7 +1383,6 @@ public struct AgentInputView: View {
     }
 
     private func handleSend() {
-        guard !isBusy else { return }
         guard agentManager.canAcceptPrompt else { return }
         guard canSubmitPrompt else { return }
 

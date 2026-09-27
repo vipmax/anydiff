@@ -504,4 +504,153 @@ final class AgentSessionManagerTests: XCTestCase {
         XCTAssertEqual(manager.selectedModel, "Gemini 3.8 Flash (High)")
         XCTAssertEqual(manager.configOptions.first?.currentValue, "gemini-3.8-flash-high", "configOptions must have non-nil currentValue matching the selected default")
     }
+
+    // MARK: - Prompt Queue Tests
+
+    func testEnqueueAndDequeuePrompt() {
+        let manager = ACPAgentSessionManager()
+        XCTAssertTrue(manager.promptQueue.isEmpty)
+
+        let id1 = manager.enqueuePrompt("First prompt", workingDirectory: "/tmp/repo")
+        let id2 = manager.enqueuePrompt("Second prompt", workingDirectory: "/tmp/repo")
+
+        XCTAssertEqual(manager.promptQueue.count, 2)
+        XCTAssertEqual(manager.promptQueue[0].id, id1)
+        XCTAssertEqual(manager.promptQueue[0].text, "First prompt")
+        XCTAssertEqual(manager.promptQueue[0].workingDirectory, "/tmp/repo")
+        XCTAssertEqual(manager.promptQueue[1].id, id2)
+        XCTAssertEqual(manager.promptQueue[1].text, "Second prompt")
+
+        let dequeued1 = manager.dequeuePrompt()
+        XCTAssertEqual(dequeued1?.id, id1)
+        XCTAssertEqual(dequeued1?.text, "First prompt")
+        XCTAssertEqual(manager.promptQueue.count, 1)
+
+        let dequeued2 = manager.dequeuePrompt()
+        XCTAssertEqual(dequeued2?.id, id2)
+        XCTAssertTrue(manager.promptQueue.isEmpty)
+
+        let dequeuedEmpty = manager.dequeuePrompt()
+        XCTAssertNil(dequeuedEmpty)
+    }
+
+    func testUpdateQueuedPrompt() {
+        let manager = ACPAgentSessionManager()
+        let id = manager.enqueuePrompt("Original text")
+
+        manager.updateQueuedPrompt(id: id, text: "Updated text")
+        XCTAssertEqual(manager.promptQueue.first?.text, "Updated text")
+
+        // Updating to whitespace with no images should remove it
+        manager.updateQueuedPrompt(id: id, text: "   ")
+        XCTAssertTrue(manager.promptQueue.isEmpty)
+    }
+
+    func testRemoveQueuedPrompt() {
+        let manager = ACPAgentSessionManager()
+        let id1 = manager.enqueuePrompt("Prompt 1")
+        let id2 = manager.enqueuePrompt("Prompt 2")
+        let id3 = manager.enqueuePrompt("Prompt 3")
+
+        manager.removeQueuedPrompt(id: id2)
+        XCTAssertEqual(manager.promptQueue.count, 2)
+        XCTAssertEqual(manager.promptQueue.map(\.id), [id1, id3])
+    }
+
+    func testMoveQueuedPrompt() {
+        let manager = ACPAgentSessionManager()
+        let id1 = manager.enqueuePrompt("Prompt 1")
+        let id2 = manager.enqueuePrompt("Prompt 2")
+        let id3 = manager.enqueuePrompt("Prompt 3")
+
+        // Move #2 up -> becomes #1
+        manager.moveQueuedPrompt(id: id2, direction: .up)
+        XCTAssertEqual(manager.promptQueue.map(\.id), [id2, id1, id3])
+
+        // Move #2 down -> becomes #2 again
+        manager.moveQueuedPrompt(id: id2, direction: .down)
+        XCTAssertEqual(manager.promptQueue.map(\.id), [id1, id2, id3])
+
+        // Move #1 up when already at top -> no change
+        manager.moveQueuedPrompt(id: id1, direction: .up)
+        XCTAssertEqual(manager.promptQueue.map(\.id), [id1, id2, id3])
+
+        // Move #3 down when already at bottom -> no change
+        manager.moveQueuedPrompt(id: id3, direction: .down)
+        XCTAssertEqual(manager.promptQueue.map(\.id), [id1, id2, id3])
+    }
+
+    func testClearQueueAndClearSession() {
+        let manager = ACPAgentSessionManager()
+        _ = manager.enqueuePrompt("Prompt 1")
+        _ = manager.enqueuePrompt("Prompt 2")
+        XCTAssertEqual(manager.promptQueue.count, 2)
+
+        manager.clearQueue()
+        XCTAssertTrue(manager.promptQueue.isEmpty)
+
+        _ = manager.enqueuePrompt("Prompt 3")
+        XCTAssertEqual(manager.promptQueue.count, 1)
+
+        manager.clearSession()
+        XCTAssertTrue(manager.promptQueue.isEmpty)
+    }
+
+    func testCanAcceptPromptAllowsQueuingWhenBusy() {
+        let manager = ACPAgentSessionManager()
+        XCTAssertTrue(manager.canAcceptPrompt)
+
+        manager.status = .busy
+        XCTAssertTrue(manager.canAcceptPrompt)
+
+        manager.pendingPermission = AgentPermissionRequest(
+            requestId: .string("req-1"),
+            sessionId: "sess-1",
+            toolCallId: "tool-1",
+            title: "Command execution",
+            options: []
+        )
+        XCTAssertFalse(manager.canAcceptPrompt)
+
+        manager.pendingPermission = nil
+        XCTAssertTrue(manager.canAcceptPrompt)
+    }
+
+    #if DEBUG
+    func testMockAgentSessionManagerAutoDrainsQueue() async throws {
+        let manager = MockAgentSessionManager(loadFixtures: false)
+        XCTAssertEqual(manager.status, .idle)
+
+        // Send first prompt
+        manager.sendPrompt("First prompt", workingDirectory: "/tmp")
+        XCTAssertEqual(manager.status, .busy)
+
+        // While busy, send second prompt -> it should be enqueued!
+        manager.sendPrompt("Second prompt", workingDirectory: "/tmp")
+        XCTAssertEqual(manager.promptQueue.count, 1)
+        XCTAssertEqual(manager.promptQueue.first?.text, "Second prompt")
+
+        // Also enqueue third prompt
+        manager.sendPrompt("Third prompt", workingDirectory: "/tmp")
+        XCTAssertEqual(manager.promptQueue.count, 2)
+    }
+
+    func testMockAgentSessionManagerCancelDoesNotDrainQueue() {
+        let manager = MockAgentSessionManager(loadFixtures: false)
+        manager.sendPrompt("Active prompt", workingDirectory: "/tmp")
+        XCTAssertEqual(manager.status, .busy)
+
+        // Queue another prompt
+        manager.sendPrompt("Queued prompt", workingDirectory: "/tmp")
+        XCTAssertEqual(manager.promptQueue.count, 1)
+
+        // Cancel active turn
+        manager.cancel()
+        XCTAssertEqual(manager.status, .idle)
+
+        // The queued prompt should remain in queue intact!
+        XCTAssertEqual(manager.promptQueue.count, 1)
+        XCTAssertEqual(manager.promptQueue.first?.text, "Queued prompt")
+    }
+    #endif
 }

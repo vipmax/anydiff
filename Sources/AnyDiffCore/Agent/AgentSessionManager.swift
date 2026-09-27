@@ -68,9 +68,10 @@ open class AgentSessionManager: ObservableObject, @unchecked Sendable {
     @Published public var isNotificationsEnabled: Bool = false
     @Published public var draftPrompt: String = ""
     @Published public var draftAttachments: [AgentImageAttachment] = []
+    @Published public var promptQueue: [AgentQueuedMessage] = []
     open var isMock: Bool { false }
     open var isReadyForPrompt: Bool { initializationState == .ready }
-    open var canAcceptPrompt: Bool { initializationState != .starting && status != .busy && pendingPermission == nil }
+    open var canAcceptPrompt: Bool { pendingPermission == nil }
     open var isBusyOrStreaming: Bool { status == .busy || messages.last?.isStreaming == true }
 
     open var presetId: String? = nil
@@ -261,6 +262,74 @@ open class AgentSessionManager: ObservableObject, @unchecked Sendable {
             .name
     }
 
+    // MARK: - Prompt Queue Management
+
+    @discardableResult
+    open func enqueuePrompt(
+        _ text: String,
+        images: [AgentImageAttachment] = [],
+        workingDirectory: String = ""
+    ) -> UUID {
+        let item = AgentQueuedMessage(
+            text: text,
+            images: images,
+            workingDirectory: workingDirectory
+        )
+        promptQueue.append(item)
+        return item.id
+    }
+
+    @discardableResult
+    open func dequeuePrompt() -> AgentQueuedMessage? {
+        guard !promptQueue.isEmpty else { return nil }
+        return promptQueue.removeFirst()
+    }
+
+    open func removeQueuedPrompt(id: UUID) {
+        promptQueue.removeAll(where: { $0.id == id })
+    }
+
+    open func updateQueuedPrompt(id: UUID, text: String) {
+        guard let index = promptQueue.firstIndex(where: { $0.id == id }) else { return }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty && promptQueue[index].images.isEmpty {
+            promptQueue.remove(at: index)
+        } else {
+            promptQueue[index].text = text
+        }
+    }
+
+    open func moveQueuedPrompt(id: UUID, direction: QueueMoveDirection) {
+        guard let index = promptQueue.firstIndex(where: { $0.id == id }) else { return }
+        switch direction {
+        case .up:
+            if index > 0 {
+                promptQueue.swapAt(index, index - 1)
+            }
+        case .down:
+            if index < promptQueue.count - 1 {
+                promptQueue.swapAt(index, index + 1)
+            }
+        }
+    }
+
+    open func clearQueue() {
+        promptQueue.removeAll()
+    }
+
+    open func runNextQueuedPrompt(workingDirectory: String) {
+        guard let nextItem = dequeuePrompt() else { return }
+        let nextDir = nextItem.workingDirectory.isEmpty ? workingDirectory : nextItem.workingDirectory
+        sendPrompt(nextItem.text, images: nextItem.images, workingDirectory: nextDir)
+    }
+
+    open func runQueuedPrompt(id: UUID, workingDirectory: String) {
+        guard let index = promptQueue.firstIndex(where: { $0.id == id }) else { return }
+        let item = promptQueue.remove(at: index)
+        let nextDir = item.workingDirectory.isEmpty ? workingDirectory : item.workingDirectory
+        sendPrompt(item.text, images: item.images, workingDirectory: nextDir)
+    }
+
     open func sendPrompt(_ text: String, images: [AgentImageAttachment] = [], workingDirectory: String) {}
 
     open func sendPrompt(_ text: String, workingDirectory: String) {
@@ -280,6 +349,7 @@ open class AgentSessionManager: ObservableObject, @unchecked Sendable {
 
     open func clearSession() {
         messages.removeAll()
+        promptQueue.removeAll()
         draftPrompt = ""
         draftAttachments.removeAll()
         initializationState = .notStarted

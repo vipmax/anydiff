@@ -259,6 +259,11 @@ public final class MockAgentSessionManager: AgentSessionManager, @unchecked Send
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || !images.isEmpty else { return }
 
+        if isBusyOrStreaming || mockTask != nil {
+            _ = enqueuePrompt(trimmed, images: images, workingDirectory: workingDirectory)
+            return
+        }
+
         let userMsg = AgentMessage(role: .user, content: trimmed, images: images)
         messages.append(userMsg)
 
@@ -405,8 +410,16 @@ public final class MockAgentSessionManager: AgentSessionManager, @unchecked Send
             self.messages[idx].isStreaming = false
             self.status = .idle
             self.statusMessage = nil
+            self.mockTask = nil
             self.contextUsagePercentage = min(95, (self.contextUsagePercentage ?? 68) + 4)
+            self.drainQueueIfPossible(workingDirectory: workingDirectory)
         }
+    }
+
+    private func drainQueueIfPossible(workingDirectory: String) {
+        guard !promptQueue.isEmpty else { return }
+        guard status == .idle, mockTask == nil else { return }
+        runNextQueuedPrompt(workingDirectory: workingDirectory)
     }
 
     private func streamResponse(_ response: String, messageId: UUID) async -> Bool {
