@@ -27,45 +27,78 @@ public struct EmptyPanelView: View {
                 Color(theme.background)
                     .ignoresSafeArea()
 
-                VStack(spacing: 18) {
-                    Spacer(minLength: 20)
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(spacing: 18) {
+                        Spacer(minLength: 20)
 
-                    VStack(spacing: 6) {
-                        Image(systemName: "square.grid.2x2")
-                            .font(.system(size: 26, weight: .light))
-                            .foregroundColor(Color(theme.gutterForeground).opacity(0.8))
+                        VStack(spacing: 6) {
+                            Image(systemName: "square.grid.2x2")
+                                .font(.system(size: 26, weight: .light))
+                                .foregroundColor(Color(theme.gutterForeground).opacity(0.8))
 
-                        Text("Select Panel View")
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundColor(Color(theme.foreground))
+                            Text("Select Panel View")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundColor(Color(theme.foreground))
 
-                        Text("Choose what to display in the \(slot.title.lowercased()).")
-                            .font(.system(size: 11.5))
-                            .foregroundColor(Color(theme.gutterForeground))
-                            .multilineTextAlignment(.center)
-                    }
-
-                    if proxy.size.width > 440 {
-                        HStack(spacing: 12) {
-                            ForEach(PanelContent.allCases) { content in
-                                cardView(for: content, isNarrow: false)
-                            }
+                            Text("Choose what to display in the \(slot.title.lowercased()).")
+                                .font(.system(size: 11.5))
+                                .foregroundColor(Color(theme.gutterForeground))
+                                .multilineTextAlignment(.center)
                         }
-                        .padding(.horizontal, 20)
-                    } else {
-                        VStack(spacing: 10) {
-                            ForEach(PanelContent.allCases) { content in
-                                cardView(for: content, isNarrow: true)
-                            }
-                        }
-                        .padding(.horizontal, 16)
-                        .frame(maxWidth: 320)
-                    }
 
-                    Spacer(minLength: 20)
+                        cardsContent(for: proxy.size.width)
+
+                        Spacer(minLength: 20)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(minHeight: proxy.size.height)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+        }
+    }
+
+    @ViewBuilder
+    private func cardsContent(for availableWidth: CGFloat) -> some View {
+        let allCases = PanelContent.allCases
+        let cardWidth: CGFloat = 140
+        let spacing: CGFloat = 12
+        let singleRowNeededWidth = CGFloat(allCases.count) * cardWidth + CGFloat(max(0, allCases.count - 1)) * spacing + 40
+        let maxCardsInTwoRowTop = (allCases.count + 1) / 2
+        let twoRowsMinNeededWidth = CGFloat(maxCardsInTwoRowTop) * cardWidth + CGFloat(max(0, maxCardsInTwoRowTop - 1)) * spacing + 24
+
+        if availableWidth >= singleRowNeededWidth {
+            HStack(spacing: spacing) {
+                ForEach(allCases) { content in
+                    cardView(for: content, isNarrow: false)
+                }
+            }
+            .padding(.horizontal, 20)
+        } else if availableWidth >= twoRowsMinNeededWidth {
+            let midIndex = (allCases.count + 1) / 2
+            let firstRow = Array(allCases.prefix(midIndex))
+            let secondRow = Array(allCases.suffix(from: midIndex))
+
+            VStack(spacing: spacing) {
+                HStack(spacing: spacing) {
+                    ForEach(firstRow) { content in
+                        cardView(for: content, isNarrow: false)
+                    }
+                }
+                HStack(spacing: spacing) {
+                    ForEach(secondRow) { content in
+                        cardView(for: content, isNarrow: false)
+                    }
+                }
+            }
+            .padding(.horizontal, 12)
+        } else {
+            VStack(spacing: 10) {
+                ForEach(allCases) { content in
+                    cardView(for: content, isNarrow: true)
+                }
+            }
+            .padding(.horizontal, 16)
+            .frame(maxWidth: 380)
         }
     }
 
@@ -100,7 +133,7 @@ public struct EmptyPanelView: View {
                             Text(content.description)
                                 .font(.system(size: 10.5))
                                 .foregroundColor(Color(theme.gutterForeground))
-                                .lineLimit(1)
+                                .lineLimit(2)
                         }
 
                         Spacer(minLength: 0)
