@@ -185,4 +185,32 @@ final class AgentMarkdownParserTests: XCTestCase {
         XCTAssertEqual(blocks[6], .header(level: 4, text: "Путь 1: Без 4-го мультибуффера — использовать существующий"))
         XCTAssertEqual(blocks[7], .paragraph("reviewMultiBuffer (или multiBuffer)"))
     }
+
+    func testBlockquotePreservesIndentationAndLines() {
+        let input = """
+        > Request Breakdown
+        > Request: `> Verified Items
+        > • Layout stability and smooth scrolling.
+        > • Real-time Markdown formatting during streaming.
+        > • Tool call timeline integration.
+        > Ready for the next instructions! 🚀`
+        > Done. I inspected the project workspace and verified the context.
+        """
+
+        let blocks = AgentMarkdownParser.parse(input)
+        XCTAssertEqual(blocks.count, 1)
+        if case .quote(let text) = blocks[0] {
+            let lines = text.components(separatedBy: "\n")
+            XCTAssertEqual(lines.count, 7)
+            XCTAssertEqual(lines[0], "Request Breakdown")
+            XCTAssertEqual(lines[1], "Request: `> Verified Items")
+            XCTAssertEqual(lines[2], "• Layout stability and smooth scrolling.")
+            XCTAssertEqual(lines[3], "• Real-time Markdown formatting during streaming.")
+            XCTAssertEqual(lines[4], "• Tool call timeline integration.")
+            XCTAssertEqual(lines[5], "Ready for the next instructions! 🚀`")
+            XCTAssertEqual(lines[6], "Done. I inspected the project workspace and verified the context.")
+        } else {
+            XCTFail("Expected quote block")
+        }
+    }
 }

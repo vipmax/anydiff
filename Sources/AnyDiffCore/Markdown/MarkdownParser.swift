@@ -22,9 +22,15 @@ public enum MarkdownParser {
 
         func flushQuote() {
             if !currentQuoteLines.isEmpty {
-                let text = currentQuoteLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-                if !text.isEmpty {
-                    blocks.append(.quote(text))
+                var qLines = currentQuoteLines
+                while let first = qLines.first, first.trimmingCharacters(in: .whitespaces).isEmpty {
+                    qLines.removeFirst()
+                }
+                while let last = qLines.last, last.trimmingCharacters(in: .whitespaces).isEmpty {
+                    qLines.removeLast()
+                }
+                if !qLines.isEmpty {
+                    blocks.append(.quote(qLines.joined(separator: "\n")))
                 }
                 currentQuoteLines.removeAll()
             }
@@ -67,8 +73,11 @@ public enum MarkdownParser {
             if trimmed.hasPrefix(">") {
                 flushParagraph()
                 if let gtIdx = line.firstIndex(of: ">") {
-                    let afterGt = line[line.index(after: gtIdx)...]
-                    currentQuoteLines.append(String(afterGt).trimmingCharacters(in: .whitespaces))
+                    var afterGt = line[line.index(after: gtIdx)...]
+                    if afterGt.hasPrefix(" ") {
+                        afterGt = afterGt.dropFirst()
+                    }
+                    currentQuoteLines.append(String(afterGt))
                 }
                 lineIndex += 1
                 continue

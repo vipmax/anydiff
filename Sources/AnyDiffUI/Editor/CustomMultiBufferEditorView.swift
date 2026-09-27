@@ -3054,6 +3054,80 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         }
         isDraggingSelection = false
         activeSelectionGranularity = .character
+        checkAndPublishSelectionQuote()
+    }
+
+    public override func keyUp(with event: NSEvent) {
+        super.keyUp(with: event)
+        checkAndPublishSelectionQuote()
+    }
+
+    private var lastPublishedQuoteId: String? = nil
+
+    public func checkAndPublishSelectionQuote() {
+        guard let dm = displayMap else {
+            if let lastId = lastPublishedQuoteId {
+                SelectionQuoteStore.shared.clearQuote(scopedToId: lastId)
+                lastPublishedQuoteId = nil
+            }
+            return
+        }
+
+        guard hasSelection, let sel = normalizedSelectionRange(), !sel.isEmpty else {
+            if let lastId = lastPublishedQuoteId {
+                SelectionQuoteStore.shared.clearQuote(scopedToId: lastId)
+                lastPublishedQuoteId = nil
+            }
+            return
+        }
+
+        guard let text = dm.getSelectionText(for: sel), text.trimmingCharacters(in: .whitespacesAndNewlines).count >= 2 else {
+            if let lastId = lastPublishedQuoteId {
+                SelectionQuoteStore.shared.clearQuote(scopedToId: lastId)
+                lastPublishedQuoteId = nil
+            }
+            return
+        }
+
+        let startRow = sel.lowerBound.row
+        let endRow = (sel.upperBound.row > sel.lowerBound.row && sel.upperBound.column == 0)
+            ? sel.upperBound.row - 1
+            : sel.upperBound.row
+
+        let startLoc = dm.fastSourceLocation(forCodeRow: startRow)
+        let endLoc = dm.fastSourceLocation(forCodeRow: endRow)
+
+        let isSingleFile = (startLoc != nil && endLoc != nil && startLoc?.filePath == endLoc?.filePath)
+        let resolvedFilePath = isSingleFile ? startLoc?.filePath : nil
+        let fileName = resolvedFilePath.map { ($0 as NSString).lastPathComponent } ?? "selection"
+
+        let lineRange: ClosedRange<Int>?
+        if isSingleFile, let s = startLoc?.lineNumber, let e = endLoc?.lineNumber {
+            lineRange = min(s, e)...max(s, e)
+        } else {
+            lineRange = nil
+        }
+
+        let linesLabel: String
+        if let range = lineRange {
+            linesLabel = range.lowerBound == range.upperBound ? " (L\(range.lowerBound))" : " (L\(range.lowerBound)-\(range.upperBound))"
+        } else {
+            linesLabel = ""
+        }
+
+        let quoteId = "editor:\(resolvedFilePath ?? "multibuffer")"
+        let quote = SelectionQuote(
+            id: quoteId,
+            text: text,
+            source: .editor,
+            label: "\(fileName)\(linesLabel)",
+            filePath: resolvedFilePath,
+            displayPath: resolvedFilePath,
+            lineRange: lineRange,
+            language: resolvedFilePath.map { Buffer.detectLanguage(for: $0) }
+        )
+        lastPublishedQuoteId = quoteId
+        SelectionQuoteStore.shared.setQuote(quote)
     }
 
     @discardableResult
@@ -4311,6 +4385,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         selectionAnchor = MultiBufferPoint(row: firstRow, column: 0)
         cursorPoint = MultiBufferPoint(row: lastRow, column: activeLineLength(at: lastRow))
         needsDisplay = true
+        checkAndPublishSelectionQuote()
     }
 
     @objc @IBAction public func copy(_ sender: Any?) {

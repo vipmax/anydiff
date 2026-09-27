@@ -597,7 +597,8 @@ public final class AgentNativeStandardChatScrollView: NSScrollView {
         super.viewDidEndLiveResize()
         resizeLayoutWorkItem?.cancel()
         resizeLayoutWorkItem = nil
-        if let width = pendingResizeWidth, width > 50 {
+        let width = contentView.bounds.width
+        if width > 50, abs(width - documentViewCustom.lastLayoutWidth) > 0.5 || pendingResizeWidth != nil {
             pendingResizeWidth = nil
             documentViewCustom.layoutContent(for: width)
             if followsBottom {
@@ -980,8 +981,293 @@ public final class AgentNativeCodeBlockView: AgentNativeFlippedView {
     public let header = AgentNativeCodeBlockHeaderView()
     public let codeScrollView = NSScrollView()
     public let tv = AgentSelectableTextView()
-
     public var isExpanded: Bool { header.isExpanded }
+}
+
+public final class AgentCodeBlockScrollView: NSScrollView {
+    public override func scrollWheel(with event: NSEvent) {
+        let docH = documentView?.bounds.height ?? 0
+        let clipH = contentView.bounds.height
+        let docW = documentView?.bounds.width ?? 0
+        let clipW = contentView.bounds.width
+        let canScrollY = docH > clipH + 1
+        let canScrollX = docW > clipW + 1
+        let isVertical = abs(event.scrollingDeltaY) >= abs(event.scrollingDeltaX)
+
+        if (isVertical && canScrollY) || (!isVertical && canScrollX) {
+            super.scrollWheel(with: event)
+        } else if let sv = enclosingScrollView {
+            sv.scrollWheel(with: event)
+        } else {
+            super.scrollWheel(with: event)
+        }
+    }
+}
+
+public final class AgentUserCodeBlockView: AgentNativeFlippedView {
+    public let codeScrollView = AgentCodeBlockScrollView()
+    public let tv = AgentSelectableTextView()
+    public let copyBtn = NSButton()
+    public let langLabel = NSTextField()
+    private var rawCode: String = ""
+    private var contentTextHeight: CGFloat = 0
+    private var cachedHeight: CGFloat = 0
+
+    public override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setup()
+    }
+
+    public required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setup()
+    }
+
+    private func setup() {
+        wantsLayer = true
+        layer?.cornerRadius = 7
+        layer?.masksToBounds = true
+
+        codeScrollView.hasVerticalScroller = true
+        codeScrollView.hasHorizontalScroller = true
+        codeScrollView.autohidesScrollers = true
+        codeScrollView.scrollerStyle = .overlay
+        codeScrollView.drawsBackground = false
+        codeScrollView.borderType = .noBorder
+        codeScrollView.contentView = FlippedClipView()
+
+        tv.isEditable = false
+        tv.isSelectable = true
+        tv.drawsBackground = false
+        tv.textContainerInset = NSSize(width: 8, height: 6)
+        tv.textContainer?.lineFragmentPadding = 0
+        tv.textContainer?.widthTracksTextView = false
+        tv.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        tv.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        tv.isHorizontallyResizable = true
+        tv.isVerticallyResizable = true
+
+        codeScrollView.documentView = tv
+        addSubview(codeScrollView)
+
+        langLabel.isBezeled = false
+        langLabel.drawsBackground = false
+        langLabel.isEditable = false
+        langLabel.isSelectable = false
+        langLabel.font = NSFont.monospacedSystemFont(ofSize: 9.5, weight: .bold)
+        addSubview(langLabel)
+
+        copyBtn.isBordered = false
+        copyBtn.setButtonType(.momentaryPushIn)
+        copyBtn.target = self
+        copyBtn.action = #selector(handleCopy)
+        copyBtn.toolTip = "Copy code"
+        if let copyImg = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: "Copy code") {
+            copyBtn.image = copyImg
+            copyBtn.imageScaling = .scaleProportionallyDown
+            copyBtn.imagePosition = .imageOnly
+        } else {
+            copyBtn.title = "Copy"
+            copyBtn.font = NSFont.systemFont(ofSize: 10, weight: .medium)
+        }
+        addSubview(copyBtn)
+    }
+
+    public func configure(
+        code: String,
+        language: String?,
+        theme: Theme,
+        accentColor: Color,
+        messageId: UUID,
+        index: Int,
+        parentCell: AgentNativeMessageCell
+    ) {
+        self.rawCode = code
+        tv.parentCell = parentCell
+        tv.cellId = messageId
+        tv.tvKey = "user_code_\(index)"
+
+        let bg = (NSColor(cgColor: theme.background.cgColor) ?? .black).withAlphaComponent(0.40)
+        layer?.backgroundColor = bg.cgColor
+        let border = (NSColor(cgColor: theme.excerptHeaderBorder.cgColor) ?? .white).withAlphaComponent(0.20)
+        layer?.borderColor = border.cgColor
+        layer?.borderWidth = 1
+
+        let labelColor = (NSColor(cgColor: theme.gutterForeground.cgColor) ?? .secondaryLabelColor).withAlphaComponent(0.75)
+        langLabel.textColor = labelColor
+        let detectedLang = language?.trimmingCharacters(in: .whitespacesAndNewlines)
+        langLabel.stringValue = (detectedLang?.isEmpty == false) ? detectedLang!.uppercased() : ""
+        langLabel.isHidden = langLabel.stringValue.isEmpty
+
+        copyBtn.contentTintColor = labelColor
+
+        let codeFont = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .regular)
+        let langForSyntax = (detectedLang?.isEmpty == false) ? detectedLang! : "plaintext"
+        let normalized = code
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        let cleanCode = normalized.hasSuffix("\n") ? String(normalized.dropLast()) : normalized
+        let lines = cleanCode.components(separatedBy: "\n")
+        let attr = NSMutableAttributedString()
+        let pStyle = NSMutableParagraphStyle()
+        pStyle.lineSpacing = 2.5
+
+        for (i, line) in lines.enumerated() {
+            let highlighted = SyntaxHighlighter.shared.highlight(
+                line: line,
+                language: langForSyntax,
+                font: codeFont,
+                theme: theme
+            )
+            let lineAttr = NSMutableAttributedString(attributedString: highlighted)
+            lineAttr.addAttribute(.paragraphStyle, value: pStyle, range: NSRange(location: 0, length: lineAttr.length))
+            attr.append(lineAttr)
+            if i < lines.count - 1 {
+                attr.append(NSAttributedString(string: "\n", attributes: [.font: codeFont, .paragraphStyle: pStyle]))
+            }
+        }
+        tv.textStorage?.setAttributedString(attr)
+
+        let hasHeader = !langLabel.isHidden
+        let headerH: CGFloat = hasHeader ? 22 : 6
+
+        let textHeight: CGFloat
+        if let lm = tv.layoutManager, let tc = tv.textContainer {
+            tc.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+            lm.ensureLayout(for: tc)
+            let usedRect = lm.usedRect(for: tc)
+            let calculated = ceil(usedRect.height) + tv.textContainerInset.height * 2
+            textHeight = max(CGFloat(lines.count) * 17.5 + tv.textContainerInset.height * 2, calculated)
+        } else {
+            textHeight = CGFloat(lines.count) * 17.5 + tv.textContainerInset.height * 2
+        }
+
+        self.contentTextHeight = textHeight
+        let totalH = headerH + textHeight + 8
+        self.cachedHeight = min(200, max(42, totalH))
+    }
+
+    public func height(for width: CGFloat) -> CGFloat {
+        cachedHeight
+    }
+
+    public func applyLayout(width: CGFloat) {
+        let hasHeader = !langLabel.isHidden
+        let headerH: CGFloat = hasHeader ? 22 : 6
+        let totalH = cachedHeight
+
+        if hasHeader {
+            langLabel.frame = NSRect(x: 10, y: 3, width: max(50, width - 60), height: 16)
+        }
+        copyBtn.frame = NSRect(x: max(10, width - 26), y: 3, width: 20, height: 18)
+
+        let scrollY = hasHeader ? headerH : 4
+        let scrollH = max(20, totalH - scrollY - 4)
+        codeScrollView.frame = NSRect(x: 0, y: scrollY, width: width, height: scrollH)
+
+        if let lm = tv.layoutManager, let tc = tv.textContainer {
+            tc.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+            lm.ensureLayout(for: tc)
+            let usedRect = lm.usedRect(for: tc)
+            let tvW = max(width, ceil(usedRect.width) + tv.textContainerInset.width * 2)
+            let calculatedH = ceil(usedRect.height) + tv.textContainerInset.height * 2
+            let tvH = max(scrollH, max(contentTextHeight, calculatedH))
+            tv.frame = NSRect(x: 0, y: 0, width: tvW, height: tvH)
+        } else {
+            let tvH = max(scrollH, contentTextHeight)
+            tv.frame = NSRect(x: 0, y: 0, width: width, height: tvH)
+        }
+    }
+
+    public override func scrollWheel(with event: NSEvent) {
+        codeScrollView.scrollWheel(with: event)
+    }
+
+    @objc private func handleCopy() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(rawCode, forType: .string)
+        if let checkImg = NSImage(systemSymbolName: "checkmark", accessibilityDescription: "Copied") {
+            copyBtn.image = checkImg
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+                guard let self else { return }
+                self.copyBtn.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: "Copy code")
+            }
+        }
+    }
+}
+
+public final class AgentUserQuoteBlockView: AgentNativeFlippedView {
+    public let bar = NSView()
+    public let tv = AgentSelectableTextView()
+
+    public override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setup()
+    }
+
+    public required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setup()
+    }
+
+    private func setup() {
+        wantsLayer = true
+        layer?.cornerRadius = 6
+        layer?.masksToBounds = true
+
+        bar.wantsLayer = true
+        bar.layer?.cornerRadius = 1.5
+        addSubview(bar)
+
+        tv.isEditable = false
+        tv.isSelectable = true
+        tv.drawsBackground = false
+        tv.textContainerInset = NSSize(width: 0, height: 0)
+        tv.textContainer?.lineFragmentPadding = 0
+        tv.textContainer?.widthTracksTextView = false
+        tv.isHorizontallyResizable = false
+        tv.isVerticallyResizable = true
+        addSubview(tv)
+    }
+
+    public func configure(
+        attributedText: NSAttributedString,
+        theme: Theme,
+        accentColor: Color,
+        messageId: UUID,
+        index: Int,
+        parentCell: AgentNativeMessageCell
+    ) {
+        tv.parentCell = parentCell
+        tv.cellId = messageId
+        tv.tvKey = "user_quote_\(index)"
+        tv.textStorage?.setAttributedString(attributedText)
+
+        let bg = (NSColor(cgColor: theme.background.cgColor) ?? .black).withAlphaComponent(0.28)
+        layer?.backgroundColor = bg.cgColor
+        let border = (NSColor(cgColor: theme.excerptHeaderBorder.cgColor) ?? .white).withAlphaComponent(0.18)
+        layer?.borderColor = border.cgColor
+        layer?.borderWidth = 1
+
+        let barColor = (NSColor(cgColor: theme.foreground.cgColor) ?? .white).withAlphaComponent(0.60)
+        bar.layer?.backgroundColor = barColor.cgColor
+    }
+
+    public func height(for width: CGFloat) -> CGFloat {
+        let textWidth = max(20, width - 22)
+        guard let attr = tv.textStorage, attr.length > 0 else { return 32 }
+        return measureAttributedTextHeight(attr, maxWidth: textWidth) + 14
+    }
+
+    public func applyLayout(width: CGFloat) {
+        let totalH = height(for: width)
+        let textWidth = max(20, width - 22)
+        let textHeight = max(16, totalH - 14)
+
+        bar.frame = NSRect(x: 5, y: 6, width: 3, height: max(14, totalH - 12))
+        tv.frame = NSRect(x: 14, y: 7, width: textWidth, height: textHeight)
+        tv.textContainer?.containerSize = NSSize(width: textWidth, height: CGFloat.greatestFiniteMagnitude)
+    }
 }
 
 public final class AgentNativeDividerView: AgentNativeFlippedView {
@@ -1187,7 +1473,7 @@ public final class AgentSelectableTextView: NSTextView, NSTextStorageDelegate {
         textStorage.addLayoutManager(layoutManager)
         let textContainer = NSTextContainer()
         textContainer.lineFragmentPadding = 0
-        textContainer.widthTracksTextView = true
+        textContainer.widthTracksTextView = false
         layoutManager.addTextContainer(textContainer)
 
         super.init(frame: .zero, textContainer: textContainer)
@@ -1228,6 +1514,9 @@ public final class AgentSelectableTextView: NSTextView, NSTextStorageDelegate {
         let sizeChanged = bounds.size != newSize
         super.setFrameSize(newSize)
         if sizeChanged {
+            if !isHorizontallyResizable && newSize.width > 0 {
+                textContainer?.containerSize = NSSize(width: newSize.width, height: CGFloat.greatestFiniteMagnitude)
+            }
             window?.invalidateCursorRects(for: self)
         }
     }
@@ -1321,6 +1610,58 @@ public final class AgentSelectableTextView: NSTextView, NSTextStorageDelegate {
             }
         }
         super.mouseDown(with: event)
+        checkAndPublishQuote(for: selectedRange())
+    }
+
+    public override func mouseUp(with event: NSEvent) {
+        super.mouseUp(with: event)
+        checkAndPublishQuote(for: selectedRange())
+    }
+
+    public override func selectAll(_ sender: Any?) {
+        super.selectAll(sender)
+        checkAndPublishQuote(for: selectedRange())
+    }
+
+    public override func keyUp(with event: NSEvent) {
+        super.keyUp(with: event)
+        checkAndPublishQuote(for: selectedRange())
+    }
+
+    public override func setSelectedRange(
+        _ charRange: NSRange,
+        affinity: NSSelectionAffinity,
+        stillSelecting stillSelectingFlag: Bool
+    ) {
+        super.setSelectedRange(charRange, affinity: affinity, stillSelecting: stillSelectingFlag)
+        guard !stillSelectingFlag else { return }
+        checkAndPublishQuote(for: charRange)
+    }
+
+    private func checkAndPublishQuote(for range: NSRange) {
+        let quoteId = "agent:\(cellId?.uuidString ?? "msg"):\(tvKey)"
+        guard range.location != NSNotFound,
+              range.length > 0,
+              range.location + range.length <= (string as NSString).length else {
+            SelectionQuoteStore.shared.clearQuote(scopedToId: quoteId)
+            return
+        }
+
+        let text = (string as NSString).substring(with: range)
+        guard text.trimmingCharacters(in: .whitespacesAndNewlines).count >= 2 else {
+            SelectionQuoteStore.shared.clearQuote(scopedToId: quoteId)
+            return
+        }
+
+        let isUser = parentCell?.message.role == .user
+        let label = isUser ? "Quote from You" : "Quote from Assistant"
+        let quote = SelectionQuote(
+            id: quoteId,
+            text: text,
+            source: .agent,
+            label: label
+        )
+        SelectionQuoteStore.shared.setQuote(quote)
     }
 
     public override func resetCursorRects() {
@@ -1974,6 +2315,29 @@ public final class AgentNativeChatDocumentView: NSView {
                 }
             }
         }
+
+        let text = selectedCombinedText
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).count >= 2 {
+            let minY = min(selectionStartPoint?.y ?? 0, selectionEndPoint?.y ?? 0)
+            let maxY = max(selectionStartPoint?.y ?? 0, selectionEndPoint?.y ?? 0)
+            let selectedCells = orderedCells.filter { item in
+                let cellFrame = item.cell.frame
+                return cellFrame.maxY >= minY && cellFrame.minY <= maxY
+            }
+            let label: String
+            if selectedCells.count == 1, let single = selectedCells.first {
+                label = single.cell.message.role == .user ? "Quote from You" : "Quote from Assistant"
+            } else {
+                label = "Quote from Chat"
+            }
+            let quote = SelectionQuote(
+                id: "agent:chat",
+                text: text,
+                source: .agent,
+                label: label
+            )
+            SelectionQuoteStore.shared.setQuote(quote)
+        }
     }
 
     private func currentScreenFPS() -> Double {
@@ -2055,6 +2419,9 @@ public final class AgentNativeChatDocumentView: NSView {
         doubleClickTVIndex = nil
         doubleClickRange = nil
         persistentSelection = nil
+        if let current = SelectionQuoteStore.shared.currentQuote, current.source == .agent {
+            SelectionQuoteStore.shared.clearQuote(scopedToId: current.id)
+        }
     }
 
     private func updateSelectionHighlight(updatePersistent: Bool = true) {
@@ -2172,6 +2539,17 @@ public final class AgentNativeChatDocumentView: NSView {
         self.selectionHighlightRects = allRects
         self.selectedCombinedText = textParts.joined(separator: "\n\n")
         renderSelectionHighlightLayers()
+
+        let text = selectedCombinedText
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).count >= 2 {
+            let quote = SelectionQuote(
+                id: "agent:chat",
+                text: text,
+                source: .agent,
+                label: "Quote from Chat"
+            )
+            SelectionQuoteStore.shared.setQuote(quote)
+        }
     }
 
     private func getAllSelectableTextViewsInDocument() -> [(tv: AgentSelectableTextView, frameInDoc: NSRect)] {
@@ -2419,6 +2797,18 @@ public final class AgentNativeChatDocumentView: NSView {
             selectionStartPoint = selectionAnchorPoint
             updateSelectionHighlight()
             ensurePointVisible(endPt)
+            let text = selectedCombinedText
+            if text.trimmingCharacters(in: .whitespacesAndNewlines).count >= 2 {
+                let quote = SelectionQuote(
+                    id: "agent:chat",
+                    text: text,
+                    source: .agent,
+                    label: "Quote from Chat"
+                )
+                SelectionQuoteStore.shared.setQuote(quote)
+            } else if let current = SelectionQuoteStore.shared.currentQuote, current.id == "agent:chat" {
+                SelectionQuoteStore.shared.clearQuote(scopedToId: "agent:chat")
+            }
             return
         } else {
             // Arrow keys without shift: clear selection
@@ -3140,7 +3530,7 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
             detailTextView.isVerticallyResizable = true
             detailTextView.isHorizontallyResizable = false
             detailTextView.autoresizingMask = [.width]
-            detailTextView.textContainer?.widthTracksTextView = true
+            detailTextView.textContainer?.widthTracksTextView = false
             detailTextView.textContainer?.containerSize = NSSize(width: 100, height: CGFloat.greatestFiniteMagnitude)
             detailTextView.textContainerInset = NSSize(width: 4, height: 4)
 
@@ -4313,8 +4703,8 @@ public final class AgentNativeMessageCell: NSView {
     private let nativeTextSelectionEnabled: Bool
     private var isThoughtExpanded: Bool = false
     private var isUserTextExpanded: Bool = false
-    private let maxUserTextCollapsedHeight: CGFloat = 160
-    private let userTextCollapseThreshold: CGFloat = 190
+    private let maxUserTextCollapsedHeight: CGFloat = 180
+    private let userTextCollapseThreshold: CGFloat = 240
     private var expandedToolIds: Set<String> = []
     private var toolCallIDs: [String] = []
     private var inlineThoughtViews: [AgentNativeThoughtBlockView] = []
@@ -4355,9 +4745,12 @@ public final class AgentNativeMessageCell: NSView {
 
     // Subviews
     private let userBubbleView = AgentNativeFlippedView()
+    private let userContentContainerView = AgentNativeFlippedView()
     private let userTextView = AgentSelectableTextView()
     private let userExpandButton = AgentHoverButton()
     private var userImageViews: [NSButton] = []
+    private var userContentViews: [NSView] = []
+    private var renderedUserContent: String? = nil
     public var onPreviewImages: (([AgentImageAttachment], Int) -> Void)?
     private let thoughtHeaderButton = NSButton()
     private let thoughtTextView = AgentSelectableTextView()
@@ -4428,10 +4821,9 @@ public final class AgentNativeMessageCell: NSView {
         userBubbleView.layer?.shadowColor = nil
         userBubbleView.layer?.shadowOpacity = 0.0
 
-        userTextView.parentCell = self
-        userTextView.wantsLayer = true
-        userTextView.layer?.masksToBounds = true
-        userBubbleView.addSubview(userTextView)
+        userContentContainerView.wantsLayer = true
+        userContentContainerView.layer?.masksToBounds = true
+        userBubbleView.addSubview(userContentContainerView)
         userBubbleView.addSubview(userExpandButton)
         addSubview(userBubbleView)
 
@@ -4558,20 +4950,11 @@ public final class AgentNativeMessageCell: NSView {
                 }
             }
 
-            let style = NSMutableParagraphStyle()
-            style.lineSpacing = 3
-            style.alignment = .left
-            let textColor = NSColor(cgColor: theme.foreground.cgColor) ?? .textColor
-            let attr = NSAttributedString(string: message.content, attributes: [
-                .font: NSFont.systemFont(ofSize: 13, weight: .regular),
-                .foregroundColor: textColor,
-                .paragraphStyle: style
-            ])
-            userTextView.textStorage?.setAttributedString(attr)
-            userTextView.isHidden = message.content.isEmpty
+            rebuildUserContentViews(content: message.content)
             updateUserExpandButtonAppearance()
             clearAssistantViews()
         } else {
+            clearUserViews()
             thoughtTextView.cellId = message.id
             thoughtTextView.tvKey = "thought"
             userBubbleView.isHidden = true
@@ -4915,6 +5298,179 @@ public final class AgentNativeMessageCell: NSView {
         previousStreamedLength = 0
     }
 
+    private func clearUserViews() {
+        for v in userContentViews { v.removeFromSuperview() }
+        userContentViews.removeAll()
+        userImageViews.forEach { $0.removeFromSuperview() }
+        userImageViews.removeAll()
+        renderedUserContent = nil
+    }
+
+    private func rebuildUserContentViews(content: String) {
+        if renderedUserContent == content && !userContentViews.isEmpty {
+            return
+        }
+        renderedUserContent = content
+
+        for v in userContentViews {
+            v.removeFromSuperview()
+        }
+        userContentViews.removeAll()
+        userTextView.isHidden = true
+
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        let blocks = AgentMarkdownParser.parse(trimmed)
+        guard !blocks.isEmpty else {
+            let tv = AgentSelectableTextView()
+            tv.parentCell = self
+            tv.cellId = message.id
+            tv.tvKey = "user_text_0"
+            tv.isSelectable = true
+            let bodyFont = NSFont.systemFont(ofSize: 13, weight: .regular)
+            let bodyColor = NSColor(cgColor: theme.foreground.cgColor) ?? .textColor
+            let bodyStyle = NSMutableParagraphStyle()
+            bodyStyle.lineSpacing = 3
+            tv.textStorage?.setAttributedString(NSAttributedString(string: trimmed, attributes: [
+                .font: bodyFont,
+                .foregroundColor: bodyColor,
+                .paragraphStyle: bodyStyle
+            ]))
+            userContentContainerView.addSubview(tv)
+            userContentViews.append(tv)
+            return
+        }
+
+        var currentText = NSMutableAttributedString()
+        var textIndex = 0
+
+        func flushCurrentText() {
+            let s = currentText.string.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !s.isEmpty else {
+                currentText = NSMutableAttributedString()
+                return
+            }
+            let tv = AgentSelectableTextView()
+            tv.parentCell = self
+            tv.cellId = message.id
+            tv.tvKey = "user_text_\(textIndex)"
+            tv.isSelectable = true
+            tv.textStorage?.setAttributedString(currentText)
+            userContentContainerView.addSubview(tv)
+            userContentViews.append(tv)
+            textIndex += 1
+            currentText = NSMutableAttributedString()
+        }
+
+        let bodyFont = NSFont.systemFont(ofSize: 13, weight: .regular)
+        let bodyColor = NSColor(cgColor: theme.foreground.cgColor) ?? .textColor
+        let bodyStyle = NSMutableParagraphStyle()
+        bodyStyle.lineSpacing = 3
+        bodyStyle.paragraphSpacing = 6
+
+        for block in blocks {
+            switch block {
+            case .codeBlock(let language, let code):
+                flushCurrentText()
+                let codeView = AgentUserCodeBlockView()
+                codeView.configure(
+                    code: code,
+                    language: language,
+                    theme: theme,
+                    accentColor: accentColor,
+                    messageId: message.id,
+                    index: userContentViews.count,
+                    parentCell: self
+                )
+                userContentContainerView.addSubview(codeView)
+                userContentViews.append(codeView)
+
+            case .paragraph(let text):
+                let attr = formatInlineMarkdownString(text, font: bodyFont, color: bodyColor, paragraphStyle: bodyStyle)
+                if currentText.length > 0 {
+                    currentText.append(NSAttributedString(string: "\n\n", attributes: [.font: bodyFont]))
+                }
+                currentText.append(attr)
+
+            case .header(let level, let text):
+                let hFont = NSFont.systemFont(ofSize: level <= 2 ? 14.5 : 13.5, weight: .bold)
+                let attr = formatInlineMarkdownString(text, font: hFont, color: bodyColor, paragraphStyle: bodyStyle)
+                if currentText.length > 0 {
+                    currentText.append(NSAttributedString(string: "\n\n", attributes: [.font: bodyFont]))
+                }
+                currentText.append(attr)
+
+            case .bulletItem(let text):
+                let bStyle = NSMutableParagraphStyle()
+                bStyle.lineSpacing = 3
+                bStyle.headIndent = 14
+                bStyle.firstLineHeadIndent = 0
+                let attr = formatInlineMarkdownString("• \(text)", font: bodyFont, color: bodyColor, paragraphStyle: bStyle)
+                if currentText.length > 0 {
+                    currentText.append(NSAttributedString(string: "\n\n", attributes: [.font: bodyFont]))
+                }
+                currentText.append(attr)
+
+            case .numberedItem(let number, let text):
+                let nStyle = NSMutableParagraphStyle()
+                nStyle.lineSpacing = 3
+                nStyle.headIndent = 14
+                nStyle.firstLineHeadIndent = 0
+                let attr = formatInlineMarkdownString("\(number). \(text)", font: bodyFont, color: bodyColor, paragraphStyle: nStyle)
+                if currentText.length > 0 {
+                    currentText.append(NSAttributedString(string: "\n\n", attributes: [.font: bodyFont]))
+                }
+                currentText.append(attr)
+
+            case .quote(let text):
+                flushCurrentText()
+                let quoteAttr = formatQuoteAttributedText(text, theme: theme)
+                let quoteView = AgentUserQuoteBlockView()
+                quoteView.configure(
+                    attributedText: quoteAttr,
+                    theme: theme,
+                    accentColor: accentColor,
+                    messageId: message.id,
+                    index: userContentViews.count,
+                    parentCell: self
+                )
+                userContentContainerView.addSubview(quoteView)
+                userContentViews.append(quoteView)
+
+            case .divider:
+                if currentText.length > 0 {
+                    currentText.append(NSAttributedString(string: "\n───\n", attributes: [.foregroundColor: NSColor.separatorColor]))
+                }
+
+            case .table, .image:
+                break
+
+            @unknown default:
+                break
+            }
+        }
+        flushCurrentText()
+    }
+
+    private func measureUserContentViewsHeight(width: CGFloat) -> CGFloat {
+        var total: CGFloat = 0
+        for (i, view) in userContentViews.enumerated() {
+            if let tv = view as? AgentSelectableTextView {
+                let h = measuredTextHeight(for: tv, attributedString: tv.attributedString(), width: width)
+                total += h
+            } else if let cb = view as? AgentUserCodeBlockView {
+                total += cb.height(for: width)
+            } else if let qv = view as? AgentUserQuoteBlockView {
+                total += qv.height(for: width)
+            }
+            if i < userContentViews.count - 1 {
+                total += 8
+            }
+        }
+        return total
+    }
+
     private func clearInlineThoughtViews() {
         for view in inlineThoughtViews {
             view.removeFromSuperview()
@@ -4947,6 +5503,8 @@ public final class AgentNativeMessageCell: NSView {
             thoughtView.textView.parentCell = self
             thoughtView.textView.cellId = message.id
             thoughtView.textView.tvKey = "thought_\(thoughtIndex)"
+            thoughtView.textView.isSelectable = nativeTextSelectionEnabled
+            thoughtView.textView.isEditable = false
             thoughtView.updateColors(theme: theme)
             if thoughtIndex < expandedStates.count {
                 thoughtView.setExpanded(expandedStates[thoughtIndex])
@@ -5691,6 +6249,33 @@ public final class AgentNativeMessageCell: NSView {
         }
     }
 
+    private func formatQuoteAttributedText(_ raw: String, theme: Theme) -> NSAttributedString {
+        let qFont = NSFont.systemFont(ofSize: 12.5, weight: .regular)
+        let qColor = (NSColor(cgColor: theme.foreground.cgColor) ?? .textColor).withAlphaComponent(0.90)
+        let style = NSMutableParagraphStyle()
+        style.lineSpacing = 2.5
+        style.paragraphSpacing = 2
+
+        let normalized = raw
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        let lines = normalized.components(separatedBy: "\n")
+        let result = NSMutableAttributedString()
+
+        for (i, line) in lines.enumerated() {
+            let lineAttr = formatInlineMarkdownString(line, font: qFont, color: qColor, paragraphStyle: style)
+            result.append(lineAttr)
+            if i < lines.count - 1 {
+                result.append(NSAttributedString(string: "\n", attributes: [
+                    .font: qFont,
+                    .foregroundColor: qColor,
+                    .paragraphStyle: style
+                ]))
+            }
+        }
+        return result
+    }
+
     private func formatMarkdownString(_ raw: String) -> NSAttributedString {
         let style = NSMutableParagraphStyle()
         style.lineSpacing = 3
@@ -5720,6 +6305,33 @@ public final class AgentNativeMessageCell: NSView {
     }
 
     private func formatInlineMarkdownString(
+        _ raw: String,
+        font: NSFont,
+        color: NSColor,
+        paragraphStyle: NSParagraphStyle
+    ) -> NSAttributedString {
+        if raw.contains("\n") {
+            let normalized = raw
+                .replacingOccurrences(of: "\r\n", with: "\n")
+                .replacingOccurrences(of: "\r", with: "\n")
+            let lines = normalized.components(separatedBy: "\n")
+            let result = NSMutableAttributedString()
+            for (i, line) in lines.enumerated() {
+                result.append(formatSingleLineMarkdownString(line, font: font, color: color, paragraphStyle: paragraphStyle))
+                if i < lines.count - 1 {
+                    result.append(NSAttributedString(string: "\n", attributes: [
+                        .font: font,
+                        .foregroundColor: color,
+                        .paragraphStyle: paragraphStyle
+                    ]))
+                }
+            }
+            return result
+        }
+        return formatSingleLineMarkdownString(raw, font: font, color: color, paragraphStyle: paragraphStyle)
+    }
+
+    private func formatSingleLineMarkdownString(
         _ raw: String,
         font: NSFont,
         color: NSColor,
@@ -5781,12 +6393,18 @@ public final class AgentNativeMessageCell: NSView {
                 let linkColor = NSColor(accentColor)
                 result.addAttribute(.link, value: link, range: range)
                 result.addAttribute(.foregroundColor, value: linkColor, range: range)
-                result.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: range)
-                result.addAttribute(.underlineColor, value: linkColor.withAlphaComponent(0.4), range: range)
                 result.addAttribute(.cursor, value: NSCursor.pointingHand, range: range)
                 result.addAttribute(.toolTip, value: link.isFileURL ? link.path : link.absoluteString, range: range)
-                if (intent?.rawValue ?? 0) & 4 != 0 {
+                let linkText = (result.string as NSString).substring(with: range)
+                if linkText.contains(":") || linkText.contains(".") || !link.pathExtension.isEmpty {
                     runFont = NSFont.monospacedSystemFont(ofSize: max(11.5, font.pointSize - 0.5), weight: .semibold)
+                    result.addAttribute(.backgroundColor, value: linkColor.withAlphaComponent(0.14), range: range)
+                } else {
+                    result.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: range)
+                    result.addAttribute(.underlineColor, value: linkColor.withAlphaComponent(0.4), range: range)
+                    if (intent?.rawValue ?? 0) & 4 != 0 {
+                        runFont = NSFont.monospacedSystemFont(ofSize: max(11.5, font.pointSize - 0.5), weight: .semibold)
+                    }
                 }
             }
 
@@ -5967,19 +6585,15 @@ public final class AgentNativeMessageCell: NSView {
             let bubbleWidth = contentWidth
             let hasImages = !userImageViews.isEmpty
             let imagesHeight: CGFloat = hasImages ? (userImageViews.count == 1 ? 140 : 54) : 0
-            let hasText = !message.content.isEmpty
-            let fullTextHeight = hasText ? measuredTextHeight(
-                for: userTextView,
-                attributedString: userTextView.attributedString(),
-                width: bubbleWidth - 28
-            ) : 0
-
-            let isCollapsible = fullTextHeight > userTextCollapseThreshold
+            let hasContent = !userContentViews.isEmpty
+            let fullTextHeight = hasContent ? measureUserContentViewsHeight(width: bubbleWidth - 28) : 0
+            let hasComplexViews = userContentViews.contains { $0 is AgentUserCodeBlockView || $0 is AgentUserQuoteBlockView }
+            let isCollapsible = !hasComplexViews && fullTextHeight > userTextCollapseThreshold
             let displayedTextHeight = (isCollapsible && !isUserTextExpanded) ? maxUserTextCollapsedHeight : fullTextHeight
             let buttonHeight: CGFloat = isCollapsible ? 22 : 0
             let buttonSpacing: CGFloat = isCollapsible ? 4 : 0
 
-            let bubbleHeight = 9 + imagesHeight + (hasImages && hasText ? 8 : 0) + displayedTextHeight + (isCollapsible ? (buttonSpacing + buttonHeight) : 0) + 9
+            let bubbleHeight = 9 + imagesHeight + (hasImages && hasContent ? 8 : 0) + displayedTextHeight + (isCollapsible ? (buttonSpacing + buttonHeight) : 0) + 9
             height = bubbleHeight + 8
         } else {
             var currentY: CGFloat = 4
@@ -6031,19 +6645,16 @@ public final class AgentNativeMessageCell: NSView {
             let bubbleWidth = contentWidth
             let hasImages = !userImageViews.isEmpty
             let imagesHeight: CGFloat = hasImages ? (userImageViews.count == 1 ? 140 : 54) : 0
-            let hasText = !message.content.isEmpty
-            let fullTextHeight = hasText ? measuredTextHeight(
-                for: userTextView,
-                attributedString: userTextView.attributedString(),
-                width: bubbleWidth - 28
-            ) : 0
+            let hasContent = !userContentViews.isEmpty
+            let fullTextHeight = hasContent ? measureUserContentViewsHeight(width: bubbleWidth - 28) : 0
 
-            let isCollapsible = fullTextHeight > userTextCollapseThreshold
+            let hasComplexViews = userContentViews.contains { $0 is AgentUserCodeBlockView || $0 is AgentUserQuoteBlockView }
+            let isCollapsible = !hasComplexViews && fullTextHeight > userTextCollapseThreshold
             let displayedTextHeight = (isCollapsible && !isUserTextExpanded) ? maxUserTextCollapsedHeight : fullTextHeight
             let buttonHeight: CGFloat = isCollapsible ? 22 : 0
             let buttonSpacing: CGFloat = isCollapsible ? 4 : 0
 
-            let bubbleHeight = 9 + imagesHeight + (hasImages && hasText ? 8 : 0) + displayedTextHeight + (isCollapsible ? (buttonSpacing + buttonHeight) : 0) + 9
+            let bubbleHeight = 9 + imagesHeight + (hasImages && hasContent ? 8 : 0) + displayedTextHeight + (isCollapsible ? (buttonSpacing + buttonHeight) : 0) + 9
 
             let bubbleFrame = NSRect(
                 x: horizontalPadding,
@@ -6076,17 +6687,43 @@ public final class AgentNativeMessageCell: NSView {
                         if animated { btn.animator().frame = btnFrame } else { btn.frame = btnFrame }
                     }
                 }
-                currentInsideY += imagesHeight + (hasText ? 8 : 0)
+                currentInsideY += imagesHeight + (hasContent ? 8 : 0)
             }
 
-            if hasText {
-                let tvFrame = NSRect(x: 14, y: currentInsideY, width: bubbleWidth - 28, height: displayedTextHeight)
-                userTextView.isHidden = false
+            userTextView.isHidden = true
+
+            if hasContent {
+                let contentW = bubbleWidth - 28
+                let containerFrame = NSRect(x: 14, y: currentInsideY, width: contentW, height: displayedTextHeight)
                 if animated {
-                    userTextView.animator().frame = tvFrame
+                    userContentContainerView.animator().frame = containerFrame
                 } else {
-                    userTextView.frame = tvFrame
+                    userContentContainerView.frame = containerFrame
                 }
+
+                var subY: CGFloat = 0
+                for view in userContentViews {
+                    let viewH: CGFloat
+                    if let tv = view as? AgentSelectableTextView {
+                        viewH = measuredTextHeight(for: tv, attributedString: tv.attributedString(), width: contentW)
+                        let vFrame = NSRect(x: 0, y: subY, width: contentW, height: viewH)
+                        if animated { tv.animator().frame = vFrame } else { tv.frame = vFrame }
+                    } else if let cb = view as? AgentUserCodeBlockView {
+                        viewH = cb.height(for: contentW)
+                        let vFrame = NSRect(x: 0, y: subY, width: contentW, height: viewH)
+                        if animated { cb.animator().frame = vFrame } else { cb.frame = vFrame }
+                        cb.applyLayout(width: contentW)
+                    } else if let qv = view as? AgentUserQuoteBlockView {
+                        viewH = qv.height(for: contentW)
+                        let vFrame = NSRect(x: 0, y: subY, width: contentW, height: viewH)
+                        if animated { qv.animator().frame = vFrame } else { qv.frame = vFrame }
+                        qv.applyLayout(width: contentW)
+                    } else {
+                        viewH = 0
+                    }
+                    subY += viewH + 8
+                }
+                userContentContainerView.isHidden = false
 
                 if isCollapsible {
                     userExpandButton.isHidden = false
@@ -6108,7 +6745,7 @@ public final class AgentNativeMessageCell: NSView {
                     userExpandButton.isHidden = true
                 }
             } else {
-                userTextView.isHidden = true
+                userContentContainerView.isHidden = true
                 userExpandButton.isHidden = true
             }
         } else {
@@ -6262,7 +6899,17 @@ public final class AgentNativeMessageCell: NSView {
 
     func allSelectableTextViews() -> [AgentSelectableTextView] {
         if message.role == .user {
-            return [userTextView]
+            var views: [AgentSelectableTextView] = []
+            for item in userContentViews {
+                if let tv = item as? AgentSelectableTextView {
+                    views.append(tv)
+                } else if let codeBlock = item as? AgentUserCodeBlockView {
+                    views.append(codeBlock.tv)
+                } else if let quoteBlock = item as? AgentUserQuoteBlockView {
+                    views.append(quoteBlock.tv)
+                }
+            }
+            return views.isEmpty ? [userTextView] : views
         }
         var views: [AgentSelectableTextView] = []
         if isThoughtExpanded || hasCompactTopThought {
@@ -6282,6 +6929,10 @@ public final class AgentNativeMessageCell: NSView {
                 if codeBlock.isExpanded {
                     views.append(codeBlock.tv)
                 }
+            } else if let codeBlock = item as? AgentUserCodeBlockView {
+                views.append(codeBlock.tv)
+            } else if let quoteBlock = item as? AgentUserQuoteBlockView {
+                views.append(quoteBlock.tv)
             } else if let tv = item.subviews.first(where: { $0 is AgentSelectableTextView }) as? AgentSelectableTextView {
                 views.append(tv)
             } else if item.subviews.count > 1, let tv = item.subviews[1] as? AgentSelectableTextView {

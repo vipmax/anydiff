@@ -61,9 +61,7 @@ public struct AgentMessageRowView: View {
                 userImagesView
             }
             if !message.content.isEmpty {
-                Text(message.content)
-                    .font(.system(size: 13, weight: .regular))
-                    .foregroundColor(Color(theme.foreground))
+                AgentMarkdownView(content: message.content, theme: theme)
                     .lineLimit(isCollapsibleUserText && !isUserTextExpanded ? 8 : nil)
                     .fixedSize(horizontal: false, vertical: true)
             }
