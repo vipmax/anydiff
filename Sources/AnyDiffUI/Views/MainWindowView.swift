@@ -325,6 +325,12 @@ public struct MainWindowView: View {
         .onAppear(perform: handleOnAppear)
         .onChange(of: agentCoordinator.activeReviewSummary) { newSummary in
             if let summary = newSummary {
+                if activeMarkdownPreviewPath != nil {
+                    closeMarkdownPreview()
+                }
+                if panelLayout.slot(for: .editor) == nil {
+                    panelLayout.assign(.editor, to: .center)
+                }
                 // beginReview preloads the review before switching modes. The
                 // fallback handles any coordinator-driven activation that did
                 // not go through that path.
@@ -353,6 +359,14 @@ public struct MainWindowView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didExitFullScreenNotification)) { _ in
             updateWindowAppearance()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .focusFileInEditor)) { _ in
+            if activeMarkdownPreviewPath != nil {
+                closeMarkdownPreview()
+            }
+            if panelLayout.slot(for: .editor) == nil {
+                panelLayout.assign(.editor, to: .center)
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResizeNotification)) { _ in
             updateWindowAppearance()
@@ -703,6 +717,12 @@ public struct MainWindowView: View {
     }
 
     private func selectCommit(_ commit: GitCommit, targetFilePath: String? = nil) {
+        if activeMarkdownPreviewPath != nil {
+            closeMarkdownPreview()
+        }
+        if panelLayout.slot(for: .editor) == nil {
+            panelLayout.assign(.editor, to: .center)
+        }
         if let target = targetFilePath {
             selectedFilePath = target
         }
@@ -721,6 +741,12 @@ public struct MainWindowView: View {
     }
 
     private func focusFileInMultiBuffer(_ filePath: String) {
+        if activeMarkdownPreviewPath != nil {
+            closeMarkdownPreview()
+        }
+        if panelLayout.slot(for: .editor) == nil {
+            panelLayout.assign(.editor, to: .center)
+        }
         selectedFilePath = filePath
         let post = {
             NotificationCenter.default.post(
@@ -1934,6 +1960,12 @@ public struct MainWindowView: View {
     }
 
     private func loadReviewDiff(for summary: AgentEditedFilesSummary) {
+        if activeMarkdownPreviewPath != nil {
+            closeMarkdownPreview()
+        }
+        if panelLayout.slot(for: .editor) == nil {
+            panelLayout.assign(.editor, to: .center)
+        }
         closeProjectSearch()
         let currentDir = effectiveWorkingDirectory
         let isGit = isGitRepository(at: currentDir)
@@ -2000,11 +2032,25 @@ public struct MainWindowView: View {
     }
 
     private func beginReview(summary: AgentEditedFilesSummary) {
+        if activeMarkdownPreviewPath != nil {
+            closeMarkdownPreview()
+        }
+        if panelLayout.slot(for: .editor) == nil {
+            panelLayout.assign(.editor, to: .center)
+        }
         selectedFilePathBeforeReadOnly = selectedFilePath
         readOnlyViewStateResetToken &+= 1
         clearReadOnlyDiff()
         readOnlyDisplayMap.layoutMode = .unified
         loadReviewDiff(for: summary)
+        if let firstFile = summary.files.first?.path {
+            let matched = readOnlyDisplayMap.matchFilePath(firstFile) ?? firstFile
+            selectedFilePath = matched
+            NotificationCenter.default.post(
+                name: .focusFileInEditor,
+                object: FileNavigationRequest(filePath: matched, lineNumber: nil, endLineNumber: nil)
+            )
+        }
         preparedReviewSummary = summary
         agentCoordinator.startReview(summary: summary)
     }
@@ -2046,6 +2092,10 @@ public struct MainWindowView: View {
     }
 
     public func closeMarkdownPreview() {
+        if let current = SelectionQuoteStore.shared.currentQuote,
+           current.source == .markdown || current.id.hasPrefix("markdown:") {
+            SelectionQuoteStore.shared.clearQuote(scopedToId: current.id)
+        }
         withAnimation(.easeInOut(duration: 0.16)) {
             activeMarkdownPreviewPath = nil
         }

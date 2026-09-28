@@ -39,6 +39,19 @@ public struct AgentSessionRowView: View {
                                 .foregroundColor(.primary)
                                 .lineLimit(1)
 
+                            if let profile = session.preset.profile, !profile.isEmpty {
+                                Text(profile)
+                                    .font(.system(size: 8.5, weight: .bold))
+                                    .foregroundColor(Color.accentColor)
+                                    .padding(.horizontal, 4)
+                                    .padding(.vertical, 1)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 3.5, style: .continuous)
+                                            .fill(Color.accentColor.opacity(0.14))
+                                    )
+                                    .layoutPriority(1)
+                            }
+
                             if let shortId = session.shortSessionId, !session.title.contains(shortId) {
                                 Text(shortId)
                                     .font(.system(size: 8.5, weight: .medium, design: .monospaced))

@@ -52,6 +52,7 @@ public struct MarkdownDocumentView: View {
             theme: theme,
             filePath: resolvedFullPath,
             rootDirectory: rootDirectory,
+            rawContent: content,
             scrollToHeaderIndex: scrollToHeaderIndex,
             onClose: onClose
         )
@@ -76,6 +77,10 @@ public struct MarkdownDocumentView: View {
         .onDisappear {
             fileWatcher?.stop()
             fileWatcher = nil
+            if let current = SelectionQuoteStore.shared.currentQuote,
+               current.source == .markdown || current.id.hasPrefix("markdown:") {
+                SelectionQuoteStore.shared.clearQuote(scopedToId: current.id)
+            }
         }
     }
 

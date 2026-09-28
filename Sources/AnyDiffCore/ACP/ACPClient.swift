@@ -3,6 +3,8 @@ import Foundation
 public enum ACPClientError: LocalizedError, Sendable {
     case executableNotFound(String)
     case processTerminated(Int, String)
+    case authRequired([ACPAuthMethod])
+    case authenticationFailed(String)
 
     public var errorDescription: String? {
         switch self {
@@ -13,6 +15,10 @@ public enum ACPClientError: LocalizedError, Sendable {
                 return "Agent executable or command not found (exit code 127). \(stderr.isEmpty ? "Please verify installation." : stderr)"
             }
             return "Agent process exited with code \(code)\(stderr.isEmpty ? "" : ": \(stderr)")"
+        case .authRequired:
+            return "Authentication required to use this agent."
+        case .authenticationFailed(let reason):
+            return "Authentication failed: \(reason)"
         }
     }
 }
@@ -64,6 +70,7 @@ public final class ACPClient: ACPTransportDelegate, @unchecked Sendable {
 
     public private(set) var workingDirectory: String = ""
     public private(set) var activeSessionId: String? = nil
+    public private(set) var advertisedAuthMethods: [ACPAuthMethod] = []
 
     public var isConnected: Bool {
         transport.isRunning
@@ -85,6 +92,7 @@ public final class ACPClient: ACPTransportDelegate, @unchecked Sendable {
             let copy = pendingRequests
             pendingRequests.removeAll()
             activeSessionId = nil
+            advertisedAuthMethods = []
             return copy
         }
 
@@ -124,15 +132,41 @@ public final class ACPClient: ACPTransportDelegate, @unchecked Sendable {
         guard let result = response.result else {
             throw JSONRPCError(code: -32603, message: "Missing initialize result in response")
         }
+        self.advertisedAuthMethods = result.authMethods ?? []
         return result
+    }
+
+    public func authenticate(methodId: String) async throws {
+        let params = ACPAuthenticateParams(methodId: methodId)
+        let responseData: Data
+        do {
+            responseData = try await sendRequest(method: "authenticate", params: params)
+        } catch let err as JSONRPCError {
+            throw ACPClientError.authenticationFailed(err.localizedDescription)
+        }
+        let response = try decoder.decode(JSONRPCResponse<ACPAuthenticateResult>.self, from: responseData)
+        if let err = response.error {
+            throw ACPClientError.authenticationFailed(err.localizedDescription)
+        }
     }
 
     public func createSession(cwd: String) async throws -> String {
         self.workingDirectory = cwd
         let params = ACPSessionNewParams(cwd: cwd)
-        let responseData = try await sendRequest(method: "session/new", params: params)
+        let responseData: Data
+        do {
+            responseData = try await sendRequest(method: "session/new", params: params)
+        } catch let err as JSONRPCError {
+            if err.isAuthRequired {
+                throw ACPClientError.authRequired(advertisedAuthMethods)
+            }
+            throw err
+        }
         let response = try decoder.decode(JSONRPCResponse<ACPSessionNewResult>.self, from: responseData)
         if let err = response.error {
+            if err.isAuthRequired {
+                throw ACPClientError.authRequired(advertisedAuthMethods)
+            }
             throw err
         }
         guard let result = response.result else {
@@ -145,9 +179,20 @@ public final class ACPClient: ACPTransportDelegate, @unchecked Sendable {
     public func createSessionFull(cwd: String) async throws -> ACPSessionNewResult {
         self.workingDirectory = cwd
         let params = ACPSessionNewParams(cwd: cwd)
-        let responseData = try await sendRequest(method: "session/new", params: params)
+        let responseData: Data
+        do {
+            responseData = try await sendRequest(method: "session/new", params: params)
+        } catch let err as JSONRPCError {
+            if err.isAuthRequired {
+                throw ACPClientError.authRequired(advertisedAuthMethods)
+            }
+            throw err
+        }
         let response = try decoder.decode(JSONRPCResponse<ACPSessionNewResult>.self, from: responseData)
         if let err = response.error {
+            if err.isAuthRequired {
+                throw ACPClientError.authRequired(advertisedAuthMethods)
+            }
             throw err
         }
         guard let result = response.result else {
@@ -175,9 +220,20 @@ public final class ACPClient: ACPTransportDelegate, @unchecked Sendable {
         self.workingDirectory = cwd
         self.activeSessionId = sessionId
         let params = ACPSessionLoadParams(sessionId: sessionId, cwd: cwd, mcpServers: [])
-        let responseData = try await sendRequest(method: "session/load", params: params)
+        let responseData: Data
+        do {
+            responseData = try await sendRequest(method: "session/load", params: params)
+        } catch let err as JSONRPCError {
+            if err.isAuthRequired {
+                throw ACPClientError.authRequired(advertisedAuthMethods)
+            }
+            throw err
+        }
         let response = try decoder.decode(JSONRPCResponse<ACPSessionLoadResult>.self, from: responseData)
         if let err = response.error {
+            if err.isAuthRequired {
+                throw ACPClientError.authRequired(advertisedAuthMethods)
+            }
             throw err
         }
         guard let result = response.result else {

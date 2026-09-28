@@ -187,5 +187,97 @@ final class MarkdownParserTests: XCTestCase {
         docScrollView.containerView.layoutContent(for: 350)
         XCTAssertTrue(tableScrollView.hasHorizontalScroller)
     }
-}
 
+    func testMarkdownSelectableTextViewQuotePublishing() {
+        let tv = MarkdownSelectableTextView()
+        tv.filePath = "/Users/test/dev/README.md"
+        tv.displayPath = "README.md"
+        let sampleText = "Hello world from markdown preview"
+        tv.textStorage?.setAttributedString(NSAttributedString(string: sampleText))
+        tv.rawContentProvider = { sampleText }
+
+        // Select text >= 2 chars
+        let range = NSRange(location: 0, length: 11) // "Hello world"
+        tv.setSelectedRange(range, affinity: .downstream, stillSelecting: false)
+
+        guard let quote = SelectionQuoteStore.shared.currentQuote else {
+            XCTFail("Expected quote to be published")
+            return
+        }
+        XCTAssertEqual(quote.source, .markdown)
+        XCTAssertEqual(quote.text, "Hello world")
+        XCTAssertEqual(quote.filePath, "/Users/test/dev/README.md")
+        XCTAssertEqual(quote.displayPath, "README.md")
+        XCTAssertTrue(quote.id.hasPrefix("markdown:/Users/test/dev/README.md:"))
+
+        // Deselect or select empty range -> should clear
+        tv.setSelectedRange(NSRange(location: NSNotFound, length: 0), affinity: .downstream, stillSelecting: false)
+        XCTAssertNil(SelectionQuoteStore.shared.currentQuote)
+    }
+
+    func testMarkdownNativeContainerClearsSiblingSelections() {
+        let tv1 = MarkdownSelectableTextView()
+        tv1.textStorage?.setAttributedString(NSAttributedString(string: "First paragraph text"))
+        let tv2 = MarkdownSelectableTextView()
+        tv2.textStorage?.setAttributedString(NSAttributedString(string: "Second paragraph text"))
+
+        let container = MarkdownNativeContainerView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        container.setSections([
+            .text(textView: tv1, headerAnchors: []),
+            .text(textView: tv2, headerAnchors: [])
+        ])
+
+        // Select in tv1
+        tv1.setSelectedRange(NSRange(location: 0, length: 5), affinity: .downstream, stillSelecting: false)
+        XCTAssertEqual(tv1.selectedRange().length, 5)
+
+        // Select in tv2 -> tv1 should have its selection cleared
+        tv2.setSelectedRange(NSRange(location: 0, length: 6), affinity: .downstream, stillSelecting: false)
+        XCTAssertEqual(tv2.selectedRange().length, 6)
+        XCTAssertEqual(tv1.selectedRange().length, 0)
+
+        // Clean up
+        tv2.setSelectedRange(NSRange(location: NSNotFound, length: 0), affinity: .downstream, stillSelecting: false)
+        SelectionQuoteStore.shared.clearQuote()
+    }
+
+    func testMarkdownNativeContainerClearAllSelections() {
+        let tv1 = MarkdownSelectableTextView()
+        tv1.filePath = "test.md"
+        tv1.textStorage?.setAttributedString(NSAttributedString(string: "First paragraph text"))
+        let tv2 = MarkdownSelectableTextView()
+        tv2.filePath = "test.md"
+        tv2.textStorage?.setAttributedString(NSAttributedString(string: "Second paragraph text"))
+
+        let container = MarkdownNativeContainerView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        container.setSections([
+            .text(textView: tv1, headerAnchors: []),
+            .text(textView: tv2, headerAnchors: [])
+        ])
+
+        tv1.setSelectedRange(NSRange(location: 0, length: 8), affinity: .downstream, stillSelecting: false)
+        XCTAssertEqual(tv1.selectedRange().length, 8)
+        XCTAssertNotNil(SelectionQuoteStore.shared.currentQuote)
+
+        container.clearAllSelections()
+        XCTAssertEqual(tv1.selectedRange().length, 0)
+        XCTAssertNil(SelectionQuoteStore.shared.currentQuote)
+    }
+
+    func testMarkdownSelectableTextViewSelectAll() {
+        let tv = MarkdownSelectableTextView()
+        tv.filePath = "/Users/test/dev/README.md"
+        tv.displayPath = "README.md"
+        let sample = "Selection all text here"
+        tv.textStorage?.setAttributedString(NSAttributedString(string: sample))
+        tv.rawContentProvider = { sample }
+
+        tv.selectAll(nil)
+        XCTAssertEqual(tv.selectedRange().length, (sample as NSString).length)
+        XCTAssertEqual(SelectionQuoteStore.shared.currentQuote?.text, sample)
+
+        // Clear
+        tv.clearPublishedQuote()
+        SelectionQuoteStore.shared.clearQuote()
+    }
+}

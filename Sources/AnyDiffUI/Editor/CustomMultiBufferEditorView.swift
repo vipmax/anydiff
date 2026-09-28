@@ -129,6 +129,10 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     private static let headerTitleFont = NSFont.systemFont(ofSize: 12, weight: .semibold)
     private static let headerDirectoryFont = NSFont.systemFont(ofSize: 12, weight: .regular)
     private static let badgeFont = NSFont.monospacedSystemFont(ofSize: 10, weight: .bold)
+    private static let previewSymbolImage: NSImage? = {
+        NSImage(systemSymbolName: "eye", accessibilityDescription: "Preview Markdown")
+            ?? NSImage(systemSymbolName: "doc.richtext", accessibilityDescription: "Preview Markdown")
+    }()
 
     // Layout Metrics
     public private(set) var lineHeight: CGFloat = 22
@@ -1679,11 +1683,43 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         return CGRect(x: x, y: y, width: size, height: size)
     }
 
+    func diffBadgesWidth(deletions: Int, additions: Int) -> CGFloat {
+        var width: CGFloat = 0
+        var hasDel = false
+        if deletions > 0 {
+            let delStr = NSAttributedString(string: "-\(deletions)", attributes: [.font: Self.badgeFont])
+            let line = CTLineCreateWithAttributedString(delStr)
+            width += CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
+            hasDel = true
+        }
+        if additions > 0 {
+            let addStr = NSAttributedString(string: "+\(additions)", attributes: [.font: Self.badgeFont])
+            let line = CTLineCreateWithAttributedString(addStr)
+            width += CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
+            if hasDel {
+                width += 10.0 // badgeSpacing
+            }
+        }
+        return width
+    }
+
+    func previewButtonRect(in headerRect: CGRect, for info: ExcerptHeaderInfo) -> CGRect {
+        let btnWidth: CGFloat = 20
+        let btnHeight: CGFloat = 20
+        let rightMargin: CGFloat = 16
+        let badgeW = diffBadgesWidth(deletions: info.deletions, additions: info.additions)
+        let spacing: CGFloat = badgeW > 0 ? 8 : 0
+        let x = bounds.width - rightMargin - badgeW - spacing - btnWidth
+        let y = headerRect.minY + (headerRect.height - btnHeight) / 2.0 + 0.5
+        return CGRect(x: x, y: y, width: btnWidth, height: btnHeight)
+    }
+
     func previewButtonRect(in headerRect: CGRect) -> CGRect {
-        let size: CGFloat = 18
-        let x: CGFloat = bounds.width - 32
-        let y = headerRect.minY + (headerRect.height - size) / 2.0
-        return CGRect(x: x, y: y, width: size, height: size)
+        let btnWidth: CGFloat = 20
+        let btnHeight: CGFloat = 20
+        let x: CGFloat = bounds.width - 16 - btnWidth
+        let y = headerRect.minY + (headerRect.height - btnHeight) / 2.0 + 0.5
+        return CGRect(x: x, y: y, width: btnWidth, height: btnHeight)
     }
 
     public func currentFocusedFilePath() -> String? {
@@ -1862,7 +1898,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         }
 
         let isMarkdown = info.filePath.hasSuffix(".md") || info.filePath.hasSuffix(".markdown") || info.filePath.hasSuffix(".mdx")
-        let badgeRightMargin: CGFloat = isMarkdown ? 38 : 16
+        let badgeRightMargin: CGFloat = 16
         let badgeSpacing: CGFloat = 10
         var totalBadgeWidth: CGFloat = 0
         if delLine != nil { totalBadgeWidth += delWidth }
@@ -1870,8 +1906,10 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         if delLine != nil && addLine != nil { totalBadgeWidth += badgeSpacing }
 
         let badgeStartX = bounds.width - badgeRightMargin - totalBadgeWidth
-        let minBadgeGap: CGFloat = 20
-        let shouldDrawBadges = totalBadgeWidth > 0 && (badgeStartX >= titleEndX + minBadgeGap)
+        let prevRect = previewButtonRect(in: headerRect, for: info)
+        let rightElementsStartX = isMarkdown ? prevRect.minX : (totalBadgeWidth > 0 ? badgeStartX : bounds.width - badgeRightMargin)
+        let minGap: CGFloat = 16
+        let shouldDrawRightElements = rightElementsStartX >= titleEndX + minGap
 
         // Draw title
         context.saveGState()
@@ -1882,7 +1920,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         context.restoreGState()
 
         // Draw badges (pinned to right edge of viewport, hidden if title is too long)
-        if shouldDrawBadges {
+        if shouldDrawRightElements && totalBadgeWidth > 0 {
             var rightBadgeX = bounds.width - badgeRightMargin
 
             if let delLine = delLine {
@@ -1907,23 +1945,39 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             }
         }
 
-        if isMarkdown {
-            let prevRect = previewButtonRect(in: headerRect)
+        if isMarkdown && shouldDrawRightElements {
             let isPrevHovered = (hoveredPreviewFilePath == info.filePath)
+
+            // Only show subtle hover pill when mouse is over button, completely clear background by default
             if isPrevHovered {
-                let bgRect = prevRect.insetBy(dx: 1, dy: 1)
+                let bgPath = CGPath(roundedRect: prevRect.insetBy(dx: 1, dy: 1), cornerWidth: 4.0, cornerHeight: 4.0, transform: nil)
                 context.saveGState()
-                context.setFillColor(theme.gutterForeground.withAlphaComponent(0.18).cgColor)
-                let path = CGPath(roundedRect: bgRect, cornerWidth: 3.5, cornerHeight: 3.5, transform: nil)
-                context.addPath(path)
+                let bgAlpha: CGFloat = theme.isDark ? 0.18 : 0.10
+                let bgBaseColor = theme.isDark ? NSColor.white : NSColor.black
+                context.setFillColor(bgBaseColor.withAlphaComponent(bgAlpha).cgColor)
+                context.addPath(bgPath)
                 context.fillPath()
                 context.restoreGState()
             }
 
-            if let img = NSImage(systemSymbolName: "doc.richtext", accessibilityDescription: "Preview Markdown") ?? NSImage(systemSymbolName: "eye", accessibilityDescription: "Preview Markdown") {
-                let imgSize: CGFloat = 12
-                let imgRect = CGRect(x: prevRect.midX - imgSize / 2.0, y: prevRect.midY - imgSize / 2.0, width: imgSize, height: imgSize)
-                img.draw(in: imgRect, from: .zero, operation: .sourceOver, fraction: isPrevHovered ? 1.0 : 0.65, respectFlipped: true, hints: nil)
+            // Icon - clean, perfectly centered vertically and aligned with the badges
+            let iconColor = isPrevHovered
+                ? (theme.isDark ? NSColor.white : theme.foreground)
+                : theme.foreground.withAlphaComponent(0.85)
+
+            let symbolConfig = NSImage.SymbolConfiguration(pointSize: 10.5, weight: .medium)
+                .applying(.init(paletteColors: [iconColor]))
+
+            if let img = Self.previewSymbolImage?.withSymbolConfiguration(symbolConfig) {
+                let imgW = img.size.width
+                let imgH = img.size.height
+                let imgRect = CGRect(
+                    x: round(prevRect.midX - imgW / 2.0),
+                    y: round(prevRect.midY - imgH / 2.0),
+                    width: imgW,
+                    height: imgH
+                )
+                img.draw(in: imgRect, from: .zero, operation: .sourceOver, fraction: contentAlpha, respectFlipped: true, hints: nil)
             }
         }
 
@@ -2604,7 +2658,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         // 1. Check if user clicked on Sticky Excerpt Header
         if let (stickyInfo, stickyFrame) = currentStickyHeader(), stickyFrame.contains(screenPoint) {
             let isMd = stickyInfo.filePath.hasSuffix(".md") || stickyInfo.filePath.hasSuffix(".markdown") || stickyInfo.filePath.hasSuffix(".mdx")
-            if isMd && previewButtonRect(in: stickyFrame).contains(screenPoint) {
+            if isMd && previewButtonRect(in: stickyFrame, for: stickyInfo).contains(screenPoint) {
                 delegate?.editorDidRequestPreviewMarkdown(filePath: stickyInfo.filePath)
                 return
             }
@@ -2639,7 +2693,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                 let headerRect = CGRect(x: 0, y: lineMinY, width: bounds.width, height: height)
                 let isMd = header.filePath.hasSuffix(".md") || header.filePath.hasSuffix(".markdown") || header.filePath.hasSuffix(".mdx")
                 let clickPoint = CGPoint(x: screenPoint.x, y: docY)
-                if isMd && previewButtonRect(in: headerRect).contains(clickPoint) {
+                if isMd && previewButtonRect(in: headerRect, for: header).contains(clickPoint) {
                     delegate?.editorDidRequestPreviewMarkdown(filePath: header.filePath)
                     return
                 }
@@ -3138,7 +3192,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
         if let (stickyInfo, stickyFrame) = currentStickyHeader(), stickyFrame.contains(screenPoint) {
             let isMd = stickyInfo.filePath.hasSuffix(".md") || stickyInfo.filePath.hasSuffix(".markdown") || stickyInfo.filePath.hasSuffix(".mdx")
-            if isMd && previewButtonRect(in: stickyFrame).contains(screenPoint) {
+            if isMd && previewButtonRect(in: stickyFrame, for: stickyInfo).contains(screenPoint) {
                 shouldHandCursor = true
                 hoveredPrevPath = stickyInfo.filePath
             }
@@ -3156,7 +3210,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                 let headerRect = CGRect(x: 0, y: lineMinY, width: bounds.width, height: height)
                 let pt = CGPoint(x: screenPoint.x, y: docY)
                 let isMd = header.filePath.hasSuffix(".md") || header.filePath.hasSuffix(".markdown") || header.filePath.hasSuffix(".mdx")
-                if isMd && previewButtonRect(in: headerRect).contains(pt) {
+                if isMd && previewButtonRect(in: headerRect, for: header).contains(pt) {
                     shouldHandCursor = true
                     hoveredPrevPath = header.filePath
                 }
@@ -3181,6 +3235,14 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             needsDisplay = true
         }
 
+        if hoveredPrevPath != nil {
+            toolTip = "Preview Markdown (⌘E)"
+        } else if hoveredFilePath != nil {
+            toolTip = "Close file"
+        } else {
+            toolTip = nil
+        }
+
         if shouldHandCursor {
             NSCursor.pointingHand.set()
         }
@@ -3195,6 +3257,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
 
     public override func mouseExited(with event: NSEvent) {
         super.mouseExited(with: event)
+        toolTip = nil
         var didChange = false
         if hoveredCloseFilePath != nil {
             hoveredCloseFilePath = nil

@@ -68,10 +68,45 @@ public struct JSONRPCError: Codable, Sendable, Error, LocalizedError, CustomNSEr
     public let message: String
     public let data: String?
 
+    enum CodingKeys: String, CodingKey {
+        case code
+        case message
+        case data
+    }
+
     public init(code: Int, message: String, data: String? = nil) {
         self.code = code
         self.message = message
         self.data = data
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.code = try container.decode(Int.self, forKey: .code)
+        self.message = (try? container.decode(String.self, forKey: .message)) ?? "Unknown error"
+
+        if let stringData = try? container.decode(String.self, forKey: .data) {
+            self.data = stringData
+        } else if let anyVal = try? container.decode(AnyCodableSendable.self, forKey: .data) {
+            if let dict = anyVal.value as? [String: Any], let msg = dict["message"] as? String {
+                self.data = msg
+            } else if JSONSerialization.isValidJSONObject(anyVal.value),
+                      let jsonData = try? JSONSerialization.data(withJSONObject: anyVal.value, options: [.fragmentsAllowed]),
+                      let str = String(data: jsonData, encoding: .utf8) {
+                self.data = str
+            } else {
+                self.data = anyVal.description
+            }
+        } else {
+            self.data = nil
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(code, forKey: .code)
+        try container.encode(message, forKey: .message)
+        try container.encodeIfPresent(data, forKey: .data)
     }
 
     public var errorDescription: String? {
@@ -83,6 +118,13 @@ public struct JSONRPCError: Codable, Sendable, Error, LocalizedError, CustomNSEr
 
     public static var errorDomain: String { "JSONRPCError" }
     public var errorCode: Int { code }
+
+    public var isAuthRequired: Bool {
+        message.localizedCaseInsensitiveContains("authentication required")
+            || message.localizedCaseInsensitiveContains("auth required")
+            || (data?.localizedCaseInsensitiveContains("auth") ?? false)
+            || (code == -32000 && (message.localizedCaseInsensitiveContains("auth") || (data?.localizedCaseInsensitiveContains("auth") ?? false)))
+    }
 }
 
 /// JSON-RPC request identifiers may be numbers or strings. Client-originated
@@ -232,9 +274,91 @@ public struct ACPClientInfo: Codable, Sendable {
     public static let `default` = ACPClientInfo()
 }
 
+public struct ACPAuthMethod: Codable, Sendable, Identifiable, Equatable {
+    public let id: String
+    public let name: String
+    public let description: String?
+    public let type: String?
+
+    public init(id: String, name: String, description: String? = nil, type: String? = nil) {
+        self.id = id
+        self.name = name
+        self.description = description
+        self.type = type
+    }
+}
+
 public struct ACPInitializeResult: Codable, Sendable {
     public let protocolVersion: Int?
     public let agentInfo: ACPAgentInfo?
+    public let authMethods: [ACPAuthMethod]?
+
+    enum CodingKeys: String, CodingKey {
+        case protocolVersion
+        case agentInfo
+        case authMethods
+        case auth_methods
+    }
+
+    public init(protocolVersion: Int? = nil, agentInfo: ACPAgentInfo? = nil, authMethods: [ACPAuthMethod]? = nil) {
+        self.protocolVersion = protocolVersion
+        self.agentInfo = agentInfo
+        self.authMethods = authMethods
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if let intVer = try? container.decode(Int.self, forKey: .protocolVersion) {
+            self.protocolVersion = intVer
+        } else if let strVer = try? container.decode(String.self, forKey: .protocolVersion), let intVer = Int(strVer) {
+            self.protocolVersion = intVer
+        } else {
+            self.protocolVersion = nil
+        }
+        self.agentInfo = try container.decodeIfPresent(ACPAgentInfo.self, forKey: .agentInfo)
+        self.authMethods = try container.decodeIfPresent([ACPAuthMethod].self, forKey: .authMethods)
+            ?? container.decodeIfPresent([ACPAuthMethod].self, forKey: .auth_methods)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(protocolVersion, forKey: .protocolVersion)
+        try container.encodeIfPresent(agentInfo, forKey: .agentInfo)
+        try container.encodeIfPresent(authMethods, forKey: .authMethods)
+    }
+}
+
+public struct ACPAuthenticateParams: Codable, Sendable {
+    public let methodId: String
+
+    enum CodingKeys: String, CodingKey {
+        case methodId
+        case method_id
+    }
+
+    public init(methodId: String) {
+        self.methodId = methodId
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if let mid = try container.decodeIfPresent(String.self, forKey: .methodId) {
+            self.methodId = mid
+        } else if let mid = try container.decodeIfPresent(String.self, forKey: .method_id) {
+            self.methodId = mid
+        } else {
+            self.methodId = ""
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(methodId, forKey: .methodId)
+    }
+}
+
+public struct ACPAuthenticateResult: Codable, Sendable {
+    public init() {}
 }
 
 public struct ACPAgentInfo: Codable, Sendable {

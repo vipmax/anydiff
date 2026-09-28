@@ -126,4 +126,71 @@ final class SelectionQuoteTests: XCTestCase {
         ]
         XCTAssertEqual(result, expectedParts.joined(separator: "\n\n"))
     }
+
+    func testFormatMarkdownQuoteWithLineRange() {
+        let quote = SelectionQuote(
+            id: "markdown:/path/to/README.md:123",
+            text: "This is a great feature",
+            source: .markdown,
+            label: "README.md (L10-12)",
+            filePath: "/path/to/README.md",
+            displayPath: "README.md",
+            lineRange: 10...12,
+            language: "markdown"
+        )
+        let formatted = SelectionQuoteFormatter.formatSingleQuote(quote)
+        XCTAssertTrue(formatted.contains("[README.md:L10-L12](README.md#L10-L12)"))
+        XCTAssertTrue(formatted.contains("```markdown\nThis is a great feature\n```"))
+    }
+
+    func testFormatMarkdownQuoteCodeBlock() {
+        let quote = SelectionQuote(
+            id: "markdown:/path/to/README.md:456",
+            text: "func hello() { print(\"hi\") }",
+            source: .markdown,
+            label: "README.md (L20)",
+            filePath: "/path/to/README.md",
+            displayPath: "docs/README.md",
+            lineRange: 20...20,
+            language: "swift"
+        )
+        let formatted = SelectionQuoteFormatter.formatSingleQuote(quote)
+        XCTAssertTrue(formatted.contains("[README.md:L20](docs/README.md#L20)"))
+        XCTAssertTrue(formatted.contains("```swift\nfunc hello() { print(\"hi\") }\n```"))
+    }
+
+    func testMarkdownSelectionLineFinder() {
+        let markdown = """
+        # Title
+
+        A quick brown fox
+        jumps over the lazy dog.
+
+        ```swift
+        let a = 1
+        let b = 2
+        ```
+
+        - Item one
+        - Item two
+
+        > A quoted statement
+        """
+        let lines = markdown.components(separatedBy: "\n")
+        let blocks = MarkdownParser.parse(markdown)
+        let blockRanges = MarkdownSelectionLineFinder.findBlockLineRanges(blocks: blocks, in: lines)
+        XCTAssertEqual(blockRanges.count, blocks.count)
+
+        let range1 = MarkdownSelectionLineFinder.findLineRange(in: lines, for: "jumps over")
+        XCTAssertEqual(range1, 4...4)
+
+        let range2 = MarkdownSelectionLineFinder.findLineRange(in: lines, for: "brown fox\njumps over")
+        XCTAssertEqual(range2, 3...4)
+
+        let range3 = MarkdownSelectionLineFinder.findLineRange(in: lines, for: "let b = 2")
+        XCTAssertEqual(range3, 8...8)
+
+        let range4 = MarkdownSelectionLineFinder.findLineRange(in: lines, for: "A quoted statement")
+        XCTAssertEqual(range4, 14...14)
+    }
 }

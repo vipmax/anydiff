@@ -5,6 +5,7 @@ public enum QuoteSource: String, Sendable, Codable, Equatable {
     case editor
     case agent
     case terminal
+    case markdown
 }
 
 public struct SelectionQuote: Identifiable, Equatable, Sendable {
@@ -86,8 +87,9 @@ public enum SelectionQuoteFormatter {
             .replacingOccurrences(of: "\r", with: "\n")
         let rawText = normalized.hasSuffix("\n") ? String(normalized.dropLast()) : normalized
 
-        if quote.source == .editor {
-            let lang = quote.language ?? (quote.filePath.map { Buffer.detectLanguage(for: $0) } ?? "")
+        if quote.source == .editor || quote.source == .markdown {
+            let defaultLang = (quote.source == .markdown) ? "markdown" : ""
+            let lang = quote.language ?? (quote.filePath.map { Buffer.detectLanguage(for: $0) } ?? defaultLang)
             let cleanLang = (lang == "plaintext") ? "" : lang
             var header = ""
             if let filePath = quote.filePath {

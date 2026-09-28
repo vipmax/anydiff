@@ -13,6 +13,7 @@ public enum AgentInitializationState: Equatable, Sendable {
     case notStarted
     case starting
     case ready
+    case authRequired([ACPAuthMethod])
     case failed(String)
 }
 
@@ -69,9 +70,18 @@ open class AgentSessionManager: ObservableObject, @unchecked Sendable {
     @Published public var draftPrompt: String = ""
     @Published public var draftAttachments: [AgentImageAttachment] = []
     @Published public var promptQueue: [AgentQueuedMessage] = []
+    @Published public var authMethods: [ACPAuthMethod] = []
+    @Published public var isAuthenticating: Bool = false
+    @Published public var authErrorMessage: String? = nil
+    @Published public var authURL: URL? = nil
+
+    open func authenticate(methodId: String) async throws {
+        // Subclasses override
+    }
+
     open var isMock: Bool { false }
     open var isReadyForPrompt: Bool { initializationState == .ready }
-    open var canAcceptPrompt: Bool { pendingPermission == nil }
+    open var canAcceptPrompt: Bool { pendingPermission == nil && authMethods.isEmpty }
     open var isBusyOrStreaming: Bool { status == .busy || messages.last?.isStreaming == true }
 
     open var presetId: String? = nil

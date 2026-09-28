@@ -13,10 +13,99 @@ public struct AgentPreset: Identifiable, Equatable, Sendable, Codable {
     public var summary: String
     public let isMock: Bool
     public var isCustom: Bool
+    public var profile: String?
+    public var environment: [String: String]?
 
     private enum CodingKeys: String, CodingKey {
         case id, name, version, command, arguments, iconName, colorName
-        case providerName, summary, isMock, isCustom
+        case providerName, summary, isMock, isCustom, profile, environment
+    }
+
+    public var displayName: String {
+        if let profile = profile?.trimmingCharacters(in: .whitespacesAndNewlines), !profile.isEmpty {
+            return "\(name) (\(profile))"
+        }
+        return name
+    }
+
+    public var profileDisplayName: String {
+        if let profile = profile?.trimmingCharacters(in: .whitespacesAndNewlines), !profile.isEmpty {
+            return profile
+        }
+        return "Default"
+    }
+
+    public var isDefaultProfile: Bool {
+        profile == nil || profile?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true
+    }
+
+    public var effectiveBaseId: String {
+        AgentProfileService.rootAgentId(for: id, profile: profile)
+    }
+
+    public var asBasePreset: AgentPreset {
+        guard !isDefaultProfile else { return self }
+        let baseSummary = summary.replacingOccurrences(of: #"\s*\[Profile: [^\]]+\]"#, with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return AgentPreset(
+            id: effectiveBaseId,
+            name: name,
+            version: version,
+            command: command,
+            arguments: arguments,
+            iconName: iconName,
+            colorName: colorName,
+            providerName: providerName,
+            summary: baseSummary,
+            isMock: isMock,
+            isCustom: isCustom,
+            profile: nil,
+            environment: nil
+        )
+    }
+
+    public var rootAgentId: String {
+        effectiveBaseId
+    }
+
+    public var resolvedEnvironment: [String: String] {
+        AgentProfileService.resolveEnvironment(environment)
+    }
+
+    /// Duplicates this preset into a new preset configured with an isolated profile in ~/.anydiff/profiles/<newId>.
+    public func duplicating(withProfile profileName: String) -> AgentPreset {
+        let trimmedProfile = profileName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let slug = AgentProfileService.sanitizeSlug(trimmedProfile.isEmpty ? "profile" : trimmedProfile)
+        let root = effectiveBaseId
+        let newId = "\(root)-\(slug)"
+
+        var profileEnv = AgentProfileService.profileEnvironment(for: id, profileId: newId)
+        if let currentEnv = environment {
+            for (k, v) in currentEnv {
+                if profileEnv[k] == nil {
+                    profileEnv[k] = v
+                }
+            }
+        }
+
+        let baseSummary = summary.replacingOccurrences(of: #"\s*\[Profile: [^\]]+\]"#, with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return AgentPreset(
+            id: newId,
+            name: name,
+            version: version,
+            command: command,
+            arguments: arguments,
+            iconName: iconName,
+            colorName: colorName,
+            providerName: providerName,
+            summary: baseSummary,
+            isMock: isMock,
+            isCustom: true,
+            profile: trimmedProfile.isEmpty ? nil : trimmedProfile,
+            environment: profileEnv
+        )
     }
 
     public var effectiveCommand: String {
@@ -75,7 +164,9 @@ public struct AgentPreset: Identifiable, Equatable, Sendable, Codable {
         providerName: String = "",
         summary: String = "",
         isMock: Bool = false,
-        isCustom: Bool = false
+        isCustom: Bool = false,
+        profile: String? = nil,
+        environment: [String: String]? = nil
     ) {
         self.id = id
         self.name = name
@@ -88,6 +179,8 @@ public struct AgentPreset: Identifiable, Equatable, Sendable, Codable {
         self.summary = summary
         self.isMock = isMock
         self.isCustom = isCustom
+        self.profile = profile
+        self.environment = environment
     }
 
     public static let codex = AgentPreset(
@@ -147,6 +240,8 @@ public struct AgentPreset: Identifiable, Equatable, Sendable, Codable {
         summary = try container.decodeIfPresent(String.self, forKey: .summary) ?? ""
         isMock = try container.decodeIfPresent(Bool.self, forKey: .isMock) ?? false
         isCustom = try container.decodeIfPresent(Bool.self, forKey: .isCustom) ?? false
+        profile = try container.decodeIfPresent(String.self, forKey: .profile)
+        environment = try container.decodeIfPresent([String: String].self, forKey: .environment)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -162,6 +257,22 @@ public struct AgentPreset: Identifiable, Equatable, Sendable, Codable {
         try container.encode(summary, forKey: .summary)
         try container.encode(isMock, forKey: .isMock)
         try container.encode(isCustom, forKey: .isCustom)
+        try container.encodeIfPresent(profile, forKey: .profile)
+        try container.encodeIfPresent(environment, forKey: .environment)
+    }
+}
+
+/// Represents a distinct AI agent and its associated isolated account profiles.
+public struct AgentGroup: Identifiable, Sendable {
+    public var id: String { basePreset.effectiveBaseId }
+    public let basePreset: AgentPreset
+    public var profiles: [AgentPreset]
+    public var selectedPreset: AgentPreset
+
+    public init(basePreset: AgentPreset, profiles: [AgentPreset], selectedPreset: AgentPreset) {
+        self.basePreset = basePreset
+        self.profiles = profiles
+        self.selectedPreset = selectedPreset
     }
 }
 
@@ -235,6 +346,67 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
 
     public var allPresets: [AgentPreset] {
         AgentPreset.defaultPresets + customPresets
+    }
+
+    /// Groups all available presets (default and custom) by root agent, associating their account profiles.
+    public var agentGroups: [AgentGroup] {
+        var groupMap: [String: (base: AgentPreset, profiles: [AgentPreset])] = [:]
+        var groupOrder: [String] = []
+
+        for preset in allPresets {
+            let baseId = preset.effectiveBaseId
+            if groupMap[baseId] == nil {
+                groupOrder.append(baseId)
+                let base = preset.isDefaultProfile ? preset : preset.asBasePreset
+                groupMap[baseId] = (base: base, profiles: [])
+            }
+            groupMap[baseId]?.profiles.append(preset)
+        }
+
+        return groupOrder.compactMap { baseId in
+            guard let entry = groupMap[baseId] else { return nil }
+            var allProfiles = entry.profiles
+            if !allProfiles.contains(where: { $0.isDefaultProfile }) {
+                allProfiles.insert(entry.base, at: 0)
+            }
+            var seenProfiles = Set<String>()
+            var uniqueProfiles: [AgentPreset] = []
+            for p in allProfiles {
+                let key = p.profile ?? ""
+                if seenProfiles.insert(key).inserted {
+                    uniqueProfiles.append(p)
+                }
+            }
+
+            let savedSelectedId = userDefaults.string(forKey: "anydiff_selected_profile_\(baseId)")
+            let selected = uniqueProfiles.first(where: { $0.id == savedSelectedId })
+                ?? uniqueProfiles.first(where: { $0.isDefaultProfile })
+                ?? uniqueProfiles.first
+                ?? entry.base
+
+            return AgentGroup(
+                basePreset: entry.base,
+                profiles: uniqueProfiles,
+                selectedPreset: selected
+            )
+        }
+    }
+
+    public func selectProfile(preset: AgentPreset, forBaseId baseId: String) {
+        userDefaults.set(preset.id, forKey: "anydiff_selected_profile_\(baseId)")
+        selectedPresetId = preset.id
+        objectWillChange.send()
+    }
+
+    public func deleteProfile(_ preset: AgentPreset) {
+        guard let profile = preset.profile, !profile.isEmpty else { return }
+        deleteCustomPreset(id: preset.id)
+        let baseId = preset.effectiveBaseId
+        if userDefaults.string(forKey: "anydiff_selected_profile_\(baseId)") == preset.id {
+            userDefaults.removeObject(forKey: "anydiff_selected_profile_\(baseId)")
+        }
+        saveCustomPresets()
+        objectWillChange.send()
     }
 
     private var cancellables = Set<AnyCancellable>()
@@ -372,21 +544,17 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
             title = "Mock Session \(mockSessions.count + 1)"
         } else {
             let acp = ACPAgentSessionManager()
-            acp.presetId = chosenPreset.id
+            acp.preset = chosenPreset
             acp.userDefaults = userDefaults
-            acp.agentCommand = chosenPreset.effectiveCommand
-            acp.agentTitle = chosenPreset.name
             manager = acp
-            title = "\(acp.agentTitle) Session \(liveSessions.count + 1)"
+            title = "\(chosenPreset.displayName) Session \(liveSessions.count + 1)"
         }
         #else
         let acp = ACPAgentSessionManager()
-        acp.presetId = chosenPreset.id
+        acp.preset = chosenPreset
         acp.userDefaults = userDefaults
-        acp.agentCommand = chosenPreset.effectiveCommand
-        acp.agentTitle = chosenPreset.name
         manager = acp
-        title = "\(acp.agentTitle) Session \(liveSessions.count + 1)"
+        title = "\(chosenPreset.displayName) Session \(liveSessions.count + 1)"
         #endif
 
         let newSession = AgentSessionItem(
@@ -528,7 +696,11 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
         }
 
         let client = ACPClient()
-        try client.start(command: preset.effectiveCommand, workingDirectory: resolvedWorkingDirectory)
+        try client.start(
+            command: preset.effectiveCommand,
+            workingDirectory: resolvedWorkingDirectory,
+            environment: preset.resolvedEnvironment
+        )
         defer { client.stop() }
 
         _ = try await client.initialize()
@@ -595,10 +767,8 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
             manager = mockManager
         } else {
             let acp = ACPAgentSessionManager()
-            acp.presetId = preset.id
+            acp.preset = preset
             acp.userDefaults = userDefaults
-            acp.agentCommand = preset.effectiveCommand
-            acp.agentTitle = preset.name
             manager = acp
             acp.prepareAgent(
                 workingDirectory: normalizedWorkingDirectory(workingDirectory),
@@ -607,10 +777,8 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
         }
         #else
         let acp = ACPAgentSessionManager()
-        acp.presetId = preset.id
+        acp.preset = preset
         acp.userDefaults = userDefaults
-        acp.agentCommand = preset.effectiveCommand
-        acp.agentTitle = preset.name
         manager = acp
         acp.prepareAgent(
             workingDirectory: normalizedWorkingDirectory(workingDirectory),
@@ -668,21 +836,53 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
     }
 
     @discardableResult
-    public func addCustomPreset(name: String, command: String, arguments: String = "", colorName: String = "teal", iconName: String = "terminal") -> AgentPreset {
+    public func addCustomPreset(
+        name: String,
+        command: String,
+        arguments: String = "",
+        colorName: String = "teal",
+        iconName: String = "terminal",
+        profile: String? = nil,
+        environment: [String: String]? = nil
+    ) -> AgentPreset {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedCommand = command.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedArgs = arguments.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedProfile = profile?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let baseId = UUID().uuidString
+        let finalId: String
+        var finalEnv = environment
+
+        if let prof = trimmedProfile, !prof.isEmpty {
+            let slug = AgentProfileService.sanitizeSlug(prof)
+            finalId = "\(AgentProfileService.sanitizeSlug(trimmedName))-\(slug)"
+            let profileEnv = AgentProfileService.profileEnvironment(for: trimmedName, profileId: finalId)
+            if finalEnv == nil {
+                finalEnv = profileEnv
+            } else {
+                for (k, v) in profileEnv where finalEnv?[k] == nil {
+                    finalEnv?[k] = v
+                }
+            }
+        } else {
+            finalId = baseId
+        }
+
         let preset = AgentPreset(
-            id: UUID().uuidString,
+            id: finalId,
             name: trimmedName.isEmpty ? "Custom Agent" : trimmedName,
             command: trimmedCommand,
             arguments: trimmedArgs,
             iconName: iconName,
             colorName: colorName,
             isMock: false,
-            isCustom: true
+            isCustom: true,
+            profile: (trimmedProfile?.isEmpty ?? true) ? nil : trimmedProfile,
+            environment: finalEnv
         )
         customPresets.append(preset)
+        saveCustomPresets()
+        objectWillChange.send()
         return preset
     }
 
@@ -691,6 +891,7 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
         if selectedPresetId == id {
             selectedPresetId = allPresets.first?.id ?? ""
         }
+        saveCustomPresets()
     }
 
     // MARK: - Registry Agents Management
@@ -830,9 +1031,25 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
     }
 
     public func uninstallRegistryAgent(id: String) {
-        deleteCustomPreset(id: id)
+        let baseId = AgentProfileService.rootAgentId(for: id)
+        customPresets.removeAll(where: { $0.id == id || $0.effectiveBaseId == baseId })
+        if selectedPresetId == id || selectedPresetId.hasPrefix(baseId) {
+            selectedPresetId = allPresets.first?.id ?? ""
+        }
+        saveCustomPresets()
         ACPRegistryBinaryDownloader.removeAgent(agentId: id)
         objectWillChange.send()
+    }
+
+    @discardableResult
+    public func duplicatePreset(_ preset: AgentPreset, profileName: String) -> AgentPreset {
+        let duplicated = preset.duplicating(withProfile: profileName)
+        deleteCustomPreset(id: duplicated.id)
+        customPresets.append(duplicated)
+        saveCustomPresets()
+        selectProfile(preset: duplicated, forBaseId: preset.effectiveBaseId)
+        objectWillChange.send()
+        return duplicated
     }
 
     private func saveCustomPresets() {

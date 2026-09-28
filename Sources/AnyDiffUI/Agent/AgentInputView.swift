@@ -611,7 +611,7 @@ public struct AgentInputView: View {
                                 get: { state.text },
                                 set: { newText in updateTextBlock(id: state.id, text: newText) }
                             ),
-                            placeholder: "Ask anything...",
+                            placeholder: (!agentManager.authMethods.isEmpty || agentManager.isAuthenticating) ? "Sign in above to start chatting..." : "Ask anything...",
                             theme: theme,
                             minHeight: 22,
                             maxHeight: 160,
@@ -769,19 +769,19 @@ public struct AgentInputView: View {
                     .fill(Color(theme.inputBackground))
                     .overlay(
                         RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .fill(Color(theme.focusColor).opacity(isInputFocused ? 0.035 : 0))
+                            .fill(Color(theme.focusColor).opacity(isInputFocused ? 0.015 : 0))
                     )
                     .overlay(
                         RoundedRectangle(cornerRadius: 18, style: .continuous)
                             .stroke(
-                                isInputFocused ? Color(theme.focusColor).opacity(0.65) : Color(theme.excerptHeaderBorder).opacity(0.80),
-                                lineWidth: isInputFocused ? 1.4 : 1.2
+                                isInputFocused ? Color(theme.focusColor).opacity(0.48) : Color(theme.excerptHeaderBorder).opacity(0.80),
+                                lineWidth: isInputFocused ? 1.25 : 1.2
                             )
                     )
                     .shadow(
-                        color: isInputFocused ? Color(theme.focusColor).opacity(0.20) : .clear,
-                        radius: isInputFocused ? 14 : 0,
-                        y: isInputFocused ? 2 : 0
+                        color: isInputFocused ? Color(theme.focusColor).opacity(0.08) : .clear,
+                        radius: isInputFocused ? 5 : 0,
+                        y: isInputFocused ? 1 : 0
                     )
             )
             .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))

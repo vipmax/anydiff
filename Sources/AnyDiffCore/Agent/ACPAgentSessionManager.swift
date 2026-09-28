@@ -9,6 +9,16 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
         }
     }
 
+    public var preset: AgentPreset? = nil {
+        didSet {
+            if let preset {
+                presetId = preset.id
+                agentCommand = preset.effectiveCommand
+                agentTitle = preset.displayName
+            }
+        }
+    }
+
     private let client: ACPClient
     private var currentWorkingDirectory: String = ""
     private var currentStreamMessageId: UUID? = nil
@@ -16,6 +26,8 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
     private var initializationWorkingDirectory: String?
     private var promptTask: Task<Void, Never>?
     private var pendingPrompt: (text: String, images: [AgentImageAttachment], workingDirectory: String)?
+    private var authTask: Task<Void, Error>?
+    private static let linkDetector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
 
     public init(client: ACPClient = ACPClient()) {
         self.client = client
@@ -27,6 +39,7 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
     deinit {
         initializationTask?.cancel()
         promptTask?.cancel()
+        authTask?.cancel()
     }
 
     public override func selectModel(name: String, value: String) {
@@ -45,7 +58,7 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
         super.selectConfigOption(id: id, value: value)
         guard let sessionId = currentSessionId else { return }
         Task { @MainActor [weak self] in
-            guard let self else { return }
+            guard let self = self else { return }
             if let result = try? await self.client.setConfigOption(sessionId: sessionId, configId: id, value: value) {
                 self.applyConfigOptions(result)
             }
@@ -117,7 +130,7 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
         statusMessage = targetLoadSessionId != nil ? "Loading session..." : "Starting agent..."
 
         initializationTask = Task { @MainActor [weak self] in
-            guard let self else { return }
+            guard let self = self else { return }
             do {
                 try await self.ensureConnectedAndSession(workingDirectory: workingDirectory)
                 guard self.currentSessionId != nil else {
@@ -130,6 +143,26 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
                 self.status = .idle
                 self.statusMessage = nil
                 self.startPendingPromptIfPossible()
+            } catch ACPClientError.authRequired(let methods) {
+                self.initializationTask = nil
+                self.initializationWorkingDirectory = nil
+                guard !Task.isCancelled else { return }
+                let authList = methods.isEmpty ? self.client.advertisedAuthMethods : methods
+                let finalMethods = authList.isEmpty ? [ACPAuthMethod(id: "default", name: "Authenticate")] : authList
+                self.authMethods = finalMethods
+                self.initializationState = .authRequired(finalMethods)
+                self.status = .idle
+                self.statusMessage = "Authentication required"
+            } catch let error as JSONRPCError where error.isAuthRequired {
+                self.initializationTask = nil
+                self.initializationWorkingDirectory = nil
+                guard !Task.isCancelled else { return }
+                let authList = self.client.advertisedAuthMethods
+                let finalMethods = authList.isEmpty ? [ACPAuthMethod(id: "default", name: "Authenticate")] : authList
+                self.authMethods = finalMethods
+                self.initializationState = .authRequired(finalMethods)
+                self.status = .idle
+                self.statusMessage = "Authentication required"
             } catch {
                 self.initializationTask = nil
                 self.initializationWorkingDirectory = nil
@@ -169,7 +202,7 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
         let workingDir = pending.workingDirectory
 
         promptTask = Task { @MainActor [weak self] in
-            guard let self else { return }
+            guard let self = self else { return }
             let snapshot = await AgentGitChangesDetector.capturePreTurnSnapshotAsync(workingDirectory: workingDir)
             guard !Task.isCancelled else { return }
             self.preTurnSnapshot = snapshot
@@ -234,10 +267,14 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
             initializationTask?.cancel()
             initializationTask = nil
             initializationWorkingDirectory = nil
+            authTask?.cancel()
+            authTask = nil
             client.stop()
             pendingPrompt = nil
             markCurrentStreamComplete()
             initializationState = .notStarted
+            isAuthenticating = false
+            authURL = nil
             status = .idle
             statusMessage = "Stopped"
             return
@@ -249,6 +286,10 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
             try? await self.client.cancelSession(sessionId: sessionId)
             self.promptTask?.cancel()
             self.promptTask = nil
+            self.authTask?.cancel()
+            self.authTask = nil
+            self.isAuthenticating = false
+            self.authURL = nil
             self.status = .idle
             self.statusMessage = "Stopped"
             self.markCurrentStreamComplete()
@@ -262,15 +303,21 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
         liveGitDiffPending = false
         initializationTask?.cancel()
         promptTask?.cancel()
+        authTask?.cancel()
         initializationTask = nil
         initializationWorkingDirectory = nil
         promptTask = nil
+        authTask = nil
         pendingPrompt = nil
         pendingPermission = nil
         client.stop()
         messages.removeAll()
         currentStreamMessageId = nil
         currentSessionId = nil
+        authMethods = []
+        isAuthenticating = false
+        authErrorMessage = nil
+        authURL = nil
         initializationState = .notStarted
         status = .disconnected
         statusMessage = nil
@@ -282,24 +329,71 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
         liveGitDiffPending = false
         initializationTask?.cancel()
         promptTask?.cancel()
+        authTask?.cancel()
         initializationTask = nil
         initializationWorkingDirectory = nil
         promptTask = nil
+        authTask = nil
         pendingPrompt = nil
         pendingPermission = nil
         currentStreamMessageId = nil
         client.stop()
         currentSessionId = nil
         currentWorkingDirectory = ""
+        authMethods = []
+        isAuthenticating = false
+        authErrorMessage = nil
+        authURL = nil
         initializationState = .notStarted
         status = .disconnected
         statusMessage = "Agent stopped"
     }
 
+    public override func authenticate(methodId: String) async throws {
+        authTask?.cancel()
+        let task = Task { [weak self] in
+            guard let self = self else { return }
+            await MainActor.run {
+                self.isAuthenticating = true
+                self.authErrorMessage = nil
+                self.status = .connecting
+                self.statusMessage = "Authenticating..."
+            }
+
+            do {
+                try await self.client.authenticate(methodId: methodId)
+                let cwd = await MainActor.run { () -> String in
+                    self.isAuthenticating = false
+                    self.authMethods = []
+                    self.authErrorMessage = nil
+                    self.statusMessage = "Authenticated. Connecting..."
+                    return self.currentWorkingDirectory
+                }
+                if !cwd.isEmpty {
+                    await MainActor.run {
+                        self.prepareAgent(workingDirectory: cwd)
+                    }
+                }
+            } catch {
+                if Task.isCancelled { return }
+                await MainActor.run {
+                    self.isAuthenticating = false
+                    self.authErrorMessage = error.localizedDescription
+                    self.status = .idle
+                    self.statusMessage = "Authentication failed: \(error.localizedDescription)"
+                }
+                throw error
+            }
+        }
+        self.authTask = task
+        try await task.value
+    }
+
     private func startClient(command: String, workingDirectory: String) async throws {
         let client = self.client
+        let env = self.preset?.resolvedEnvironment
         try await Task.detached(priority: .userInitiated) {
-            try client.start(command: command, workingDirectory: workingDirectory)
+            try client.start(command: command, workingDirectory: workingDirectory, environment: env)
         }.value
     }
 
@@ -312,7 +406,8 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
             client.stop()
             currentWorkingDirectory = workingDirectory
             self.status = .connecting
-            self.statusMessage = "Launching \(self.agentCommand)..."
+            let targetTitle = !self.agentTitle.isEmpty ? self.agentTitle : self.agentCommand
+            self.statusMessage = "Launching \(targetTitle)..."
             try await startClient(command: agentCommand, workingDirectory: workingDirectory)
 
             let initResult = try await client.initialize()
@@ -657,7 +752,23 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
         statusMessage = "Agent is thinking..."
     }
 
-    public func client(_ client: ACPClient, didLog message: String) {}
+    public func client(_ client: ACPClient, didLog message: String) {
+        if isAuthenticating || !authMethods.isEmpty {
+            if let detector = Self.linkDetector {
+                let matches = detector.matches(in: message, range: NSRange(message.startIndex..., in: message))
+                for match in matches {
+                    if let range = Range(match.range, in: message),
+                       let url = URL(string: String(message[range])),
+                       url.scheme == "https" || url.scheme == "http" {
+                        DispatchQueue.main.async { [weak self] in
+                            self?.authURL = url
+                        }
+                        break
+                    }
+                }
+            }
+        }
+    }
 
     public func client(_ client: ACPClient, didExecuteTool toolName: String, path: String?, details: String?) {
         ACPLogger.log("MANAGER didExecuteTool: toolName=\(toolName), path=\(path ?? "nil"), details=\(details ?? "nil")")

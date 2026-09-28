@@ -46,7 +46,8 @@ public final class ACPTransport: @unchecked Sendable {
         // Enhance PATH environment variable for macOS GUI environments to find node/npx/homebrew
         var mergedEnv = ProcessInfo.processInfo.environment
         if let customEnv = environment {
-            mergedEnv.merge(customEnv) { _, new in new }
+            let resolved = AgentProfileService.resolveEnvironment(customEnv)
+            mergedEnv.merge(resolved) { _, new in new }
         }
 
         let existingPath = mergedEnv["PATH"] ?? ""

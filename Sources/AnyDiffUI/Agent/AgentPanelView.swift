@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import UniformTypeIdentifiers
 import AnyDiffCore
 
@@ -58,6 +59,10 @@ public struct AgentPanelView: View {
             Rectangle()
                 .fill(Color(theme.background))
                 .frame(height: 5)
+
+            if (!agentManager.authMethods.isEmpty || agentManager.isAuthenticating) && !agentManager.messages.isEmpty {
+                authRequiredTopBannerView
+            }
 
             ZStack(alignment: .bottomTrailing) {
                 messagesArea
@@ -210,8 +215,11 @@ public struct AgentPanelView: View {
     private var messagesArea: some View {
         ZStack {
             if agentManager.messages.isEmpty {
-                if agentManager.status == .connecting || agentManager.statusMessage == "Loading session..." {
+                if (agentManager.status == .connecting || agentManager.statusMessage == "Loading session...") && !agentManager.isAuthenticating && agentManager.authMethods.isEmpty {
                     loadingSessionStateView
+                        .transition(.opacity)
+                } else if !agentManager.authMethods.isEmpty || agentManager.isAuthenticating {
+                    authRequiredEmptyStateView
                         .transition(.opacity)
                 } else {
                     emptyStateView
@@ -457,5 +465,221 @@ public struct AgentPanelView: View {
             return .green
         }
         return Color(theme.foreground)
+    }
+
+    @ViewBuilder
+    private var authRequiredEmptyStateView: some View {
+        VStack(spacing: 0) {
+            Spacer()
+
+            VStack(spacing: 18) {
+                ZStack(alignment: .bottomTrailing) {
+                    AgentIconView(icon: agentIcon, tintColor: agentAccentColor, size: 44)
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(.white)
+                        .padding(4)
+                        .background(Color.blue, in: Circle())
+                        .offset(x: 3, y: 3)
+                }
+
+                VStack(spacing: 6) {
+                    Text("Authenticate to \(agentManager.agentTitle)")
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundColor(Color(theme.foreground))
+
+                    Text("Choose an account or sign-in method to start using this agent profile.")
+                        .font(.system(size: 12.5))
+                        .foregroundColor(Color(theme.gutterForeground))
+                        .multilineTextAlignment(.center)
+                        .lineSpacing(2)
+                        .frame(maxWidth: 360)
+                }
+
+                if let error = agentManager.authErrorMessage {
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.circle.fill")
+                            .font(.system(size: 11))
+                        Text(error)
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .foregroundColor(.red)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(Color.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+                    .frame(maxWidth: 380)
+                }
+
+                if agentManager.isAuthenticating {
+                    VStack(spacing: 12) {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("Waiting for authentication…")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundColor(Color(theme.foreground))
+                        }
+
+                        Text("Please complete sign-in in your browser window.")
+                            .font(.system(size: 12))
+                            .foregroundColor(Color(theme.gutterForeground))
+                            .multilineTextAlignment(.center)
+
+                        if let authURL = agentManager.authURL {
+                            Button {
+                                NSWorkspace.shared.open(authURL)
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "arrow.up.right.square")
+                                    Text("Open Sign-In Page in Browser")
+                                }
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 7)
+                                .background(Color.blue, in: RoundedRectangle(cornerRadius: 8))
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.top, 2)
+                        }
+
+                        Button("Cancel") {
+                            agentManager.cancel()
+                        }
+                        .font(.system(size: 12))
+                        .foregroundColor(Color(theme.gutterForeground))
+                        .buttonStyle(.plain)
+                        .padding(.top, 4)
+                    }
+                    .frame(maxWidth: 360)
+                    .padding(16)
+                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(Color(theme.excerptHeaderBorder).opacity(0.6), lineWidth: 1)
+                    )
+                } else {
+                    VStack(spacing: 8) {
+                        ForEach(Array(agentManager.authMethods.enumerated()), id: \.element.id) { index, method in
+                            authMethodButton(method: method, isPrimary: index == 0)
+                        }
+                    }
+                    .frame(maxWidth: 380)
+                }
+            }
+            .padding(.horizontal, 20)
+
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    @ViewBuilder
+    private func authMethodButton(method: ACPAuthMethod, isPrimary: Bool) -> some View {
+        Button {
+            Task {
+                try? await agentManager.authenticate(methodId: method.id)
+            }
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: authMethodIcon(for: method.id))
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(isPrimary ? .white : agentAccentColor)
+                    .frame(width: 28, height: 28)
+                    .background(
+                        isPrimary ? agentAccentColor : agentAccentColor.opacity(0.12),
+                        in: RoundedRectangle(cornerRadius: 7)
+                    )
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(method.name)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(Color(theme.foreground))
+                    if let desc = method.description, !desc.isEmpty {
+                        Text(desc)
+                            .font(.system(size: 11))
+                            .foregroundColor(Color(theme.gutterForeground))
+                            .lineLimit(1)
+                    }
+                }
+
+                Spacer()
+
+                Image(systemName: "arrow.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(Color(theme.gutterForeground))
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 48)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(
+                        isPrimary ? agentAccentColor.opacity(0.4) : Color(theme.excerptHeaderBorder).opacity(0.6),
+                        lineWidth: 1
+                    )
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func authMethodIcon(for id: String) -> String {
+        let lower = id.lowercased()
+        if lower.contains("oauth") || lower.contains("google") {
+            return "person.crop.circle.fill"
+        } else if lower.contains("key") {
+            return "key.fill"
+        } else if lower.contains("enterprise") || lower.contains("platform") {
+            return "building.2.fill"
+        }
+        return "lock.fill"
+    }
+
+    @ViewBuilder
+    private var authRequiredTopBannerView: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "lock.fill")
+                .foregroundColor(.blue)
+                .font(.system(size: 12))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Authentication required")
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundColor(Color(theme.foreground))
+                Text("Sign in to continue using this agent.")
+                    .font(.system(size: 10.5))
+                    .foregroundColor(Color(theme.gutterForeground))
+            }
+
+            Spacer()
+
+            if agentManager.isAuthenticating {
+                ProgressView()
+                    .controlSize(.small)
+            } else if let firstMethod = agentManager.authMethods.first {
+                Button {
+                    Task {
+                        try? await agentManager.authenticate(methodId: firstMethod.id)
+                    }
+                } label: {
+                    Text(firstMethod.name)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(Color.blue, in: RoundedRectangle(cornerRadius: 6))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color(theme.gutterBackground))
+        .overlay(
+            Rectangle()
+                .frame(height: 1)
+                .foregroundColor(Color(theme.excerptHeaderBorder)),
+            alignment: .bottom
+        )
     }
 }

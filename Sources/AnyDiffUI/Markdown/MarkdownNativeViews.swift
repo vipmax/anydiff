@@ -6,6 +6,16 @@ import AnyDiffCore
 
 public final class MarkdownSelectableTextView: NSTextView, NSTextViewDelegate {
     public var hasLinks: Bool = false
+    public var filePath: String?
+    public var displayPath: String?
+    public var codeLanguage: String?
+    public var sourceLineRange: ClosedRange<Int>?
+    public var rawContentProvider: (() -> String?)?
+    public var onSelectionChange: ((MarkdownSelectableTextView, NSRange) -> Void)?
+    public let uniqueId: String = UUID().uuidString
+    private var lastPublishedQuoteId: String? = nil
+    private var selectionObserver: NSObjectProtocol?
+
     private var cachedLinkRects: [NSRect]?
     private var lastCalculatedBoundsWidth: CGFloat = -1
     private var lastMeasuredWidth: CGFloat = -1
@@ -43,6 +53,19 @@ public final class MarkdownSelectableTextView: NSTextView, NSTextViewDelegate {
         self.isHorizontallyResizable = false
         self.wantsLayer = true
         self.layer?.drawsAsynchronously = false
+
+        selectionObserver = NotificationCenter.default.addObserver(
+            forName: NSTextView.didChangeSelectionNotification,
+            object: self,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            let sel = self.selectedRange()
+            self.checkAndPublishQuote(for: sel)
+            if sel.length > 0 {
+                self.onSelectionChange?(self, sel)
+            }
+        }
     }
 
     public required init?(coder: NSCoder) {
@@ -170,12 +193,135 @@ public final class MarkdownSelectableTextView: NSTextView, NSTextViewDelegate {
         return h
     }
 
+    public override func setSelectedRange(
+        _ charRange: NSRange,
+        affinity: NSSelectionAffinity,
+        stillSelecting stillSelectingFlag: Bool
+    ) {
+        super.setSelectedRange(charRange, affinity: affinity, stillSelecting: stillSelectingFlag)
+        guard !stillSelectingFlag else { return }
+        checkAndPublishQuote(for: charRange)
+        if charRange.length > 0 {
+            onSelectionChange?(self, charRange)
+        }
+    }
+
+    public override func mouseDown(with event: NSEvent) {
+        super.mouseDown(with: event)
+        let sel = selectedRange()
+        checkAndPublishQuote(for: sel)
+        if sel.length > 0 {
+            onSelectionChange?(self, sel)
+        }
+    }
+
+    public override func mouseUp(with event: NSEvent) {
+        super.mouseUp(with: event)
+        let sel = selectedRange()
+        checkAndPublishQuote(for: sel)
+        if sel.length > 0 {
+            onSelectionChange?(self, sel)
+        }
+    }
+
+    public override func selectAll(_ sender: Any?) {
+        super.selectAll(sender)
+        let sel = selectedRange()
+        checkAndPublishQuote(for: sel)
+        if sel.length > 0 {
+            onSelectionChange?(self, sel)
+        }
+    }
+
+    public override func keyUp(with event: NSEvent) {
+        super.keyUp(with: event)
+        let sel = selectedRange()
+        checkAndPublishQuote(for: sel)
+        if sel.length > 0 {
+            onSelectionChange?(self, sel)
+        }
+    }
+
+    public func clearPublishedQuote() {
+        if let lastId = lastPublishedQuoteId {
+            SelectionQuoteStore.shared.clearQuote(scopedToId: lastId)
+            lastPublishedQuoteId = nil
+        }
+    }
+
+    public func checkAndPublishQuote(for range: NSRange) {
+        let quoteId = "markdown:\(filePath ?? "preview"):\(uniqueId)"
+
+        guard range.location != NSNotFound,
+              range.length > 0,
+              range.location + range.length <= (string as NSString).length else {
+            clearPublishedQuote()
+            return
+        }
+
+        let rawSelected = (string as NSString).substring(with: range)
+        let trimmed = rawSelected.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count >= 2 else {
+            clearPublishedQuote()
+            return
+        }
+
+        let fileName = filePath.map { ($0 as NSString).lastPathComponent } ?? "markdown"
+        let lineRange = resolveLineRange(for: rawSelected, charRange: range)
+
+        let linesLabel: String
+        if let range = lineRange {
+            linesLabel = range.lowerBound == range.upperBound ? " (L\(range.lowerBound))" : " (L\(range.lowerBound)-\(range.upperBound))"
+        } else {
+            linesLabel = ""
+        }
+
+        let quote = SelectionQuote(
+            id: quoteId,
+            text: rawSelected,
+            source: .markdown,
+            label: "\(fileName)\(linesLabel)",
+            filePath: filePath,
+            displayPath: displayPath,
+            lineRange: lineRange,
+            language: codeLanguage ?? (filePath.map { Buffer.detectLanguage(for: $0) } ?? "markdown")
+        )
+        lastPublishedQuoteId = quoteId
+        SelectionQuoteStore.shared.setQuote(quote)
+    }
+
+    private func resolveLineRange(for selectedText: String, charRange: NSRange) -> ClosedRange<Int>? {
+        if let knownRange = sourceLineRange, knownRange.lowerBound == knownRange.upperBound {
+            return knownRange
+        }
+
+        let rawContent = rawContentProvider?() ?? filePath.flatMap { try? String(contentsOfFile: $0, encoding: .utf8) }
+        guard let content = rawContent else {
+            return sourceLineRange
+        }
+
+        let fileLines = content.components(separatedBy: "\n")
+        return MarkdownSelectionLineFinder.findLineRange(
+            in: fileLines,
+            for: selectedText,
+            hintRange: sourceLineRange
+        )
+    }
+
     public override func cancelOperation(_ sender: Any?) {
         if selectedRange().length > 0 {
             setSelectedRange(NSRange(location: NSNotFound, length: 0))
+            checkAndPublishQuote(for: NSRange(location: NSNotFound, length: 0))
         } else {
             nextResponder?.cancelOperation(sender)
         }
+    }
+
+    deinit {
+        if let selectionObserver {
+            NotificationCenter.default.removeObserver(selectionObserver)
+        }
+        clearPublishedQuote()
     }
 }
 
@@ -192,10 +338,24 @@ public final class MarkdownNativeCodeBlockView: NSView {
     public private(set) var theme: Theme = .zedDark
     private var copyTimer: Timer?
 
-    public init(language: String?, code: String, theme: Theme) {
+    public init(
+        language: String?,
+        code: String,
+        theme: Theme,
+        filePath: String? = nil,
+        displayPath: String? = nil,
+        lineRange: ClosedRange<Int>? = nil,
+        rawContentProvider: (() -> String?)? = nil
+    ) {
         self.code = code
         self.theme = theme
         super.init(frame: .zero)
+
+        textView.filePath = filePath
+        textView.displayPath = displayPath
+        textView.codeLanguage = language
+        textView.sourceLineRange = lineRange
+        textView.rawContentProvider = rawContentProvider
 
         wantsLayer = true
         layer?.cornerRadius = 8
@@ -241,6 +401,7 @@ public final class MarkdownNativeCodeBlockView: NSView {
 
     public func updateTheme(_ newTheme: Theme, language: String?) {
         self.theme = newTheme
+        self.textView.codeLanguage = language
         lastMeasuredWidth = -1
         cachedMeasuredHeight = 0
         updateColors()
@@ -937,12 +1098,69 @@ public final class MarkdownNativeContainerView: NSView {
         self.sections = newSections
         for section in newSections {
             addSubview(section.view)
+            configureTextViews(in: section)
         }
         let width = (lastLayoutWidth > 100) ? lastLayoutWidth : (enclosingScrollView?.contentView.bounds.width ?? 0)
         if width > 100 {
             layoutContent(for: width)
         }
         updateVisibleSections(in: enclosingScrollView?.contentView)
+    }
+
+    private func configureTextViews(in section: MarkdownDocumentSection) {
+        switch section {
+        case .text(let tv, _):
+            tv.onSelectionChange = { [weak self] activeTV, _ in
+                self?.clearOtherSelections(except: activeTV)
+            }
+        case .codeBlock(let cb):
+            cb.textView.onSelectionChange = { [weak self] activeTV, _ in
+                self?.clearOtherSelections(except: activeTV)
+            }
+        default:
+            break
+        }
+    }
+
+    public override func mouseDown(with event: NSEvent) {
+        super.mouseDown(with: event)
+        clearAllSelections()
+    }
+
+    public func clearAllSelections() {
+        for section in sections {
+            switch section {
+            case .text(let tv, _):
+                if tv.selectedRange().length > 0 {
+                    tv.setSelectedRange(NSRange(location: NSNotFound, length: 0))
+                    tv.clearPublishedQuote()
+                }
+            case .codeBlock(let cb):
+                if cb.textView.selectedRange().length > 0 {
+                    cb.textView.setSelectedRange(NSRange(location: NSNotFound, length: 0))
+                    cb.textView.clearPublishedQuote()
+                }
+            default:
+                break
+            }
+        }
+    }
+
+    public func clearOtherSelections(except activeTV: MarkdownSelectableTextView) {
+        for section in sections {
+            switch section {
+            case .text(let tv, _):
+                if tv !== activeTV && tv.selectedRange().length > 0 {
+                    tv.setSelectedRange(NSRange(location: NSNotFound, length: 0))
+                }
+            case .codeBlock(let cb):
+                if cb.textView !== activeTV && cb.textView.selectedRange().length > 0 {
+                    cb.textView.setSelectedRange(NSRange(location: NSNotFound, length: 0))
+                }
+            default:
+                break
+            }
+        }
     }
 
     public func layoutContent(for width: CGFloat) {
@@ -1216,12 +1434,31 @@ public enum MarkdownSectionCompiler {
         theme: Theme,
         filePath: String,
         rootDirectory: String,
+        rawContent: String? = nil,
         onImageLoaded: (() -> Void)? = nil
     ) -> [MarkdownDocumentSection] {
         var sections: [MarkdownDocumentSection] = []
 
+        let fullPath = (filePath as NSString).isAbsolutePath ? filePath : (rootDirectory as NSString).appendingPathComponent(filePath)
+        let displayPath: String
+        if (filePath as NSString).isAbsolutePath {
+            let prefix = rootDirectory.hasSuffix("/") ? rootDirectory : "\(rootDirectory)/"
+            if filePath.hasPrefix(prefix) {
+                displayPath = String(filePath.dropFirst(prefix.count))
+            } else {
+                displayPath = (filePath as NSString).lastPathComponent
+            }
+        } else {
+            displayPath = filePath
+        }
+
+        let content = rawContent ?? (FileManager.default.fileExists(atPath: fullPath) ? (try? String(contentsOfFile: fullPath, encoding: .utf8)) : nil)
+        let fileLines = content.map { $0.components(separatedBy: "\n") } ?? []
+        let blockLineRanges = fileLines.isEmpty ? Array(repeating: nil, count: blocks.count) : MarkdownSelectionLineFinder.findBlockLineRanges(blocks: blocks, in: fileLines)
+
         var currentRichText = NSMutableAttributedString()
         var currentHeaderAnchors: [(headerIndex: Int, charRange: NSRange)] = []
+        var currentTextRanges: [ClosedRange<Int>] = []
         var headerCounter = 0
         var pendingImages: [MarkdownNativeImageView] = []
 
@@ -1242,6 +1479,14 @@ public enum MarkdownSectionCompiler {
                 }
                 if currentRichText.length > 0 {
                     let tv = MarkdownSelectableTextView()
+                    tv.filePath = fullPath
+                    tv.displayPath = displayPath
+                    tv.rawContentProvider = { content }
+                    if !currentTextRanges.isEmpty {
+                        let minLine = currentTextRanges.map(\.lowerBound).min()!
+                        let maxLine = currentTextRanges.map(\.upperBound).max()!
+                        tv.sourceLineRange = minLine...maxLine
+                    }
                     tv.textColor = theme.foreground
                     tv.textStorage?.setAttributedString(currentRichText)
                     var hasAnyLink = false
@@ -1256,13 +1501,14 @@ public enum MarkdownSectionCompiler {
                 }
                 currentRichText = NSMutableAttributedString()
                 currentHeaderAnchors.removeAll()
+                currentTextRanges.removeAll()
             }
         }
 
         let textColor = theme.foreground
         let gutterColor = theme.gutterForeground
 
-        for block in blocks {
+        for (blockIndex, block) in blocks.enumerated() {
             if case .image = block {
                 // Image block handling
             } else {
@@ -1271,6 +1517,9 @@ public enum MarkdownSectionCompiler {
 
             switch block {
             case .header(let level, let text):
+                if blockIndex < blockLineRanges.count, let r = blockLineRanges[blockIndex] {
+                    currentTextRanges.append(r)
+                }
                 let (fontSize, weight, spacingBefore, spacingAfter): (CGFloat, NSFont.Weight, CGFloat, CGFloat) = {
                     switch level {
                     case 1: return (22, .bold, 24, 8)
@@ -1310,6 +1559,9 @@ public enum MarkdownSectionCompiler {
                 }
 
             case .paragraph(let text):
+                if blockIndex < blockLineRanges.count, let r = blockLineRanges[blockIndex] {
+                    currentTextRanges.append(r)
+                }
                 let style = NSMutableParagraphStyle()
                 style.lineSpacing = 3.5
                 style.paragraphSpacing = 10
@@ -1324,6 +1576,9 @@ public enum MarkdownSectionCompiler {
                 currentRichText.append(NSAttributedString(string: "\n", attributes: [.font: NSFont.systemFont(ofSize: 13.5)]))
 
             case .bulletItem(let text):
+                if blockIndex < blockLineRanges.count, let r = blockLineRanges[blockIndex] {
+                    currentTextRanges.append(r)
+                }
                 let style = NSMutableParagraphStyle()
                 style.lineSpacing = 3
                 style.paragraphSpacing = 4
@@ -1386,6 +1641,9 @@ public enum MarkdownSectionCompiler {
                 currentRichText.append(NSAttributedString(string: "\n", attributes: [.font: NSFont.systemFont(ofSize: 13.5)]))
 
             case .numberedItem(let number, let text):
+                if blockIndex < blockLineRanges.count, let r = blockLineRanges[blockIndex] {
+                    currentTextRanges.append(r)
+                }
                 let style = NSMutableParagraphStyle()
                 style.lineSpacing = 3
                 style.paragraphSpacing = 4
@@ -1433,6 +1691,9 @@ public enum MarkdownSectionCompiler {
                 currentRichText.append(NSAttributedString(string: "\n", attributes: [.font: NSFont.systemFont(ofSize: 13.5)]))
 
             case .quote(let text):
+                if blockIndex < blockLineRanges.count, let r = blockLineRanges[blockIndex] {
+                    currentTextRanges.append(r)
+                }
                 let style = NSMutableParagraphStyle()
                 style.lineSpacing = 3
                 style.paragraphSpacing = 6
@@ -1462,7 +1723,16 @@ public enum MarkdownSectionCompiler {
 
             case .codeBlock(let language, let code):
                 flushText()
-                sections.append(.codeBlock(view: MarkdownNativeCodeBlockView(language: language, code: code, theme: theme)))
+                let codeRange = blockIndex < blockLineRanges.count ? blockLineRanges[blockIndex] : nil
+                sections.append(.codeBlock(view: MarkdownNativeCodeBlockView(
+                    language: language,
+                    code: code,
+                    theme: theme,
+                    filePath: fullPath,
+                    displayPath: displayPath,
+                    lineRange: codeRange,
+                    rawContentProvider: { content }
+                )))
 
             case .image(let alt, let path):
                 flushText()
@@ -1496,6 +1766,7 @@ public struct MarkdownNativeScrollViewRepresentable: NSViewRepresentable {
     public let theme: Theme
     public let filePath: String
     public let rootDirectory: String
+    public let rawContent: String?
     public let scrollToHeaderIndex: Int?
     public var onClose: (() -> Void)?
 
@@ -1504,6 +1775,7 @@ public struct MarkdownNativeScrollViewRepresentable: NSViewRepresentable {
         theme: Theme,
         filePath: String,
         rootDirectory: String,
+        rawContent: String? = nil,
         scrollToHeaderIndex: Int?,
         onClose: (() -> Void)? = nil
     ) {
@@ -1511,6 +1783,7 @@ public struct MarkdownNativeScrollViewRepresentable: NSViewRepresentable {
         self.theme = theme
         self.filePath = filePath
         self.rootDirectory = rootDirectory
+        self.rawContent = rawContent
         self.scrollToHeaderIndex = scrollToHeaderIndex
         self.onClose = onClose
     }
@@ -1524,20 +1797,23 @@ public struct MarkdownNativeScrollViewRepresentable: NSViewRepresentable {
         var lastBlocksHash: Int = 0
         var lastThemeId: String = ""
         var lastFilePath: String = ""
+        var lastRawContent: String? = nil
         var lastScrollToHeaderIndex: Int? = nil
 
-        func needsUpdate(blocks: [MarkdownBlock], theme: Theme, filePath: String) -> Bool {
+        func needsUpdate(blocks: [MarkdownBlock], theme: Theme, filePath: String, rawContent: String?) -> Bool {
             var hasher = Hasher()
             hasher.combine(blocks.count)
             for block in blocks {
                 hasher.combine(block.id)
             }
             let hash = hasher.finalize()
-            if blocks.count != lastBlocksCount || hash != lastBlocksHash || theme.id != lastThemeId || filePath != lastFilePath {
+            let contentChanged = rawContent != lastRawContent
+            if blocks.count != lastBlocksCount || hash != lastBlocksHash || theme.id != lastThemeId || filePath != lastFilePath || contentChanged {
                 lastBlocksCount = blocks.count
                 lastBlocksHash = hash
                 lastThemeId = theme.id
                 lastFilePath = filePath
+                lastRawContent = rawContent
                 return true
             }
             return false
@@ -1548,13 +1824,14 @@ public struct MarkdownNativeScrollViewRepresentable: NSViewRepresentable {
         let scrollView = MarkdownNativeDocumentScrollView()
         scrollView.onClose = onClose
         scrollView.backgroundColor = theme.background
-        _ = context.coordinator.needsUpdate(blocks: blocks, theme: theme, filePath: filePath)
+        _ = context.coordinator.needsUpdate(blocks: blocks, theme: theme, filePath: filePath, rawContent: rawContent)
 
         let sections = MarkdownSectionCompiler.compile(
             blocks: blocks,
             theme: theme,
             filePath: filePath,
             rootDirectory: rootDirectory,
+            rawContent: rawContent,
             onImageLoaded: { [weak scrollView] in
                 guard let scrollView else { return }
                 let width = scrollView.contentView.bounds.width
@@ -1575,12 +1852,13 @@ public struct MarkdownNativeScrollViewRepresentable: NSViewRepresentable {
             scrollView.backgroundColor = theme.background
         }
 
-        if context.coordinator.needsUpdate(blocks: blocks, theme: theme, filePath: filePath) {
+        if context.coordinator.needsUpdate(blocks: blocks, theme: theme, filePath: filePath, rawContent: rawContent) {
             let sections = MarkdownSectionCompiler.compile(
                 blocks: blocks,
                 theme: theme,
                 filePath: filePath,
                 rootDirectory: rootDirectory,
+                rawContent: rawContent,
                 onImageLoaded: { [weak scrollView] in
                     guard let scrollView else { return }
                     let width = scrollView.contentView.bounds.width

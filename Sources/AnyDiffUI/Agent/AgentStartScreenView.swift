@@ -8,6 +8,7 @@ public struct AgentStartScreenView: View {
 
     @State private var isAddingCustom: Bool = false
     @State private var customName: String = ""
+    @State private var customProfile: String = ""
     @State private var customCommand: String = ""
     @State private var customArgs: String = ""
     @State private var customIcon: String = "terminal"
@@ -107,26 +108,37 @@ public struct AgentStartScreenView: View {
                         Spacer(minLength: 0)
 
                         VStack(spacing: 10) {
-                            ForEach(coordinator.allPresets) { preset in
+                            ForEach(coordinator.agentGroups) { group in
                                 AgentCardButton(
-                                    preset: preset,
+                                    group: group,
                                     theme: theme,
                                     onSelect: {
                                         withAnimation(.easeInOut(duration: 0.2)) {
                                             _ = coordinator.createNewSession(
                                                 workingDirectory: workingDirectory,
-                                                preset: preset
+                                                preset: group.selectedPreset
                                             )
                                         }
                                     },
-                                    onOpenSessions: {
-                                        withAnimation(.easeInOut(duration: 0.18)) {
-                                            viewingSessionsPreset = preset
+                                    onSelectProfile: { p in
+                                        withAnimation(.easeInOut(duration: 0.15)) {
+                                            coordinator.selectProfile(preset: p, forBaseId: group.id)
                                         }
                                     },
-                                    onDelete: preset.isCustom ? {
+                                    onAddProfile: {
+                                        promptForProfileDuplication(preset: group.basePreset)
+                                    },
+                                    onDeleteProfile: { p in
+                                        confirmDeleteProfile(p)
+                                    },
+                                    onOpenSessions: {
+                                        withAnimation(.easeInOut(duration: 0.18)) {
+                                            viewingSessionsPreset = group.selectedPreset
+                                        }
+                                    },
+                                    onDeleteAgent: group.basePreset.isCustom ? {
                                         withAnimation(.easeInOut(duration: 0.15)) {
-                                            coordinator.uninstallRegistryAgent(id: preset.id)
+                                            coordinator.uninstallRegistryAgent(id: group.basePreset.id)
                                         }
                                     } : nil
                                 )
@@ -363,6 +375,24 @@ public struct AgentStartScreenView: View {
             }
 
             VStack(alignment: .leading, spacing: 5) {
+                Text("PROFILE / ACCOUNT (OPTIONAL)")
+                    .font(.system(size: 9.5, weight: .bold))
+                    .foregroundColor(Color(theme.gutterForeground))
+
+                TextField("e.g. Work, Personal, djvipmax (stored in ~/.anydiff/profiles)", text: $customProfile)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .background(Color(theme.background))
+                    .cornerRadius(6)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color(theme.excerptHeaderBorder), lineWidth: 1)
+                    )
+            }
+
+            VStack(alignment: .leading, spacing: 5) {
                 Text("COMMAND (STDIO / ACP)")
                     .font(.system(size: 9.5, weight: .bold))
                     .foregroundColor(Color(theme.gutterForeground))
@@ -484,20 +514,62 @@ public struct AgentStartScreenView: View {
     }
 
     private func saveAndLaunchCustomAgent() {
+        let trimmedProfile = customProfile.trimmingCharacters(in: .whitespacesAndNewlines)
         let preset = coordinator.addCustomPreset(
             name: customName,
             command: customCommand,
             arguments: customArgs,
             colorName: selectedColorName,
-            iconName: customIcon.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "terminal" : customIcon.trimmingCharacters(in: .whitespacesAndNewlines)
+            iconName: customIcon.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "terminal" : customIcon.trimmingCharacters(in: .whitespacesAndNewlines),
+            profile: trimmedProfile.isEmpty ? nil : trimmedProfile
         )
         customName = ""
+        customProfile = ""
         customCommand = ""
         customArgs = ""
         customIcon = "terminal"
         isAddingCustom = false
         withAnimation(.easeInOut(duration: 0.2)) {
             _ = coordinator.createNewSession(workingDirectory: workingDirectory, preset: preset)
+        }
+    }
+
+    private func promptForProfileDuplication(preset: AgentPreset) {
+        let alert = NSAlert()
+        alert.messageText = "New Account Profile"
+        alert.informativeText = "Enter a profile / account name for '\(preset.name)' (e.g. Work, Personal, djvipmax).\nIsolated storage will be configured at ~/.anydiff/profiles."
+        alert.addButton(withTitle: "Create Profile")
+        alert.addButton(withTitle: "Cancel")
+
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        input.placeholderString = "Work"
+        alert.accessoryView = input
+        alert.window.initialFirstResponder = input
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            let name = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !name.isEmpty {
+                let duplicated = coordinator.duplicatePreset(preset, profileName: name)
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    _ = coordinator.createNewSession(workingDirectory: workingDirectory, preset: duplicated)
+                }
+            }
+        }
+    }
+
+    private func confirmDeleteProfile(_ preset: AgentPreset) {
+        guard let profileName = preset.profile, !profileName.isEmpty else { return }
+        let alert = NSAlert()
+        alert.messageText = "Delete Profile"
+        alert.informativeText = "Are you sure you want to remove the profile '\(profileName)' for '\(preset.name)' from AnyDiff?"
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                coordinator.deleteProfile(preset)
+            }
         }
     }
 
@@ -520,25 +592,33 @@ public struct AgentStartScreenView: View {
 }
 
 private struct AgentCardButton: View {
-    let preset: AgentPreset
+    let group: AgentGroup
     let theme: Theme
     let onSelect: () -> Void
+    let onSelectProfile: (AgentPreset) -> Void
+    let onAddProfile: () -> Void
+    let onDeleteProfile: (AgentPreset) -> Void
     let onOpenSessions: () -> Void
-    var onDelete: (() -> Void)? = nil
+    var onDeleteAgent: (() -> Void)? = nil
 
     @State private var isHovered: Bool = false
     @State private var isSessionsHovered: Bool = false
+    @State private var isProfileHovered: Bool = false
+
+    private var preset: AgentPreset {
+        group.selectedPreset
+    }
 
     private var presetColor: Color {
-        preset.color
+        group.basePreset.color
     }
 
     private var badgeTitle: String {
-        preset.providerName
+        group.basePreset.providerName
     }
 
     private var descriptionText: String {
-        preset.summary.isEmpty ? preset.effectiveCommand : preset.summary
+        group.basePreset.summary.isEmpty ? group.basePreset.effectiveCommand : group.basePreset.summary
     }
 
     var body: some View {
@@ -547,19 +627,19 @@ private struct AgentCardButton: View {
                 RoundedRectangle(cornerRadius: 9, style: .continuous)
                     .fill(presetColor.opacity(isHovered ? 0.16 : 0.09))
                     .frame(width: 40, height: 40)
-                AgentIconView(icon: preset.iconName, tintColor: presetColor, size: 20)
+                AgentIconView(icon: group.basePreset.iconName, tintColor: presetColor, size: 20)
             }
 
-            VStack(alignment: .center, spacing: 2) {
+            VStack(alignment: .center, spacing: 3) {
                 Button(action: onSelect) {
                     VStack(alignment: .center, spacing: 3) {
                         HStack(spacing: 6) {
-                            Text(preset.name)
+                            Text(group.basePreset.name)
                                 .font(.system(size: 14.5, weight: .semibold))
                                 .foregroundColor(Color(theme.foreground))
                                 .lineLimit(1)
 
-                            if !preset.isExecutableAvailable {
+                            if !group.basePreset.isExecutableAvailable {
                                 HStack(spacing: 3) {
                                     Image(systemName: "exclamationmark.triangle.fill")
                                         .font(.system(size: 8.5))
@@ -601,37 +681,45 @@ private struct AgentCardButton: View {
                 }
                 .buttonStyle(.plain)
 
-                Button(action: onOpenSessions) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "clock.arrow.circlepath")
-                            .font(.system(size: 10, weight: .medium))
-                        Text("Sessions")
-                            .font(.system(size: 10.5, weight: .medium))
+                HStack(spacing: 6) {
+                    profileSelectorMenu
+
+                    Button(action: onOpenSessions) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "clock.arrow.circlepath")
+                                .font(.system(size: 9.5, weight: .medium))
+                            Text("Sessions")
+                                .font(.system(size: 10.5, weight: .medium))
+                        }
+                        .foregroundColor(Color(theme.gutterForeground).opacity(isSessionsHovered ? 1.0 : 0.72))
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(
+                            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                .fill(isSessionsHovered ? Color(theme.foreground).opacity(0.08) : Color.clear)
+                        )
                     }
-                    .foregroundColor(Color(theme.gutterForeground).opacity(isSessionsHovered ? 1.0 : 0.72))
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 2)
-                    .background(
-                        RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(isSessionsHovered ? Color(theme.foreground).opacity(0.08) : Color.clear)
-                    )
+                    .buttonStyle(.plain)
+                    .onHover { isSessionsHovered = $0 }
+                    .help("View past sessions for this agent")
                 }
-                .buttonStyle(.plain)
-                .onHover { isSessionsHovered = $0 }
-                .help("View past sessions for this agent")
+                .frame(maxWidth: .infinity, alignment: .center)
             }
             .frame(maxWidth: .infinity, alignment: .center)
 
             Spacer(minLength: 4)
 
             // Right arrow
-            HStack(spacing: 6) {
+            Button(action: onSelect) {
                 Image(systemName: "chevron.right")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundColor(Color(theme.gutterForeground).opacity(isHovered ? 1.0 : 0.45))
                     .offset(x: isHovered ? 2 : 0)
                     .animation(.easeOut(duration: 0.15), value: isHovered)
+                    .frame(width: 20, height: 20)
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -644,8 +732,8 @@ private struct AgentCardButton: View {
             onSelect()
         }
         .contextMenu {
-            if let onDelete = onDelete {
-                Button(role: .destructive, action: onDelete) {
+            if let onDeleteAgent = onDeleteAgent {
+                Button(role: .destructive, action: onDeleteAgent) {
                     Label("Delete Agent", systemImage: "trash")
                 }
             }
@@ -654,5 +742,67 @@ private struct AgentCardButton: View {
         .onHover { hovering in
             isHovered = hovering
         }
+    }
+
+    @ViewBuilder
+    private var profileSelectorMenu: some View {
+        Menu {
+            Section("Account Profiles") {
+                ForEach(group.profiles) { p in
+                    Button {
+                        onSelectProfile(p)
+                    } label: {
+                        if p.id == preset.id {
+                            Label(p.profileDisplayName, systemImage: "checkmark")
+                        } else {
+                            Text(p.profileDisplayName)
+                        }
+                    }
+                }
+            }
+
+            Divider()
+
+            Button {
+                onAddProfile()
+            } label: {
+                Label("New Profile…", systemImage: "plus")
+            }
+
+            if let customProfile = preset.profile, !customProfile.isEmpty {
+                Divider()
+                Button(role: .destructive) {
+                    onDeleteProfile(preset)
+                } label: {
+                    Label("Delete Profile \"\(customProfile)\"…", systemImage: "trash")
+                }
+            }
+        } label: {
+            HStack(spacing: 3.5) {
+                Image(systemName: "person.crop.circle")
+                    .font(.system(size: 9, weight: .medium))
+                Text(preset.profileDisplayName)
+                    .font(.system(size: 10, weight: .semibold))
+                    .lineLimit(1)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 7, weight: .bold))
+                    .foregroundColor(presetColor.opacity(0.85))
+            }
+            .foregroundColor(presetColor)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(presetColor.opacity(isProfileHovered ? 0.22 : 0.13))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .stroke(presetColor.opacity(isProfileHovered ? 0.45 : 0.25), lineWidth: 0.8)
+            )
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .onHover { isProfileHovered = $0 }
+        .help("Select or create an isolated account profile in ~/.anydiff/profiles")
     }
 }
