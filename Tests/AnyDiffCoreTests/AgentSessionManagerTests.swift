@@ -154,6 +154,46 @@ final class AgentSessionManagerTests: XCTestCase {
         XCTAssertTrue(scrollView.documentView is AgentNativeStandardChatDocumentView)
         XCTAssertGreaterThan(scrollView.documentView?.bounds.height ?? 0, 0)
     }
+
+    func testShortChatDoesNotScrollUpWhenScrollViewHeightShrinks() {
+        let messages = [
+            AgentMessage(role: .user, content: "здрасте"),
+            AgentMessage(role: .assistant, content: "Здравствуйте! Чем могу помочь вам сегодня?")
+        ]
+        let scrollView = AgentNativeStandardChatScrollView(frame: NSRect(x: 0, y: 0, width: 400, height: 600))
+        scrollView.update(messages: messages, theme: .zedDark, animated: false)
+        scrollView.layoutSubtreeIfNeeded()
+
+        XCTAssertEqual(scrollView.contentView.bounds.origin.y, 0)
+
+        // When the input view expands (e.g. image attached + multiple newlines entered),
+        // the chat scroll view frame shrinks in height (e.g. from 600 to 400).
+        scrollView.setFrameSize(NSSize(width: 400, height: 400))
+        scrollView.scrollToBottom(animated: false)
+
+        // Content height is smaller than viewport height (400), so origin.y MUST remain 0
+        // and messages must NOT scroll up out of view.
+        XCTAssertEqual(scrollView.contentView.bounds.origin.y, 0)
+    }
+
+    func testLongChatFollowsBottomWhenScrollViewHeightShrinks() {
+        let messages = (1...20).map { idx in
+            AgentMessage(role: .user, content: "Message line \(idx) details")
+        }
+        let scrollView = AgentNativeStandardChatScrollView(frame: NSRect(x: 0, y: 0, width: 400, height: 600))
+        scrollView.update(messages: messages, theme: .zedDark, animated: false)
+        scrollView.layoutSubtreeIfNeeded()
+
+        let initialDocHeight = scrollView.documentView?.bounds.height ?? 0
+        XCTAssertGreaterThan(initialDocHeight, 600)
+        XCTAssertEqual(scrollView.contentView.bounds.origin.y, initialDocHeight - 600)
+
+        // Shrink scroll view height
+        scrollView.setFrameSize(NSSize(width: 400, height: 400))
+
+        // When following bottom, new scroll position must pin to bottom of document
+        XCTAssertEqual(scrollView.contentView.bounds.origin.y, initialDocHeight - 400)
+    }
     #endif
 
     func testStreamingMessageUsesOneIncrementalTextViewUntilCompletion() {

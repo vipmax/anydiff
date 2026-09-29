@@ -301,6 +301,8 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     }
 
     private func setup() {
+        wantsLayer = true
+        layerContentsRedrawPolicy = .onSetNeedsDisplay
         canDrawConcurrently = true
         updateFontMetrics()
         startCursorBlink()
@@ -1364,6 +1366,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     // MARK: - Cursor Blinking
 
     private func startCursorBlink() {
+        guard isEditable else { return }
         cursorTimer?.invalidate()
         isCursorVisible = true
         cursorTimer = Timer.scheduledTimer(withTimeInterval: 0.55, repeats: true) { [weak self] _ in

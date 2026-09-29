@@ -170,6 +170,9 @@ public struct AgentPanelView: View {
         .onChange(of: inputContentHeight) { _ in
             preserveChatBottomIfNeeded()
         }
+        .onChange(of: agentManager.draftAttachments.count) { _ in
+            preserveChatBottomIfNeeded()
+        }
         .onChange(of: isInputCollapsed) { _ in
             preserveChatBottomIfNeeded()
         }

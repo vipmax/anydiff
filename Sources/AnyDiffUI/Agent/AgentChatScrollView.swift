@@ -163,7 +163,6 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
 
 public final class AgentNativeChatScrollView: NSScrollView {
     private let documentViewCustom = AgentNativeChatDocumentView()
-    private var boundsChangeObserver: NSObjectProtocol?
     private var lastScrollToBottomTrigger = 0
     private var lastNearBottom: Bool?
     private var pendingMessages: [AgentMessage]?
@@ -174,6 +173,7 @@ public final class AgentNativeChatScrollView: NSScrollView {
     private var streamingUpdateWorkItem: DispatchWorkItem?
     private var resizeLayoutWorkItem: DispatchWorkItem?
     private var pendingResizeWidth: CGFloat?
+    private var isResizing = false
     public var onNearBottomChanged: ((Bool) -> Void)?
 
     public override init(frame frameRect: NSRect) {
@@ -197,16 +197,8 @@ public final class AgentNativeChatScrollView: NSScrollView {
         let clipView = FlippedClipView()
         clipView.drawsBackground = false
         clipView.wantsLayer = true
-        clipView.postsBoundsChangedNotifications = true
+        clipView.postsBoundsChangedNotifications = false
         self.contentView = clipView
-
-        boundsChangeObserver = NotificationCenter.default.addObserver(
-            forName: NSView.boundsDidChangeNotification,
-            object: clipView,
-            queue: .main
-        ) { [weak self] _ in
-            self?.notifyNearBottomChanged()
-        }
 
         documentView = documentViewCustom
         registerForDraggedTypes([
@@ -245,9 +237,6 @@ public final class AgentNativeChatScrollView: NSScrollView {
     }
 
     deinit {
-        if let boundsChangeObserver {
-            NotificationCenter.default.removeObserver(boundsChangeObserver)
-        }
         streamingUpdateWorkItem?.cancel()
         resizeLayoutWorkItem?.cancel()
     }
@@ -311,20 +300,37 @@ public final class AgentNativeChatScrollView: NSScrollView {
     }
 
     public override func setFrameSize(_ newSize: NSSize) {
+        isResizing = true
+        defer {
+            isResizing = false
+            notifyNearBottomChanged()
+        }
+        let oldHeight = contentView.bounds.height
         super.setFrameSize(newSize)
         let width = contentView.bounds.width
-        guard width > 50, abs(width - documentViewCustom.lastLayoutRequestWidth) > 0.5 else { return }
+        let heightChanged = abs(contentView.bounds.height - oldHeight) > 0.5
+        let widthChanged = abs(width - documentViewCustom.lastLayoutRequestWidth) > 0.5
+        guard width > 50 else { return }
 
-        pendingResizeWidth = width
-        resizeLayoutWorkItem?.cancel()
-        let workItem = DispatchWorkItem { [weak self] in
-            self?.flushResizeLayout()
+        if widthChanged {
+            pendingResizeWidth = width
+            resizeLayoutWorkItem?.cancel()
+            let workItem = DispatchWorkItem { [weak self] in
+                self?.flushResizeLayout()
+            }
+            resizeLayoutWorkItem = workItem
+            // NSSplitView sends a frame update for practically every mouse move.
+            // A short debounce keeps the drag responsive while still updating at a
+            // useful cadence, and viewDidEndLiveResize flushes the final width.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.04, execute: workItem)
+        } else if heightChanged {
+            let clipBounds = contentView.bounds
+            let docHeight = documentViewCustom.bounds.height
+            if docHeight <= clipBounds.height, clipBounds.origin.y != 0 {
+                contentView.scroll(to: NSPoint(x: clipBounds.origin.x, y: 0))
+                reflectScrolledClipView(contentView)
+            }
         }
-        resizeLayoutWorkItem = workItem
-        // NSSplitView sends a frame update for practically every mouse move.
-        // A short debounce keeps the drag responsive while still updating at a
-        // useful cadence, and viewDidEndLiveResize flushes the final width.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.04, execute: workItem)
     }
 
     public override func viewDidEndLiveResize() {
@@ -343,7 +349,19 @@ public final class AgentNativeChatScrollView: NSScrollView {
     public func scrollToBottom(animated: Bool = true, duration: TimeInterval = 0.2) {
         let clipBounds = contentView.bounds
         let docHeight = documentViewCustom.bounds.height
-        guard docHeight > clipBounds.height else { return }
+        guard docHeight > clipBounds.height else {
+            if clipBounds.origin.y != 0 {
+                let targetPoint = NSPoint(x: clipBounds.origin.x, y: 0)
+                if animated {
+                    contentView.animator().setBoundsOrigin(targetPoint)
+                    reflectScrolledClipView(contentView)
+                } else {
+                    contentView.scroll(to: targetPoint)
+                    reflectScrolledClipView(contentView)
+                }
+            }
+            return
+        }
 
         let targetPoint = NSPoint(x: 0, y: docHeight - clipBounds.height)
         if animated {
@@ -357,6 +375,12 @@ public final class AgentNativeChatScrollView: NSScrollView {
             contentView.scroll(to: targetPoint)
             reflectScrolledClipView(contentView)
         }
+    }
+
+    public override func reflectScrolledClipView(_ cView: NSClipView) {
+        super.reflectScrolledClipView(cView)
+        guard !isResizing else { return }
+        notifyNearBottomChanged()
     }
 
     public var isNearBottom: Bool {
@@ -383,7 +407,6 @@ public final class AgentNativeChatScrollView: NSScrollView {
 /// evaluated.
 public final class AgentNativeStandardChatScrollView: NSScrollView {
     private let documentViewCustom = AgentNativeStandardChatDocumentView()
-    private var boundsChangeObserver: NSObjectProtocol?
     private var lastScrollToBottomTrigger = 0
     private var lastNearBottom: Bool?
     private var pendingMessages: [AgentMessage]?
@@ -396,6 +419,7 @@ public final class AgentNativeStandardChatScrollView: NSScrollView {
     private var streamingUpdateWorkItem: DispatchWorkItem?
     private var resizeLayoutWorkItem: DispatchWorkItem?
     private var pendingResizeWidth: CGFloat?
+    private var isResizing = false
     fileprivate var followsBottom = true
     public var onNearBottomChanged: ((Bool) -> Void)?
     public var onReview: ((AgentEditedFilesSummary) -> Void)? {
@@ -451,20 +475,10 @@ public final class AgentNativeStandardChatScrollView: NSScrollView {
         let clipView = FlippedClipView()
         clipView.drawsBackground = false
         clipView.wantsLayer = true
-        clipView.postsBoundsChangedNotifications = true
+        clipView.postsBoundsChangedNotifications = false
         self.contentView = clipView
 
         documentView = documentViewCustom
-
-        boundsChangeObserver = NotificationCenter.default.addObserver(
-            forName: NSView.boundsDidChangeNotification,
-            object: clipView,
-            queue: .main
-        ) { [weak self] _ in
-            guard let self else { return }
-            self.notifyNearBottomChanged()
-            self.documentViewCustom.updateVisibleCells(in: self.contentView)
-        }
 
         registerForDraggedTypes([
             .fileURL,
@@ -502,9 +516,6 @@ public final class AgentNativeStandardChatScrollView: NSScrollView {
     }
 
     deinit {
-        if let boundsChangeObserver {
-            NotificationCenter.default.removeObserver(boundsChangeObserver)
-        }
         streamingUpdateWorkItem?.cancel()
         resizeLayoutWorkItem?.cancel()
     }
@@ -575,22 +586,44 @@ public final class AgentNativeStandardChatScrollView: NSScrollView {
     }
 
     public override func setFrameSize(_ newSize: NSSize) {
+        isResizing = true
+        defer {
+            isResizing = false
+            notifyNearBottomChanged()
+        }
+        let oldHeight = contentView.bounds.height
         super.setFrameSize(newSize)
         let width = contentView.bounds.width
-        guard width > 50, abs(width - documentViewCustom.lastLayoutWidth) > 0.5 else { return }
+        let heightChanged = abs(contentView.bounds.height - oldHeight) > 0.5
+        let widthChanged = abs(width - documentViewCustom.lastLayoutWidth) > 0.5
 
-        pendingResizeWidth = width
-        resizeLayoutWorkItem?.cancel()
-        let workItem = DispatchWorkItem { [weak self] in
-            guard let self, let width = self.pendingResizeWidth else { return }
-            self.pendingResizeWidth = nil
-            self.documentViewCustom.layoutContent(for: width)
-            if self.followsBottom {
-                self.scrollToBottom(animated: false)
+        guard width > 50 else { return }
+
+        if widthChanged {
+            pendingResizeWidth = width
+            resizeLayoutWorkItem?.cancel()
+            let workItem = DispatchWorkItem { [weak self] in
+                guard let self, let width = self.pendingResizeWidth else { return }
+                self.pendingResizeWidth = nil
+                self.documentViewCustom.layoutContent(for: width)
+                if self.followsBottom {
+                    self.scrollToBottom(animated: false)
+                }
+            }
+            resizeLayoutWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.04, execute: workItem)
+        } else if heightChanged {
+            if followsBottom {
+                scrollToBottom(animated: false)
+            } else {
+                let docHeight = documentViewCustom.bounds.height
+                let clipHeight = contentView.bounds.height
+                if docHeight <= clipHeight, contentView.bounds.origin.y != 0 {
+                    contentView.scroll(to: NSPoint(x: contentView.bounds.origin.x, y: 0))
+                    reflectScrolledClipView(contentView)
+                }
             }
         }
-        resizeLayoutWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.04, execute: workItem)
     }
 
     public override func viewDidEndLiveResize() {
@@ -608,8 +641,22 @@ public final class AgentNativeStandardChatScrollView: NSScrollView {
     }
 
     public func scrollToBottom(animated: Bool = true, duration: TimeInterval = 0.2) {
-        let targetY = max(0, documentViewCustom.bounds.height - contentView.bounds.height)
-        let targetPoint = NSPoint(x: contentView.bounds.origin.x, y: targetY)
+        let clipBounds = contentView.bounds
+        let docHeight = documentViewCustom.bounds.height
+        guard docHeight > clipBounds.height else {
+            if clipBounds.origin.y != 0 {
+                let targetPoint = NSPoint(x: clipBounds.origin.x, y: 0)
+                if animated {
+                    contentView.animator().setBoundsOrigin(targetPoint)
+                } else {
+                    contentView.scroll(to: targetPoint)
+                    reflectScrolledClipView(contentView)
+                }
+            }
+            return
+        }
+        let targetY = max(0, docHeight - clipBounds.height)
+        let targetPoint = NSPoint(x: clipBounds.origin.x, y: targetY)
         if animated {
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = duration
@@ -621,6 +668,12 @@ public final class AgentNativeStandardChatScrollView: NSScrollView {
             contentView.scroll(to: targetPoint)
             reflectScrolledClipView(contentView)
         }
+    }
+
+    public override func reflectScrolledClipView(_ cView: NSClipView) {
+        super.reflectScrolledClipView(cView)
+        guard !isResizing else { return }
+        notifyNearBottomChanged()
     }
 
     /// Expanding a tool call is an explicit inspection action. Do not let a
@@ -812,59 +865,60 @@ public final class AgentNativeStandardChatDocumentView: NSView {
             let height = cell.layout(for: contentWidth)
             let cellFrame = NSRect(x: 0, y: currentY, width: contentWidth, height: height)
             orderedCells[i].frame = cellFrame
-            if cell.superview != nil && cell.frame != cellFrame {
+            if cell.superview == nil {
                 cell.frame = cellFrame
+                addSubview(cell)
+            } else if cell.frame != cellFrame {
+                cell.frame = cellFrame
+            }
+            if cell.isHidden {
+                cell.isHidden = false
             }
             currentY += height + 10
         }
 
         let contentHeight = currentY + 6 + bottomInset
-        let viewportHeight = enclosingScrollView?.contentView.bounds.height ?? 0
-        let documentHeight = max(contentHeight, viewportHeight)
+        let documentHeight = contentHeight
         setFrameSize(NSSize(width: contentWidth, height: documentHeight))
-
-        updateVisibleCells(in: enclosingScrollView?.contentView)
     }
 
     public func updateVisibleCells(in clipView: NSClipView?) {
-        guard !orderedCells.isEmpty else { return }
-        let clip = clipView ?? enclosingScrollView?.contentView
-        let vis = clip?.documentVisibleRect ?? bounds
-        // 600px buffer above and below for smooth pre-rendering without jank
-        let bufferRect = NSRect(
-            x: 0,
-            y: max(0, vis.minY - 600),
-            width: max(vis.width, bounds.width),
-            height: vis.height + 1200
-        )
-
-        for item in orderedCells {
-            let isVisible = item.frame.intersects(bufferRect)
-            if isVisible {
-                if item.cell.superview == nil {
-                    item.cell.frame = item.frame
-                    addSubview(item.cell)
-                } else if item.cell.frame != item.frame {
-                    item.cell.frame = item.frame
-                }
-                if item.cell.isHidden {
-                    item.cell.isHidden = false
-                }
-            } else {
-                if item.cell.superview != nil && !item.cell.isHidden {
-                    item.cell.isHidden = true
-                }
-            }
-        }
+        // No-op: AppKit's layer-backed clip view handles GPU-level clipping smoothly.
+        // Mutating isHidden during scroll invalidates tracking areas and triggers
+        // synchronous main-thread transaction stalls.
     }
 }
 
 public final class FlippedClipView: NSClipView {
     public override var isFlipped: Bool { true }
+
+    public override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layerContentsRedrawPolicy = .onSetNeedsDisplay
+    }
+
+    public required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        wantsLayer = true
+        layerContentsRedrawPolicy = .onSetNeedsDisplay
+    }
 }
 
 public class AgentNativeFlippedView: NSView {
     public override var isFlipped: Bool { true }
+
+    public override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layerContentsRedrawPolicy = .onSetNeedsDisplay
+    }
+
+    public required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        wantsLayer = true
+        layerContentsRedrawPolicy = .onSetNeedsDisplay
+    }
 }
 
 /// Read-only labels in the chat must never advertise text editing.
@@ -905,7 +959,7 @@ public final class AgentNativeStaticTextField: NSTextField {
 public final class AgentNativeCodeBlockHeaderView: AgentNativeFlippedView {
     public let langLabel = AgentNativeStaticTextField(labelWithString: "")
     public let toggleButton = NSButton()
-    public let copyBtn = NSButton()
+    public let copyBtn = AgentHoverButton()
     private var trackingArea: NSTrackingArea?
     public private(set) var isExpanded = false
     public var onToggle: (() -> Void)?
@@ -962,18 +1016,12 @@ public final class AgentNativeCodeBlockHeaderView: AgentNativeFlippedView {
 
     public override func mouseEntered(with event: NSEvent) {
         super.mouseEntered(with: event)
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.15
-            copyBtn.animator().alphaValue = 1.0
-        }
+        copyBtn.alphaValue = 1.0
     }
 
     public override func mouseExited(with event: NSEvent) {
         super.mouseExited(with: event)
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.15
-            copyBtn.animator().alphaValue = 0.0
-        }
+        copyBtn.alphaValue = 0.0
     }
 }
 
@@ -1304,8 +1352,11 @@ public final class AgentNativeThoughtBlockView: AgentNativeFlippedView {
         self.isExpandable = isExpandable
         super.init(frame: .zero)
         wantsLayer = true
+        layerContentsRedrawPolicy = .onSetNeedsDisplay
         layer?.masksToBounds = true
 
+        headerButton.wantsLayer = true
+        headerButton.layerContentsRedrawPolicy = .onSetNeedsDisplay
         headerButton.isBordered = false
         headerButton.setButtonType(.momentaryPushIn)
         headerButton.alignment = .left
@@ -1315,12 +1366,10 @@ public final class AgentNativeThoughtBlockView: AgentNativeFlippedView {
         headerButton.target = self
         headerButton.action = #selector(toggle)
         headerButton.isEnabled = isExpandable
-        headerButton.toolTip = isExpandable ? "Expand thought" : nil
         addSubview(headerButton)
 
         textView.isHidden = true
         textView.alphaValue = 0
-        addSubview(textView)
 
         update(title: title, attributedText: attributedText)
         updateHeaderAppearance()
@@ -1350,26 +1399,30 @@ public final class AgentNativeThoughtBlockView: AgentNativeFlippedView {
             isExpanded = false
             textView.isHidden = true
             textView.alphaValue = 0
+            textView.removeFromSuperview()
             return
         }
         isExpanded = expanded
-        headerButton.toolTip = expanded ? "Collapse thought" : "Expand thought"
         updateHeaderAppearance()
 
-        guard animated else {
-            textView.isHidden = !expanded
-            textView.alphaValue = expanded ? 1 : 0
-            return
-        }
-
         if expanded {
+            if textView.superview == nil {
+                addSubview(textView)
+            }
             textView.isHidden = false
             textView.alphaValue = 1
         } else {
-            textView.alphaValue = 1
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
-                guard let self, !self.isExpanded else { return }
-                self.textView.isHidden = true
+            if animated {
+                textView.alphaValue = 0
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                    guard let self, !self.isExpanded else { return }
+                    self.textView.isHidden = true
+                    self.textView.removeFromSuperview()
+                }
+            } else {
+                textView.alphaValue = 0
+                textView.isHidden = true
+                textView.removeFromSuperview()
             }
         }
     }
@@ -1455,7 +1508,6 @@ public final class AgentSelectableTextView: NSTextView, NSTextStorageDelegate {
         hasLinksChecked = false
         cachedLinkRects = nil
         lastCalculatedBoundsWidth = -1
-        window?.invalidateCursorRects(for: self)
     }
 
     public func textStorage(
@@ -1501,6 +1553,7 @@ public final class AgentSelectableTextView: NSTextView, NSTextStorageDelegate {
         self.isVerticallyResizable = false
         self.isHorizontallyResizable = false
         self.wantsLayer = true
+        self.layerContentsRedrawPolicy = .onSetNeedsDisplay
         self.layer?.drawsAsynchronously = false
     }
 
@@ -1517,7 +1570,6 @@ public final class AgentSelectableTextView: NSTextView, NSTextStorageDelegate {
             if !isHorizontallyResizable && newSize.width > 0 {
                 textContainer?.containerSize = NSSize(width: newSize.width, height: CGFloat.greatestFiniteMagnitude)
             }
-            window?.invalidateCursorRects(for: self)
         }
     }
 
@@ -1553,6 +1605,18 @@ public final class AgentSelectableTextView: NSTextView, NSTextStorageDelegate {
         if hasLinks {
             let mouseLoc = window?.mouseLocationOutsideOfEventStream ?? event.locationInWindow
             let pInTV = convert(mouseLoc, from: nil)
+            if isOverLink(at: pInTV) {
+                NSCursor.pointingHand.set()
+                return
+            }
+        }
+        NSCursor.arrow.set()
+    }
+
+    public override func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+        if hasLinks {
+            let pInTV = convert(event.locationInWindow, from: nil)
             if isOverLink(at: pInTV) {
                 NSCursor.pointingHand.set()
                 return
@@ -1665,33 +1729,11 @@ public final class AgentSelectableTextView: NSTextView, NSTextStorageDelegate {
     }
 
     public override func resetCursorRects() {
-        // Do not call super.resetCursorRects() to avoid adding an I-beam cursor over chat text.
-        // Instead, explicitly add an arrow cursor for the entire view bounds so the pointer remains
-        // a stable arrow everywhere, while clickable links still show the pointing hand cursor.
-        addCursorRect(bounds, cursor: .arrow)
-
-        guard hasLinks else { return }
-        guard let lm = layoutManager, let tc = textContainer, let ts = textStorage, ts.length > 0 else { return }
-
-        let currentWidth = bounds.width
-        if let cached = cachedLinkRects, abs(lastCalculatedBoundsWidth - currentWidth) < 0.5 {
-            for rect in cached {
-                addCursorRect(rect, cursor: .pointingHand)
-            }
-            return
-        }
-
-        var rects: [NSRect] = []
-        ts.enumerateAttribute(.link, in: NSRange(location: 0, length: ts.length), options: []) { val, range, _ in
-            guard val != nil else { return }
-            let glyphRange = lm.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
-            lm.enumerateEnclosingRects(forGlyphRange: glyphRange, withinSelectedGlyphRange: NSRange(location: NSNotFound, length: 0), in: tc) { rect, _ in
-                rects.append(rect)
-                self.addCursorRect(rect, cursor: .pointingHand)
-            }
-        }
-        cachedLinkRects = rects
-        lastCalculatedBoundsWidth = currentWidth
+        // Do not register legacy cursor rects: registering cursor rects inside a scroll view
+        // causes AppKit to invalidate the window's structural regions and recursively traverse
+        // all subviews with _updateTrackingAreasWithInvalidCursorRects on every scroll frame.
+        // Link hover is handled dynamically via mouseMoved and hitTest.
+        discardCursorRects()
     }
 
     private func findEnclosingOpenURLHandler() -> ((URL) -> Void)? {
@@ -1890,6 +1932,7 @@ public final class AgentNativeChatDocumentView: NSView {
 
     private func setupLayers() {
         wantsLayer = true
+        layerContentsRedrawPolicy = .onSetNeedsDisplay
         selectionHighlightLayer.name = "selectionHighlightLayer"
         selectionHighlightLayer.zPosition = 9999
         layer?.addSublayer(selectionHighlightLayer)
@@ -2043,7 +2086,7 @@ public final class AgentNativeChatDocumentView: NSView {
         }
 
         let totalHeight = currentY + bottomPadding + bottomInset
-        let finalDocHeight = max(totalHeight, clipBounds.height)
+        let finalDocHeight = totalHeight
 
         if animated {
             NSAnimationContext.runAnimationGroup { context in
@@ -2225,6 +2268,9 @@ public final class AgentNativeChatDocumentView: NSView {
 
     public override func updateTrackingAreas() {
         super.updateTrackingAreas()
+        if let docTrackingArea, docTrackingArea.rect == bounds {
+            return
+        }
         if let docTrackingArea {
             removeTrackingArea(docTrackingArea)
         }
@@ -2957,9 +3003,10 @@ public final class AgentNativeSimpleToolCallView: AgentNativeFlippedView {
     }
 }
 
-public final class AgentNativeDiffStatsButton: NSButton {
+public final class AgentNativeDiffStatsButton: AgentNativeFlippedView {
     private var trackingArea: NSTrackingArea?
     public let badgeLabel = AgentNativeStaticTextField(labelWithString: "")
+    public var onClick: (() -> Void)?
 
     public override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -2967,13 +3014,13 @@ public final class AgentNativeDiffStatsButton: NSButton {
     }
 
     public required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
+        super.init(coder: coder)
+        setup()
     }
 
     private func setup() {
         wantsLayer = true
-        isBordered = false
-        title = ""
+        layerContentsRedrawPolicy = .onSetNeedsDisplay
         layer?.cornerRadius = 4
         layer?.masksToBounds = true
         layer?.backgroundColor = NSColor.clear.cgColor
@@ -3000,7 +3047,7 @@ public final class AgentNativeDiffStatsButton: NSButton {
         }
         let area = NSTrackingArea(
             rect: bounds,
-            options: [.mouseEnteredAndExited, .activeInActiveApp, .cursorUpdate],
+            options: [.mouseEnteredAndExited, .activeInActiveApp],
             owner: self,
             userInfo: nil
         )
@@ -3008,29 +3055,43 @@ public final class AgentNativeDiffStatsButton: NSButton {
         self.trackingArea = area
     }
 
-    public override func cursorUpdate(with event: NSEvent) {
-        NSCursor.pointingHand.set()
-    }
-
     public override func mouseEntered(with event: NSEvent) {
         super.mouseEntered(with: event)
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.12
-            layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.14).cgColor
-        }
+        NSCursor.pointingHand.set()
+        layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.14).cgColor
     }
 
     public override func mouseExited(with event: NSEvent) {
         super.mouseExited(with: event)
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.12
-            layer?.backgroundColor = NSColor.clear.cgColor
+        NSCursor.arrow.set()
+        layer?.backgroundColor = NSColor.clear.cgColor
+    }
+
+    public override func mouseUp(with event: NSEvent) {
+        let pt = convert(event.locationInWindow, from: nil)
+        if bounds.contains(pt) {
+            onClick?()
         }
     }
 
     public override func layout() {
         super.layout()
         badgeLabel.frame = NSRect(x: 4, y: 1, width: max(0, bounds.width - 8), height: bounds.height - 2)
+    }
+}
+
+private final class ToolCardHeaderContainer: AgentNativeFlippedView {
+    var onHeaderClicked: (() -> Void)?
+
+    override func mouseUp(with event: NSEvent) {
+        let pt = convert(event.locationInWindow, from: nil)
+        guard bounds.contains(pt) else { return }
+        for sv in subviews where !sv.isHidden && sv.alphaValue > 0.01 {
+            if (sv is AgentHoverButton || sv is AgentNativeDiffStatsButton) && sv.frame.contains(pt) {
+                return
+            }
+        }
+        onHeaderClicked?()
     }
 }
 
@@ -3042,10 +3103,7 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
     public var onToggle: (() -> Void)?
     public var onReview: ((AgentEditedFilesSummary) -> Void)?
     private weak var parentCell: AgentNativeMessageCell?
-    private var cachedParentHunks: [DiffHunk]?
-    private var cachedParentHunkDataCount: Int = -1
-    private let headerContainer = AgentNativeFlippedView()
-    private let headerButton = NSButton()
+    private let headerContainer = ToolCardHeaderContainer()
     private let openInEditorButton = AgentHoverButton(frame: .zero)
     private let diffStatsButton = AgentNativeDiffStatsButton()
     private let actionPillView = AgentNativeFlippedView()
@@ -3056,9 +3114,7 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
     private let errorLabel = AgentNativeStaticTextField(labelWithString: "")
     private let chevronImageView = NSImageView()
     private let descriptionLabel = AgentNativeStaticTextField(wrappingLabelWithString: "")
-    public let detailContainer = NSView()
-    public let detailScrollView = NSScrollView()
-    public let detailTextView = AgentSelectableTextView()
+    public let detailContainer = AgentNativeFlippedView()
     private var virtualizedDetailView: CustomMultiBufferEditorView?
     private var cachedDetailAttributedString: NSAttributedString?
     private var cachedDetailHeightWidth: CGFloat = -1
@@ -3069,8 +3125,6 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
     private var cachedLayoutHeight: CGFloat = 0
     private var cachedTitleText: String?
     private var cachedTitleWidth: CGFloat = 0
-    private var trackingArea: NSTrackingArea?
-    private var isCardHovered = false
 
     public init(
         item: ToolCallItem,
@@ -3102,27 +3156,11 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
 
     private func hunksFromParentMessage(for item: ToolCallItem) -> [DiffHunk]? {
         guard isEditToolCall else { return nil }
-        guard let rawData = parentCell?.message.editedFilesSummary?.rawDiffData,
-              !rawData.isEmpty,
-              let itemPath = item.path ?? (!item.displayTitle.isEmpty ? item.displayTitle : nil),
+        guard let itemPath = item.path ?? (!item.displayTitle.isEmpty ? item.displayTitle : nil),
               !itemPath.isEmpty else {
             return nil
         }
-        if rawData.count == cachedParentHunkDataCount {
-            return cachedParentHunks
-        }
-        let parsedFiles = GitDiffParser.shared.parse(data: rawData)
-        guard let matchedFile = parsedFiles.first(where: {
-            let p = $0.displayPath
-            return p == itemPath || p.hasSuffix(itemPath) || itemPath.hasSuffix(p)
-        }), !matchedFile.hunks.isEmpty else {
-            cachedParentHunks = nil
-            cachedParentHunkDataCount = rawData.count
-            return nil
-        }
-        cachedParentHunks = matchedFile.hunks
-        cachedParentHunkDataCount = rawData.count
-        return matchedFile.hunks
+        return parentCell?.parsedDiffHunks(for: itemPath)
     }
 
     private func hunkFromParentMessage(for item: ToolCallItem) -> DiffHunk? {
@@ -3176,45 +3214,7 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
         hasExpandableContent && !hasDiffStats
     }
 
-    private func updateOpenInEditorButtonVisibility() {
-        openInEditorButton.isHidden = !isCardHovered || !shouldShowOpenInEditorButton
-    }
 
-    private func updateCardHover(for event: NSEvent) {
-        let point = convert(event.locationInWindow, from: nil)
-        let isInside = bounds.contains(point)
-        guard isCardHovered != isInside else { return }
-        isCardHovered = isInside
-        updateOpenInEditorButtonVisibility()
-    }
-
-    public override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let trackingArea, trackingArea.rect == bounds {
-            return
-        }
-        if let trackingArea {
-            removeTrackingArea(trackingArea)
-        }
-        let area = NSTrackingArea(
-            rect: bounds,
-            options: [.mouseEnteredAndExited, .activeInActiveApp],
-            owner: self,
-            userInfo: nil
-        )
-        addTrackingArea(area)
-        trackingArea = area
-    }
-
-    public override func mouseEntered(with event: NSEvent) {
-        super.mouseEntered(with: event)
-        updateCardHover(for: event)
-    }
-
-    public override func mouseExited(with event: NSEvent) {
-        super.mouseExited(with: event)
-        updateCardHover(for: event)
-    }
 
     public func canUpdateInPlace(with newItem: ToolCallItem) -> Bool {
         if item.id == newItem.id { return true }
@@ -3229,8 +3229,6 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
         item = newItem
         theme = newTheme
 
-        cachedParentHunkDataCount = -1
-        cachedParentHunks = nil
         cachedLayoutWidth = -1
         cachedLayoutHeight = 0
         cachedDescriptionHeightWidth = -1
@@ -3340,12 +3338,16 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
             if chevronImageView.superview == nil {
                 headerContainer.addSubview(chevronImageView)
             }
-            if shouldShowOpenInEditorButton, openInEditorButton.superview == nil {
-                headerContainer.addSubview(openInEditorButton)
-            } else if !shouldShowOpenInEditorButton {
+            if shouldShowOpenInEditorButton {
+                openInEditorButton.alphaValue = 0.65
+                openInEditorButton.isHidden = false
+                if openInEditorButton.superview == nil {
+                    headerContainer.addSubview(openInEditorButton)
+                }
+            } else {
+                openInEditorButton.isHidden = true
                 openInEditorButton.removeFromSuperview()
             }
-            updateOpenInEditorButtonVisibility()
         } else {
             chevronImageView.removeFromSuperview()
             openInEditorButton.removeFromSuperview()
@@ -3359,6 +3361,7 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
         let (bgCol, fgCol, symbolName) = actionColorsAndSymbol(for: item.shortToolName)
 
         wantsLayer = true
+        layerContentsRedrawPolicy = .onSetNeedsDisplay
         layer?.cornerRadius = 12
         layer?.masksToBounds = true
         layer?.borderWidth = 1
@@ -3367,13 +3370,20 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
 
         // Header Container
         headerContainer.wantsLayer = true
+        headerContainer.layerContentsRedrawPolicy = .onSetNeedsDisplay
+        headerContainer.onHeaderClicked = { [weak self] in
+            self?.headerClicked()
+        }
         addSubview(headerContainer)
 
         actionPillView.wantsLayer = true
+        actionPillView.layerContentsRedrawPolicy = .onSetNeedsDisplay
         applyActionAppearance(background: bgCol, foreground: fgCol)
         actionPillView.layer?.cornerRadius = 6
 
         let config = NSImage.SymbolConfiguration(pointSize: 10.5, weight: .semibold)
+        actionIconView.wantsLayer = true
+        actionIconView.layerContentsRedrawPolicy = .onSetNeedsDisplay
         actionIconView.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)?.withSymbolConfiguration(config)
         actionIconView.imageScaling = .scaleProportionallyDown
         actionPillView.addSubview(actionIconView)
@@ -3425,6 +3435,9 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
             if statsAttr.length > 0 {
                 diffStatsButton.badgeLabel.attributedStringValue = statsAttr
                 diffStatsButton.isHidden = false
+                diffStatsButton.onClick = { [weak self] in
+                    self?.diffStatsClicked()
+                }
                 headerContainer.addSubview(diffStatsButton)
             }
         }
@@ -3452,18 +3465,13 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
         // Chevron
         if hasExpandableContent {
             let chevConfig = NSImage.SymbolConfiguration(pointSize: 8.5, weight: .bold)
+            chevronImageView.wantsLayer = true
+            chevronImageView.layerContentsRedrawPolicy = .onSetNeedsDisplay
             chevronImageView.image = NSImage(systemSymbolName: isExpanded ? "chevron.down" : "chevron.right", accessibilityDescription: nil)?.withSymbolConfiguration(chevConfig)
             chevronImageView.contentTintColor = NSColor(cgColor: theme.gutterForeground.cgColor)?.withAlphaComponent(0.8) ?? .secondaryLabelColor
             chevronImageView.imageScaling = .scaleProportionallyDown
             headerContainer.addSubview(chevronImageView)
         }
-
-        // Clickable header button
-        headerButton.isBordered = false
-        headerButton.title = ""
-        headerButton.target = self
-        headerButton.action = #selector(headerClicked)
-        headerContainer.addSubview(headerButton)
 
         // Open the complete tool buffer in the main Review editor.
         if shouldShowOpenInEditorButton {
@@ -3479,18 +3487,10 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
             openInEditorButton.imageScaling = .scaleProportionallyDown
             openInEditorButton.target = self
             openInEditorButton.action = #selector(openInEditorClicked)
-            openInEditorButton.toolTip = "Open in editor"
+            openInEditorButton.alphaValue = 0.65
+            openInEditorButton.isHidden = false
             headerContainer.addSubview(openInEditorButton)
-            openInEditorButton.isHidden = true
         }
-
-        // Clickable diff stats button
-        diffStatsButton.isBordered = false
-        diffStatsButton.title = ""
-        diffStatsButton.target = self
-        diffStatsButton.action = #selector(diffStatsClicked)
-        diffStatsButton.toolTip = "Review this file in MultiBuffer"
-        headerContainer.addSubview(diffStatsButton)
 
         // Description
         let descText = item.descriptionText?.isEmpty == false ? item.descriptionText : ((!hasExpandableContent) ? (item.summary ?? item.output) : nil)
@@ -3503,42 +3503,18 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
             addSubview(descriptionLabel)
         }
 
-        // Detail Container & ScrollView
+        // Detail Container
         if hasExpandableContent {
             detailContainer.wantsLayer = true
-            // Keep the expanded output on the toolcall surface. A second
-            // filled rounded container made the card look double-framed.
+            detailContainer.layerContentsRedrawPolicy = .onSetNeedsDisplay
             detailContainer.layer?.backgroundColor = NSColor.clear.cgColor
             detailContainer.layer?.cornerRadius = 8
             detailContainer.layer?.borderWidth = 0
             detailContainer.layer?.borderColor = NSColor.clear.cgColor
             detailContainer.layer?.masksToBounds = true
-            detailContainer.isHidden = !isExpanded
-            detailContainer.alphaValue = isExpanded ? 1 : 0
-
-            detailScrollView.hasVerticalScroller = true
-            detailScrollView.hasHorizontalScroller = false
-            detailScrollView.autohidesScrollers = false
-            detailScrollView.scrollerStyle = .overlay
-            detailScrollView.drawsBackground = false
-            detailScrollView.borderType = .noBorder
-
-            detailTextView.parentCell = parentCell
-            detailTextView.cellId = parentCell.message.id
-            detailTextView.tvKey = "tool_detail_\(index)"
-            detailTextView.isEditable = false
-            detailTextView.isVerticallyResizable = true
-            detailTextView.isHorizontallyResizable = false
-            detailTextView.autoresizingMask = [.width]
-            detailTextView.textContainer?.widthTracksTextView = false
-            detailTextView.textContainer?.containerSize = NSSize(width: 100, height: CGFloat.greatestFiniteMagnitude)
-            detailTextView.textContainerInset = NSSize(width: 4, height: 4)
-
-            detailScrollView.documentView = detailTextView
-            detailContainer.addSubview(detailScrollView)
-            addSubview(detailContainer)
 
             if isExpanded {
+                addSubview(detailContainer)
                 installVirtualizedDetailView()
             }
         }
@@ -3552,7 +3528,12 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
         cachedDetailHeightWidth = -1
         cachedDetailHeight = 0
         if isExpanded {
+            if detailContainer.superview == nil {
+                addSubview(detailContainer)
+            }
             installVirtualizedDetailView()
+        } else {
+            detailContainer.removeFromSuperview()
         }
         let chevConfig = NSImage.SymbolConfiguration(pointSize: 8.5, weight: .bold)
         chevronImageView.image = NSImage(systemSymbolName: isExpanded ? "chevron.down" : "chevron.right", accessibilityDescription: nil)?.withSymbolConfiguration(chevConfig)
@@ -3563,7 +3544,7 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
         var summary = item.createEditedFilesSummary()
         if summary?.rawDiffData == nil, let parentDiff = parentCell?.message.editedFilesSummary?.rawDiffData {
             if let p = item.path ?? (item.shortToolName == "Edit" ? item.displayTitle : nil), !p.isEmpty {
-                let parsed = GitDiffParser.shared.parse(data: parentDiff)
+                let parsed = parentCell?.parsedDiffFiles() ?? GitDiffParser.shared.parse(data: parentDiff)
                 if parsed.contains(where: {
                     let path = $0.displayPath
                     return path == p || path.hasSuffix(p) || p.hasSuffix(path)
@@ -3717,7 +3698,6 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
         editor.ignoreEdits = true
         editor.invalidateLayout()
 
-        detailScrollView.isHidden = true
         detailContainer.addSubview(editor)
         virtualizedDetailView = editor
         cachedDetailHeightWidth = -1
@@ -4079,7 +4059,6 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
 
         // 1. Header Layout (Unified coordinate system with height 22 and center line at y = 11.0)
         headerContainer.frame = NSRect(x: padding, y: 6, width: innerWidth, height: 22)
-        headerButton.frame = NSRect(x: 0, y: 0, width: innerWidth, height: 22)
 
         // Action badge size with icon + text (height 20, y: 1.0 -> center = 11.0)
         let textSize = actionTextLabel.intrinsicContentSize
@@ -4107,12 +4086,15 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
             if shouldShowOpenInEditorButton {
                 rightX -= 18
                 openInEditorButton.frame = NSRect(x: rightX, y: 3.0, width: 16, height: 16)
-                openInEditorButton.isHidden = !isCardHovered
+                openInEditorButton.alphaValue = 0.65
+                openInEditorButton.isHidden = false
                 rightX -= 6
             } else {
+                openInEditorButton.alphaValue = 0.0
                 openInEditorButton.isHidden = true
             }
         } else {
+            openInEditorButton.alphaValue = 0.0
             openInEditorButton.isHidden = true
         }
 
@@ -4169,21 +4151,24 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
             currentY += descHeight + 6
         }
 
-        // 3. Detail Container & ScrollView
+        // 3. Detail Container & Virtualized Editor
         if hasExpandableContent {
             let detailContentWidth = max(40, innerWidth - 12)
             let maxDetailHeight: CGFloat = 320
 
-            if virtualizedDetailView == nil, isExpanded {
-                installVirtualizedDetailView()
-            }
-
-            let rawHeight = isExpanded ? detailContentHeight(width: detailContentWidth) : 0
-            let containerHeight = min(maxDetailHeight, rawHeight + 12)
-            let detailFrame = NSRect(x: padding, y: currentY, width: innerWidth, height: containerHeight)
-            let contentFrame = NSRect(x: 6, y: 6, width: detailContentWidth, height: max(10, containerHeight - 12))
-
             if isExpanded {
+                if detailContainer.superview == nil {
+                    addSubview(detailContainer)
+                }
+                if virtualizedDetailView == nil {
+                    installVirtualizedDetailView()
+                }
+
+                let rawHeight = detailContentHeight(width: detailContentWidth)
+                let containerHeight = min(maxDetailHeight, rawHeight + 12)
+                let detailFrame = NSRect(x: padding, y: currentY, width: innerWidth, height: containerHeight)
+                let contentFrame = NSRect(x: 6, y: 6, width: detailContentWidth, height: max(10, containerHeight - 12))
+
                 detailContainer.isHidden = false
 
                 // The custom editor owns a small viewport and virtualizes the
@@ -4204,11 +4189,12 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
             } else {
                 if animated {
                     detailContainer.animator().alphaValue = 0
+                    detailContainer.animator().frame = NSRect(x: padding, y: currentY, width: innerWidth, height: 0)
                 } else {
                     detailContainer.alphaValue = 0
                     detailContainer.isHidden = true
+                    detailContainer.removeFromSuperview()
                 }
-                detailContainer.frame = NSRect(x: padding, y: currentY, width: innerWidth, height: 0)
                 virtualizedDetailView?.isHidden = true
                 currentY += 2
             }
@@ -4216,8 +4202,9 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
     }
 
     public func finishAnimation() {
-        if !isExpanded && hasExpandableContent {
+        if !isExpanded {
             detailContainer.isHidden = true
+            detailContainer.removeFromSuperview()
         }
     }
 
@@ -4230,32 +4217,7 @@ public final class AgentNativeToolCardView: AgentNativeFlippedView {
             installVirtualizedDetailView()
         }
 
-        if let virtualizedDetailView {
-            let measured = max(18, virtualizedDetailView.totalDocumentHeight)
-            cachedDetailHeightWidth = width
-            cachedDetailHeight = measured
-            return measured
-        }
-
-        // Measure using the same TextKit layout that renders the card. The
-        // previous boundingRect call created a second layout pass over the
-        // complete tool output on every expansion.
-        let measured: CGFloat
-        if let textContainer = detailTextView.textContainer,
-           let layoutManager = detailTextView.layoutManager {
-            textContainer.containerSize = NSSize(
-                width: max(1, width),
-                height: CGFloat.greatestFiniteMagnitude
-            )
-            layoutManager.ensureLayout(for: textContainer)
-            let usedHeight = layoutManager.usedRect(for: textContainer).height
-            measured = max(
-                18,
-                ceil(usedHeight + detailTextView.textContainerInset.height * 2)
-            )
-        } else {
-            measured = measureAttributedTextHeight(detailTextView.attributedString(), maxWidth: width)
-        }
+        let measured = max(18, virtualizedDetailView?.totalDocumentHeight ?? 18)
         cachedDetailHeightWidth = width
         cachedDetailHeight = measured
         return measured
@@ -4296,6 +4258,7 @@ public final class AgentHoverButton: NSButton {
         imagePosition = .imageLeading
         imageScaling = .scaleProportionallyDown
         wantsLayer = true
+        layerContentsRedrawPolicy = .onSetNeedsDisplay
         layer?.cornerRadius = 5
         layer?.masksToBounds = true
         layer?.backgroundColor = defaultBackgroundColor.cgColor
@@ -4303,7 +4266,15 @@ public final class AgentHoverButton: NSButton {
     }
 
     public override func updateTrackingAreas() {
-        super.updateTrackingAreas()
+        // Do NOT call super.updateTrackingAreas() to prevent NSButtonCell's rollover
+        // tracking from creating overhead on every scroll tick.
+        guard !isHidden && alphaValue > 0.01 && window != nil && bounds.width > 0 && bounds.height > 0 else {
+            if let trackingArea {
+                removeTrackingArea(trackingArea)
+                self.trackingArea = nil
+            }
+            return
+        }
         if let trackingArea, trackingArea.rect == bounds {
             return
         }
@@ -4312,7 +4283,7 @@ public final class AgentHoverButton: NSButton {
         }
         let area = NSTrackingArea(
             rect: bounds,
-            options: [.mouseEnteredAndExited, .activeInActiveApp, .cursorUpdate],
+            options: [.mouseEnteredAndExited, .activeInActiveApp],
             owner: self,
             userInfo: nil
         )
@@ -4320,26 +4291,25 @@ public final class AgentHoverButton: NSButton {
         self.trackingArea = area
     }
 
-    public override func cursorUpdate(with event: NSEvent) {
-        NSCursor.pointingHand.set()
+    public override func hitTest(_ point: NSPoint) -> NSView? {
+        guard alphaValue > 0.01 && !isHidden else { return nil }
+        return super.hitTest(point)
     }
 
     public override func mouseEntered(with event: NSEvent) {
+        guard alphaValue > 0.01 && !isHidden else { return }
         super.mouseEntered(with: event)
         isHovered = true
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.12
-            layer?.backgroundColor = hoverBackgroundColor.cgColor
-        }
+        NSCursor.pointingHand.set()
+        layer?.backgroundColor = hoverBackgroundColor.cgColor
     }
 
     public override func mouseExited(with event: NSEvent) {
+        guard alphaValue > 0.01 && !isHidden else { return }
         super.mouseExited(with: event)
         isHovered = false
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.12
-            layer?.backgroundColor = defaultBackgroundColor.cgColor
-        }
+        NSCursor.arrow.set()
+        layer?.backgroundColor = defaultBackgroundColor.cgColor
     }
 }
 
@@ -4711,6 +4681,33 @@ public final class AgentNativeMessageCell: NSView {
     private var markdownViewsByTextPart: [[NSView]] = []
     private var orderedAssistantViews: [NSView] = []
     private var editedFilesCardView: NSView?
+    private var cachedParsedDiffFiles: [FileDiff]?
+    private var cachedParsedDiffDataCount: Int = -1
+
+    public func parsedDiffFiles() -> [FileDiff]? {
+        guard let rawData = message.editedFilesSummary?.rawDiffData,
+              !rawData.isEmpty else {
+            return nil
+        }
+        if rawData.count == cachedParsedDiffDataCount, let cached = cachedParsedDiffFiles {
+            return cached
+        }
+        let files = GitDiffParser.shared.parse(data: rawData)
+        cachedParsedDiffFiles = files
+        cachedParsedDiffDataCount = rawData.count
+        return files
+    }
+
+    public func parsedDiffHunks(for itemPath: String) -> [DiffHunk]? {
+        guard let files = parsedDiffFiles() else { return nil }
+        guard let matchedFile = files.first(where: {
+            let p = $0.displayPath
+            return p == itemPath || p.hasSuffix(itemPath) || itemPath.hasSuffix(p)
+        }), !matchedFile.hunks.isEmpty else {
+            return nil
+        }
+        return matchedFile.hunks
+    }
 
     public var enclosingDocumentView: AgentNativeChatDocumentView? {
         var v = superview
@@ -4814,7 +4811,9 @@ public final class AgentNativeMessageCell: NSView {
 
     private func setup() {
         wantsLayer = true
+        layerContentsRedrawPolicy = .onSetNeedsDisplay
         userBubbleView.wantsLayer = true
+        userBubbleView.layerContentsRedrawPolicy = .onSetNeedsDisplay
         userBubbleView.layer?.cornerRadius = 13
         userBubbleView.layer?.borderWidth = 0.0
         userBubbleView.layer?.masksToBounds = false
@@ -4822,6 +4821,7 @@ public final class AgentNativeMessageCell: NSView {
         userBubbleView.layer?.shadowOpacity = 0.0
 
         userContentContainerView.wantsLayer = true
+        userContentContainerView.layerContentsRedrawPolicy = .onSetNeedsDisplay
         userContentContainerView.layer?.masksToBounds = true
         userBubbleView.addSubview(userContentContainerView)
         userBubbleView.addSubview(userExpandButton)
@@ -4831,6 +4831,8 @@ public final class AgentNativeMessageCell: NSView {
         userExpandButton.action = #selector(toggleUserTextExpand)
         updateUserExpandButtonAppearance()
 
+        thoughtHeaderButton.wantsLayer = true
+        thoughtHeaderButton.layerContentsRedrawPolicy = .onSetNeedsDisplay
         thoughtHeaderButton.isBordered = false
         thoughtHeaderButton.setButtonType(.momentaryPushIn)
         thoughtHeaderButton.alignment = .left
@@ -4847,7 +4849,6 @@ public final class AgentNativeMessageCell: NSView {
         thoughtTextView.parentCell = self
         thoughtTextView.isHidden = true
         thoughtTextView.alphaValue = 0
-        addSubview(thoughtTextView)
     }
 
     @objc private func toggleUserTextExpand() {
@@ -4904,6 +4905,10 @@ public final class AgentNativeMessageCell: NSView {
         let partsChanged = message.orderedParts != previousMessage.orderedParts
         let contentChanged = previousMessage.content.count != message.content.count || previousMessage.content != message.content
         let editedFilesChanged = previousMessage.editedFilesSummary != message.editedFilesSummary
+        if editedFilesChanged {
+            cachedParsedDiffFiles = nil
+            cachedParsedDiffDataCount = -1
+        }
 
         self.message = message
         self.theme = theme
@@ -4917,6 +4922,8 @@ public final class AgentNativeMessageCell: NSView {
             userBubbleView.isHidden = false
             thoughtHeaderButton.isHidden = true
             thoughtTextView.isHidden = true
+            thoughtTextView.alphaValue = 0
+            thoughtTextView.removeFromSuperview()
 
             let focusCol = theme.focusColor.usingColorSpace(.deviceRGB) ?? theme.focusColor
             let inputBg = theme.inputBackground.usingColorSpace(.deviceRGB) ?? theme.inputBackground
@@ -4938,6 +4945,7 @@ public final class AgentNativeMessageCell: NSView {
                     btn.imageScaling = .scaleProportionallyUpOrDown
                     btn.isBordered = false
                     btn.wantsLayer = true
+                    btn.layerContentsRedrawPolicy = .onSetNeedsDisplay
                     btn.layer?.cornerRadius = 8
                     btn.layer?.masksToBounds = true
                     btn.layer?.borderWidth = 1
@@ -4969,6 +4977,7 @@ public final class AgentNativeMessageCell: NSView {
                 thoughtHeaderButton.isHidden = true
                 thoughtTextView.isHidden = true
                 thoughtTextView.alphaValue = 0
+                thoughtTextView.removeFromSuperview()
                 if partsChanged || themeChanged || inlineThoughtViews.isEmpty {
                     rebuildInlineThoughtViews()
                 }
@@ -4979,8 +4988,16 @@ public final class AgentNativeMessageCell: NSView {
                     thoughtHeaderButton.isHidden = isCompact
                     updateThoughtHeaderAppearance()
                     thoughtHeaderButton.contentTintColor = NSColor(cgColor: theme.gutterForeground.cgColor)?.withAlphaComponent(0.85) ?? NSColor.secondaryLabelColor
-                    thoughtTextView.isHidden = isCompact ? false : !isThoughtExpanded
-                    thoughtTextView.alphaValue = isCompact || isThoughtExpanded ? 1 : 0
+                    let shouldShowThought = isCompact || isThoughtExpanded
+                    thoughtTextView.isHidden = !shouldShowThought
+                    thoughtTextView.alphaValue = shouldShowThought ? 1 : 0
+                    if shouldShowThought {
+                        if thoughtTextView.superview == nil {
+                            addSubview(thoughtTextView)
+                        }
+                    } else {
+                        thoughtTextView.removeFromSuperview()
+                    }
                     let previousThoughtLength = thoughtTextView.textStorage?.length ?? 0
                     let previousThought = previousMessage.thought ?? ""
                     let isThoughtAppend = (message.thought ?? "").count > previousThought.count &&
@@ -5003,6 +5020,7 @@ public final class AgentNativeMessageCell: NSView {
                     thoughtHeaderButton.isHidden = true
                     thoughtTextView.isHidden = true
                     thoughtTextView.alphaValue = 0
+                    thoughtTextView.removeFromSuperview()
                 }
             }
 
@@ -5104,46 +5122,87 @@ public final class AgentNativeMessageCell: NSView {
         styleChanged: Bool,
         editedFilesChanged: Bool = false
     ) {
-        let previousIDs = previousItems.map(\.id)
-        let canReplaceInPlace = !styleChanged &&
-            previousItems.count == newItems.count &&
-            zip(previousItems, newItems).allSatisfy { representsSameToolCall($0.0, $0.1) } &&
-            toolCallViews.count == newItems.count
+        let previousIDs = Set(previousItems.map(\.id))
 
-        guard canReplaceInPlace else {
-            for view in toolCallViews {
-                view.removeFromSuperview()
+        // Fast path: if style hasn't changed and we already have tool views,
+        // reconcile incrementally by tool ID without tearing down views.
+        if !styleChanged && !toolCallViews.isEmpty {
+            var existingViewsByID: [String: NSView] = [:]
+            existingViewsByID.reserveCapacity(toolCallViews.count)
+            for (id, view) in zip(toolCallIDs, toolCallViews) {
+                existingViewsByID[id] = view
             }
-            toolCallViews.removeAll(keepingCapacity: true)
-            toolCallIDs.removeAll(keepingCapacity: true)
+
+            var nextViews: [NSView] = []
+            nextViews.reserveCapacity(newItems.count)
+            var nextIDs: [String] = []
+            nextIDs.reserveCapacity(newItems.count)
+            var retainedViewIDs = Set<ObjectIdentifier>()
 
             for (index, item) in newItems.enumerated() {
-                let view = makeToolCallView(item: item, index: index)
-                addSubview(view)
-                toolCallViews.append(view)
-                toolCallIDs.append(item.id)
-                let continuesPreviousCall = index < previousItems.count &&
-                    representsSameToolCall(previousItems[index], item)
-                if !continuesPreviousCall && !previousIDs.contains(item.id) {
-                    pendingToolCallAppearances.append(view)
+                nextIDs.append(item.id)
+                if let existing = existingViewsByID[item.id],
+                   let card = existing as? AgentNativeToolCardView,
+                   card.canUpdateInPlace(with: item) {
+                    let prevItem = index < previousItems.count && previousItems[index].id == item.id ? previousItems[index] : nil
+                    if prevItem != item || editedFilesChanged {
+                        card.update(item: item, theme: theme)
+                    }
+                    nextViews.append(card)
+                    retainedViewIDs.insert(ObjectIdentifier(card))
+                } else if let existing = existingViewsByID[item.id],
+                          let simple = existing as? AgentNativeSimpleToolCallView {
+                    let prevItem = index < previousItems.count && previousItems[index].id == item.id ? previousItems[index] : nil
+                    if prevItem != item {
+                        let replacement = makeToolCallView(item: item, index: index)
+                        existing.removeFromSuperview()
+                        addSubview(replacement)
+                        nextViews.append(replacement)
+                        retainedViewIDs.insert(ObjectIdentifier(replacement))
+                    } else {
+                        nextViews.append(simple)
+                        retainedViewIDs.insert(ObjectIdentifier(simple))
+                    }
+                } else {
+                    let view = makeToolCallView(item: item, index: index)
+                    addSubview(view)
+                    nextViews.append(view)
+                    retainedViewIDs.insert(ObjectIdentifier(view))
+                    if !previousIDs.contains(item.id) {
+                        pendingToolCallAppearances.append(view)
+                    }
                 }
             }
+
+            // Clean up old views that are no longer part of newItems
+            for view in toolCallViews {
+                if !retainedViewIDs.contains(ObjectIdentifier(view)) {
+                    view.removeFromSuperview()
+                }
+            }
+
+            toolCallViews = nextViews
+            toolCallIDs = nextIDs
             return
         }
 
-        for index in newItems.indices where previousItems[index] != newItems[index] || editedFilesChanged {
-            if let card = toolCallViews[index] as? AgentNativeToolCardView,
-               card.canUpdateInPlace(with: newItems[index]) {
-                card.update(item: newItems[index], theme: theme)
-                toolCallIDs[index] = newItems[index].id
-                continue
-            }
+        // Slow path: initial setup or theme/style changed
+        for view in toolCallViews {
+            view.removeFromSuperview()
+        }
+        toolCallViews.removeAll(keepingCapacity: true)
+        toolCallIDs.removeAll(keepingCapacity: true)
 
-            let replacement = makeToolCallView(item: newItems[index], index: index)
-            toolCallViews[index].removeFromSuperview()
-            addSubview(replacement)
-            toolCallViews[index] = replacement
-            toolCallIDs[index] = newItems[index].id
+        for (index, item) in newItems.enumerated() {
+            let view = makeToolCallView(item: item, index: index)
+            addSubview(view)
+            toolCallViews.append(view)
+            toolCallIDs.append(item.id)
+            let continuesPreviousCall = index < previousItems.count &&
+                representsSameToolCall(previousItems[index], item)
+            if !continuesPreviousCall && !previousIDs.contains(item.id) {
+                pendingToolCallAppearances.append(view)
+            }
         }
     }
 
@@ -5296,6 +5355,8 @@ public final class AgentNativeMessageCell: NSView {
         thoughtFadeTimer = nil
         thoughtFadeChunks.removeAll()
         previousStreamedLength = 0
+        cachedParsedDiffFiles = nil
+        cachedParsedDiffDataCount = -1
     }
 
     private func clearUserViews() {
@@ -5761,8 +5822,16 @@ public final class AgentNativeMessageCell: NSView {
             thoughtHeaderButton.isHidden = isCompact
             updateThoughtHeaderAppearance()
             thoughtHeaderButton.contentTintColor = NSColor(cgColor: theme.gutterForeground.cgColor)?.withAlphaComponent(0.85) ?? NSColor.secondaryLabelColor
-            thoughtTextView.isHidden = isCompact ? false : !isThoughtExpanded
-            thoughtTextView.alphaValue = isCompact || isThoughtExpanded ? 1 : 0
+            let shouldShowThought = isCompact || isThoughtExpanded
+            thoughtTextView.isHidden = !shouldShowThought
+            thoughtTextView.alphaValue = shouldShowThought ? 1 : 0
+            if shouldShowThought {
+                if thoughtTextView.superview == nil {
+                    addSubview(thoughtTextView)
+                }
+            } else {
+                thoughtTextView.removeFromSuperview()
+            }
             thoughtTextView.cellId = message.id
             thoughtTextView.tvKey = "thought"
 
@@ -5777,6 +5846,8 @@ public final class AgentNativeMessageCell: NSView {
         } else {
             thoughtHeaderButton.isHidden = true
             thoughtTextView.isHidden = true
+            thoughtTextView.alphaValue = 0
+            thoughtTextView.removeFromSuperview()
         }
 
         // 2. Tool calls
@@ -5828,8 +5899,17 @@ public final class AgentNativeMessageCell: NSView {
     @objc private func toggleThought() {
         isThoughtExpanded.toggle()
         updateThoughtHeaderAppearance()
-        thoughtTextView.isHidden = !isThoughtExpanded
-        thoughtTextView.alphaValue = isThoughtExpanded ? 1 : 0
+        if isThoughtExpanded {
+            if thoughtTextView.superview == nil {
+                addSubview(thoughtTextView)
+            }
+            thoughtTextView.isHidden = false
+            thoughtTextView.alphaValue = 1
+        } else {
+            thoughtTextView.isHidden = true
+            thoughtTextView.alphaValue = 0
+            thoughtTextView.removeFromSuperview()
+        }
         invalidateLayoutCache()
         onToggleThought?()
     }
@@ -5855,11 +5935,15 @@ public final class AgentNativeMessageCell: NSView {
 
     fileprivate func finishThoughtVisibilityAnimation() {
         if isThoughtExpanded {
+            if thoughtTextView.superview == nil {
+                addSubview(thoughtTextView)
+            }
             thoughtTextView.isHidden = false
             thoughtTextView.alphaValue = 1
         } else {
             thoughtTextView.alphaValue = 0
             thoughtTextView.isHidden = true
+            thoughtTextView.removeFromSuperview()
         }
     }
 
@@ -6467,13 +6551,14 @@ public final class AgentNativeMessageCell: NSView {
             return measuredTextHeight(for: tv, attributedString: tv.attributedString(), width: contentWidth)
         }
         if let codeBlock = view as? AgentNativeCodeBlockView {
+            guard codeBlock.isExpanded else { return 26 }
             let codeHeight = measuredTextHeight(
                 for: codeBlock.tv,
                 attributedString: codeBlock.tv.attributedString(),
                 width: contentWidth - 20
             )
-            let visibleCodeHeight = codeBlock.isExpanded ? min(maxCodeBlockHeight, codeHeight) : 0
-            return codeBlock.isExpanded ? 26 + 6 + visibleCodeHeight + 10 : 26
+            let visibleCodeHeight = min(maxCodeBlockHeight, codeHeight)
+            return 26 + 6 + visibleCodeHeight + 10
         }
         if view.subviews.count >= 2 {
             let quoteTV = view.subviews[1] as? AgentSelectableTextView
@@ -6521,19 +6606,22 @@ public final class AgentNativeMessageCell: NSView {
             if animated { divider.animator().frame = frame } else { divider.frame = frame }
             divider.applyLayout(width: contentWidth)
         } else if let codeBlock = view as? AgentNativeCodeBlockView {
-            let codeHeight = measuredTextHeight(
+            let headerHeight: CGFloat = 26
+            let isExpanded = codeBlock.isExpanded
+            let codeHeight = isExpanded ? measuredTextHeight(
                 for: codeBlock.tv,
                 attributedString: codeBlock.tv.attributedString(),
                 width: contentWidth - 20
-            )
-            let headerHeight: CGFloat = 26
-            let visibleCodeHeight = codeBlock.isExpanded ? min(maxCodeBlockHeight, codeHeight) : 0
-            let totalCodeHeight = codeBlock.isExpanded ? headerHeight + 6 + visibleCodeHeight + 10 : headerHeight
+            ) : 0
+            let visibleCodeHeight = isExpanded ? min(maxCodeBlockHeight, codeHeight) : 0
+            let totalCodeHeight = isExpanded ? headerHeight + 6 + visibleCodeHeight + 10 : headerHeight
             let blockFrame = NSRect(x: horizontalPadding, y: currentY, width: contentWidth, height: totalCodeHeight)
             let codeScrollFrame = NSRect(x: 10, y: headerHeight + 6, width: contentWidth - 20, height: visibleCodeHeight)
             let codeDocumentFrame = NSRect(x: 0, y: 0, width: contentWidth - 20, height: codeHeight)
-            codeBlock.tv.textContainer?.containerSize = NSSize(width: contentWidth - 20, height: .greatestFiniteMagnitude)
-            codeBlock.codeScrollView.isHidden = !codeBlock.isExpanded
+            if isExpanded {
+                codeBlock.tv.textContainer?.containerSize = NSSize(width: contentWidth - 20, height: .greatestFiniteMagnitude)
+            }
+            codeBlock.codeScrollView.isHidden = !isExpanded
             if animated {
                 codeBlock.animator().frame = blockFrame
                 codeBlock.header.animator().frame = NSRect(x: 0, y: 0, width: contentWidth, height: headerHeight)
