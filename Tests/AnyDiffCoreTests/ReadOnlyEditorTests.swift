@@ -20,7 +20,7 @@ final class ReadOnlyEditorTests: XCTestCase {
         let reviewManager = ReviewManager()
         let displayMap = DisplayMap(multiBuffer: multiBuffer, reviewManager: reviewManager)
 
-        let editor = CustomMultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        let editor = MultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
         editor.isEditable = false
 
         // Place cursor inside excerpt
@@ -58,7 +58,7 @@ final class ReadOnlyEditorTests: XCTestCase {
         let reviewManager = ReviewManager()
         let displayMap = DisplayMap(multiBuffer: multiBuffer, reviewManager: reviewManager)
 
-        let editor = CustomMultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        let editor = MultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
         editor.isEditable = false
 
         // 1. Initial position
@@ -93,7 +93,7 @@ final class ReadOnlyEditorTests: XCTestCase {
 
         let reviewManager = ReviewManager()
         let displayMap = DisplayMap(multiBuffer: multiBuffer, reviewManager: reviewManager)
-        let editor = CustomMultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        let editor = MultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
         editor.cursorPoint = MultiBufferPoint(row: 2, column: 3)
         editor.selectionAnchor = MultiBufferPoint(row: 0, column: 1)
 
@@ -110,7 +110,7 @@ final class ReadOnlyEditorTests: XCTestCase {
         )])
         displayMap.rebuild()
 
-        let restoredEditor = CustomMultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        let restoredEditor = MultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
         restoredEditor.restoreViewState(state, shouldFocus: false)
 
         XCTAssertEqual(restoredEditor.cursorPoint, MultiBufferPoint(row: 2, column: 3))
@@ -150,7 +150,7 @@ final class ReadOnlyEditorTests: XCTestCase {
         displayMap.layoutMode = .unified
         displayMap.rebuild()
 
-        let editor = CustomMultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        let editor = MultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
         editor.frame = CGRect(x: 0, y: 0, width: 800, height: 600)
         editor.invalidateLayout()
 
@@ -224,7 +224,7 @@ final class ReadOnlyEditorTests: XCTestCase {
         displayMap.layoutMode = .unified
         displayMap.rebuild()
 
-        let editor = CustomMultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        let editor = MultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
         editor.frame = CGRect(x: 0, y: 0, width: 800, height: 600)
         editor.invalidateLayout()
 
@@ -282,7 +282,7 @@ final class ReadOnlyEditorTests: XCTestCase {
         )])
 
         let displayMap = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
-        let editor = CustomMultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        let editor = MultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
         editor.isEditable = true
         editor.ignoreEdits = true
         editor.cursorPoint = MultiBufferPoint(row: 1, column: 2)
@@ -311,7 +311,7 @@ final class ReadOnlyEditorTests: XCTestCase {
         let reviewManager = ReviewManager()
         let displayMap = DisplayMap(multiBuffer: multiBuffer, reviewManager: reviewManager)
 
-        let editor = CustomMultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        let editor = MultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
         editor.isEditable = true
 
         editor.cursorPoint = MultiBufferPoint(row: 0, column: 14)
@@ -482,7 +482,7 @@ final class ReadOnlyEditorTests: XCTestCase {
             return "\(info.diffKind.rawValue)|\(info.oldLineNumber ?? -1)|\(info.newLineNumber ?? -1)"
         }
 
-        let editor = CustomMultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        let editor = MultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
         editor.frame = NSRect(x: 0, y: 0, width: 1200, height: 700)
         editor.isEditable = true
         editor.cursorPoint = MultiBufferPoint(row: targetRow, column: originalColumn)
@@ -625,13 +625,13 @@ final class ReadOnlyEditorTests: XCTestCase {
         let reviewManager = ReviewManager()
         let displayMap = DisplayMap(multiBuffer: multiBuffer, reviewManager: reviewManager)
 
-        let editor = CustomMultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        let editor = MultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
         editor.isEditable = true
         editor.cursorPoint = MultiBufferPoint(row: 0, column: 5)
         editor.selectionAnchor = nil
 
         var capturedStates: [EditorViewState] = []
-        final class TestCoordinator: NSObject, CustomMultiBufferEditorDelegate {
+        final class TestCoordinator: NSObject, MultiBufferEditorDelegate {
             var onCursor: (() -> Void)?
             func editorDidChangeCursor(location: ExcerptLocation?, point: MultiBufferPoint) {
                 onCursor?()
@@ -692,7 +692,7 @@ final class ReadOnlyEditorTests: XCTestCase {
         multiBuffer.setExcerpts([excerpt])
 
         let displayMap = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
-        let editor = CustomMultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        let editor = MultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
         editor.isEditable = true
         editor.cursorPoint = MultiBufferPoint(row: 0, column: 0)
 
@@ -775,7 +775,7 @@ final class ReadOnlyEditorTests: XCTestCase {
         let displayMap = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
         displayMap.rebuild()
 
-        let editor = CustomMultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        let editor = MultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
         editor.isEditable = true
 
         // Place cursor at the end: "hello test|" (col 10)
@@ -827,7 +827,7 @@ final class ReadOnlyEditorTests: XCTestCase {
         displayMap.layoutMode = .sideBySide
         displayMap.rebuild()
 
-        let editor = CustomMultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        let editor = MultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
         editor.frame = CGRect(x: 0, y: 0, width: 800, height: 600)
         editor.splitRatio = 0.5
         editor.invalidateLayout()
@@ -935,7 +935,7 @@ final class ReadOnlyEditorTests: XCTestCase {
         displayMap.layoutMode = .sideBySide
         displayMap.rebuild()
 
-        let editor = CustomMultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        let editor = MultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
         editor.isEditable = true
 
         // Place cursor on line 163 (row 8)
@@ -990,7 +990,7 @@ final class ReadOnlyEditorTests: XCTestCase {
         let displayMap = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
         displayMap.rebuild()
 
-        let editor = CustomMultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        let editor = MultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
         editor.isEditable = true
 
         // Position cursor at row 1 (the added line "line 2"), end of line (col 6)
@@ -1021,19 +1021,18 @@ final class ReadOnlyEditorTests: XCTestCase {
     }
 
     func testTypeAndImmediatelyDeleteCharacterOnLargeFile() {
-        let repoRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        let fileURL = repoRoot.appendingPathComponent("Sources/AnyDiffUI/Editor/CustomMultiBufferEditorView.swift")
-        guard let currentText = try? String(contentsOf: fileURL, encoding: .utf8) else { return }
+        let lines = (0..<3500).map { "    func sampleMethod_\($0)() { let value = \($0) }" }
+        let currentText = lines.joined(separator: "\n")
+        let filePath = "Sources/AnyDiffUI/Editor/MultiBufferEditorView.swift"
 
         let multiBuffer = MultiBuffer()
         multiBuffer.setContentMode(.diff)
 
-        let buffer = Buffer(filePath: fileURL.path, text: currentText)
+        let buffer = Buffer(filePath: filePath, text: currentText)
         buffer.isFullFile = true
         buffer.startLineNumber = 1
         multiBuffer.addBuffer(buffer)
 
-        let lines = currentText.components(separatedBy: "\n")
         let testRow = 2691 // Line 2692 (0-indexed 2691)
         let hunkLines = (2680..<2705).map { r in
             DiffLine(kind: .unchanged, text: lines[r], oldLineNumber: r + 1, newLineNumber: r + 1)
@@ -1046,7 +1045,7 @@ final class ReadOnlyEditorTests: XCTestCase {
         )
         multiBuffer.addExcerpt(Excerpt(
             bufferId: buffer.id,
-            filePath: fileURL.path,
+            filePath: filePath,
             fileStatus: .modified,
             bufferRange: 2680..<2705,
             hunk: hunk,
@@ -1065,7 +1064,7 @@ final class ReadOnlyEditorTests: XCTestCase {
         )
         multiBuffer.addExcerpt(Excerpt(
             bufferId: buffer.id,
-            filePath: fileURL.path,
+            filePath: filePath,
             fileStatus: .modified,
             bufferRange: 100..<120,
             hunk: siblingHunk,
@@ -1075,7 +1074,7 @@ final class ReadOnlyEditorTests: XCTestCase {
         let displayMap = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
         displayMap.rebuild()
 
-        let editor = CustomMultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        let editor = MultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
         editor.isEditable = true
 
         guard let visualPt = displayMap.visualPoint(for: buffer.id, bufferPoint: BufferPoint(row: testRow, column: 4)) else {
@@ -1130,7 +1129,7 @@ final class ReadOnlyEditorTests: XCTestCase {
         let dm = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
         dm.rebuild()
 
-        let editor = CustomMultiBufferEditorView(displayMap: dm, theme: .unifiedDark)
+        let editor = MultiBufferEditorView(displayMap: dm, theme: .unifiedDark)
         editor.frame = CGRect(x: 0, y: 0, width: 800, height: 200)
         editor.invalidateLayout()
 
@@ -1182,7 +1181,7 @@ final class ReadOnlyEditorTests: XCTestCase {
         let dm = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
         dm.rebuild()
 
-        let editor = CustomMultiBufferEditorView(displayMap: dm, theme: .unifiedDark)
+        let editor = MultiBufferEditorView(displayMap: dm, theme: .unifiedDark)
         editor.frame = CGRect(x: 0, y: 0, width: 800, height: 100)
         editor.invalidateLayout()
 
@@ -1238,7 +1237,7 @@ final class ReadOnlyEditorTests: XCTestCase {
         let dm = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
         dm.rebuild()
 
-        let editor = CustomMultiBufferEditorView(displayMap: dm, theme: .unifiedDark)
+        let editor = MultiBufferEditorView(displayMap: dm, theme: .unifiedDark)
         editor.frame = CGRect(x: 0, y: 0, width: 800, height: 100)
         editor.invalidateLayout()
 
@@ -1273,7 +1272,7 @@ final class ReadOnlyEditorTests: XCTestCase {
         let dm = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
         dm.rebuild()
 
-        let editor = CustomMultiBufferEditorView(displayMap: dm, theme: .unifiedDark)
+        let editor = MultiBufferEditorView(displayMap: dm, theme: .unifiedDark)
         editor.frame = CGRect(x: 0, y: 0, width: 800, height: 100)
         editor.invalidateLayout()
 
@@ -1318,7 +1317,7 @@ final class ReadOnlyEditorTests: XCTestCase {
             onAddCommentRequest: { _, _ in }
         )
         let coordinator = host.makeCoordinator()
-        let editor = CustomMultiBufferEditorView(displayMap: dm, theme: .unifiedDark)
+        let editor = MultiBufferEditorView(displayMap: dm, theme: .unifiedDark)
         editor.frame = CGRect(x: 0, y: 0, width: 800, height: 200)
         editor.delegate = coordinator
         coordinator.editorView = editor

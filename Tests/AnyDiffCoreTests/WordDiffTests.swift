@@ -460,23 +460,10 @@ final class WordDiffTests: XCTestCase {
         XCTAssertEqual(buf.totalDeletions, 500)
     }
 
-    func testPerformanceOnCustomMultiBufferEditorView() {
-        let repoRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        let fileURL = repoRoot.appendingPathComponent("Sources/AnyDiffUI/Editor/CustomMultiBufferEditorView.swift")
-        guard let currentText = try? String(contentsOf: fileURL, encoding: .utf8) else { return }
-        let newLines = currentText.components(separatedBy: "\n")
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        process.arguments = ["show", "HEAD:Sources/AnyDiffUI/Editor/CustomMultiBufferEditorView.swift"]
-        process.currentDirectoryURL = repoRoot
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        try? process.run()
-        let oldData = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        guard let oldText = String(data: oldData, encoding: .utf8) else { return }
-        let oldLines = oldText.components(separatedBy: "\n")
+    func testPerformanceOnMultiBufferEditorView() {
+        let oldLines = (0..<3500).map { "    func sampleMethod_\($0)() { let value = \($0) }" }
+        var newLines = oldLines
+        newLines[2690] = "    func sampleMethod_2690() { let editedValue = 2690 }"
 
         let t0 = CFAbsoluteTimeGetCurrent()
         let slice = LineDiffEngine.shared.diffLinesForSlice(
@@ -493,7 +480,7 @@ final class WordDiffTests: XCTestCase {
         let repoRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        p.arguments = ["diff", "HEAD", "--", "Sources/AnyDiffUI/Editor/CustomMultiBufferEditorView.swift"]
+        p.arguments = ["diff", "HEAD", "--", "Sources/AnyDiffUI/Editor/MultiBufferEditorView.swift"]
         p.currentDirectoryURL = repoRoot
         let pipe = Pipe()
         p.standardOutput = pipe

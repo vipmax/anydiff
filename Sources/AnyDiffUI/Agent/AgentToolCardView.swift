@@ -200,7 +200,7 @@ public final class AgentToolCardView: AgentFlippedView {
     private let chevronImageView = NSImageView()
     private let descriptionLabel = AgentStaticTextField(wrappingLabelWithString: "")
     public let detailContainer = AgentFlippedView()
-    private var virtualizedDetailView: CustomMultiBufferEditorView?
+    private var virtualizedDetailView: MultiBufferEditorView?
     private var cachedDetailAttributedString: NSAttributedString?
     private var cachedDetailHeightWidth: CGFloat = -1
     private var cachedDetailHeight: CGFloat = 0
@@ -773,7 +773,7 @@ public final class AgentToolCardView: AgentFlippedView {
             reviewManager: ReviewManager(),
             showsExcerptHeaders: false
         )
-        let editor = CustomMultiBufferEditorView(displayMap: displayMap, theme: displayTheme)
+        let editor = MultiBufferEditorView(displayMap: displayMap, theme: displayTheme)
         editor.wantsLayer = true
         editor.layer?.cornerRadius = 8
         editor.layer?.masksToBounds = true

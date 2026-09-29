@@ -51,8 +51,8 @@ extension AppDelegate {
         let editMenu = NSMenu(title: "Edit")
         // Use responder-chain actions. UndoManager.undo/redo are zero-argument
         // methods and do not reach custom editors implementing undo(_:)/redo(_:).
-        editMenu.addItem(NSMenuItem(title: "Undo", action: #selector(CustomMultiBufferEditorView.undo(_:)), keyEquivalent: "z"))
-        let redoItem = NSMenuItem(title: "Redo", action: #selector(CustomMultiBufferEditorView.redo(_:)), keyEquivalent: "Z")
+        editMenu.addItem(NSMenuItem(title: "Undo", action: #selector(MultiBufferEditorView.undo(_:)), keyEquivalent: "z"))
+        let redoItem = NSMenuItem(title: "Redo", action: #selector(MultiBufferEditorView.redo(_:)), keyEquivalent: "Z")
         editMenu.addItem(redoItem)
         editMenu.addItem(NSMenuItem.separator())
         editMenu.addItem(NSMenuItem(title: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x"))

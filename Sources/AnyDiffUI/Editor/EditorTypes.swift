@@ -76,7 +76,7 @@ public struct EditorCursorAnchor: Sendable, Equatable {
     }
 }
 
-/// Encapsulates the complete anchor-based cursor and viewport state of CustomMultiBufferEditorView
+/// Encapsulates the complete anchor-based cursor and viewport state of MultiBufferEditorView
 public struct EditorViewState: Sendable, Equatable {
     public let cursorAnchor: EditorCursorAnchor?
     public let selectionAnchor: EditorCursorAnchor?

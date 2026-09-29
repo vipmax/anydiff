@@ -67,8 +67,8 @@ public struct EditorHostView: NSViewRepresentable {
         Coordinator(self)
     }
 
-    public func makeNSView(context: Context) -> CustomMultiBufferEditorView {
-        let editorView = CustomMultiBufferEditorView(displayMap: displayMap, theme: theme)
+    public func makeNSView(context: Context) -> MultiBufferEditorView {
+        let editorView = MultiBufferEditorView(displayMap: displayMap, theme: theme)
         editorView.font = .monospacedSystemFont(ofSize: fontSize, weight: .regular)
         editorView.isEditable = isEditable
         editorView.delegate = context.coordinator
@@ -94,11 +94,11 @@ public struct EditorHostView: NSViewRepresentable {
         return editorView
     }
 
-    public func updateNSView(_ editorView: CustomMultiBufferEditorView, context: Context) {
+    public func updateNSView(_ editorView: MultiBufferEditorView, context: Context) {
         updateView(editorView, coordinator: context.coordinator)
     }
 
-    public func updateView(_ editorView: CustomMultiBufferEditorView, coordinator: Coordinator) {
+    public func updateView(_ editorView: MultiBufferEditorView, coordinator: Coordinator) {
         coordinator.parent = self
 
         let displayMapID = ObjectIdentifier(displayMap)
@@ -209,9 +209,9 @@ public struct EditorHostView: NSViewRepresentable {
         }
     }
 
-    public final class Coordinator: NSObject, CustomMultiBufferEditorDelegate {
+    public final class Coordinator: NSObject, MultiBufferEditorDelegate {
         var parent: EditorHostView
-        weak var editorView: CustomMultiBufferEditorView?
+        weak var editorView: MultiBufferEditorView?
         var activeDisplayMapID: ObjectIdentifier?
         var isSwitchingDisplayMap = false
         var lastScrolledMatchRequestId: UInt64? = nil

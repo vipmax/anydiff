@@ -3,7 +3,7 @@ import AppKit
 @testable import AnyDiffCore
 @testable import AnyDiffUI
 
-final class CustomMultiBufferEditorUITests: XCTestCase {
+final class MultiBufferEditorUITests: XCTestCase {
 
     func testEditorUIRendersCodeIntoBitmap() throws {
         let fixture = makeEditor(text: "func greet() {\n    return \"hi\"\n}")
@@ -92,7 +92,7 @@ final class CustomMultiBufferEditorUITests: XCTestCase {
         )])
 
         let displayMap = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
-        let editor = CustomMultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        let editor = MultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 400, height: 240),
             styleMask: .borderless,
@@ -408,7 +408,7 @@ final class CustomMultiBufferEditorUITests: XCTestCase {
         ])
 
         let displayMap = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
-        let editor = CustomMultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        let editor = MultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 400, height: 240),
             styleMask: .borderless,
@@ -586,7 +586,7 @@ final class CustomMultiBufferEditorUITests: XCTestCase {
             Excerpt(bufferId: buf2.id, filePath: "/tmp/FileB.swift", bufferRange: 0..<2, isFileStart: true)
         ])
         let dm = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
-        let editor = CustomMultiBufferEditorView(displayMap: dm, theme: .unifiedDark)
+        let editor = MultiBufferEditorView(displayMap: dm, theme: .unifiedDark)
         editor.isEditable = true
         editor.invalidateLayout()
 
@@ -706,7 +706,7 @@ final class CustomMultiBufferEditorUITests: XCTestCase {
         multiBuffer.setExcerpts([excerpt1A, excerpt1B, excerpt2])
 
         let displayMap = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
-        let editor = CustomMultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        let editor = MultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600), styleMask: .borderless, backing: .buffered, defer: false)
         window.contentView = editor
         editor.frame = NSRect(x: 0, y: 0, width: 800, height: 600)
@@ -770,7 +770,7 @@ final class CustomMultiBufferEditorUITests: XCTestCase {
         multiBuffer.setExcerpts(excerpts)
 
         let displayMap = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
-        let editor = CustomMultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        let editor = MultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600), styleMask: .borderless, backing: .buffered, defer: false)
         window.contentView = editor
         editor.frame = NSRect(x: 0, y: 0, width: 800, height: 600)
@@ -812,7 +812,7 @@ final class CustomMultiBufferEditorUITests: XCTestCase {
         multiBuffer.collapseAll()
 
         let displayMap = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
-        let editor = CustomMultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        let editor = MultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
         editor.frame = NSRect(x: 0, y: 0, width: 800, height: 600)
         editor.invalidateLayout()
 
@@ -826,10 +826,10 @@ final class CustomMultiBufferEditorUITests: XCTestCase {
     private final class EditorFixture {
         let buffer: Buffer
         let displayMap: DisplayMap
-        let editor: CustomMultiBufferEditorView
+        let editor: MultiBufferEditorView
         let window: NSWindow
 
-        init(buffer: Buffer, displayMap: DisplayMap, editor: CustomMultiBufferEditorView, window: NSWindow) {
+        init(buffer: Buffer, displayMap: DisplayMap, editor: MultiBufferEditorView, window: NSWindow) {
             self.buffer = buffer
             self.displayMap = displayMap
             self.editor = editor
@@ -857,7 +857,7 @@ final class CustomMultiBufferEditorUITests: XCTestCase {
         )])
 
         let displayMap = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
-        let editor = CustomMultiBufferEditorView(displayMap: displayMap, theme: theme)
+        let editor = MultiBufferEditorView(displayMap: displayMap, theme: theme)
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 400, height: 240),
             styleMask: .borderless,
@@ -870,7 +870,7 @@ final class CustomMultiBufferEditorUITests: XCTestCase {
         return EditorFixture(buffer: buffer, displayMap: displayMap, editor: editor, window: window)
     }
 
-    private func render(_ editor: CustomMultiBufferEditorView) throws -> NSBitmapImageRep {
+    private func render(_ editor: MultiBufferEditorView) throws -> NSBitmapImageRep {
         let image = try XCTUnwrap(editor.bitmapImageRepForCachingDisplay(in: editor.bounds))
         editor.cacheDisplay(in: editor.bounds, to: image)
         return image
@@ -999,7 +999,7 @@ final class CustomMultiBufferEditorUITests: XCTestCase {
         let displayMap = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
         displayMap.rebuild()
 
-        let editor = CustomMultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        let editor = MultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 400, height: 240),
             styleMask: .borderless,
@@ -1036,7 +1036,7 @@ final class CustomMultiBufferEditorUITests: XCTestCase {
     }
 
     private func makeMouseEvent(
-        for editor: CustomMultiBufferEditorView,
+        for editor: MultiBufferEditorView,
         window: NSWindow,
         point: NSPoint,
         modifierFlags: NSEvent.ModifierFlags = []
@@ -1151,7 +1151,7 @@ final class CustomMultiBufferEditorUITests: XCTestCase {
         """
         repo.loadDiff(text: diffText)
 
-        let editor = CustomMultiBufferEditorView(displayMap: repo.displayMap, theme: .vesper)
+        let editor = MultiBufferEditorView(displayMap: repo.displayMap, theme: .vesper)
         editor.setFrameSize(NSSize(width: 800, height: 600))
         editor.syncLayoutIfNeeded()
 
