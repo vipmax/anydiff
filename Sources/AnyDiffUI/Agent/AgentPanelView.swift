@@ -24,6 +24,9 @@ public struct AgentPanelView: View {
     @State private var isPanelDropTargeted: Bool = false
     @State private var previewImages: [AgentImageAttachment]? = nil
     @State private var previewImageIndex: Int? = nil
+    @ObservedObject private var templateStore = AgentPromptTemplateStore.shared
+    @State private var isCustomizingTemplates: Bool = false
+    @State private var isCustomizeHovered: Bool = false
 
     public init(
         agentManager: AgentSessionManager,
@@ -287,45 +290,117 @@ public struct AgentPanelView: View {
 
     @ViewBuilder
     private var emptyStateView: some View {
-        VStack(spacing: 0) {
-            Spacer()
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(spacing: 0) {
+                Spacer(minLength: 24)
 
-            VStack(spacing: 18) {
-                AgentIconView(icon: agentIcon, tintColor: agentAccentColor, size: 40)
+                VStack(spacing: 18) {
+                    AgentIconView(icon: agentIcon, tintColor: agentAccentColor, size: 40)
 
-                VStack(spacing: 7) {
-                    Text(agentManager.agentTitle.isEmpty ? "Ask Agent" : "Ask \(agentManager.agentTitle)")
-                        .font(.system(size: 20, weight: .bold))
-                        .foregroundColor(Color(theme.foreground))
+                    VStack(spacing: 7) {
+                        Text(agentManager.agentTitle.isEmpty ? "Ask Agent" : "Ask \(agentManager.agentTitle)")
+                            .font(.system(size: 20, weight: .bold))
+                            .foregroundColor(Color(theme.foreground))
 
-                    Text("Inspect diffs, write code changes, and run commands with your agent.")
-                        .font(.system(size: 13, weight: .regular))
-                        .foregroundColor(Color(theme.gutterForeground))
-                        .multilineTextAlignment(.center)
-                        .lineSpacing(2)
-                        .frame(maxWidth: 390)
+                        Text("Inspect diffs, write code changes, and run commands with your agent.")
+                            .font(.system(size: 13, weight: .regular))
+                            .foregroundColor(Color(theme.gutterForeground))
+                            .multilineTextAlignment(.center)
+                            .lineSpacing(2)
+                            .frame(maxWidth: 390)
+                    }
+
+                    if isCustomizingTemplates {
+                        AgentPromptTemplatesInlineView(
+                            store: templateStore,
+                            theme: theme,
+                            accentColor: agentAccentColor,
+                            onDone: {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    isCustomizingTemplates = false
+                                }
+                            }
+                        )
+                        .transition(.asymmetric(
+                            insertion: .opacity.combined(with: .scale(scale: 0.98)),
+                            removal: .opacity.combined(with: .scale(scale: 0.98))
+                        ))
+                    } else {
+                        VStack(spacing: 8) {
+                            HStack {
+                                Text("QUICK ACTIONS")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundColor(Color(theme.gutterForeground))
+                                    .tracking(0.5)
+
+                                Spacer()
+
+                                Button(action: {
+                                    withAnimation(.easeInOut(duration: 0.2)) {
+                                        isCustomizingTemplates = true
+                                    }
+                                }) {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "slider.horizontal.3")
+                                            .font(.system(size: 10.5, weight: .medium))
+                                        Text("Customize")
+                                            .font(.system(size: 11, weight: .medium))
+                                    }
+                                    .foregroundColor(isCustomizeHovered ? Color(theme.foreground) : Color(theme.gutterForeground))
+                                    .padding(.horizontal, 7)
+                                    .padding(.vertical, 3)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                            .fill(isCustomizeHovered ? Color(theme.foreground).opacity(0.08) : Color.clear)
+                                    )
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                            .stroke(
+                                                isCustomizeHovered ? Color(theme.excerptHeaderBorder).opacity(0.4) : Color.clear,
+                                                lineWidth: 1
+                                            )
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                                .help("Customize prompt templates")
+                                .onHover { isCustomizeHovered = $0 }
+                            }
+                            .padding(.horizontal, 4)
+                            .padding(.bottom, 2)
+
+                            if templateStore.templates.isEmpty {
+                                VStack(spacing: 6) {
+                                    Text("No templates configured")
+                                        .font(.system(size: 12))
+                                        .foregroundColor(Color(theme.gutterForeground))
+                                    Button("Reset to Defaults") {
+                                        withAnimation(.easeInOut(duration: 0.15)) {
+                                            templateStore.resetToDefaults()
+                                        }
+                                    }
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundColor(agentAccentColor)
+                                    .buttonStyle(.plain)
+                                }
+                                .padding(.vertical, 16)
+                            } else {
+                                ForEach(templateStore.templates) { template in
+                                    quickActionButton(template.title) {
+                                        handleSendPrompt(template.prompt)
+                                    }
+                                }
+                            }
+                        }
+                        .frame(maxWidth: 430)
+                        .padding(.top, 5)
+                        .transition(.opacity)
+                    }
                 }
+                .padding(.horizontal, 20)
 
-                VStack(spacing: 8) {
-                    quickActionButton("Explain current diff", icon: "doc.text.magnifyingglass") {
-                        handleSendPrompt("Explain the current git diff and summarize the main changes.")
-                    }
-                    quickActionButton("Review changes for bugs", icon: "checkmark.circle") {
-                        handleSendPrompt("Review these changes carefully and highlight any potential bugs, logic issues, or edge cases.")
-                    }
-                    quickActionButton("Generate commit message", icon: "text.badge.checkmark") {
-                        handleSendPrompt("Generate a concise, conventional git commit message for these changes.")
-                    }
-                    quickActionButton("Commit and push", icon: "arrow.up.circle") {
-                        handleSendPrompt("Commit the current changes with an appropriate conventional commit message and push the commit to the configured remote.")
-                    }
-                }
-                .frame(maxWidth: 430)
-                .padding(.top, 5)
+                Spacer(minLength: 24)
             }
-            .padding(.horizontal, 20)
-
-            Spacer()
+            .frame(maxWidth: .infinity, minHeight: 460)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -333,22 +408,12 @@ public struct AgentPanelView: View {
     @ViewBuilder
     private func quickActionButton(
         _ title: String,
-        icon: String,
         action: @escaping () -> Void
     ) -> some View {
         let isHovered = hoveredQuickAction == title
 
         Button(action: action) {
             HStack(spacing: 12) {
-                Image(systemName: icon)
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundColor(isHovered ? .white : agentAccentColor)
-                    .frame(width: 24, height: 24)
-                    .background(
-                        isHovered ? agentAccentColor : agentAccentColor.opacity(0.11),
-                        in: RoundedRectangle(cornerRadius: 7)
-                    )
-
                 Text(title)
                     .font(.system(size: 13, weight: .medium))
                 Spacer()
