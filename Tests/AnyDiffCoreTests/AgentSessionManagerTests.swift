@@ -113,7 +113,7 @@ final class AgentSessionManagerTests: XCTestCase {
     func testHeavyMockMessageKeepsRichTextLayersBounded() {
         let mockManager = MockAgentSessionManager()
         let message = mockManager.messages[11]
-        let cell = AgentNativeMessageCell(message: message, theme: .zedDark)
+        let cell = AgentMessageCell(message: message, theme: .zedDark)
 
         _ = cell.layout(for: 420)
 
@@ -127,31 +127,31 @@ final class AgentSessionManagerTests: XCTestCase {
             "A tall layer causes a visible rasterization spike when it enters the scroll viewport"
         )
         XCTAssertTrue(
-            cell.subviews.contains { $0 is AgentNativeCodeBlockView } == false,
+            cell.subviews.contains { $0 is AgentCodeBlockView } == false,
             "Code blocks are temporarily disabled in the native agent chat"
         )
     }
 
     func testToolCallsUseExpandableColoredCardsWhenSimpleModeIsDisabled() {
         let message = MockAgentSessionManager().messages[11]
-        let cell = AgentNativeMessageCell(message: message, theme: .zedDark)
+        let cell = AgentMessageCell(message: message, theme: .zedDark)
 
         _ = cell.layout(for: 420)
 
         XCTAssertEqual(
-            cell.subviews.compactMap { $0 as? AgentNativeToolCardView }.count,
+            cell.subviews.compactMap { $0 as? AgentToolCardView }.count,
             message.toolCalls.count
         )
-        XCTAssertFalse(cell.subviews.contains { $0 is AgentNativeSimpleToolCallView })
+        XCTAssertFalse(cell.subviews.contains { $0 is AgentSimpleToolCallView })
     }
 
     func testStandardChatScrollViewUsesNativeDocumentView() {
         let manager = MockAgentSessionManager()
-        let scrollView = AgentNativeStandardChatScrollView(frame: NSRect(x: 0, y: 0, width: 640, height: 480))
+        let scrollView = AgentChatScrollView(frame: NSRect(x: 0, y: 0, width: 640, height: 480))
         scrollView.update(messages: manager.messages, theme: .zedDark, animated: false)
         scrollView.layoutSubtreeIfNeeded()
 
-        XCTAssertTrue(scrollView.documentView is AgentNativeStandardChatDocumentView)
+        XCTAssertTrue(scrollView.documentView is AgentChatDocumentView)
         XCTAssertGreaterThan(scrollView.documentView?.bounds.height ?? 0, 0)
     }
 
@@ -160,7 +160,7 @@ final class AgentSessionManagerTests: XCTestCase {
             AgentMessage(role: .user, content: "здрасте"),
             AgentMessage(role: .assistant, content: "Здравствуйте! Чем могу помочь вам сегодня?")
         ]
-        let scrollView = AgentNativeStandardChatScrollView(frame: NSRect(x: 0, y: 0, width: 400, height: 600))
+        let scrollView = AgentChatScrollView(frame: NSRect(x: 0, y: 0, width: 400, height: 600))
         scrollView.update(messages: messages, theme: .zedDark, animated: false)
         scrollView.layoutSubtreeIfNeeded()
 
@@ -180,7 +180,7 @@ final class AgentSessionManagerTests: XCTestCase {
         let messages = (1...20).map { idx in
             AgentMessage(role: .user, content: "Message line \(idx) details")
         }
-        let scrollView = AgentNativeStandardChatScrollView(frame: NSRect(x: 0, y: 0, width: 400, height: 600))
+        let scrollView = AgentChatScrollView(frame: NSRect(x: 0, y: 0, width: 400, height: 600))
         scrollView.update(messages: messages, theme: .zedDark, animated: false)
         scrollView.layoutSubtreeIfNeeded()
 
@@ -200,7 +200,7 @@ final class AgentSessionManagerTests: XCTestCase {
         let id = UUID()
         let content = (1...13).map { "- streamed line \($0)" }.joined(separator: "\n")
         let streaming = AgentMessage(id: id, role: .assistant, content: content, isStreaming: true)
-        let cell = AgentNativeMessageCell(message: streaming, theme: .zedDark)
+        let cell = AgentMessageCell(message: streaming, theme: .zedDark)
 
         _ = cell.layout(for: 420)
         XCTAssertEqual(cell.allSelectableTextViews().count, 1)
