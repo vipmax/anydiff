@@ -153,19 +153,24 @@ AnyDiff
 ├── Sources/
 │   ├── AnyDiffCore/          # Headless core engine (Zero UI / AppKit dependency)
 │   │   ├── Diff/             # GitDiffParser, LineDiffEngine, WordDiffEngine, GitHubDiffService
-│   │   ├── MultiBuffer/      # MultiBuffer, Buffer, Excerpt, UndoManager, EditTransaction
+│   │   ├── Git/              # GitService (repository state, branches, diffs, untracked files)
+│   │   ├── MultiBuffer/      # MultiBuffer, MultiBufferBuilder, Buffer, Excerpt, UndoManager
 │   │   ├── Display/          # DisplayMap, DisplayLine, Coordinate Mapping
+│   │   ├── Search/           # ProjectSearchEngine, streaming full-text search
 │   │   ├── Syntax/           # SyntaxHighlighter, Theme Definitions
-│   │   ├── Review/           # ReviewManager, ReviewComment
+│   │   ├── Editing/          # ReviewManager, ReviewComment
 │   │   ├── ACP/              # JSON-RPC 2.0 / Agent Client Protocol transport and models
 │   │   └── Agent/            # Agent session state, ACP manager, and mock implementation
 │   ├── AnyDiffUI/            # Native presentation layer (SwiftUI + custom AppKit CoreText engine)
-│   │   ├── Editor/           # CustomMultiBufferEditorView, ExcerptLayout, LineCache, Virtual Scroll
-│   │   ├── Agent/            # Chat panel, Markdown rendering, input, and tool-call cards
-│   │   └─ Views/            # MainWindowView, SidebarFileListView, FileIconProvider, Icons, Modals
+│   │   ├── Editor/           # MultiBufferEditorView (+ extensions), ExcerptLayout, LineCache
+│   │   ├── Agent/            # Native chat scroll view, message cells, tool cards, input
+│   │   ├── Repo/             # RepoCoordinator (repository, diff loading, folder watcher)
+│   │   ├── Review/           # ReviewCoordinator (read-only agent & commit diff reviews)
+│   │   ├── Search/           # SearchCoordinator & project search UI
+│   │   └─ Views/            # MainWindowView, SidebarFileListView, Toolbar, Icons, Modals
 │   └─ AnyDiff/              # Application entry point (main.swift, AppDelegate)
 └── Tests/
-    └─ AnyDiffCoreTests/     # Comprehensive unit & AppKit UI integration test suites (170+ tests)
+    └─ AnyDiffCoreTests/     # Comprehensive unit & AppKit UI integration test suites (380+ tests)
 ```
 
 ---

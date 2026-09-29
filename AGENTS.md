@@ -4,8 +4,8 @@
 
 AnyDiff is a native macOS Swift Package Manager app.
 
-- `Sources/AnyDiffCore/` contains UI-independent diff, Git, watcher, editing, syntax, display, and MultiBuffer logic.
-- `Sources/AnyDiffUI/` contains SwiftUI/AppKit views and the custom virtualized editor.
+- `Sources/AnyDiffCore/` contains UI-independent diff, Git (`GitService`), history, search, markdown, ACP/Agent, watcher, editing, syntax, display, and MultiBuffer (`MultiBufferBuilder`) logic.
+- `Sources/AnyDiffUI/` contains SwiftUI/AppKit views, domain coordinators (`RepoCoordinator`, `ReviewCoordinator`, `SearchCoordinator`), native agent chat components (`AgentChatScrollView`, `AgentMessageCell`, `AgentToolCardView`), and the custom virtualized CoreText editor (`MultiBufferEditorView`).
 - `Sources/AnyDiff/` contains the executable entry point and app-level wiring.
 - `Tests/AnyDiffCoreTests/` contains XCTest unit and editor integration tests; `Tests/AnyDiffBenchmarks/` contains performance tests.
 - `Resources/` stores icons and asset catalogs. `scripts/` builds `.app`, ZIP, and DMG packages.
@@ -32,7 +32,7 @@ Use `swift test --filter AnyDiffCoreTests.SomeTest` to target one test; `just cl
 
 ## Coding Style & Naming Conventions
 
-Follow existing Swift style: four-space indentation, clear type-driven names, and explicit access control where useful. Use `UpperCamelCase` for types and `lowerCamelCase` for methods, properties, and locals. Name XCTest methods `test...` descriptively. Group files by feature and keep UI code out of core modules. No formatter or linter is configured; preserve surrounding formatting and build after mechanical edits.
+Follow existing Swift style: four-space indentation, clear type-driven names, and explicit access control where useful. Use `UpperCamelCase` for types and `lowerCamelCase` for methods, properties, and locals. Name XCTest methods `test...` descriptively. Group files by feature, keep domain state in focused `@MainActor` coordinators, split large views/controllers into modular files or `<Type>+<Topic>.swift` extensions, and keep UI code out of core modules. No formatter or linter is configured; preserve surrounding formatting and build after mechanical edits.
 
 Follow a zero-alloc / low-allocation principle: minimize memory allocations and avoid unnecessary copying across all layers. In performance-sensitive paths (diffing, patch parsing, virtualized rendering, MultiBuffer indexing, and hot loops), prefer zero-copy operations, slice existing buffers (`Substring`, `ArraySlice`, contiguous memory views), reuse allocations where practical, and avoid creating disposable intermediate collections or boxing values.
 

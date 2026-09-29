@@ -746,6 +746,26 @@ public struct MainWindowView: View {
         if panelLayout.slot(for: .editor) == nil {
             panelLayout.assign(.editor, to: .center)
         }
+        let baseDir = effectiveWorkingDirectory
+        let resolvedRelativePath: String
+        if (path as NSString).isAbsolutePath {
+            if path.hasPrefix(baseDir) {
+                let suffix = String(path.dropFirst(baseDir.count))
+                resolvedRelativePath = suffix.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            } else {
+                resolvedRelativePath = (path as NSString).lastPathComponent
+            }
+        } else {
+            resolvedRelativePath = path
+        }
+        if let targetFile = activeDisplayMap.matchFilePath(resolvedRelativePath) ?? activeDisplayMap.matchFilePath(path) {
+            repo.selectedFilePath = targetFile
+            NotificationCenter.default.post(
+                name: .focusFileInEditor,
+                object: FileNavigationRequest(filePath: targetFile, lineNumber: line, endLineNumber: endLine)
+            )
+            return
+        }
         repo.openFile(path: path, line: line, endLine: endLine)
     }
 
