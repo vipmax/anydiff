@@ -1115,4 +1115,66 @@ final class CustomMultiBufferEditorUITests: XCTestCase {
         abs(lhs.greenComponent - rhs.greenComponent) < 0.02 &&
         abs(lhs.blueComponent - rhs.blueComponent) < 0.02
     }
+
+    @MainActor
+    func testCollapseAllSyncsLayoutOnDrawAndForwardsObjectWillChange() throws {
+        let repo = RepoCoordinator(initialPath: nil, reviewManager: ReviewManager())
+        let diffText = """
+        diff --git a/First.swift b/First.swift
+        index 1111111..2222222 100644
+        --- a/First.swift
+        +++ b/First.swift
+        @@ -1,5 +1,6 @@
+         let a = 1
+        +let b = 2
+         let c = 3
+         let d = 4
+         let e = 5
+        @@ -20,3 +21,4 @@
+         let x = 10
+        +let y = 20
+         let z = 30
+        diff --git a/Second.swift b/Second.swift
+        index 3333333..4444444 100644
+        --- a/Second.swift
+        +++ b/Second.swift
+        @@ -1,3 +1,4 @@
+         let s1 = 1
+        +let s2 = 2
+        diff --git a/Third.swift b/Third.swift
+        index 5555555..6666666 100644
+        --- a/Third.swift
+        +++ b/Third.swift
+        @@ -1,2 +1,3 @@
+         let t1 = 1
+        +let t2 = 2
+        """
+        repo.loadDiff(text: diffText)
+
+        let editor = CustomMultiBufferEditorView(displayMap: repo.displayMap, theme: .vesper)
+        editor.setFrameSize(NSSize(width: 800, height: 600))
+        editor.syncLayoutIfNeeded()
+
+        var changeCount = 0
+        let cancellable = repo.objectWillChange.sink { _ in
+            changeCount += 1
+        }
+        _ = cancellable
+
+        // Collapse all files without manually calling editor.syncLayoutIfNeeded()
+        repo.multiBuffer.collapseAll()
+        repo.displayMap.rebuild()
+        repo.displayMap.markContentLoaded()
+
+        XCTAssertGreaterThan(changeCount, 0, "RepoCoordinator must forward objectWillChange from multiBuffer and displayMap")
+
+        // Render a frame to trigger draw(_:) without prior syncLayoutIfNeeded()
+        _ = try render(editor)
+
+        XCTAssertEqual(repo.displayMap.displayLineCount, 3)
+        for i in 0..<3 {
+            XCTAssertEqual(editor.lineHeight(forDisplayLineIndex: i), editor.excerptHeaderHeight, "Collapsed header \(i) must have full excerptHeaderHeight")
+            XCTAssertEqual(editor.yOffset(forDisplayLineIndex: i), CGFloat(i) * editor.excerptHeaderHeight, "Collapsed header \(i) must not overlap previous header")
+        }
+    }
 }

@@ -153,6 +153,8 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
     }
 
     public private(set) var excerptLocations: [ExcerptSliceRange] = []
+    /// Increments on every `rebuild()` or `clear()` so views can detect layout changes in O(1).
+    @Published public private(set) var rebuildVersion: UInt64 = 0
     /// Increments when the owning MultiBuffer has been loaded with new content.
     /// UI adapters use this to reset transient editor state such as the cursor.
     @Published public private(set) var loadRevision: UInt64 = 0
@@ -252,12 +254,14 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
         excerptSplitCache.removeAll(keepingCapacity: false)
         hunkBufferRowRankCache.removeAll(keepingCapacity: false)
         maxLineChars = 80
+        rebuildVersion &+= 1
     }
 
     // MARK: - Rebuild & Range Indexing
 
     /// Rebuilds the prefix-sum Virtual Range Index across excerpts in O(Excerpts)
     public func rebuild(invalidatingPaths: Set<String>? = nil) {
+        rebuildVersion &+= 1
         excerptLocations.removeAll(keepingCapacity: true)
         if let invalidatingPaths {
             for excerpt in multiBuffer.excerpts where invalidatingPaths.contains(excerpt.filePath) {

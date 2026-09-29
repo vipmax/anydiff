@@ -76,6 +76,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
     public private(set) var splitActiveColumn: SplitActiveColumn = .right
     private var isDraggingDivider: Bool = false
     private var lastLayoutMode: DiffLayoutMode? = nil
+    private var lastRebuildVersion: UInt64 = 0
 
     /// Adjusts the scrollbar thumb for enough contrast in both appearances.
     private var scrollbarThumbBaseColor: NSColor {
@@ -795,7 +796,8 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         let lastUpperBound = excerptLayouts.last?.displayRange.upperBound ?? 0
         if excerptLayouts.count != expectedCount ||
            dm.displayLineCount != lastUpperBound ||
-           lastLayoutMode != dm.effectiveLayoutMode {
+           lastLayoutMode != dm.effectiveLayoutMode ||
+           lastRebuildVersion != dm.rebuildVersion {
             invalidateLayout()
         }
     }
@@ -804,7 +806,13 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         guard !excerptStartYs.isEmpty else { return 0 }
         let maxIdx = excerptStartYs.count - 1
         if y <= 0 { return 0 }
-        if y >= excerptStartYs[maxIdx] { return maxIdx }
+        if y >= excerptStartYs[maxIdx] {
+            var idx = maxIdx
+            while idx > 0 && excerptLayouts[idx].displayRange.isEmpty {
+                idx -= 1
+            }
+            return idx
+        }
 
         var low = 0
         var high = maxIdx
@@ -819,7 +827,11 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                 high = mid - 1
             }
         }
-        return min(maxIdx, max(0, best))
+        var result = min(maxIdx, max(0, best))
+        while result > 0 && excerptLayouts[result].displayRange.isEmpty {
+            result -= 1
+        }
+        return result
     }
 
     public func excerptIndex(forDisplayLineIndex lineIdx: Int) -> Int {
@@ -838,7 +850,11 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
                 high = mid - 1
             }
         }
-        return min(maxIdx, max(0, best))
+        var result = min(maxIdx, max(0, best))
+        while result > 0 && excerptLayouts[result].displayRange.isEmpty {
+            result -= 1
+        }
+        return result
     }
 
     public func lineIndex(atY y: CGFloat) -> Int {
@@ -897,6 +913,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
         SyntaxHighlighter.shared.clearCache()
         lineCache.clear()
         lastLayoutMode = displayMap?.effectiveLayoutMode
+        lastRebuildVersion = displayMap?.rebuildVersion ?? 0
         guard let displayMap = displayMap else {
             contentTotalHeight = 0
             contentNeededWidth = 0
@@ -1411,9 +1428,7 @@ public final class CustomMultiBufferEditorView: NSView, NSTextInputClient, NSUse
             return
         }
 
-        if excerptLayouts.count != displayMap.excerptLocations.count {
-            invalidateLayout()
-        }
+        syncLayoutIfNeeded()
 
         guard !excerptLayouts.isEmpty else {
             context.saveGState()

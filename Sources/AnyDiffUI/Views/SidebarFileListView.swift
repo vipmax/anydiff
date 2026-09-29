@@ -2,18 +2,12 @@ import SwiftUI
 import AnyDiffCore
 
 public struct SidebarFileListView: View {
+    @ObservedObject public var repo: RepoCoordinator
     public var fileDiffs: [FileDiff]
     public var theme: Theme
     public var emptyMessage: String
-    public var isReloading: Bool
-    public var isStreaming: Bool
-    public var streamingCount: Int
-    public var comparisonTarget: ComparisonTarget
-    public var isWatchModeEnabled: Bool
     @ObservedObject public var reviewManager: ReviewManager
-    @Binding public var selectedFilePath: String?
     public var onReload: () -> Void
-    public var onToggleWatchMode: (() -> Void)?
     public var onBack: (() -> Void)?
     public var onSwitchToFiles: (() -> Void)?
     public var onSwitchToHistory: (() -> Void)?
@@ -24,34 +18,22 @@ public struct SidebarFileListView: View {
     @State private var isTitleHovered: Bool = false
 
     public init(
+        repo: RepoCoordinator,
         fileDiffs: [FileDiff],
         theme: Theme,
         emptyMessage: String = "No changed files",
-        isReloading: Bool = false,
-        isStreaming: Bool = false,
-        streamingCount: Int = 0,
-        comparisonTarget: ComparisonTarget = .workingTree,
-        isWatchModeEnabled: Bool = true,
         reviewManager: ReviewManager,
-        selectedFilePath: Binding<String?>,
         onReload: @escaping () -> Void,
-        onToggleWatchMode: (() -> Void)? = nil,
         onBack: (() -> Void)? = nil,
         onSwitchToFiles: (() -> Void)? = nil,
         onSwitchToHistory: (() -> Void)? = nil
     ) {
+        self.repo = repo
         self.fileDiffs = fileDiffs
         self.theme = theme
         self.emptyMessage = emptyMessage
-        self.isReloading = isReloading
-        self.isStreaming = isStreaming
-        self.streamingCount = streamingCount
-        self.comparisonTarget = comparisonTarget
-        self.isWatchModeEnabled = isWatchModeEnabled
         self.reviewManager = reviewManager
-        self._selectedFilePath = selectedFilePath
         self.onReload = onReload
-        self.onToggleWatchMode = onToggleWatchMode
         self.onBack = onBack
         self.onSwitchToFiles = onSwitchToFiles
         self.onSwitchToHistory = onSwitchToHistory
@@ -122,9 +104,9 @@ public struct SidebarFileListView: View {
         HStack(spacing: 5) {
             if let onSwitch = onSwitchToFiles {
                 Button(action: onSwitch) {
-                    Text(isStreaming ? "Loading..." : "CHANGES")
+                    Text(repo.isStreaming ? "Loading..." : "CHANGES")
                         .font(.system(size: 10.5, weight: .bold))
-                        .foregroundColor(isStreaming ? .accentColor : Color(theme.foreground))
+                        .foregroundColor(repo.isStreaming ? .accentColor : Color(theme.foreground))
                         .padding(.horizontal, 4)
                         .padding(.vertical, 2)
                         .background(
@@ -139,17 +121,17 @@ public struct SidebarFileListView: View {
                 }
                 .help("Switch to Project Files (Cmd+2)")
             } else {
-                Text(isStreaming ? "Loading..." : "CHANGES")
+                Text(repo.isStreaming ? "Loading..." : "CHANGES")
                     .font(.system(size: 10.5, weight: .bold))
-                    .foregroundColor(isStreaming ? .accentColor : Color(theme.foreground))
+                    .foregroundColor(repo.isStreaming ? .accentColor : Color(theme.foreground))
                     .padding(.horizontal, 4)
                     .padding(.vertical, 2)
                     .lineLimit(1)
                     .fixedSize()
             }
 
-            if availableWidth >= 165 || isStreaming {
-                let count = isStreaming ? (streamingCount > 0 ? streamingCount : filteredFiles.count) : filteredFiles.count
+            if availableWidth >= 165 || repo.isStreaming {
+                let count = repo.isStreaming ? (repo.streamingCount > 0 ? repo.streamingCount : filteredFiles.count) : filteredFiles.count
                 Text("\(count)")
                     .font(.system(size: 10, weight: .semibold, design: .monospaced))
                     .foregroundColor(Color(theme.gutterForeground).opacity(0.85))
@@ -170,10 +152,10 @@ public struct SidebarFileListView: View {
     private func headerTrailingActions(availableWidth: CGFloat) -> some View {
         HStack(spacing: 4) {
             // Action buttons progressively collapse/hide when space is tight
-            if availableWidth >= 215 || isReloading {
+            if availableWidth >= 215 || repo.isReloading {
                 Button(action: onReload) {
                     ZStack {
-                        if isReloading {
+                        if repo.isReloading {
                             ProgressView()
                                 .controlSize(.small)
                         } else {
@@ -185,7 +167,7 @@ public struct SidebarFileListView: View {
                     .frame(width: 14, height: 14)
                 }
                 .buttonStyle(ToolbarHoverButtonStyle())
-                .disabled(isReloading)
+                .disabled(repo.isReloading)
                 .help("Reload Git Diff (Cmd+R)")
             }
 
@@ -212,7 +194,7 @@ public struct SidebarFileListView: View {
 
             // +- stats or branch badge is ALWAYS at the far right edge ("справа справа")
             targetComparisonBadge
-                .padding(.leading, (availableWidth >= 215 || isReloading) ? 2 : 0)
+                .padding(.leading, (availableWidth >= 215 || repo.isReloading) ? 2 : 0)
         }
         .lineLimit(1)
         .fixedSize(horizontal: true, vertical: false)
@@ -220,7 +202,7 @@ public struct SidebarFileListView: View {
 
     @ViewBuilder
     private var targetComparisonBadge: some View {
-        switch comparisonTarget {
+        switch repo.comparisonTarget {
         case .baseBranch(let base):
             Text("\(base)...")
                 .font(.system(size: 9.5, weight: .medium))
@@ -304,7 +286,7 @@ public struct SidebarFileListView: View {
                 files: filteredFiles,
                 theme: theme,
                 reviewManager: reviewManager,
-                selectedFilePath: $selectedFilePath
+                selectedFilePath: $repo.selectedFilePath
             )
             .background(Color(theme.background))
         }

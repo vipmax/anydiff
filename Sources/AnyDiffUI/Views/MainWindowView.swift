@@ -3,129 +3,52 @@ import AppKit
 import UniformTypeIdentifiers
 import AnyDiffCore
 
-private final class SystemAppearanceObserver: ObservableObject {
-    @Published private(set) var isDark: Bool
-    private var appearanceObservation: NSKeyValueObservation?
-
-    init() {
-        self.isDark = Self.readIsDark()
-        self.appearanceObservation = NSApp.observe(\NSApplication.effectiveAppearance, options: [.new]) { [weak self] _, _ in
-            DispatchQueue.main.async {
-                self?.isDark = Self.readIsDark()
-            }
-        }
-    }
-
-    private static func readIsDark() -> Bool {
-        NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-    }
-}
 
 public struct MainWindowView: View {
     public var initialPath: String?
 
-    @StateObject private var multiBuffer = MultiBuffer()
-    @StateObject private var reviewManager = ReviewManager()
-    @StateObject private var displayMap: DisplayMap
-
-    @StateObject private var readOnlyMultiBuffer = MultiBuffer()
-    @StateObject private var readOnlyDisplayMap: DisplayMap
-    @State private var readOnlyFileDiffs: [FileDiff] = []
-    @State private var readOnlyViewStateResetToken: UInt64 = 0
-    @State private var preparedReviewSummary: AgentEditedFilesSummary? = nil
-    @State private var toolcallColorMode = AgentDisplayPreferences.toolcallColorMode
-
-    @StateObject private var searchMultiBuffer = MultiBuffer()
-    @StateObject private var searchDisplayMap: DisplayMap
-    @State private var isProjectSearchActive: Bool = false
-    @State private var isProjectSearchHovered: Bool = false
-    @State private var isProjectSearchCloseHovered: Bool = false
-    @State private var searchQuery = ProjectSearchQuery()
-    @State private var searchMatches: [ProjectSearchMatch] = []
-    @State private var activeMatchIndex: Int? = nil
-    @State private var searchMatchScrollRequest: SearchMatchScrollRequest? = nil
-    @State private var searchScrollRequestId: UInt64 = 0
-    @State private var searchViewStateResetToken: UInt64 = 0
-    @State private var isSearching: Bool = false
-    @State private var searchTask: Task<Void, Never>? = nil
-    @State private var searchDebounceWorkItem: DispatchWorkItem? = nil
-    @State private var searchFocusToken: UInt64 = 0
-    @State private var isSearchTruncated: Bool = false
-    @State private var hasExecutedSearch: Bool = false
-
+    @StateObject private var repo: RepoCoordinator
+    @StateObject private var review: ReviewCoordinator
+    @StateObject private var reviewManager: ReviewManager
+    @StateObject private var search: SearchCoordinator
     @StateObject private var systemAppearance = SystemAppearanceObserver()
     @StateObject private var agentCoordinator = AgentSessionCoordinator(enablePeriodicAutoUpdate: true)
     @StateObject private var panelLayout = PanelLayoutManager()
-    @State private var isAgentSessionsPresented: Bool = false
-    @State private var isAgentSessionsHovered: Bool = false
-    @State private var isReadOnlyBadgeHovered: Bool = false
+
+    @State private var toolcallColorMode = AgentDisplayPreferences.toolcallColorMode
     @State private var activeMarkdownPreviewPath: String? = nil
-    @State private var isMarkdownPreviewBadgeHovered: Bool = false
-    @State private var isMarkdownPreviewCloseHovered: Bool = false
-    @State private var isReadOnlyCloseHovered: Bool = false
-
-    private var activeAgentManager: AgentSessionManager? {
-        agentCoordinator.activeManager
-    }
-
-    private var isMockAgent: Bool {
-        agentCoordinator.isMockAgent
-    }
 
     private var isReadOnlyActive: Bool {
-        agentCoordinator.activeReviewSummary != nil || comparisonTarget.isCommit
+        agentCoordinator.activeReviewSummary != nil || repo.comparisonTarget.isCommit || review.isActive
     }
 
     private var activeMultiBuffer: MultiBuffer {
-        if isProjectSearchActive {
-            return searchMultiBuffer
+        if search.isActive {
+            return search.multiBuffer
         } else if isReadOnlyActive {
-            return readOnlyMultiBuffer
+            return review.multiBuffer
         }
-        return multiBuffer
+        return repo.multiBuffer
     }
 
     private var activeDisplayMap: DisplayMap {
-        if isProjectSearchActive {
-            return searchDisplayMap
+        if search.isActive {
+            return search.displayMap
         } else if isReadOnlyActive {
-            return readOnlyDisplayMap
+            return review.displayMap
         }
-        return displayMap
+        return repo.displayMap
     }
 
     private var activeFileDiffs: [FileDiff] {
-        isReadOnlyActive ? readOnlyFileDiffs : fileDiffs
+        isReadOnlyActive ? review.fileDiffs : repo.fileDiffs
     }
 
-    public enum RepoStatus {
-        case notGitRepository
-        case clean
-        case hasChanges
-    }
+    public typealias RepoStatus = RepoCoordinator.RepoStatus
 
-    @State private var currentPath: String? = nil
-    @State private var isReloading: Bool = false
-    @State private var isStreaming: Bool = false
-    @State private var streamingCount: Int = 0
-    @State private var currentBranch: String = ""
-    @State private var localBranches: [String] = []
-    @State private var remoteBranches: [String] = []
-    @State private var comparisonTarget: ComparisonTarget = .workingTree
-    @State private var repoStatus: RepoStatus = .clean
-    @State private var fileDiffs: [FileDiff] = []
-    @State private var selectedCommit: GitCommit? = nil
-    @State private var showCommitDetailPopover: Bool = false
-    @State private var selectedFilePath: String? = nil
-    @State private var selectedFilePathBeforeReadOnly: String? = nil
-    @State private var manuallyOpenedFilePaths: Set<String> = []
-    @State private var isWatchModeEnabled: Bool = true
-    @State private var folderWatcher: FolderWatcher? = nil
     @State private var selectedTheme: Theme = .vesper
     @State private var followsSystemAppearance: Bool = true
-    @State private var viewMode: DiffViewMode = .unified
     @AppStorage("preferredDiffLayoutMode") private var preferredDiffLayoutMode: String = DiffLayoutMode.unified.rawValue
-    @State private var contextLines: Int = 3
     @State private var fontSize: CGFloat = 13
 
     private static let isLeftPanelOpenKey = "anydiff_is_left_panel_open"
@@ -134,66 +57,51 @@ public struct MainWindowView: View {
         return isOpen ? .all : .doubleColumn
     }()
     @State private var commentTarget: (filePath: String, lineNumber: Int)? = nil
-    @State private var currentFolderName: String = ""
     @State private var showOpenSourcePopover: Bool = false
     @State private var isWindowDropTargeted: Bool = false
-    @State private var remoteTarget: GitHubDiffReference? = nil
-    @State private var remoteErrorMessage: String? = nil
-    @State private var remoteLoadTask: Task<Void, Never>? = nil
-    @State private var gitStateReloadWorkItem: DispatchWorkItem? = nil
-    @State private var hasPendingGitStateReload: Bool = false
-    @State private var loadGeneration: UInt64 = 0
-    @State private var watchRefreshGeneration: UInt64 = 0
-    @State private var pendingWatchPaths: Set<String> = []
-    @State private var watchRefreshInFlight: Bool = false
+
+    public var effectiveWorkingDirectory: String {
+        repo.effectiveWorkingDirectory
+    }
+    public var effectiveBaseDirectory: String {
+        repo.effectiveBaseDirectory
+    }
 
     public init(initialPath: String? = nil) {
         self.initialPath = initialPath
-        let mb = MultiBuffer()
         let rm = ReviewManager()
-        let dm = DisplayMap(multiBuffer: mb, reviewManager: rm)
+        let review = ReviewCoordinator(reviewManager: rm)
+        let repo = RepoCoordinator(initialPath: initialPath, reviewManager: rm)
+        let search = SearchCoordinator(reviewManager: rm)
+        repo.search = search
 
-        let roMb = MultiBuffer()
-        let roDm = DisplayMap(multiBuffer: roMb, reviewManager: rm)
-
-        let smb = MultiBuffer()
-        let sdm = DisplayMap(multiBuffer: smb, reviewManager: rm)
-
-        let initialLayout = (UserDefaults.standard.string(forKey: "preferredDiffLayoutMode").flatMap(DiffLayoutMode.init)) ?? .unified
-        dm.layoutMode = initialLayout
-        roDm.layoutMode = .unified
-        sdm.layoutMode = .unified
-
-        self._multiBuffer = StateObject(wrappedValue: mb)
+        self._repo = StateObject(wrappedValue: repo)
         self._reviewManager = StateObject(wrappedValue: rm)
-        self._displayMap = StateObject(wrappedValue: dm)
-        self._readOnlyMultiBuffer = StateObject(wrappedValue: roMb)
-        self._readOnlyDisplayMap = StateObject(wrappedValue: roDm)
-        self._searchMultiBuffer = StateObject(wrappedValue: smb)
-        self._searchDisplayMap = StateObject(wrappedValue: sdm)
+        self._review = StateObject(wrappedValue: review)
+        self._search = StateObject(wrappedValue: search)
     }
 
     private var diffLayoutMode: DiffLayoutMode {
         if isReadOnlyActive {
-            return readOnlyDisplayMap.layoutMode
+            return review.displayMap.layoutMode
         }
         return DiffLayoutMode(rawValue: preferredDiffLayoutMode) ?? .unified
     }
 
     private func setDiffLayoutMode(_ mode: DiffLayoutMode) {
         if isReadOnlyActive {
-            readOnlyDisplayMap.layoutMode = mode
+            review.displayMap.layoutMode = mode
             return
         }
         preferredDiffLayoutMode = mode.rawValue
-        displayMap.layoutMode = mode
-        searchDisplayMap.layoutMode = .unified
+        repo.displayMap.layoutMode = mode
+        search.displayMap.layoutMode = .unified
     }
 
     private func toggleDiffLayoutMode() {
         if isReadOnlyActive {
-            let nextMode: DiffLayoutMode = (readOnlyDisplayMap.layoutMode == .unified ? .sideBySide : .unified)
-            readOnlyDisplayMap.layoutMode = nextMode
+            let nextMode: DiffLayoutMode = (review.displayMap.layoutMode == .unified ? .sideBySide : .unified)
+            review.displayMap.layoutMode = nextMode
         } else {
             setDiffLayoutMode(diffLayoutMode == .unified ? .sideBySide : .unified)
         }
@@ -233,10 +141,10 @@ public struct MainWindowView: View {
     public var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             panelView(for: .left)
-                .navigationSplitViewColumnWidth(min: leftColumnMinWidth, ideal: leftColumnIdealWidth, max: leftColumnMaxWidth)
+                .navigationSplitViewColumnWidth(min: panelLayout.minWidth(for: .left), ideal: panelLayout.idealWidth(for: .left), max: panelLayout.maxWidth(for: .left))
         } content: {
             panelView(for: .center)
-                .navigationSplitViewColumnWidth(min: centerColumnMinWidth, ideal: centerColumnIdealWidth, max: centerColumnMaxWidth)
+                .navigationSplitViewColumnWidth(min: panelLayout.minWidth(for: .center), ideal: panelLayout.idealWidth(for: .center), max: panelLayout.maxWidth(for: .center))
                 .toolbar {
                     ToolbarItem(id: "mainWindowToolbarNav", placement: .navigation) {
                         toolbarNavigationItems
@@ -251,7 +159,7 @@ public struct MainWindowView: View {
                 .background(hiddenKeyboardShortcuts)
         } detail: {
             panelView(for: .right)
-                .navigationSplitViewColumnWidth(min: rightColumnMinWidth, ideal: rightColumnIdealWidth, max: rightColumnMaxWidth)
+                .navigationSplitViewColumnWidth(min: panelLayout.minWidth(for: .right), ideal: panelLayout.idealWidth(for: .right), max: panelLayout.maxWidth(for: .right))
         }
         .onChange(of: columnVisibility) { newVisibility in
             let isOpen = (newVisibility == .all)
@@ -264,60 +172,21 @@ public struct MainWindowView: View {
         .toolbarColorScheme(activeTheme.isDark ? .dark : .light, for: .windowToolbar)
         .background(Color(activeTheme.background).ignoresSafeArea())
         .background(WindowAppearanceConfigurator(theme: activeTheme))
-        .onDrop(of: [UTType.fileURL, UTType.url, UTType.text], isTargeted: $isWindowDropTargeted) { providers in
-            handleWindowDrop(providers: providers)
-        }
-        .overlay(windowDropOverlayView)
-        .overlay {
-            if let preview = agentCoordinator.activeImagePreview {
-                AgentImagePreviewModalView(
-                    images: preview.images,
-                    selectedIndex: Binding(
-                        get: { agentCoordinator.activeImagePreview?.selectedIndex },
-                        set: { newIdx in
-                            if let newIdx = newIdx {
-                                agentCoordinator.activeImagePreview?.selectedIndex = newIdx
-                            } else {
-                                agentCoordinator.activeImagePreview = nil
-                            }
-                        }
-                    ),
-                    allowsEditing: preview.isDraft,
-                    onDelete: preview.isDraft ? { delIdx in
-                        NotificationCenter.default.post(
-                            name: Notification.Name("anyDiffDeleteDraftImage"),
-                            object: nil,
-                            userInfo: ["index": delIdx]
-                        )
-                        if let currentImages = agentCoordinator.activeImagePreview?.images, delIdx < currentImages.count {
-                            var updated = currentImages
-                            updated.remove(at: delIdx)
-                            if updated.isEmpty {
-                                agentCoordinator.activeImagePreview = nil
-                            } else {
-                                agentCoordinator.activeImagePreview?.images = updated
-                            }
-                        }
-                    } : nil,
-                    onEdit: preview.isDraft ? { index, image in
-                        NotificationCenter.default.post(
-                            name: Notification.Name("anyDiffUpdateDraftImage"),
-                            object: nil,
-                            userInfo: ["index": index, "image": image]
-                        )
-                        if let currentImages = agentCoordinator.activeImagePreview?.images,
-                           index >= 0,
-                           index < currentImages.count {
-                            var updated = currentImages
-                            updated[index] = image
-                            agentCoordinator.activeImagePreview?.images = updated
-                        }
-                    } : nil,
-                    theme: activeTheme
-                )
-                .transition(.opacity)
-                .zIndex(999)
+        .modifier(WindowDropModifier(
+            isTargeted: $isWindowDropTargeted,
+            theme: activeTheme,
+            onOpenFolder: { path in
+                showOpenSourcePopover = false
+                repo.currentPath = path
+                repo.loadCurrentDirectoryDiff()
+            },
+            onOpenRemote: { str in
+                showOpenSourcePopover = false
+                repo.loadRemoteDiff(from: str)
             }
+        ))
+        .overlay {
+            AgentImagePreviewOverlay(coordinator: agentCoordinator, theme: activeTheme)
         }
         .sheet(item: commentModalBinding) { target in
             commentModalView(for: target)
@@ -334,242 +203,90 @@ public struct MainWindowView: View {
                 // beginReview preloads the review before switching modes. The
                 // fallback handles any coordinator-driven activation that did
                 // not go through that path.
-                if preparedReviewSummary == summary {
-                    preparedReviewSummary = nil
+                if review.preparedReviewSummary == summary {
+                    review.preparedReviewSummary = nil
                 } else {
-                    readOnlyDisplayMap.layoutMode = .unified
-                    loadReviewDiff(for: summary)
+                    review.displayMap.layoutMode = .unified
+                    review.loadReviewDiff(for: summary, workingDirectory: effectiveWorkingDirectory, baseDirectory: effectiveBaseDirectory)
                 }
             } else {
-                preparedReviewSummary = nil
-                clearReadOnlyDiff()
-                if let savedPath = selectedFilePathBeforeReadOnly {
-                    selectedFilePath = savedPath
-                    selectedFilePathBeforeReadOnly = nil
+                review.preparedReviewSummary = nil
+                review.clear()
+                if let savedPath = review.selectedFilePathBeforeReadOnly {
+                    repo.selectedFilePath = savedPath
+                    review.selectedFilePathBeforeReadOnly = nil
                 }
-                if multiBuffer.excerpts.isEmpty && fileDiffs.isEmpty {
-                    loadCurrentDirectoryDiff()
+                if repo.multiBuffer.excerpts.isEmpty && repo.fileDiffs.isEmpty {
+                    repo.loadCurrentDirectoryDiff()
                 }
             }
         }
         .onChange(of: selectedTheme.id) { _ in updateWindowAppearance() }
         .onChange(of: followsSystemAppearance) { _ in updateWindowAppearance() }
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didEnterFullScreenNotification)) { _ in
-            updateWindowAppearance()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didExitFullScreenNotification)) { _ in
-            updateWindowAppearance()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .focusFileInEditor)) { _ in
-            if activeMarkdownPreviewPath != nil {
-                closeMarkdownPreview()
-            }
-            if panelLayout.slot(for: .editor) == nil {
-                panelLayout.assign(.editor, to: .center)
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResizeNotification)) { _ in
-            updateWindowAppearance()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: NSSplitView.didResizeSubviewsNotification)) { _ in
-            updateWindowAppearance()
-        }
-        .onChange(of: isWatchModeEnabled) { enabled in
-            if enabled {
-                guard let currentDir = loadableWorkingDirectory else {
-                    folderWatcher?.stop()
-                    folderWatcher = nil
-                    pendingWatchPaths.removeAll()
-                    return
-                }
-                restartWatcher(for: currentDir)
-                startPendingWatchRefresh(directory: currentDir)
-            } else {
-                folderWatcher?.stop()
-                folderWatcher = nil
-                pendingWatchPaths.removeAll()
-                watchRefreshGeneration &+= 1
-            }
+        .onChange(of: repo.isWatchModeEnabled) { enabled in
+            repo.setWatchModeEnabled(enabled)
         }
         .onDisappear {
-            folderWatcher?.stop()
-            folderWatcher = nil
+            repo.stopWatcher()
         }
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffOpenProject"))) { _ in
-            showOpenSourcePopover = true
-        }
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffOpenURL"))) { _ in
-            showOpenSourcePopover = true
-        }
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffOpenInBrowser"))) { _ in
-            openInBrowser()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffAgentSessionTurnCompleted"))) { notification in
-            guard let session = notification.object as? AgentSessionItem else { return }
-            let isError = (notification.userInfo?["isError"] as? Bool) ?? false
-            if session.isNotificationsEnabled {
-                if isError {
-                    SoundFeedback.play(.error)
-                } else {
-                    SoundFeedback.play(.completion)
+        .modifier(MainWindowEventsModifier(
+            onUpdateAppearance: { updateWindowAppearance() },
+            onFocusEditor: {
+                if activeMarkdownPreviewPath != nil {
+                    closeMarkdownPreview()
                 }
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: AgentDisplayPreferences.didChangeNotification)) { _ in
-            toolcallColorMode = AgentDisplayPreferences.toolcallColorMode
-        }
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffAgentPermissionRequested"))) { notification in
-            guard let session = notification.object as? AgentSessionItem else { return }
-            if session.isNotificationsEnabled {
-                SoundFeedback.play(.attention)
-                HapticFeedback.perform(.levelChange)
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffReloadDiff"))) { _ in
-            reloadCurrentDiff()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffToggleWatchMode"))) { _ in
-            isWatchModeEnabled.toggle()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffToggleLeftPanel"))) { _ in
-            withAnimation(.easeInOut(duration: 0.12)) {
-                toggleLeftPanel()
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffToggleRightPanel"))) { _ in
-            withAnimation(.easeInOut(duration: 0.2)) {
-                toggleRightPanel()
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffToggleAgent"))) { _ in
-            withAnimation(.easeInOut(duration: 0.2)) {
-                toggleRightPanel()
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffToggleSidebar"))) { _ in
-            withAnimation(.easeInOut(duration: 0.12)) {
-                toggleLeftPanel()
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffSelectTheme"))) { notif in
-            if let themeId = notif.userInfo?["themeId"] as? String {
+                if panelLayout.slot(for: .editor) == nil {
+                    panelLayout.assign(.editor, to: .center)
+                }
+            },
+            onOpenProject: { showOpenSourcePopover = true },
+            onOpenInBrowser: { openInBrowser() },
+            onReloadDiff: { reloadCurrentDiff() },
+            onToggleWatchMode: { repo.isWatchModeEnabled.toggle() },
+            onToggleLeftPanel: {
+                withAnimation(.easeInOut(duration: 0.12)) {
+                    toggleLeftPanel()
+                }
+            },
+            onToggleRightPanel: {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    toggleRightPanel()
+                }
+            },
+            onSelectTheme: { themeId in
                 if themeId == "system" {
                     followsSystemAppearance = true
                 } else if let t = Theme.allThemes.first(where: { $0.id == themeId }) {
                     followsSystemAppearance = false
                     selectedTheme = t
                 }
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffSetDiffLayout"))) { notif in
-            if let modeStr = notif.userInfo?["mode"] as? String, let m = DiffLayoutMode(rawValue: modeStr) {
+            },
+            onSetDiffLayout: { m in
                 withAnimation(.easeInOut(duration: 0.15)) {
                     setDiffLayoutMode(m)
                 }
+            },
+            onFindInProject: {
+                withAnimation(.easeInOut(duration: 0.16)) {
+                    search.open(in: effectiveWorkingDirectory, selectedText: activeDisplayMap.getSelectionText())
+                }
+            },
+            onFindNext: { search.selectNextMatch() },
+            onFindPrevious: { search.selectPreviousMatch() },
+            onZoomIn: { fontSize = min(28, fontSize + 1) },
+            onZoomOut: { fontSize = max(9, fontSize - 1) },
+            onResetZoom: { fontSize = 13 },
+            onResetPanelsLayout: {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    panelLayout.resetToDefaults()
+                }
+            },
+            onToolcallColorModeChanged: { mode in
+                toolcallColorMode = mode
             }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffFindInProject"))) { _ in
-            withAnimation(.easeInOut(duration: 0.16)) {
-                openProjectSearch()
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffFindNext"))) { _ in
-            selectNextSearchMatch()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffFindPrevious"))) { _ in
-            selectPreviousSearchMatch()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffZoomIn"))) { _ in
-            fontSize = min(28, fontSize + 1)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffZoomOut"))) { _ in
-            fontSize = max(9, fontSize - 1)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffResetZoom"))) { _ in
-            fontSize = 13
-        }
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffResetPanelsLayout"))) { _ in
-            withAnimation(.easeInOut(duration: 0.2)) {
-                panelLayout.resetToDefaults()
-            }
-        }
+        ))
     }
 
-    private var leftColumnMinWidth: CGFloat {
-        switch panelLayout.leftContent {
-        case .editor: return 360
-        case .agent: return 280
-        case .history: return 240
-        case .changes, .files, nil: return 200
-        }
-    }
-
-    private var leftColumnIdealWidth: CGFloat {
-        switch panelLayout.leftContent {
-        case .editor: return 500
-        case .agent: return 360
-        case .history: return 320
-        case .changes, .files, nil: return 280
-        }
-    }
-
-    private var leftColumnMaxWidth: CGFloat {
-        switch panelLayout.leftContent {
-        case .editor: return 1200
-        case .agent: return 800
-        case .changes, .files, .history, nil: return 800
-        }
-    }
-
-    private var centerColumnMinWidth: CGFloat {
-        switch panelLayout.centerContent {
-        case .changes, .files, .history: return 200
-        case .agent: return 280
-        case .editor, nil: return 320
-        }
-    }
-
-    private var centerColumnIdealWidth: CGFloat {
-        switch panelLayout.centerContent {
-        case .changes, .files, .history: return 320
-        case .agent: return 560
-        case .editor, nil: return 760
-        }
-    }
-
-    private var centerColumnMaxWidth: CGFloat {
-        1600
-    }
-
-    private var rightColumnMinWidth: CGFloat {
-        guard panelLayout.isRightPanelOpen else { return 0 }
-        switch panelLayout.rightContent {
-        case .changes, .files, .history: return 220
-        case .editor: return 360
-        case .agent: return 320
-        case nil: return 240
-        }
-    }
-
-    private var rightColumnIdealWidth: CGFloat {
-        guard panelLayout.isRightPanelOpen else { return 0 }
-        switch panelLayout.rightContent {
-        case .changes, .files, .history: return 320
-        case .editor: return 600
-        case .agent: return 560
-        case nil: return 320
-        }
-    }
-
-    private var rightColumnMaxWidth: CGFloat {
-        guard panelLayout.isRightPanelOpen else { return 0 }
-        switch panelLayout.rightContent {
-        case .changes, .files, .history: return 800
-        case .editor: return 1400
-        case .agent: return 950
-        case nil: return 800
-        }
-    }
 
     @ViewBuilder
     private func panelView(for slot: PanelSlot) -> some View {
@@ -605,18 +322,12 @@ public struct MainWindowView: View {
     @ViewBuilder
     private func changesPanelView(for slot: PanelSlot) -> some View {
         SidebarFileListView(
+            repo: repo,
             fileDiffs: activeFileDiffs,
             theme: activeTheme,
-            emptyMessage: isReadOnlyActive ? (comparisonTarget.isCommit ? "No changed files in commit" : "No files in review") : (repoStatus == .notGitRepository ? "Not a Git repository" : "No changed files"),
-            isReloading: isReloading,
-            isStreaming: isStreaming,
-            streamingCount: streamingCount,
-            comparisonTarget: comparisonTarget,
-            isWatchModeEnabled: isWatchModeEnabled,
+            emptyMessage: isReadOnlyActive ? (repo.comparisonTarget.isCommit ? "No changed files in commit" : "No files in review") : (repo.repoStatus == .notGitRepository ? "Not a Git repository" : "No changed files"),
             reviewManager: reviewManager,
-            selectedFilePath: $selectedFilePath,
             onReload: { reloadCurrentDiff() },
-            onToggleWatchMode: { isWatchModeEnabled.toggle() },
             onBack: {
                 withAnimation(.easeInOut(duration: 0.18)) {
                     panelLayout.clear(slot)
@@ -642,7 +353,7 @@ public struct MainWindowView: View {
             fileDiffs: activeFileDiffs,
             openFilePaths: Set(activeDisplayMap.multiBuffer.excerpts.map(\.filePath)),
             theme: activeTheme,
-            selectedFilePath: $selectedFilePath,
+            selectedFilePath: $repo.selectedFilePath,
             onOpenFile: { path in
                 if activeMarkdownPreviewPath != nil {
                     let isMd = path.hasSuffix(".md") || path.hasSuffix(".markdown") || path.hasSuffix(".mdx")
@@ -685,9 +396,9 @@ public struct MainWindowView: View {
         HistoryPanelView(
             directory: effectiveWorkingDirectory,
             theme: activeTheme,
-            comparisonTarget: comparisonTarget,
-            workingChangesCount: fileDiffs.count,
-            reloadToken: loadGeneration,
+            comparisonTarget: repo.comparisonTarget,
+            workingChangesCount: repo.fileDiffs.count,
+            reloadToken: repo.reloadToken,
             onSelectCommit: { commit in
                 selectCommit(commit)
             },
@@ -724,19 +435,19 @@ public struct MainWindowView: View {
             panelLayout.assign(.editor, to: .center)
         }
         if let target = targetFilePath {
-            selectedFilePath = target
+            repo.selectedFilePath = target
         }
-        if case .commit(let currentHash, _) = comparisonTarget, currentHash == commit.hash {
+        if case .commit(let currentHash, _) = repo.comparisonTarget, currentHash == commit.hash {
             if let target = targetFilePath {
                 focusFileInMultiBuffer(target)
             }
             return
         }
-        if selectedFilePathBeforeReadOnly == nil {
-            selectedFilePathBeforeReadOnly = selectedFilePath
+        if review.selectedFilePathBeforeReadOnly == nil {
+            review.selectedFilePathBeforeReadOnly = repo.selectedFilePath
         }
-        selectedCommit = commit
-        comparisonTarget = .commit(hash: commit.hash, summary: commit.summary)
+        repo.selectedCommit = commit
+        repo.comparisonTarget = .commit(hash: commit.hash, summary: commit.summary)
         loadCommitDiff(hash: commit.hash, targetFilePath: targetFilePath)
     }
 
@@ -747,7 +458,7 @@ public struct MainWindowView: View {
         if panelLayout.slot(for: .editor) == nil {
             panelLayout.assign(.editor, to: .center)
         }
-        selectedFilePath = filePath
+        repo.selectedFilePath = filePath
         let post = {
             NotificationCenter.default.post(
                 name: .focusFileInEditor,
@@ -761,22 +472,27 @@ public struct MainWindowView: View {
     }
 
     private func selectWorkingChanges() {
-        guard comparisonTarget != .workingTree else { return }
+        guard repo.comparisonTarget != .workingTree else { return }
         endReadOnlyDiff()
     }
 
     private func loadCommitDiff(hash: String, targetFilePath: String? = nil) {
         let dir = effectiveWorkingDirectory
         guard !dir.isEmpty else { return }
-        readOnlyMultiBuffer.baseDirectory = dir
-        readOnlyDisplayMap.layoutMode = diffLayoutMode
+        review.multiBuffer.baseDirectory = dir
+        review.displayMap.layoutMode = diffLayoutMode
 
         DispatchQueue.global(qos: .userInitiated).async {
-            let (files, rawData) = self.fetchGitDiffFiles(at: dir, target: .commit(hash: hash, summary: ""))
+            let (files, rawData) = GitService.shared.diffFiles(at: dir, target: .commit(hash: hash, summary: ""))
             DispatchQueue.main.async {
-                guard case .commit(let currentHash, _) = self.comparisonTarget, currentHash == hash else { return }
-                self.readOnlyViewStateResetToken &+= 1
-                self.loadDiff(files: files, rawData: rawData, isReadOnly: true)
+                guard case .commit(let currentHash, _) = self.repo.comparisonTarget, currentHash == hash else { return }
+                self.review.viewStateResetToken &+= 1
+                self.review.loadDiff(files: files, rawData: rawData, baseDirectory: self.effectiveBaseDirectory)
+                if let sel = self.repo.selectedFilePath, files.contains(where: { $0.displayPath == sel }) {
+                    self.repo.selectedFilePath = sel
+                } else {
+                    self.repo.selectedFilePath = files.first?.displayPath
+                }
                 if let target = targetFilePath {
                     self.focusFileInMultiBuffer(target)
                 }
@@ -786,1250 +502,167 @@ public struct MainWindowView: View {
 
     @ViewBuilder
     private func editorPanelView(for slot: PanelSlot) -> some View {
-        VStack(spacing: 0) {
-            GeometryReader { headerGeo in
-                PanelHeaderView(
-                    theme: activeTheme,
-                    onBack: {
-                        withAnimation(.easeInOut(duration: 0.18)) {
-                            panelLayout.clear(slot)
-                        }
-                    }
-                ) {
-                    editorHeaderLeadingView(availableWidth: headerGeo.size.width)
-                } actions: {
-                    editorHeaderActions(availableWidth: headerGeo.size.width)
-                }
-                .frame(width: headerGeo.size.width, height: 28, alignment: .leading)
-            }
-            .frame(height: 28)
-
-            if isProjectSearchActive {
-                ProjectSearchBarView(
-                    query: $searchQuery,
-                    totalMatchesCount: searchMatches.count,
-                    activeMatchIndex: activeMatchIndex,
-                    isSearching: isSearching,
-                    isTruncated: isSearchTruncated,
-                    hasExecutedSearch: hasExecutedSearch,
-                    theme: activeTheme,
-                    focusToken: searchFocusToken,
-                    onSearch: {
-                        triggerDebouncedSearch(delay: 0)
-                    },
-                    onQueryChanged: {
-                        triggerDebouncedSearch(delay: 0)
-                    },
-                    onNextMatch: {
-                        selectNextSearchMatch()
-                    },
-                    onPrevMatch: {
-                        selectPreviousSearchMatch()
-                    },
-                    onClose: {
-                        withAnimation(.easeInOut(duration: 0.16)) {
-                            closeProjectSearch()
-                        }
-                    }
-                )
-                .transition(.move(edge: .top).combined(with: .opacity))
-            }
-
-            ZStack {
-                if let mdPath = activeMarkdownPreviewPath {
-                    MarkdownDocumentView(
-                        filePath: mdPath,
-                        rootDirectory: effectiveWorkingDirectory,
-                        theme: activeTheme,
-                        onClose: {
-                            closeMarkdownPreview()
-                        },
-                        onOpenInEditor: {
-                            let path = mdPath
-                            closeMarkdownPreview()
-                            openFileInEditor(path: path)
-                        }
-                    )
-                    .id(mdPath)
-                } else {
-                    editorDetailView
-
-                    if activeFileDiffs.isEmpty && !isReadOnlyActive && !isProjectSearchActive {
-                        emptyStateDetailView
-                    } else if isProjectSearchActive && hasExecutedSearch && searchMatches.isEmpty && !isSearching && !searchQuery.isEmpty {
-                        searchEmptyStateView
-                    }
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .onChange(of: searchQuery.query) { _ in
-            hasExecutedSearch = false
-        }
-        .background(Color(activeTheme.background))
-    }
-
-    private var hasAnyCollapsedFiles: Bool {
-        activeMultiBuffer.excerpts.contains { $0.isCollapsed }
-    }
-
-    private func toggleCollapseAllFiles() {
-        withAnimation(.easeInOut(duration: 0.16)) {
-            if hasAnyCollapsedFiles {
-                activeMultiBuffer.expandAll()
-            } else {
-                activeMultiBuffer.collapseAll()
-            }
-            activeDisplayMap.rebuild()
-            activeDisplayMap.markContentLoaded()
-        }
-    }
-
-    private var editorTitlePrefix: String {
-        if activeMarkdownPreviewPath != nil {
-            return "Preview"
-        } else if isProjectSearchActive {
-            return "Search"
-        } else if agentCoordinator.activeReviewSummary != nil {
-            return "Review"
-        } else if case .baseBranch(let base) = comparisonTarget {
-            return base
-        } else if case .directBranch(let branch) = comparisonTarget {
-            return branch
-        } else if case .remote(let ref) = comparisonTarget {
-            return ref.displayTitle
-        } else if case .commit(let hash, _) = comparisonTarget {
-            return String(hash.prefix(7))
-        }
-        return "Uncommitted"
-    }
-
-    private var commitSummaryTooltip: String {
-        if case .commit(_, let summary) = comparisonTarget, !summary.isEmpty {
-            return summary
-        }
-        return ""
-    }
-
-    @ViewBuilder
-    private func editorHeaderLeadingView(availableWidth: CGFloat = 600) -> some View {
-        HStack(spacing: 6) {
-            let iconName: String = {
-                if activeMarkdownPreviewPath != nil {
-                    return "doc.text"
-                } else if isProjectSearchActive {
-                    return "magnifyingglass"
-                } else if case .commit = comparisonTarget {
-                    return "clock.arrow.circlepath"
-                } else {
-                    return "arrow.triangle.branch"
-                }
-            }()
-
-            Image(systemName: iconName)
-                .font(.system(size: 11.5, weight: .medium))
-                .frame(width: 14, height: 14)
-                .foregroundColor(Color(activeTheme.gutterForeground))
-
-            Text(editorTitlePrefix)
-                .font(.system(size: 11, weight: .bold))
-                .foregroundColor(Color(activeTheme.foreground))
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .help(commitSummaryTooltip)
-
-            // Changed count: hide if available width is tight (< 420 pt) or if markdown preview is active
-            if availableWidth >= 420 && activeMarkdownPreviewPath == nil {
-                Text("\(activeFileDiffs.count) \(activeFileDiffs.count == 1 ? "change" : "changes")")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(Color(activeTheme.gutterForeground))
-                    .lineLimit(1)
-            }
-
-            // Badges moved from window toolbar into the editor header
-            if let mdPath = activeMarkdownPreviewPath {
-                markdownPreviewBadge(for: mdPath)
-            } else if availableWidth >= 460 || (!isProjectSearchActive && comparisonTarget == .workingTree) {
-                if isProjectSearchActive {
-                    globalSearchBadge
-                } else if isReadOnlyActive {
-                    readOnlyDiffBadge
-                } else if comparisonTarget != .workingTree {
-                    readOnlyBadge
-                }
-            }
-        }
-        .lineLimit(1)
-    }
-
-    @ViewBuilder
-    private func commitDetailPopoverContent(hash: String, summary: String) -> some View {
-        let commit = selectedCommit ?? (effectiveWorkingDirectory.isEmpty ? nil : GitLogReader.shared.readCommit(directory: effectiveWorkingDirectory, hash: hash)) ?? GitCommit(
-            hash: hash,
-            shortHash: String(hash.prefix(7)),
-            parentHashes: [],
-            authorName: "",
-            authorEmail: "",
-            date: Date(),
-            summary: summary
-        )
-        let totalAdds = activeFileDiffs.reduce(0) { $0 + $1.additions }
-        let totalDels = activeFileDiffs.reduce(0) { $0 + $1.deletions }
-        let fileChanges: [CommitFileChange] = activeFileDiffs.map {
-            CommitFileChange(path: $0.displayPath, additions: $0.additions, deletions: $0.deletions)
-        }
-
-        CommitDetailPopoverView(
-            commit: commit,
+        EditorContainerView(
+            repo: repo,
+            review: review,
+            search: search,
             theme: activeTheme,
-            directory: effectiveWorkingDirectory,
-            fileCount: activeFileDiffs.count,
-            additions: totalAdds,
-            deletions: totalDels,
-            files: fileChanges,
-            onSelectFile: { file in
-                focusFileInMultiBuffer(file.path)
-            },
-            onOpen: {
-                selectCommit(commit)
-            },
-            onClose: { showCommitDetailPopover = false }
-        )
-    }
-
-    @ViewBuilder
-    private func editorHeaderActions(availableWidth: CGFloat = 600) -> some View {
-        HStack(spacing: 2) {
-            // Next / Previous Hunk stepper buttons
-            HStack(spacing: 1) {
-                Button(action: {
-                    NotificationCenter.default.post(name: .goToPreviousHunk, object: nil)
-                }) {
-                    Image(systemName: "arrow.up")
-                        .font(.system(size: 10.5, weight: .semibold))
-                        .frame(width: 14, height: 14)
-                        .foregroundColor(activeFileDiffs.isEmpty ? Color(activeTheme.gutterForeground).opacity(0.35) : Color(activeTheme.gutterForeground))
+            fontSize: fontSize,
+            activeMarkdownPreviewPath: activeMarkdownPreviewPath,
+            isReviewActive: agentCoordinator.activeReviewSummary != nil || review.isActive,
+            onClosePanel: {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    panelLayout.clear(slot)
                 }
-                .buttonStyle(ToolbarHoverButtonStyle())
-                .disabled(activeFileDiffs.isEmpty)
-                .help("Go to Previous Hunk (⇧⌘F8 / ⇧F7)")
-
-                Button(action: {
-                    NotificationCenter.default.post(name: .goToNextHunk, object: nil)
-                }) {
-                    Image(systemName: "arrow.down")
-                        .font(.system(size: 10.5, weight: .semibold))
-                        .frame(width: 14, height: 14)
-                        .foregroundColor(activeFileDiffs.isEmpty ? Color(activeTheme.gutterForeground).opacity(0.35) : Color(activeTheme.gutterForeground))
-                }
-                .buttonStyle(ToolbarHoverButtonStyle())
-                .disabled(activeFileDiffs.isEmpty)
-                .help("Go to Next Hunk (⌘F8 / F7)")
-            }
-
-            Rectangle()
-                .fill(Color(activeTheme.gutterForeground).opacity(0.2))
-                .frame(width: 1, height: 12)
-                .padding(.horizontal, 3)
-
-            // Toggle/collapse all files in MultiBuffer button (перед switch side by side)
-            Button(action: toggleCollapseAllFiles) {
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 10.5, weight: .semibold))
-                    .frame(width: 14, height: 14)
-                    .foregroundColor(hasAnyCollapsedFiles ? Color(activeTheme.foreground) : Color(activeTheme.gutterForeground))
-            }
-            .buttonStyle(ToolbarHoverButtonStyle())
-            .help(hasAnyCollapsedFiles ? "Expand All Files in MultiBuffer" : "Collapse All Files in MultiBuffer")
-
-            // Single toggle icon switching between Unified and Side-by-Side
-            Button(action: {
+            },
+            onToggleLayout: {
                 withAnimation(.easeInOut(duration: 0.16)) {
                     toggleDiffLayoutMode()
                 }
-            }) {
-                DiffLayoutToggleIcon(mode: diffLayoutMode)
+            },
+            onCloseMarkdown: {
+                closeMarkdownPreview()
+            },
+            onOpenFileInEditor: { path in
+                openFileInEditor(path: path)
+            },
+            onEndReadOnly: {
+                endReadOnlyDiff()
+            },
+            onAddComment: { path, line in
+                commentTarget = (filePath: path, lineNumber: line)
+            },
+            onOpenExternalIDE: { path, line in
+                openInExternalIDE(filePath: path, line: line)
+            },
+            onPreviewMarkdown: { path in
+                openMarkdownPreview(path: path)
+            },
+            onOpenInBrowser: {
+                openInBrowser()
             }
-            .buttonStyle(ToolbarHoverButtonStyle())
-            .help(diffLayoutMode == .unified ? "Switch to Side-by-Side Diff (⌘D)" : "Switch to Unified Diff (⌘D)")
-
-            // Search button (hide if width < 290 pt unless search is active)
-            if availableWidth >= 290 || isProjectSearchActive {
-                Button(action: {
-                    withAnimation(.easeInOut(duration: 0.16)) {
-                        toggleProjectSearch()
-                    }
-                }) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.system(size: 10.5, weight: .medium))
-                        .foregroundColor(isProjectSearchActive ? Color(activeTheme.foreground) : Color(activeTheme.gutterForeground))
-                }
-                .buttonStyle(ToolbarHoverButtonStyle())
-                .help("Find in Project (Cmd+Shift+F)")
-            }
-
-            // Global diff stats (+- глобальный справа в самом конце)
-            // Gracefully hidden when available width is tight (< 360 pt)
-            let totalAdds = activeFileDiffs.reduce(0) { $0 + $1.additions }
-            let totalDels = activeFileDiffs.reduce(0) { $0 + $1.deletions }
-            if availableWidth >= 360 && (totalAdds > 0 || totalDels > 0) {
-                HStack(spacing: 5) {
-                    if totalAdds > 0 {
-                        Text("+\(totalAdds)")
-                            .font(.system(size: 10, weight: .bold, design: .monospaced))
-                            .foregroundColor(Color(activeTheme.diffAddedGutter))
-                            .lineLimit(1)
-                    }
-                    if totalDels > 0 {
-                        Text("-\(totalDels)")
-                            .font(.system(size: 10, weight: .bold, design: .monospaced))
-                            .foregroundColor(Color(activeTheme.diffDeletedGutter))
-                            .lineLimit(1)
-                    }
-                }
-                .lineLimit(1)
-                .fixedSize()
-                .padding(.leading, 6)
-            }
-        }
-        .lineLimit(1)
-        .fixedSize(horizontal: true, vertical: false)
+        )
     }
 
     @ViewBuilder
     private func agentPanelView(for slot: PanelSlot) -> some View {
-        VStack(spacing: 0) {
-            PanelHeaderView(
-                theme: activeTheme,
-                onBack: {
-                    withAnimation(.easeInOut(duration: 0.18)) {
-                        panelLayout.clear(slot)
-                    }
+        AgentContainerView(
+            coordinator: agentCoordinator,
+            theme: activeTheme,
+            workingDirectory: effectiveWorkingDirectory,
+            selectedFilePath: repo.selectedFilePath,
+            fileDiffsSummary: currentDiffSummary,
+            toolcallColorMode: toolcallColorMode,
+            onClose: {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    panelLayout.clear(slot)
                 }
-            ) {
-                EmptyView()
-            } actions: {
-                agentHeaderActions(for: slot)
-            }
-
-            Group {
-                if !agentCoordinator.showStartScreen, let activeSession = agentCoordinator.activeSession {
-                    AgentPanelView(
-                        agentManager: activeSession.manager,
-                        theme: activeTheme,
-                        workingDirectory: effectiveWorkingDirectory,
-                        currentSelectedFile: selectedFilePath,
-                        fileDiffsSummary: currentDiffSummary,
-                        agentAccentColor: activeSession.preset.color,
-                        agentIcon: activeSession.preset.iconName,
-                        toolcallColorMode: toolcallColorMode,
-                        onReview: { summary in
-                            beginReview(summary: summary)
-                        },
-                        onPreviewImages: { imgs, idx, isDraft in
-                            agentCoordinator.showImagePreview(images: imgs, selectedIndex: idx, isDraft: isDraft)
-                        },
-                        onOpenURL: { url in
-                            handleOpenURL(url)
-                        }
-                    )
-                    .id(activeSession.id)
-                } else {
-                    AgentStartScreenView(
-                        coordinator: agentCoordinator,
-                        theme: activeTheme,
-                        workingDirectory: effectiveWorkingDirectory
-                    )
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-    }
-
-    @ViewBuilder
-    private func agentHeaderActions(for slot: PanelSlot) -> some View {
-        HStack(alignment: .center, spacing: 4) {
-            if let activeSession = agentCoordinator.activeSession {
-                Button(action: { isAgentSessionsPresented.toggle() }) {
-                    Text(activeSession.preset.name)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(isAgentSessionsHovered || isAgentSessionsPresented
-                            ? Color(nsColor: .labelColor)
-                            : Color(nsColor: .labelColor).opacity(0.92))
-                        .lineLimit(1)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 3)
-                        .frame(minHeight: 20)
-                        .background(Color.clear, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(agentAccentColor.opacity(
-                                    isAgentSessionsHovered || isAgentSessionsPresented ? 0.08 : 0
-                                ))
-                        )
-                }
-                .buttonStyle(.plain)
-                .help("Sessions")
-                .popover(isPresented: $isAgentSessionsPresented, arrowEdge: .bottom) {
-                    AgentSettingsPopoverView(
-                        coordinator: agentCoordinator,
-                        theme: activeTheme,
-                        workingDirectory: effectiveWorkingDirectory,
-                        onClose: { isAgentSessionsPresented = false }
-                    )
-                }
-                .onHover { isAgentSessionsHovered = $0 }
-
-                Button(action: {
-                    activeSession.isNotificationsEnabled.toggle()
-                }) {
-                    Image(systemName: activeSession.isNotificationsEnabled ? "bell.fill" : "bell.slash")
-                        .font(.system(size: 11, weight: .medium))
-                        .frame(width: 16, height: 16)
-                        .foregroundColor(activeSession.isNotificationsEnabled
-                            ? agentAccentColor
-                            : Color(nsColor: .secondaryLabelColor).opacity(0.85))
-                }
-                .buttonStyle(AgentToolbarActionButtonStyle(
-                    accentColor: agentAccentColor,
-                    isActive: activeSession.isNotificationsEnabled
-                ))
-                .help(activeSession.isNotificationsEnabled
-                    ? "Sound notifications enabled (Click to mute)"
-                    : "Sound notifications disabled (Click to enable)")
-            }
-
-            if hasActiveAgentSession {
-                Button(action: {
-                    withAnimation(.easeInOut(duration: 0.15)) {
-                        _ = agentCoordinator.createNewSession(workingDirectory: effectiveWorkingDirectory)
-                    }
-                }) {
-                    Image(systemName: "plus")
-                        .font(.system(size: 12, weight: .medium))
-                        .frame(width: 16, height: 16)
-                        .foregroundColor(Color(nsColor: .secondaryLabelColor))
-                }
-                .buttonStyle(AgentToolbarActionButtonStyle(accentColor: agentAccentColor))
-                .help("New Agent Session (Cmd+N)")
-            }
-
-            if hasActiveAgentSession {
-                Button(action: {
-                    withAnimation(.easeInOut(duration: 0.18)) {
-                        if isShowingAgentStartScreen {
-                            if let active = agentCoordinator.activeSession {
-                                agentCoordinator.selectSession(id: active.id)
-                            }
-                        } else {
-                            agentCoordinator.openStartScreen()
-                        }
-                    }
-                }) {
-                    Image(systemName: isShowingAgentStartScreen ? "chevron.right" : "chevron.left")
-                        .font(.system(size: 11, weight: .medium))
-                        .frame(width: 16, height: 16)
-                        .foregroundColor(isShowingAgentStartScreen ? agentAccentColor : Color(nsColor: .secondaryLabelColor))
-                }
-                .buttonStyle(AgentToolbarActionButtonStyle(
-                    accentColor: agentAccentColor,
-                    isActive: isShowingAgentStartScreen
-                ))
-                .help(isShowingAgentStartScreen ? "Back to Chat" : "Choose Agent / All Agents")
-            }
-        }
+            },
+            onReview: { summary in beginReview(summary: summary) },
+            onOpenURL: { url in handleOpenURL(url) }
+        )
     }
 
     @ViewBuilder
     private var windowToolbarTrailingItems: some View {
-        HStack(spacing: 6) {
-            rightPanelToggleButton(isOpen: panelLayout.isRightPanelOpen)
-        }
-    }
-
-    private var hasActiveAgentSession: Bool {
-        agentCoordinator.activeSession != nil
-    }
-
-    private var agentAccentColor: Color {
-        agentCoordinator.activeSession?.preset.color ?? .accentColor
-    }
-
-    private var isShowingAgentStartScreen: Bool {
-        agentCoordinator.showStartScreen || !hasActiveAgentSession
-    }
-
-    @ViewBuilder
-    private var agentToolbarButton: some View {
-        HStack(spacing: 6) {
-            rightPanelToggleButton(isOpen: false)
-        }
-    }
-
-    @ViewBuilder
-    private func rightPanelToggleButton(isOpen: Bool) -> some View {
-        let title = panelLayout.rightContent?.title ?? "Right Panel"
-        Button(action: {
-            withAnimation(.easeInOut(duration: 0.2)) {
-                panelLayout.toggleRightPanel()
-                agentCoordinator.isPanelOpen = panelLayout.isRightPanelOpen
+        RightPanelToggleButton(
+            isOpen: panelLayout.isRightPanelOpen,
+            title: panelLayout.rightContent?.title ?? "Right Panel",
+            onToggle: {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    panelLayout.toggleRightPanel()
+                    agentCoordinator.isPanelOpen = panelLayout.isRightPanelOpen
+                }
             }
-        }) {
-            Label(isOpen ? "Hide \(title)" : "Show \(title)", systemImage: "sidebar.right")
-        }
-        .help(isOpen ? "Hide \(title) (Cmd+Opt+A)" : "Show \(title) (Cmd+Opt+A)")
+        )
     }
 
     private var currentDiffSummary: String {
-        guard !fileDiffs.isEmpty else { return "No uncommitted changes." }
-        var summary = "Repository: \(currentFolderName)\n"
-        summary += "Changed Files (\(fileDiffs.count)):\n"
-        for file in fileDiffs.prefix(25) {
+        guard !repo.fileDiffs.isEmpty else { return "No uncommitted changes." }
+        var summary = "Repository: \(repo.currentFolderName)\n"
+        summary += "Changed Files (\(repo.fileDiffs.count)):\n"
+        for file in repo.fileDiffs.prefix(25) {
             summary += "- \(file.displayPath) (+\(file.additions), -\(file.deletions))\n"
         }
-        if fileDiffs.count > 25 {
-            summary += "...and \(fileDiffs.count - 25) more files\n"
+        if repo.fileDiffs.count > 25 {
+            summary += "...and \(repo.fileDiffs.count - 25) more files\n"
         }
         return summary
     }
 
-    @ViewBuilder
-    private var emptyStateDetailView: some View {
-        VStack(spacing: 0) {
-            Spacer()
-            VStack(spacing: 16) {
-                emptyStatusHeaderView
 
-                OpenSourceContentView(
-                    theme: activeTheme,
-                    currentLocalPath: currentPath,
-                    currentComparisonTarget: comparisonTarget,
-                    isInline: true,
-                    onOpenLocalFolder: { openGitRepositoryFolder() },
-                    onSelectLocalPath: { path in
-                        self.currentPath = path
-                        loadCurrentDirectoryDiff()
-                    },
-                    onOpenRemoteURL: { url in
-                        loadRemoteDiff(from: url)
-                    },
-                    onOpenInBrowser: { openInBrowser() }
-                )
-            }
-            Spacer()
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(activeTheme.background))
-    }
-
-    @ViewBuilder
-    private var emptyStatusHeaderView: some View {
-        VStack(spacing: 6) {
-            if loadableWorkingDirectory == nil {
-                Image(systemName: "folder.badge.plus")
-                    .font(.system(size: 34, weight: .light))
-                    .foregroundColor(Color(activeTheme.gutterForeground).opacity(0.8))
-
-                Text("Choose a Git Repository")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundColor(Color(activeTheme.foreground))
-
-                Text("Open a repository to view its changes.")
-                    .font(.system(size: 12))
-                    .foregroundColor(Color(activeTheme.gutterForeground))
-            } else if repoStatus == .notGitRepository {
-                Image(systemName: "folder.badge.questionmark")
-                    .font(.system(size: 34, weight: .light))
-                    .foregroundColor(Color(activeTheme.gutterForeground).opacity(0.8))
-
-                Text("Not a Git Repository")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundColor(Color(activeTheme.foreground))
-
-                Text(currentFolderName.isEmpty ? "Current folder is not a Git repository." : "\"\(currentFolderName)\" is not a Git repository.")
-                    .font(.system(size: 12))
-                    .foregroundColor(Color(activeTheme.gutterForeground))
-            } else {
-                Image(systemName: "checkmark.circle")
-                    .font(.system(size: 34, weight: .ultraLight))
-                    .foregroundColor(Color(activeTheme.gutterForeground).opacity(0.8))
-
-                Text("No Uncommitted Changes")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundColor(Color(activeTheme.foreground))
-
-                Text("Working tree in \(currentFolderName.isEmpty ? "project" : "\"\(currentFolderName)\"") is clean.")
-                    .font(.system(size: 12))
-                    .foregroundColor(Color(activeTheme.gutterForeground))
-            }
-        }
-        .padding(.bottom, 4)
-    }
-
-    @ViewBuilder
-    private var editorDetailView: some View {
-        EditorHostView(
-            displayMap: activeDisplayMap,
-            theme: activeTheme,
-            fontSize: fontSize,
-            isEditable: (!isReadOnlyActive && comparisonTarget == .workingTree),
-            selectedFilePath: selectedFilePath,
-            viewStateResetToken: isReadOnlyActive ? readOnlyViewStateResetToken : (isProjectSearchActive ? searchViewStateResetToken : nil),
-            searchMatches: isProjectSearchActive ? searchMatches : [],
-            activeMatchIndex: isProjectSearchActive ? activeMatchIndex : nil,
-            searchMatchScrollRequest: isProjectSearchActive ? searchMatchScrollRequest : nil,
-            onCursorChange: { location, _ in
-                if let path = location?.filePath, self.selectedFilePath != path {
-                    self.selectedFilePath = path
-                }
-            },
-            onAddCommentRequest: { path, line in
-                commentTarget = (filePath: path, lineNumber: line)
-            },
-            onContentEdited: {
-                if isProjectSearchActive {
-                    handleSearchContentEdited()
-                }
-            },
-            onCloseFileRequest: { path in
-                closeFileFromEditor(filePath: path)
-            },
-            onOpenExternalIDERequest: { path, line in
-                openInExternalIDE(filePath: path, line: line)
-            },
-            onPreviewMarkdownRequest: { path in
-                openMarkdownPreview(path: path)
-            }
-        )
-        .clipped()
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
 
     @ViewBuilder
     private var toolbarNavigationItems: some View {
-        HStack(spacing: 6) {
-            if case .remote(let ref) = comparisonTarget {
-                remoteHeaderButton(for: ref)
-            } else {
-                localHeaderButton
-
-                if repoStatus != .notGitRepository && !currentBranch.isEmpty {
-                    BranchPickerView(
-                        currentBranch: currentBranch,
-                        localBranches: localBranches,
-                        remoteBranches: remoteBranches,
-                        comparisonTarget: $comparisonTarget,
-                        onSelectTarget: { target in
-                            self.comparisonTarget = target
-                            loadCurrentDirectoryDiff()
-                        }
-                    )
-                }
-            }
-        }
-        .padding(.leading, 8)
-        .padding(.trailing, 8)
-        .padding(.vertical, 3)
-    }
-
-    @ViewBuilder
-    private func markdownPreviewBadge(for path: String) -> some View {
-        let fileName = (path as NSString).lastPathComponent
-        Button(action: {
-            withAnimation(.easeInOut(duration: 0.16)) {
-                closeMarkdownPreview()
-            }
-        }) {
-            HStack(spacing: 5) {
-                Image(systemName: "doc.richtext")
-                    .font(.system(size: 9.5, weight: .medium))
-                    .foregroundColor(.accentColor)
-
-                Text(fileName)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(isMarkdownPreviewBadgeHovered ? Color(activeTheme.foreground) : Color(activeTheme.foreground).opacity(0.85))
-                    .lineLimit(1)
-
-                Image(systemName: "xmark")
-                    .font(.system(size: 8, weight: .bold))
-                    .foregroundColor(isMarkdownPreviewCloseHovered ? Color.accentColor : Color.accentColor.opacity(0.85))
-                    .frame(width: 15, height: 15)
-                    .background(
-                        Circle()
-                            .fill(isMarkdownPreviewCloseHovered ? Color.accentColor.opacity(0.25) : Color.accentColor.opacity(0.14))
-                    )
-                    .onHover { isMarkdownPreviewCloseHovered = $0 }
-            }
-            .padding(.leading, 7.5)
-            .padding(.trailing, 4.5)
-            .padding(.vertical, 3)
-            .background(
-                Capsule()
-                    .fill(isMarkdownPreviewBadgeHovered ? Color.accentColor.opacity(0.18) : Color.accentColor.opacity(0.11))
-            )
-            .overlay(
-                Capsule()
-                    .strokeBorder(isMarkdownPreviewBadgeHovered ? Color.accentColor.opacity(0.32) : Color.accentColor.opacity(0.20), lineWidth: 0.5)
-            )
-        }
-        .buttonStyle(.plain)
-        .contentShape(Capsule())
-        .help("Close Preview (Esc)")
-        .accessibilityLabel("Close Preview")
-        .onHover { isMarkdownPreviewBadgeHovered = $0 }
-        .fixedSize()
-    }
-
-    @ViewBuilder
-    private var globalSearchBadge: some View {
-        Button(action: {
-            withAnimation(.easeInOut(duration: 0.16)) {
-                closeProjectSearch()
-            }
-        }) {
-            HStack(spacing: 5) {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 9.5, weight: .medium))
-                    .foregroundColor(.accentColor)
-
-                Text("Global Search")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(isProjectSearchHovered ? Color(activeTheme.foreground) : Color(activeTheme.foreground).opacity(0.85))
-
-                Image(systemName: "xmark")
-                    .font(.system(size: 8, weight: .bold))
-                    .foregroundColor(isProjectSearchCloseHovered ? Color.accentColor : Color.accentColor.opacity(0.85))
-                    .frame(width: 15, height: 15)
-                    .background(
-                        Circle()
-                            .fill(isProjectSearchCloseHovered ? Color.accentColor.opacity(0.25) : Color.accentColor.opacity(0.14))
-                    )
-                    .onHover { isProjectSearchCloseHovered = $0 }
-            }
-            .padding(.leading, 7.5)
-            .padding(.trailing, 4.5)
-            .padding(.vertical, 3)
-            .background(
-                Capsule()
-                    .fill(isProjectSearchHovered ? Color.accentColor.opacity(0.18) : Color.accentColor.opacity(0.11))
-            )
-            .overlay(
-                Capsule()
-                    .strokeBorder(isProjectSearchHovered ? Color.accentColor.opacity(0.32) : Color.accentColor.opacity(0.20), lineWidth: 0.5)
-            )
-        }
-        .buttonStyle(.plain)
-        .contentShape(Capsule())
-        .help("Exit Search (Esc)")
-        .accessibilityLabel("Exit Search")
-        .onHover { isProjectSearchHovered = $0 }
-        .fixedSize()
-    }
-
-    @ViewBuilder
-    private var readOnlyDiffBadge: some View {
-        Button(action: {
-            endReadOnlyDiff()
-        }) {
-            HStack(spacing: 5) {
-                Image(systemName: "lock.fill")
-                    .font(.system(size: 9.5, weight: .medium))
-                    .foregroundColor(isReadOnlyBadgeHovered ? Color(activeTheme.foreground) : Color(activeTheme.gutterForeground))
-
-                Text("Read-Only")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(isReadOnlyBadgeHovered ? Color(activeTheme.foreground) : Color(activeTheme.foreground).opacity(0.85))
-
-                Image(systemName: "xmark")
-                    .font(.system(size: 8, weight: .bold))
-                    .foregroundColor(isReadOnlyCloseHovered ? Color(activeTheme.foreground) : Color(activeTheme.gutterForeground))
-                    .frame(width: 15, height: 15)
-                    .background(
-                        Circle()
-                            .fill(isReadOnlyCloseHovered ? Color(activeTheme.foreground).opacity(0.16) : Color(activeTheme.gutterForeground).opacity(0.12))
-                    )
-                    .onHover { isReadOnlyCloseHovered = $0 }
-            }
-            .padding(.leading, 7.5)
-            .padding(.trailing, 4.5)
-            .padding(.vertical, 3)
-            .background(
-                Capsule()
-                    .fill(isReadOnlyBadgeHovered ? Color(activeTheme.gutterForeground).opacity(0.20) : Color(activeTheme.gutterForeground).opacity(0.11))
-            )
-            .overlay(
-                Capsule()
-                    .strokeBorder(isReadOnlyBadgeHovered ? Color(activeTheme.gutterForeground).opacity(0.32) : Color(activeTheme.gutterForeground).opacity(0.18), lineWidth: 0.5)
-            )
-        }
-        .buttonStyle(.plain)
-        .contentShape(Capsule())
-        .help(comparisonTarget.isCommit ? "Return to Working Changes (Esc)" : "Exit Review (Esc)")
-        .accessibilityLabel(comparisonTarget.isCommit ? "Return to Working Changes" : "Exit Review")
-        .onHover { isReadOnlyBadgeHovered = $0 }
-        .fixedSize()
-    }
-
-    @ViewBuilder
-    private func remoteHeaderButton(for ref: GitHubDiffReference) -> some View {
-        Button(action: { showOpenSourcePopover.toggle() }) {
-            HStack(spacing: 5) {
-                Image(systemName: "globe")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(.accentColor)
-                Text(ref.displayTitle)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(.primary)
-                    .lineLimit(1)
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 8, weight: .bold))
-                    .foregroundColor(.secondary)
-            }
-        }
-        .buttonStyle(ToolbarHoverButtonStyle())
-        .help("Switch Project or Remote Diff (Cmd+O)")
-        .popover(isPresented: $showOpenSourcePopover, arrowEdge: .bottom) {
-            openSourcePopoverContentView
-        }
-    }
-
-    @ViewBuilder
-    private var localHeaderButton: some View {
-        Button(action: { showOpenSourcePopover.toggle() }) {
-            HStack(spacing: 5) {
-                Image(systemName: "folder.fill")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(.secondary)
-                Text(currentFolderName.isEmpty ? "AnyDiff" : currentFolderName)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(.primary)
-                    .lineLimit(1)
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 8, weight: .bold))
-                    .foregroundColor(.secondary)
-            }
-        }
-        .buttonStyle(ToolbarHoverButtonStyle())
-        .help("Open Git Repository or Diff (Cmd+O)")
-        .popover(isPresented: $showOpenSourcePopover, arrowEdge: .bottom) {
-            openSourcePopoverContentView
-        }
-    }
-
-    @ViewBuilder
-    private var readOnlyBadge: some View {
-        HStack(spacing: 4) {
-            Image(systemName: "lock.fill")
-                .font(.system(size: 9.5))
-            Text("Read-Only")
-                .font(.system(size: 11, weight: .semibold))
-        }
-        .foregroundColor(.secondary)
-        .fixedSize()
-        .help("Read-only mode.")
-    }
-
-    @ViewBuilder
-    private var openSourcePopoverContentView: some View {
-        OpenSourceContentView(
+        MainWindowToolbarLeadingView(
+            repo: repo,
             theme: activeTheme,
-            currentLocalPath: currentPath,
-            currentComparisonTarget: comparisonTarget,
-            isInline: false,
-            onOpenLocalFolder: {
-                showOpenSourcePopover = false
-                openGitRepositoryFolder()
-            },
-            onSelectLocalPath: { path in
-                showOpenSourcePopover = false
-                self.currentPath = path
-                loadCurrentDirectoryDiff()
-            },
-            onOpenRemoteURL: { url in
-                showOpenSourcePopover = false
-                loadRemoteDiff(from: url)
-            },
+            showOpenSourcePopover: $showOpenSourcePopover,
             onOpenInBrowser: {
                 openInBrowser()
-            },
-            onClose: {
-                showOpenSourcePopover = false
             }
         )
     }
 
     @ViewBuilder
     private var hiddenKeyboardShortcuts: some View {
-        Group {
-            Button(action: {
+        MainWindowShortcuts(
+            onSelectPanel: { panel in
                 withAnimation(.easeInOut(duration: 0.18)) {
-                    panelLayout.assign(.changes, to: .left)
+                    panelLayout.assign(panel, to: .left)
                 }
-            }) {}
-                .keyboardShortcut("1", modifiers: .command)
-            Button(action: {
-                withAnimation(.easeInOut(duration: 0.18)) {
-                    panelLayout.assign(.files, to: .left)
-                }
-            }) {}
-                .keyboardShortcut("2", modifiers: .command)
-            Button(action: {
-                withAnimation(.easeInOut(duration: 0.18)) {
-                    panelLayout.assign(.history, to: .left)
-                }
-            }) {}
-                .keyboardShortcut("3", modifiers: .command)
-            Button(action: {
+            },
+            onToggleDiffLayout: {
                 withAnimation(.easeInOut(duration: 0.15)) {
                     toggleDiffLayoutMode()
                 }
-            }) {}
-                .keyboardShortcut("d", modifiers: .command)
-            Button(action: { reloadCurrentDiff() }) {}
-                .keyboardShortcut("r", modifiers: .command)
-            Button(action: { handleOpenShortcut() }) {}
-                .keyboardShortcut("o", modifiers: .command)
-            Button(action: { openGitRepositoryFolder() }) {}
-                .keyboardShortcut("o", modifiers: [.command, .shift])
-            Button(action: { showOpenSourcePopover = true }) {}
-                .keyboardShortcut("u", modifiers: .command)
-            Button(action: { openInBrowser() }) {}
-                .keyboardShortcut("b", modifiers: [.command, .shift])
-            Button(action: {
+            },
+            onReload: { reloadCurrentDiff() },
+            onOpenShortcut: { handleOpenShortcut() },
+            onOpenFolder: { repo.openGitRepositoryFolder() },
+            onOpenSourcePopover: { showOpenSourcePopover = true },
+            onOpenBrowser: { openInBrowser() },
+            onToggleSearch: {
                 withAnimation(.easeInOut(duration: 0.16)) {
-                    toggleProjectSearch()
+                    search.toggle(in: effectiveWorkingDirectory, selectedText: activeDisplayMap.getSelectionText())
                 }
-            }) {}
-                .keyboardShortcut("f", modifiers: [.command, .shift])
-            Button(action: {
+            },
+            onOpenSearch: {
                 withAnimation(.easeInOut(duration: 0.16)) {
-                    openProjectSearch()
+                    search.open(in: effectiveWorkingDirectory, selectedText: activeDisplayMap.getSelectionText())
                 }
-            }) {}
-                .keyboardShortcut("f", modifiers: .command)
-            Button(action: { selectNextSearchMatch() }) {}
-                .keyboardShortcut("g", modifiers: .command)
-            Button(action: { selectPreviousSearchMatch() }) {}
-                .keyboardShortcut("g", modifiers: [.command, .shift])
-            Button(action: { fontSize = max(9, fontSize - 1) }) {}
-                .keyboardShortcut("-", modifiers: .command)
-            Button(action: { fontSize = min(28, fontSize + 1) }) {}
-                .keyboardShortcut("+", modifiers: .command)
-            Button(action: { fontSize = min(28, fontSize + 1) }) {}
-                .keyboardShortcut("=", modifiers: .command)
-            Button(action: { fontSize = 13 }) {}
-                .keyboardShortcut("0", modifiers: .command)
-            Button(action: {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    agentCoordinator.togglePanel()
-                }
-            }) {}
-                .keyboardShortcut("a", modifiers: [.command, .option])
-            Button(action: {
+            },
+            onNextSearchMatch: { search.selectNextMatch() },
+            onPreviousSearchMatch: { search.selectPreviousMatch() },
+            onZoomIn: { fontSize = min(28, fontSize + 1) },
+            onZoomOut: { fontSize = max(9, fontSize - 1) },
+            onZoomReset: { fontSize = 13 },
+            onToggleAgent: {
+                toggleRightPanel()
+            },
+            onToggleMarkdown: {
                 if let mdPath = activeMarkdownPreviewPath {
                     closeMarkdownPreview()
                     openFileInEditor(path: mdPath)
-                } else if let selectedPath = selectedFilePath,
+                } else if let selectedPath = repo.selectedFilePath,
                           (selectedPath.hasSuffix(".md") || selectedPath.hasSuffix(".markdown") || selectedPath.hasSuffix(".mdx")) {
                     openMarkdownPreview(path: selectedPath)
                 }
-            }) {}
-                .keyboardShortcut("e", modifiers: .command)
-            Button(action: {
-                if isProjectSearchActive {
+            },
+            onCancel: {
+                if search.isActive {
                     withAnimation(.easeInOut(duration: 0.16)) {
-                        closeProjectSearch()
+                        search.close()
                     }
                 } else if activeMarkdownPreviewPath != nil {
                     closeMarkdownPreview()
                 } else if isReadOnlyActive {
                     endReadOnlyDiff()
                 }
-            }) {}
-                .keyboardShortcut(.cancelAction)
-        }
-        .opacity(0)
-    }
-
-    // MARK: - Project Search Engine Integration
-
-    @ViewBuilder
-    private var searchEmptyStateView: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "text.magnifyingglass")
-                .font(.system(size: 34, weight: .light))
-                .foregroundColor(Color(activeTheme.gutterForeground).opacity(0.8))
-
-            Text("No Matches Found")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundColor(Color(activeTheme.foreground))
-
-            Text("No results matching \"\(searchQuery.query)\" in \(currentFolderName.isEmpty ? "project" : "\"\(currentFolderName)\"").")
-                .font(.system(size: 12))
-                .foregroundColor(Color(activeTheme.gutterForeground))
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(activeTheme.background))
-    }
-
-    private func toggleProjectSearch() {
-        if isProjectSearchActive {
-            closeProjectSearch()
-        } else {
-            openProjectSearch()
-        }
-    }
-
-    private func openProjectSearch() {
-        searchFocusToken &+= 1
-
-        if let selectedText = activeDisplayMap.getSelectionText()?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !selectedText.isEmpty {
-            searchQuery.query = selectedText
-            isProjectSearchActive = true
-            triggerDebouncedSearch(delay: 0)
-        } else {
-            isProjectSearchActive = true
-        }
-    }
-
-    private func requestScrollToMatch(at index: Int) {
-        searchScrollRequestId &+= 1
-        searchMatchScrollRequest = SearchMatchScrollRequest(id: searchScrollRequestId, matchIndex: index)
-    }
-
-    private func closeProjectSearch(clearResults: Bool = false) {
-        isProjectSearchActive = false
-        isSearching = false
-        searchTask?.cancel()
-        searchTask = nil
-        searchDebounceWorkItem?.cancel()
-        searchDebounceWorkItem = nil
-        if clearResults {
-            searchMultiBuffer.clear()
-            searchDisplayMap.rebuild()
-            searchMatches = []
-            activeMatchIndex = nil
-            searchMatchScrollRequest = nil
-            isSearchTruncated = false
-            hasExecutedSearch = false
-            searchViewStateResetToken &+= 1
-        }
-    }
-
-    private func resetProjectSearch() {
-        closeProjectSearch(clearResults: true)
-        searchQuery = ProjectSearchQuery()
-        hasExecutedSearch = false
-    }
-
-    private func handleSearchContentEdited() {
-        let updatedMatches = ProjectSearchEngine.shared.recalculateMatches(
-            query: searchQuery,
-            in: searchMultiBuffer
+            }
         )
-        searchMatches = updatedMatches
-        if let activeIdx = activeMatchIndex {
-            if activeIdx >= updatedMatches.count {
-                activeMatchIndex = updatedMatches.isEmpty ? nil : (updatedMatches.count - 1)
-            }
-        } else if !updatedMatches.isEmpty {
-            activeMatchIndex = 0
-        }
     }
 
-    private func triggerDebouncedSearch(delay: Double = 0.15) {
-        searchDebounceWorkItem?.cancel()
-        searchTask?.cancel()
-
-        guard !searchQuery.isEmpty else {
-            searchMultiBuffer.clear()
-            searchDisplayMap.rebuild()
-            searchMatches = []
-            activeMatchIndex = nil
-            searchMatchScrollRequest = nil
-            isSearching = false
-            isSearchTruncated = false
-            hasExecutedSearch = false
-            searchViewStateResetToken &+= 1
-            return
-        }
-
-        // Clear stale search results and reset scroll position immediately
-        searchMultiBuffer.clear()
-        searchDisplayMap.rebuild()
-        searchMatches = []
-        activeMatchIndex = nil
-        searchMatchScrollRequest = nil
-        isSearchTruncated = false
-        hasExecutedSearch = false
-        searchViewStateResetToken &+= 1
-
-        let dir = effectiveWorkingDirectory
-        let currentQuery = searchQuery
-        isSearching = true
-
-        let workItem = DispatchWorkItem { [self] in
-            searchTask = Task { @MainActor in
-                guard !Task.isCancelled else { return }
-
-                searchMultiBuffer.baseDirectory = dir
-                searchMultiBuffer.setContentMode(.text)
-
-                let backgroundTask = Task.detached(priority: .userInitiated) {
-                    await ProjectSearchEngine.shared.searchStreaming(
-                        query: currentQuery,
-                        in: dir,
-                        onBatch: { batch in
-                            Task { @MainActor in
-                                guard !Task.isCancelled else { return }
-
-                                if !batch.newBuffers.isEmpty {
-                                    for buf in batch.newBuffers {
-                                        self.searchMultiBuffer.addBuffer(buf)
-                                    }
-                                    for excerpt in batch.newExcerpts {
-                                        self.searchMultiBuffer.addExcerpt(excerpt)
-                                    }
-                                    self.searchMatches.append(contentsOf: batch.newMatches)
-                                    self.searchDisplayMap.rebuild()
-
-                                    if self.activeMatchIndex == nil && !self.searchMatches.isEmpty {
-                                        self.activeMatchIndex = 0
-                                        self.requestScrollToMatch(at: 0)
-                                    }
-                                }
-
-                                if batch.isTruncated {
-                                    self.isSearchTruncated = true
-                                }
-
-                                if batch.isFinished {
-                                    self.isSearching = false
-                                    self.hasExecutedSearch = true
-                                }
-                            }
-                        },
-                        isCancelled: {
-                            Task.isCancelled
-                        }
-                    )
-                }
-
-                _ = await withTaskCancellationHandler {
-                    if Task.isCancelled {
-                        backgroundTask.cancel()
-                    }
-                    return await backgroundTask.value
-                } onCancel: {
-                    backgroundTask.cancel()
-                }
-            }
-        }
-
-        searchDebounceWorkItem = workItem
-        if delay > 0 {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
-        } else {
-            DispatchQueue.main.async(execute: workItem)
-        }
-    }
-
-    private func selectNextSearchMatch() {
-        guard !searchMatches.isEmpty else { return }
-        let nextIndex: Int
-        if let current = activeMatchIndex {
-            nextIndex = (current + 1) % searchMatches.count
-        } else {
-            nextIndex = 0
-        }
-        activeMatchIndex = nextIndex
-        requestScrollToMatch(at: nextIndex)
-    }
-
-    private func selectPreviousSearchMatch() {
-        guard !searchMatches.isEmpty else { return }
-        let prevIndex: Int
-        if let current = activeMatchIndex {
-            prevIndex = (current - 1 + searchMatches.count) % searchMatches.count
-        } else {
-            prevIndex = searchMatches.count - 1
-        }
-        activeMatchIndex = prevIndex
-        requestScrollToMatch(at: prevIndex)
-    }
-
-    private func loadReviewDiff(for summary: AgentEditedFilesSummary) {
-        if activeMarkdownPreviewPath != nil {
-            closeMarkdownPreview()
-        }
-        if panelLayout.slot(for: .editor) == nil {
-            panelLayout.assign(.editor, to: .center)
-        }
-        closeProjectSearch()
-        let currentDir = effectiveWorkingDirectory
-        let isGit = isGitRepository(at: currentDir)
-
-        if summary.contentMode == .text {
-            loadPlainText(
-                data: summary.rawTextData ?? Data(),
-                filePath: summary.files.first?.path ?? "agent/output.txt",
-                isReadOnly: true
-            )
-            return
-        }
-
-        // 1. Direct raw diff data attached to the summary
-        if let rawData = summary.rawDiffData, !rawData.isEmpty {
-            let parsed = GitDiffParser.shared.parseZeroCopy(data: rawData)
-            if !parsed.isEmpty {
-                loadDiff(files: parsed, rawData: rawData, isReadOnly: true)
-                return
-            }
-        }
-
-        // 2. Fetch turn snapshot diff using the base commit hash
-        if isGit, let baseHash = summary.baseCommitHash, !baseHash.isEmpty {
-            if let diffData = AgentGitChangesDetector.fetchTurnDiffData(
-                workingDirectory: currentDir,
-                baseCommit: baseHash,
-                pathFilter: Set(summary.filePaths)
-            ), !diffData.isEmpty {
-                let parsed = GitDiffParser.shared.parseZeroCopy(data: diffData)
-                if !parsed.isEmpty {
-                    loadDiff(files: parsed, rawData: diffData, isReadOnly: true)
-                    return
-                }
-            }
-        }
-
-        // 3. Fallback to working tree path filter
-        let pathFilter = Set(summary.filePaths)
-        let (files, rawData) = isGit
-            ? fetchGitDiffFiles(at: currentDir, target: .workingTree, pathFilter: pathFilter)
-            : (files: [], data: nil)
-
-        if !files.isEmpty {
-            loadDiff(files: files, rawData: rawData, isReadOnly: true)
-        } else {
-            var synthText = ""
-            for file in summary.files {
-                synthText += """
-                diff --git a/\(file.path) b/\(file.path)
-                --- a/\(file.path)
-                +++ b/\(file.path)
-                @@ -1,\(max(1, file.deletions)) +1,\(max(1, file.additions)) @@
-                -    // Original implementation
-                +    // Modified by Agent
-                +    // Changes: +\(file.additions) -\(file.deletions)
-
-                """
-            }
-            let data = Data(synthText.utf8)
-            let parsed = GitDiffParser.shared.parseZeroCopy(data: data)
-            loadDiff(files: parsed, rawData: data, isReadOnly: true)
-        }
-    }
 
     private func beginReview(summary: AgentEditedFilesSummary) {
         if activeMarkdownPreviewPath != nil {
@@ -2038,48 +671,35 @@ public struct MainWindowView: View {
         if panelLayout.slot(for: .editor) == nil {
             panelLayout.assign(.editor, to: .center)
         }
-        selectedFilePathBeforeReadOnly = selectedFilePath
-        readOnlyViewStateResetToken &+= 1
-        clearReadOnlyDiff()
-        readOnlyDisplayMap.layoutMode = .unified
-        loadReviewDiff(for: summary)
+        search.close()
+        review.selectedFilePathBeforeReadOnly = repo.selectedFilePath
+        review.viewStateResetToken &+= 1
+        review.clear()
+        review.displayMap.layoutMode = .unified
+        review.loadReviewDiff(for: summary, workingDirectory: effectiveWorkingDirectory, baseDirectory: effectiveBaseDirectory)
         if let firstFile = summary.files.first?.path {
-            let matched = readOnlyDisplayMap.matchFilePath(firstFile) ?? firstFile
-            selectedFilePath = matched
-            NotificationCenter.default.post(
-                name: .focusFileInEditor,
-                object: FileNavigationRequest(filePath: matched, lineNumber: nil, endLineNumber: nil)
-            )
+            let matched = review.displayMap.matchFilePath(firstFile) ?? firstFile
+            focusFileInMultiBuffer(matched)
         }
-        preparedReviewSummary = summary
+        review.preparedReviewSummary = summary
         agentCoordinator.startReview(summary: summary)
     }
 
     private func endReadOnlyDiff() {
         if agentCoordinator.activeReviewSummary != nil {
             agentCoordinator.exitReview()
-            preparedReviewSummary = nil
+            review.preparedReviewSummary = nil
         }
-        if case .commit = comparisonTarget {
-            selectedCommit = nil
-            showCommitDetailPopover = false
-            comparisonTarget = .workingTree
+        if case .commit = repo.comparisonTarget {
+            repo.selectedCommit = nil
+            repo.showCommitDetailPopover = false
+            repo.comparisonTarget = .workingTree
         }
-        clearReadOnlyDiff()
-        if let savedPath = selectedFilePathBeforeReadOnly {
-            selectedFilePath = savedPath
-            selectedFilePathBeforeReadOnly = nil
+        review.clear()
+        if let savedPath = review.selectedFilePathBeforeReadOnly {
+            repo.selectedFilePath = savedPath
+            review.selectedFilePathBeforeReadOnly = nil
         }
-    }
-
-    private func endReview() {
-        endReadOnlyDiff()
-    }
-
-    private func clearReadOnlyDiff() {
-        readOnlyFileDiffs = []
-        readOnlyMultiBuffer.clear()
-        readOnlyDisplayMap.clear()
     }
 
     public func openMarkdownPreview(path: String) {
@@ -2126,107 +746,18 @@ public struct MainWindowView: View {
         if panelLayout.slot(for: .editor) == nil {
             panelLayout.assign(.editor, to: .center)
         }
-
-        let baseDir = effectiveWorkingDirectory
-        let resolvedRelativePath: String
-        let fullDiskPath: String
-
-        if (path as NSString).isAbsolutePath {
-            fullDiskPath = path
-            if path.hasPrefix(baseDir) {
-                let suffix = String(path.dropFirst(baseDir.count))
-                resolvedRelativePath = suffix.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            } else {
-                resolvedRelativePath = (path as NSString).lastPathComponent
-            }
-        } else {
-            resolvedRelativePath = path
-            fullDiskPath = (baseDir as NSString).appendingPathComponent(path)
-        }
-
-        // 1. Check if already present in activeDisplayMap
-        if let targetFile = activeDisplayMap.matchFilePath(resolvedRelativePath) ?? activeDisplayMap.matchFilePath(path) {
-            selectedFilePath = targetFile
-            NotificationCenter.default.post(
-                name: .focusFileInEditor,
-                object: FileNavigationRequest(filePath: targetFile, lineNumber: line, endLineNumber: endLine)
-            )
-            return
-        }
-
-        // 2. Not present: read from disk and insert as clean unmodified buffer
-        guard FileManager.default.fileExists(atPath: fullDiskPath),
-              let content = try? String(contentsOfFile: fullDiskPath, encoding: .utf8) else {
-            return
-        }
-
-        let lines = content.components(separatedBy: "\n")
-        let buffer = Buffer(
-            filePath: resolvedRelativePath,
-            lines: lines,
-            language: Buffer.detectLanguage(for: resolvedRelativePath),
-            baselineLines: lines,
-            totalAdditions: 0,
-            totalDeletions: 0,
-            startLineNumber: 1,
-            fullDiskPath: fullDiskPath,
-            diskFileLineCount: lines.count
-        )
-        buffer.isFullFile = true
-
-        let excerpt = Excerpt(
-            bufferId: buffer.id,
-            filePath: resolvedRelativePath,
-            fileStatus: .unmodified,
-            bufferRange: 0..<lines.count,
-            hunk: nil,
-            isCollapsed: false,
-            isFileStart: true
-        )
-
-        let cleanFileDiff = FileDiff(
-            oldPath: resolvedRelativePath,
-            newPath: resolvedRelativePath,
-            status: .unmodified,
-            hunks: []
-        )
-
-        let insertIndex = fileDiffs.firstIndex(where: {
-            $0.displayPath.localizedStandardCompare(resolvedRelativePath) == .orderedDescending
-        }) ?? fileDiffs.count
-        fileDiffs.insert(cleanFileDiff, at: insertIndex)
-
-        multiBuffer.replaceFile(filePath: resolvedRelativePath, buffers: [buffer], excerpts: [excerpt])
-        manuallyOpenedFilePaths.insert(resolvedRelativePath)
-
-        displayMap.rebuild()
-        selectedFilePath = resolvedRelativePath
-
-        NotificationCenter.default.post(
-            name: .focusFileInEditor,
-            object: FileNavigationRequest(filePath: resolvedRelativePath, lineNumber: line, endLineNumber: endLine)
-        )
+        repo.openFile(path: path, line: line, endLine: endLine)
     }
 
     public func closeFileFromEditor(filePath: String) {
         if isReadOnlyActive {
-            readOnlyFileDiffs.removeAll { $0.displayPath == filePath }
-            readOnlyMultiBuffer.removeFile(filePath: filePath)
-            readOnlyDisplayMap.rebuild()
-            readOnlyDisplayMap.markContentLoaded()
-            if selectedFilePath == filePath {
-                selectedFilePath = readOnlyFileDiffs.first?.displayPath
+            review.closeFile(filePath: filePath)
+            if repo.selectedFilePath == filePath {
+                repo.selectedFilePath = review.fileDiffs.first?.displayPath
             }
             return
         }
-        fileDiffs.removeAll { $0.displayPath == filePath }
-        multiBuffer.removeFile(filePath: filePath)
-        manuallyOpenedFilePaths.remove(filePath)
-        displayMap.rebuild()
-        displayMap.markContentLoaded()
-        if selectedFilePath == filePath {
-            selectedFilePath = fileDiffs.first?.displayPath
-        }
+        repo.closeFile(filePath: filePath)
     }
 
     public func openInExternalIDE(filePath: String, line: Int? = nil) {
@@ -2245,43 +776,14 @@ public struct MainWindowView: View {
     private func handleOpenShortcut() {
         if showOpenSourcePopover {
             showOpenSourcePopover = false
-            openGitRepositoryFolder()
-        } else if fileDiffs.isEmpty {
-            openGitRepositoryFolder()
+            repo.openGitRepositoryFolder()
+        } else if repo.fileDiffs.isEmpty {
+            repo.openGitRepositoryFolder()
         } else {
             showOpenSourcePopover = true
         }
     }
 
-    @ViewBuilder
-    private var windowDropOverlayView: some View {
-        if isWindowDropTargeted {
-            ZStack {
-                Color.black.opacity(0.45)
-                VStack(spacing: 12) {
-                    Image(systemName: "folder.badge.plus")
-                        .font(.system(size: 44, weight: .light))
-                        .foregroundColor(.accentColor)
-                    Text("Drop folder or URL to open")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundColor(.white)
-                }
-                .padding(28)
-                .background(
-                    RoundedRectangle(cornerRadius: 14)
-                        .fill(Color(activeTheme.background).opacity(0.95))
-                        .shadow(color: .black.opacity(0.35), radius: 24)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14)
-                        .stroke(Color.accentColor, lineWidth: 2)
-                )
-            }
-            .ignoresSafeArea()
-            .allowsHitTesting(false)
-            .transition(.opacity)
-        }
-    }
 
     @ViewBuilder
     private func commentModalView(for target: IdentifiableCommentTarget) -> some View {
@@ -2290,7 +792,7 @@ public struct MainWindowView: View {
             lineNumber: target.lineNumber,
             onAdd: { author, content in
                 _ = reviewManager.addComment(filePath: target.filePath, lineNumber: target.lineNumber, author: author, content: content)
-                displayMap.rebuild()
+                activeDisplayMap.rebuild()
                 commentTarget = nil
             },
             onCancel: {
@@ -2310,84 +812,16 @@ public struct MainWindowView: View {
             }
         }
         if let initial = initialPath, (initial.hasPrefix("http://") || initial.hasPrefix("https://") || initial.contains("github.com") || initial.contains("diffshub.com") || initial.contains("#")) {
-            loadRemoteDiff(from: initial)
+            repo.loadRemoteDiff(from: initial)
         } else {
-            loadCurrentDirectoryDiff()
+            repo.loadCurrentDirectoryDiff()
         }
         updateWindowAppearance()
     }
 
-    private func handleWindowDrop(providers: [NSItemProvider]) -> Bool {
-        guard let provider = providers.first else { return false }
-
-        if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
-            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
-                var targetURL: URL?
-                if let url = item as? URL {
-                    targetURL = url
-                } else if let data = item as? Data, let url = URL(dataRepresentation: data, relativeTo: nil) {
-                    targetURL = url
-                } else if let string = item as? String, let url = URL(string: string) {
-                    targetURL = url
-                }
-                if let url = targetURL {
-                    DispatchQueue.main.async {
-                        let path = url.path
-                        var isDir: ObjCBool = false
-                        if FileManager.default.fileExists(atPath: path, isDirectory: &isDir) {
-                            self.showOpenSourcePopover = false
-                            if isDir.boolValue {
-                                self.currentPath = path
-                            } else {
-                                self.currentPath = (path as NSString).deletingLastPathComponent
-                            }
-                            self.loadCurrentDirectoryDiff()
-                        }
-                    }
-                }
-            }
-            return true
-        } else if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
-            provider.loadItem(forTypeIdentifier: UTType.url.identifier, options: nil) { item, _ in
-                var stringVal: String?
-                if let url = item as? URL {
-                    stringVal = url.absoluteString
-                } else if let str = item as? String {
-                    stringVal = str
-                }
-                if let str = stringVal {
-                    DispatchQueue.main.async {
-                        self.showOpenSourcePopover = false
-                        self.loadRemoteDiff(from: str)
-                    }
-                }
-            }
-            return true
-        } else if provider.hasItemConformingToTypeIdentifier(UTType.text.identifier) {
-            provider.loadItem(forTypeIdentifier: UTType.text.identifier, options: nil) { item, _ in
-                if let text = item as? String {
-                    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                    DispatchQueue.main.async {
-                        self.showOpenSourcePopover = false
-                        if trimmed.hasPrefix("/") || trimmed.hasPrefix("~") {
-                            let expanded = (trimmed as NSString).expandingTildeInPath
-                            if FileManager.default.fileExists(atPath: expanded) {
-                                self.currentPath = expanded
-                                self.loadCurrentDirectoryDiff()
-                                return
-                            }
-                        }
-                        self.loadRemoteDiff(from: trimmed)
-                    }
-                }
-            }
-            return true
-        }
-        return false
-    }
 
     private func openInBrowser() {
-        if case .remote(let ref) = comparisonTarget {
+        if case .remote(let ref) = repo.comparisonTarget {
             if let url = ref.webURL ?? Optional(ref.diffURL) {
                 NSWorkspace.shared.open(url)
             }
@@ -2396,17 +830,17 @@ public struct MainWindowView: View {
 
     public func reloadCurrentDiff() {
         if let reviewSummary = agentCoordinator.activeReviewSummary {
-            loadReviewDiff(for: reviewSummary)
+            review.loadReviewDiff(for: reviewSummary, workingDirectory: effectiveWorkingDirectory, baseDirectory: effectiveBaseDirectory)
             return
         }
-        if case .commit(let hash, _) = comparisonTarget {
+        if case .commit(let hash, _) = repo.comparisonTarget {
             loadCommitDiff(hash: hash)
             return
         }
-        if case .remote(let ref) = comparisonTarget {
-            loadRemoteDiff(reference: ref)
+        if case .remote(let ref) = repo.comparisonTarget {
+            repo.loadRemoteDiff(reference: ref)
         } else {
-            loadCurrentDirectoryDiff()
+            repo.loadCurrentDirectoryDiff()
         }
     }
 
@@ -2418,1460 +852,6 @@ public struct MainWindowView: View {
             window.titlebarSeparatorStyle = .none
             updateSplitViewDividers(in: window, color: activeTheme.panelDivider)
         }
-    }
-}
-
-public struct WindowAppearanceConfigurator: NSViewRepresentable {
-    public var theme: Theme
-
-    public init(theme: Theme) {
-        self.theme = theme
-    }
-
-    public func makeNSView(context: Context) -> WindowLifecycleView {
-        let view = WindowLifecycleView()
-        view.theme = theme
-        return view
-    }
-
-    public func updateNSView(_ nsView: WindowLifecycleView, context: Context) {
-        nsView.theme = theme
-        nsView.applyAppearance()
-    }
-}
-
-public final class WindowLifecycleView: NSView {
-    public var theme: Theme = .vesper
-
-    private var observers: [NSObjectProtocol] = []
-
-    public override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        setupNotificationObservers()
-    }
-
-    public required init?(coder: NSCoder) {
-        super.init(coder: coder)
-        setupNotificationObservers()
-    }
-
-    deinit {
-        for obs in observers {
-            NotificationCenter.default.removeObserver(obs)
-        }
-    }
-
-    private func setupNotificationObservers() {
-        let center = NotificationCenter.default
-        let subviewsObs = center.addObserver(
-            forName: NSSplitView.didResizeSubviewsNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.applyAppearance()
-        }
-        let resizeObs = center.addObserver(
-            forName: NSWindow.didResizeNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.applyAppearance()
-        }
-        observers.append(contentsOf: [subviewsObs, resizeObs])
-    }
-
-    public override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        applyAppearance()
-    }
-
-    public override func layout() {
-        super.layout()
-        applyAppearance()
-    }
-
-    public func applyAppearance() {
-        guard let window = self.window else { return }
-        window.backgroundColor = theme.background
-        window.appearance = NSAppearance(named: theme.isDark ? .darkAqua : .aqua)
-        window.titlebarAppearsTransparent = true
-        window.titlebarSeparatorStyle = .none
-        updateSplitViewDividers(in: window, color: theme.panelDivider)
-    }
-}
-
-public func updateSplitViewDividers(in window: NSWindow, color: NSColor = NSColor.separatorColor) {
-    let scale = window.backingScaleFactor > 0 ? window.backingScaleFactor : 2.0
-    let thickness: CGFloat = 1.0 / scale
-    func isSplitDivider(_ v: NSView) -> Bool {
-        let name = String(describing: type(of: v))
-        return name.contains("SplitDivider") || (v.superview is NSSplitView && name.contains("Divider"))
-    }
-    func rec(v: NSView) {
-        if isSplitDivider(v) {
-            v.wantsLayer = true
-            v.layer?.backgroundColor = NSColor.clear.cgColor
-            let layerName = "anydiff.divider"
-            let lineLayer = v.layer?.sublayers?.first(where: { $0.name == layerName }) ?? CALayer()
-            lineLayer.name = layerName
-            let lineWidth = min(v.bounds.width, thickness)
-            let lineX = max(0, (v.bounds.width - lineWidth) / 2.0)
-            lineLayer.frame = CGRect(x: lineX, y: 0, width: lineWidth, height: v.bounds.height)
-            lineLayer.backgroundColor = color.cgColor
-            lineLayer.opacity = 1.0
-            lineLayer.isHidden = false
-            if lineLayer.superlayer == nil {
-                v.layer?.addSublayer(lineLayer)
-            }
-            if let subs = v.layer?.sublayers {
-                for sub in subs where sub !== lineLayer {
-                    sub.isHidden = true
-                }
-            }
-        }
-        for s in v.subviews { rec(v: s) }
-    }
-    if let root = window.contentView?.superview ?? window.contentView {
-        rec(v: root)
-    }
-}
-
-extension MainWindowView {
-
-    // MARK: - Remote GitHub Diff Loading
-
-    public func loadRemoteDiff(from urlString: String) {
-        guard !isReloading else { return }
-        switch GitHubDiffService.shared.parseReference(from: urlString) {
-        case .success(let ref):
-            RecentSourcesManager.shared.addRemoteURL(urlString)
-            loadRemoteDiff(reference: ref)
-        case .failure(let err):
-            self.remoteErrorMessage = err.localizedDescription
-        }
-    }
-
-    public func loadRemoteDiff(reference: GitHubDiffReference) {
-        guard !isReloading else { return }
-        if let webURL = reference.webURL?.absoluteString {
-            RecentSourcesManager.shared.addRemoteURL(webURL)
-        }
-        loadGeneration &+= 1
-        let generation = loadGeneration
-        isReloading = true
-        isStreaming = true
-        remoteErrorMessage = nil
-
-        // Clear existing buffers and caches
-        multiBuffer.clear()
-        displayMap.clear()
-        fileDiffs = []
-        selectedFilePath = nil
-        resetProjectSearch()
-
-        self.remoteTarget = reference
-        self.comparisonTarget = .remote(reference)
-        self.currentFolderName = reference.displayTitle
-        self.currentBranch = ""
-        self.localBranches = []
-        self.remoteBranches = []
-        self.multiBuffer.baseDirectory = nil
-        NSApp.windows.first?.title = reference.displayTitle
-        self.repoStatus = .hasChanges
-
-        let task = Task {
-            do {
-                var allFiles: [FileDiff] = []
-                var initialRenderDone = false
-                var lastProgressUpdateTime = Date()
-
-                for try await fileDiff in GitHubDiffService.shared.streamDiff(for: reference) {
-                    if Task.isCancelled { break }
-                    allFiles.append(fileDiff)
-
-                    // 1. Initial Instant Paint (<50ms): show the first file right away
-                    if !initialRenderDone && allFiles.count >= 1 {
-                        initialRenderDone = true
-                        let firstBatch = allFiles
-                        await MainActor.run {
-                            guard self.loadGeneration == generation else { return }
-                            self.fileDiffs = firstBatch
-                            self.appendFileDiffsToMultiBuffer(firstBatch)
-                            self.displayMap.rebuild()
-                            self.displayMap.markContentLoaded()
-                            if let first = firstBatch.first {
-                                self.selectedFilePath = first.displayPath
-                            }
-                        }
-                    }
-
-                    // 2. Throttle sidebar progress indicator (every 200ms) with ZERO DisplayMap rebuild
-                    let now = Date()
-                    if now.timeIntervalSince(lastProgressUpdateTime) >= 0.2 {
-                        lastProgressUpdateTime = now
-                        let count = allFiles.count
-                        await MainActor.run {
-                            guard self.loadGeneration == generation else { return }
-                            self.streamingCount = count
-                        }
-                    }
-                }
-
-                // 3. Final single atomic commit: append remaining files and rebuild DisplayMap ONCE
-                let finalFiles = allFiles
-                await MainActor.run {
-                    guard self.loadGeneration == generation else { return }
-                    self.multiBuffer.clear()
-                    self.displayMap.clear()
-                    self.fileDiffs = finalFiles
-                    self.appendFileDiffsToMultiBuffer(finalFiles)
-                    self.displayMap.rebuild()
-                    self.displayMap.markContentLoaded()
-
-                    self.isStreaming = false
-                    self.isReloading = false
-                    self.remoteLoadTask = nil
-                    self.streamingCount = finalFiles.count
-                    if self.selectedFilePath == nil, let first = finalFiles.first {
-                        self.selectedFilePath = first.displayPath
-                    }
-                    if finalFiles.isEmpty {
-                        self.repoStatus = .clean
-                    }
-                }
-            } catch {
-                await MainActor.run {
-                    guard self.loadGeneration == generation else { return }
-                    self.isStreaming = false
-                    self.isReloading = false
-                    self.remoteLoadTask = nil
-                    self.remoteErrorMessage = error.localizedDescription
-                }
-            }
-        }
-        remoteLoadTask = task
-    }
-
-    private func appendFileDiffsToMultiBuffer(_ files: [FileDiff], rawData: Data? = nil, into destination: MultiBuffer? = nil) {
-        let target = destination ?? multiBuffer
-        for file in files {
-            let fileAdds = file.additions
-            let fileDels = file.deletions
-
-            if file.status == .deleted {
-                let hunk = file.hunks.first
-                let buffer: Buffer
-                if let rawData = rawData, let h = hunk, !h.lineSpans.isEmpty {
-                    buffer = Buffer(
-                        filePath: file.displayPath,
-                        storage: .makeDiffFlat(data: rawData, spans: h.lineSpans, side: .old),
-                        language: Buffer.detectLanguage(for: file.displayPath),
-                        totalAdditions: 0,
-                        totalDeletions: fileDels,
-                        startLineNumber: 1,
-                        fullDiskPath: nil,
-                        diskFileLineCount: h.lineSpans.count - h.addedLineCount
-                    )
-                } else {
-                    var oldLines: [String] = []
-                    for hunk in file.hunks {
-                        for line in hunk.lines {
-                            if line.kind == .deleted || line.kind == .unchanged {
-                                oldLines.append(line.text)
-                            }
-                        }
-                    }
-                    buffer = Buffer(
-                        filePath: file.displayPath,
-                        lines: [],
-                        language: Buffer.detectLanguage(for: file.displayPath),
-                        baselineLines: oldLines,
-                        totalAdditions: 0,
-                        totalDeletions: fileDels,
-                        startLineNumber: 1,
-                        fullDiskPath: nil,
-                        diskFileLineCount: oldLines.count
-                    )
-                }
-                buffer.isFullFile = true
-                target.addBuffer(buffer)
-
-                let excerpt = Excerpt(
-                    bufferId: buffer.id,
-                    filePath: file.displayPath,
-                    fileStatus: .deleted,
-                    bufferRange: 0..<0,
-                    hunk: hunk,
-                    isCollapsed: false,
-                    isFileStart: true
-                )
-                target.addExcerpt(excerpt)
-            } else if file.hunks.isEmpty {
-                let buffer = Buffer(
-                    filePath: file.displayPath,
-                    lines: [],
-                    language: Buffer.detectLanguage(for: file.displayPath),
-                    baselineLines: [],
-                    totalAdditions: fileAdds,
-                    totalDeletions: fileDels,
-                    startLineNumber: 1,
-                    fullDiskPath: nil,
-                    diskFileLineCount: 0
-                )
-                buffer.isFullFile = true
-                target.addBuffer(buffer)
-
-                let excerpt = Excerpt(
-                    bufferId: buffer.id,
-                    filePath: file.displayPath,
-                    fileStatus: file.status,
-                    bufferRange: 0..<0,
-                    hunk: nil,
-                    isCollapsed: false,
-                    isFileStart: true
-                )
-                target.addExcerpt(excerpt)
-            } else {
-                for (hIdx, hunk) in file.hunks.enumerated() {
-                    let startLine = hunk.newRange.lowerBound
-                    let isLazy = (file.status != .added || file.hunks.count > 1)
-                    let buffer: Buffer
-
-                    if let rawData = rawData, !hunk.lineSpans.isEmpty {
-                        buffer = Buffer(
-                            filePath: file.displayPath,
-                            storage: .makeDiffFlat(data: rawData, spans: hunk.lineSpans, side: .new),
-                            language: Buffer.detectLanguage(for: file.displayPath),
-                            totalAdditions: fileAdds,
-                            totalDeletions: fileDels,
-                            startLineNumber: startLine,
-                            fullDiskPath: nil,
-                            diskFileLineCount: nil,
-                            isLazySlice: isLazy
-                        )
-                    } else {
-                        let newFileLines = hunk.lines.filter { $0.kind == .added || $0.kind == .unchanged }.map(\.text)
-                        let oldBaselineLines = hunk.lines.filter { $0.kind == .deleted || $0.kind == .unchanged }.map(\.text)
-                        buffer = Buffer(
-                            filePath: file.displayPath,
-                            lines: newFileLines,
-                            language: Buffer.detectLanguage(for: file.displayPath),
-                            baselineLines: oldBaselineLines,
-                            totalAdditions: fileAdds,
-                            totalDeletions: fileDels,
-                            startLineNumber: startLine,
-                            fullDiskPath: nil,
-                            diskFileLineCount: nil,
-                            isLazySlice: isLazy
-                        )
-                    }
-                    buffer.isFullFile = (file.status == .added && file.hunks.count == 1)
-                    target.addBuffer(buffer)
-
-                    let excerpt = Excerpt(
-                        bufferId: buffer.id,
-                        filePath: file.displayPath,
-                        fileStatus: file.status,
-                        bufferRange: 0..<buffer.lineCount,
-                        hunk: hunk,
-                        isCollapsed: false,
-                        isFileStart: (hIdx == 0)
-                    )
-                    target.addExcerpt(excerpt)
-                }
-            }
-        }
-    }
-
-    // MARK: - Current Directory Diff Loading
-
-    private var loadableWorkingDirectory: String? {
-        let candidate: String?
-        if let currentPath, !currentPath.isEmpty {
-            candidate = currentPath
-        } else if let initialPath, !initialPath.isEmpty {
-            candidate = initialPath
-        } else {
-            candidate = nil
-        }
-
-        guard let candidate else { return nil }
-        let resolved = URL(fileURLWithPath: (candidate as NSString).expandingTildeInPath)
-            .standardizedFileURL
-            .path
-        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
-        guard !resolved.isEmpty, resolved != home else { return nil }
-        return resolved
-    }
-
-    public var effectiveWorkingDirectory: String {
-        if let loadableWorkingDirectory {
-            return loadableWorkingDirectory
-        }
-        return FileManager.default.homeDirectoryForCurrentUser.path
-    }
-
-    public var effectiveBaseDirectory: String {
-        if let base = multiBuffer.baseDirectory, !base.isEmpty {
-            return (base as NSString).expandingTildeInPath
-        }
-        return effectiveWorkingDirectory
-    }
-
-    public func loadCurrentDirectoryDiff() {
-        // A local project must leave remote mode first. Otherwise fetchGitDiff
-        // receives `.remote` and intentionally returns no local diff.
-        if case .remote = comparisonTarget {
-            remoteLoadTask?.cancel()
-            remoteLoadTask = nil
-            loadGeneration &+= 1
-            isReloading = false
-            isStreaming = false
-            remoteTarget = nil
-            remoteErrorMessage = nil
-            comparisonTarget = .workingTree
-        }
-
-        guard let currentDir = loadableWorkingDirectory else {
-            clearLocalDirectoryState()
-            return
-        }
-
-        guard !isReloading else {
-            hasPendingGitStateReload = true
-            return
-        }
-        loadGeneration &+= 1
-        let generation = loadGeneration
-        isReloading = true
-        if multiBuffer.baseDirectory != currentDir {
-            resetProjectSearch()
-            manuallyOpenedFilePaths.removeAll()
-            selectedFilePath = nil
-            selectedCommit = nil
-            if case .commit = comparisonTarget {
-                comparisonTarget = .workingTree
-            }
-        }
-        multiBuffer.baseDirectory = currentDir
-        let folderName = (currentDir as NSString).lastPathComponent
-        self.currentFolderName = folderName
-        DispatchQueue.main.async {
-            NSApp.windows.first?.title = "\(folderName)"
-        }
-
-        if isWatchModeEnabled {
-            let resolvedDir = URL(fileURLWithPath: currentDir).resolvingSymlinksInPath().path
-            if folderWatcher == nil || folderWatcher?.watchedURL.path != resolvedDir {
-                restartWatcher(for: currentDir)
-            }
-        }
-
-        DispatchQueue.global(qos: .userInitiated).async {
-            let isGit = self.isGitRepository(at: currentDir)
-            let branch = isGit ? self.fetchCurrentBranch(at: currentDir) : ""
-            let branches = isGit ? self.fetchAvailableBranches(at: currentDir) : (local: [], remote: [])
-            let (files, rawData) = isGit ? self.fetchGitDiffFiles(at: currentDir, target: self.comparisonTarget) : (files: [], data: nil)
-
-            DispatchQueue.main.async {
-                guard self.loadGeneration == generation else { return }
-                self.currentBranch = branch
-                self.localBranches = branches.local
-                self.remoteBranches = branches.remote
-
-                defer {
-                    self.isReloading = false
-                    if self.hasPendingGitStateReload {
-                        self.hasPendingGitStateReload = false
-                        self.scheduleGitStateReload()
-                    }
-                }
-
-                guard isGit else {
-                    self.repoStatus = .notGitRepository
-                    self.loadDiff(files: [])
-                    return
-                }
-                RecentSourcesManager.shared.addLocalPath(currentDir)
-                if !files.isEmpty {
-                    self.repoStatus = .hasChanges
-                    self.loadDiff(files: files, rawData: rawData)
-                } else {
-                    self.repoStatus = .clean
-                    self.loadDiff(files: [])
-                }
-            }
-        }
-    }
-
-    private func clearLocalDirectoryState() {
-        loadGeneration &+= 1
-        gitStateReloadWorkItem?.cancel()
-        gitStateReloadWorkItem = nil
-        hasPendingGitStateReload = false
-        isReloading = false
-        isStreaming = false
-        streamingCount = 0
-
-        folderWatcher?.stop()
-        folderWatcher = nil
-        pendingWatchPaths.removeAll()
-        watchRefreshGeneration &+= 1
-        watchRefreshInFlight = false
-
-        currentFolderName = ""
-        currentBranch = ""
-        localBranches = []
-        remoteBranches = []
-        repoStatus = .notGitRepository
-        selectedFilePath = nil
-        selectedCommit = nil
-        if case .commit = comparisonTarget {
-            comparisonTarget = .workingTree
-        }
-        manuallyOpenedFilePaths.removeAll()
-        multiBuffer.baseDirectory = nil
-        resetProjectSearch()
-        loadDiff(files: [])
-
-        DispatchQueue.main.async {
-            NSApp.windows.first?.title = "AnyDiff"
-        }
-    }
-
-    private func restartWatcher(for directoryPath: String) {
-        folderWatcher?.stop()
-        folderWatcher = nil
-
-        guard isWatchModeEnabled, !directoryPath.isEmpty else { return }
-        guard loadableWorkingDirectory == URL(fileURLWithPath: directoryPath).standardizedFileURL.path else { return }
-
-        let resolvedURL = URL(fileURLWithPath: directoryPath).resolvingSymlinksInPath()
-        let watcher = FolderWatcher(url: resolvedURL, latency: 0.25) { events in
-            DispatchQueue.main.async {
-                self.handleFolderWatcherEvents(events)
-            }
-        }
-        watcher.start()
-        self.folderWatcher = watcher
-    }
-
-    private func scheduleGitStateReload() {
-        gitStateReloadWorkItem?.cancel()
-        if isReloading {
-            hasPendingGitStateReload = true
-            return
-        }
-        let item = DispatchWorkItem { [self] in
-            guard self.isWatchModeEnabled else { return }
-            if self.isReloading {
-                self.hasPendingGitStateReload = true
-                return
-            }
-            self.loadCurrentDirectoryDiff()
-        }
-        gitStateReloadWorkItem = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(150), execute: item)
-    }
-
-    private func handleFolderWatcherEvents(_ events: [FileSystemChangeEvent]) {
-        guard isWatchModeEnabled else { return }
-        if case .remote = comparisonTarget { return }
-
-        let meaningful = events.filter { !FolderWatcher.shouldIgnore(path: $0.path) }
-        guard !meaningful.isEmpty else { return }
-
-        if isReloading {
-            DispatchQueue.main.async {
-                self.hasPendingGitStateReload = true
-            }
-            return
-        }
-
-        // Check if any event was caused by git commit, checkout, branch switch, add/reset
-        let hasGitStateChange = meaningful.contains { event in
-            event.path.contains("/.git/HEAD")
-                || event.path.contains("/.git/refs/")
-                || event.path.hasSuffix("/.git/index")
-                || event.path.hasSuffix("/.git/packed-refs")
-                || event.path.hasSuffix("/.git/commondir")
-        }
-
-        if hasGitStateChange {
-            DispatchQueue.main.async {
-                self.agentCoordinator.notifyFileSystemChanged()
-                self.scheduleGitStateReload()
-            }
-            return
-        }
-
-        let currentDir = effectiveWorkingDirectory
-        let resolvedCurrentDir = URL(fileURLWithPath: currentDir).resolvingSymlinksInPath().path
-
-        // Keep concrete relative paths. A watcher batch can contain unrelated
-        // files; only these paths are fetched and replaced below.
-        var changedPaths = Set<String>()
-        var hasRenameEvents = false
-        for event in meaningful {
-            let eventURL = URL(fileURLWithPath: event.path).resolvingSymlinksInPath()
-            let resolvedEventPath = eventURL.path
-
-            // Ignore directory metadata and the repository root itself.
-            if resolvedEventPath == resolvedCurrentDir || event.isDirectory {
-                continue
-            }
-            var isDir: ObjCBool = false
-            if FileManager.default.fileExists(atPath: resolvedEventPath, isDirectory: &isDir) && isDir.boolValue {
-                continue
-            }
-
-            let prefix = resolvedCurrentDir.hasSuffix("/") ? resolvedCurrentDir : resolvedCurrentDir + "/"
-            guard resolvedEventPath.hasPrefix(prefix) else { continue }
-            let relative = String(resolvedEventPath.dropFirst(prefix.count))
-            guard !relative.isEmpty else { continue }
-
-            // Skip files currently being typed in by the user in main diff or search.
-            if multiBuffer.isFileDirty(filePath: relative) || searchMultiBuffer.isFileDirty(filePath: relative) {
-                continue
-            }
-
-            // FSEvents does not identify the writer. Ignore AnyDiff's own
-            // save notification only while the disk text still matches our
-            // materialized buffer; an edit immediately after autosave must
-            // remain eligible for an external undo transaction.
-            if multiBuffer.shouldIgnoreSelfSavedEvent(
-                filePath: relative,
-                diskPath: resolvedEventPath,
-                threshold: 3.0
-            ) || searchMultiBuffer.shouldIgnoreSelfSavedEvent(
-                filePath: relative,
-                diskPath: resolvedEventPath,
-                threshold: 3.0
-            ) {
-                continue
-            }
-
-            changedPaths.insert(relative)
-            if event.changeTypes.contains(.renamed) {
-                hasRenameEvents = true
-            }
-        }
-
-        guard !changedPaths.isEmpty else { return }
-        DispatchQueue.main.async {
-            self.agentCoordinator.notifyFileSystemChanged()
-            self.pendingWatchPaths.formUnion(changedPaths)
-            guard !self.watchRefreshInFlight else { return }
-            self.startPendingWatchRefresh(directory: resolvedCurrentDir, checkRenames: hasRenameEvents)
-        }
-    }
-
-    /// Serializes watch reads while coalescing events that arrive during an
-    /// in-flight read. No path is discarded when a second event batch arrives.
-    private func startPendingWatchRefresh(directory: String, checkRenames: Bool = false) {
-        guard loadableWorkingDirectory == URL(fileURLWithPath: directory).standardizedFileURL.path,
-              !pendingWatchPaths.isEmpty,
-              !watchRefreshInFlight else { return }
-        let paths = pendingWatchPaths
-        pendingWatchPaths.removeAll()
-        watchRefreshInFlight = true
-
-        // Snapshot all currently displayed buffers in O(Excerpts)
-        var snapshots: [String: [(BufferId, Int)]] = [:]
-        snapshots.reserveCapacity(multiBuffer.excerpts.count)
-        for excerpt in multiBuffer.excerpts {
-            let version = multiBuffer.buffer(for: excerpt.bufferId)?.version ?? -1
-            snapshots[excerpt.filePath, default: []].append((excerpt.bufferId, version))
-        }
-        watchRefreshGeneration &+= 1
-        let refreshGeneration = watchRefreshGeneration
-        let target = comparisonTarget
-
-        DispatchQueue.global(qos: .userInitiated).async {
-            var effectivePaths = paths
-            if checkRenames {
-                for path in paths {
-                    let renames = self.renamedPaths(at: directory, relatedTo: path)
-                    effectivePaths.formUnion(renames)
-                }
-            }
-            let result = self.fetchGitDiffFiles(at: directory, target: target, pathFilter: effectivePaths)
-            DispatchQueue.main.async {
-                defer {
-                    self.watchRefreshInFlight = false
-                    if self.isWatchModeEnabled && self.comparisonTarget == target {
-                        let currentDir = self.effectiveWorkingDirectory
-                        self.startPendingWatchRefresh(directory: URL(fileURLWithPath: currentDir).resolvingSymlinksInPath().path)
-                    }
-                }
-                guard self.isWatchModeEnabled,
-                      self.watchRefreshGeneration == refreshGeneration,
-                      self.comparisonTarget == target else { return }
-
-                // Group current excerpts by path for fast O(1) comparison
-                var currentByPath: [String: [(BufferId, Int)]] = [:]
-                for excerpt in self.multiBuffer.excerpts {
-                    let version = self.multiBuffer.buffer(for: excerpt.bufferId)?.version ?? -1
-                    currentByPath[excerpt.filePath, default: []].append((excerpt.bufferId, version))
-                }
-
-                // Dirty buffers and any buffer edited since the read began are
-                // left untouched. They will be reflected on a later explicit
-                // reload after the user saves/finishes editing.
-                let candidatePaths = effectivePaths
-                    .union(result.files.map(\.displayPath))
-                    .union(result.files.filter { $0.status == .renamed }.map(\.oldPath))
-                var safePaths = Set(candidatePaths.filter { path in
-                    guard !self.multiBuffer.isFileDirty(filePath: path) else { return false }
-                    let current = currentByPath[path] ?? []
-                    guard let expected = snapshots[path] else { return current.isEmpty }
-                    guard expected.count == current.count else { return false }
-                    return expected.elementsEqual(current) { lhs, rhs in
-                        lhs.0 == rhs.0 && lhs.1 == rhs.1
-                    }
-                })
-                // A rename is one logical file transition. Never apply only
-                // its new side when the old side was edited or changed during
-                // the async read; that would duplicate the dirty content.
-                for rename in result.files where rename.status == .renamed {
-                    guard safePaths.contains(rename.oldPath), safePaths.contains(rename.newPath) else {
-                        safePaths.remove(rename.oldPath)
-                        safePaths.remove(rename.newPath)
-                        safePaths.remove(rename.displayPath)
-                        continue
-                    }
-                }
-                guard !safePaths.isEmpty else { return }
-
-                var searchPathsToInvalidate: Set<String> = []
-                for path in safePaths {
-                    let diff = result.files.first { $0.displayPath == path }
-                    self.applyWatchedFile(path: path, diff: diff, rawData: result.data)
-                    if self.applyWatchedFileToSearch(path: path) {
-                        searchPathsToInvalidate.insert(path)
-                    }
-                }
-                self.displayMap.rebuild(invalidatingPaths: safePaths)
-                self.displayMap.markContentLoaded()
-                self.updateWatchedFileDiffs(result.files, safePaths: safePaths)
-                if !searchPathsToInvalidate.isEmpty {
-                    let updatedMatches = ProjectSearchEngine.shared.recalculateMatches(
-                        query: self.searchQuery,
-                        in: self.searchMultiBuffer
-                    )
-                    self.searchMatches = updatedMatches
-                    if let activeIdx = self.activeMatchIndex {
-                        if updatedMatches.isEmpty {
-                            self.activeMatchIndex = nil
-                        } else if activeIdx >= updatedMatches.count {
-                            self.activeMatchIndex = updatedMatches.count - 1
-                        }
-                    }
-                    self.searchDisplayMap.rebuild(invalidatingPaths: searchPathsToInvalidate)
-                }
-            }
-        }
-    }
-
-    /// FSEvents reports one side of a rename. Resolve its pair from git's
-    /// name-status metadata so the old buffer is removed together with the
-    /// new buffer being inserted.
-    private func renamedPaths(at directory: String, relatedTo path: String) -> Set<String> {
-        guard let output = runGit(arguments: ["-C", directory, "diff", "HEAD", "--name-status", "-M"]) else { return [] }
-        var paths = Set<String>()
-        for line in output.split(whereSeparator: { $0 == "\n" }) {
-            let fields = line.split(separator: "\t", omittingEmptySubsequences: false).map { unescapeGitPath($0[...]) }
-            guard fields.count >= 3, fields[0].hasPrefix("R") else { continue }
-            if fields[1] == path || fields[2] == path {
-                paths.insert(fields[1])
-                paths.insert(fields[2])
-            }
-        }
-        return paths
-    }
-
-    private func updateWatchedFileDiffs(_ refreshed: [FileDiff], safePaths: Set<String>) {
-        let oldFiles = fileDiffs
-        let refreshedByDisplay = Dictionary(uniqueKeysWithValues: refreshed.map { ($0.displayPath, $0) })
-        let renamedByOld = Dictionary(uniqueKeysWithValues: refreshed.filter { $0.status == .renamed }.map { ($0.oldPath, $0) })
-        var updated: [FileDiff] = []
-        var consumed = Set<String>()
-
-        for oldFile in oldFiles {
-            if let rename = renamedByOld[oldFile.displayPath], safePaths.contains(oldFile.displayPath) {
-                updated.append(rename)
-                consumed.insert(rename.displayPath)
-            } else if safePaths.contains(oldFile.displayPath) {
-                if let replacement = refreshedByDisplay[oldFile.displayPath] {
-                    updated.append(replacement)
-                    consumed.insert(replacement.displayPath)
-                }
-            } else {
-                updated.append(oldFile)
-            }
-        }
-
-        // New/untracked paths are appended in parser order, which is stable
-        // for a single filtered git invocation.
-        for file in refreshed where safePaths.contains(file.displayPath) && !consumed.contains(file.displayPath) {
-            updated.append(file)
-        }
-        fileDiffs = updated
-        if fileDiffs.isEmpty {
-            repoStatus = .clean
-            selectedFilePath = nil
-        } else {
-            repoStatus = .hasChanges
-            if let current = selectedFilePath,
-               (fileDiffs.contains(where: { $0.displayPath == current || $0.newPath == current || $0.oldPath == current }) ||
-                multiBuffer.excerpts.contains(where: { $0.filePath == current })) {
-                // Keep existing selection intact, do not jump to first file
-            } else {
-                selectedFilePath = fileDiffs.first?.displayPath
-            }
-        }
-    }
-
-    private func isGitRepository(at path: String) -> Bool {
-        return runGit(arguments: ["-C", path, "rev-parse", "--is-inside-work-tree"]) == "true"
-    }
-
-    private func fetchCurrentBranch(at path: String) -> String {
-        runGit(arguments: ["-C", path, "rev-parse", "--abbrev-ref", "HEAD"]) ?? ""
-    }
-
-    private func fetchAvailableBranches(at path: String) -> (local: [String], remote: [String]) {
-        let localOut = runGit(arguments: ["-C", path, "branch", "--format=%(refname:short)"]) ?? ""
-        let local = localOut.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
-
-        let remoteOut = runGit(arguments: ["-C", path, "branch", "-r", "--format=%(refname:short)"]) ?? ""
-        let remote = remoteOut.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty && !$0.contains("HEAD") }
-
-        return (local, remote)
-    }
-
-    private func fetchGitDiffFiles(at path: String, target: ComparisonTarget = .workingTree, pathFilter: Set<String>? = nil) -> (files: [FileDiff], data: Data?) {
-        let argumentSets: [[String]]
-        switch target {
-        case .workingTree:
-            argumentSets = [
-                ["-C", path, "diff", "HEAD"],
-                ["-C", path, "diff"],
-                ["-C", path, "diff", "--staged"]
-            ]
-        case .baseBranch(let base):
-            argumentSets = [
-                ["-C", path, "diff", "\(base)..."],
-                ["-C", path, "diff", "\(base)..HEAD"]
-            ]
-        case .directBranch(let branch):
-            argumentSets = [
-                ["-C", path, "diff", branch]
-            ]
-        case .commit(let hash, _):
-            argumentSets = [
-                ["-C", path, "show", "--format=", "--patch", "-m", "--first-parent", hash]
-            ]
-        case .remote:
-            return (files: [], data: nil)
-        }
-
-        var allFiles: [FileDiff] = []
-        var rawData: Data? = nil
-        for baseArgs in argumentSets {
-            var args = baseArgs
-            if let pathFilter, !pathFilter.isEmpty {
-                args += ["--"] + pathFilter.sorted()
-            }
-            if let data = runGitData(arguments: args) {
-                let files = GitDiffParser.shared.parseZeroCopy(data: data)
-                if !files.isEmpty {
-                    allFiles = files
-                    rawData = data
-                    break
-                }
-            }
-        }
-        if case .workingTree = target {
-            let untracked = fetchUntrackedFiles(at: path, pathFilter: pathFilter)
-            allFiles.append(contentsOf: untracked)
-            allFiles = filterIgnoredFiles(allFiles, at: path)
-        }
-        return (files: allFiles, data: rawData)
-    }
-
-    private func filterIgnoredFiles(_ files: [FileDiff], at directory: String) -> [FileDiff] {
-        guard !files.isEmpty else { return [] }
-        let paths = files.map(\.displayPath)
-        let ignoredPaths = fetchIgnoredPaths(paths: paths, at: directory)
-        guard !ignoredPaths.isEmpty else { return files }
-        return files.filter {
-            !ignoredPaths.contains($0.displayPath) &&
-            !ignoredPaths.contains($0.newPath) &&
-            !ignoredPaths.contains($0.oldPath)
-        }
-    }
-
-    private func fetchIgnoredPaths(paths: [String], at directory: String) -> Set<String> {
-        guard !paths.isEmpty else { return [] }
-        var result = Set<String>()
-        let batchSize = 250
-        for i in stride(from: 0, to: paths.count, by: batchSize) {
-            let batch = Array(paths[i..<min(i + batchSize, paths.count)])
-            var args = ["-C", directory, "check-ignore", "--no-index", "--"]
-            args.append(contentsOf: batch)
-            if let output = runGit(arguments: args), !output.isEmpty {
-                let ignored = output.components(separatedBy: "\n")
-                    .map { unescapeGitPath($0[...]) }
-                    .filter { !$0.isEmpty }
-                result.formUnion(ignored)
-            }
-        }
-        return result
-    }
-
-    private func fetchUntrackedFiles(at path: String, pathFilter: Set<String>? = nil) -> [FileDiff] {
-        var args = ["-C", path, "ls-files", "--others", "--exclude-standard"]
-        if let pathFilter, !pathFilter.isEmpty {
-            args += ["--"] + pathFilter.sorted()
-        }
-        guard let output = runGit(arguments: args), !output.isEmpty else {
-            return []
-        }
-        let filePaths = output.components(separatedBy: "\n")
-            .map { unescapeGitPath($0[...]) }
-            .filter { !$0.isEmpty && (pathFilter == nil || pathFilter!.contains($0)) }
-        var result: [FileDiff] = []
-        for relPath in filePaths {
-            let fullPath = URL(fileURLWithPath: path).appendingPathComponent(relPath).path
-            guard let content = try? String(contentsOfFile: fullPath, encoding: .utf8) else { continue }
-            let lines = content.components(separatedBy: "\n")
-            let diffLines = lines.enumerated().map { (idx, text) in
-                DiffLine(kind: .added, text: text, oldLineNumber: nil, newLineNumber: idx + 1)
-            }
-            let hunk = DiffHunk(
-                oldRange: 0..<0,
-                newRange: 1..<(lines.count + 1),
-                header: "",
-                lines: diffLines,
-                addedLineCount: lines.count,
-                deletedLineCount: 0
-            )
-            let fileDiff = FileDiff(
-                oldPath: relPath,
-                newPath: relPath,
-                status: .added,
-                hunks: [hunk]
-            )
-            result.append(fileDiff)
-        }
-        return result
-    }
-
-    /// Applies one watch result in-place. The temporary builder gives the
-    /// refreshed file the same construction rules as a normal diff load while
-    /// `MultiBuffer.replaceFile` keeps every unrelated buffer/excerpt intact.
-    private func applyWatchedFile(path: String, diff: FileDiff?, rawData: Data?) {
-        if let fullPath = externalFilePath(for: path),
-           let externalText = try? String(contentsOfFile: fullPath, encoding: .utf8) {
-            if let existingBuffer = multiBuffer.buffers.values.first(where: {
-                $0.filePath == path && $0.isFullFile && !$0.isLazySlice
-            }), existingBuffer.text() == externalText {
-                // File on disk already matches in-memory buffer text exactly; nothing to update.
-                return
-            }
-
-            if multiBuffer.applyExternalTextUpdate(
-                filePath: path,
-                newText: externalText,
-                updateBaseline: multiBuffer.contentMode == .text
-            ) {
-                return
-            }
-        }
-
-        let collapsed = multiBuffer.excerpts
-            .filter { $0.filePath == path }
-            .contains { $0.isCollapsed }
-
-        let rebuilt = MultiBuffer()
-        rebuilt.baseDirectory = multiBuffer.baseDirectory
-        if let diff {
-            appendFileDiffsToMultiBuffer([diff], rawData: rawData, into: rebuilt)
-        }
-
-        let baseDir = effectiveBaseDirectory
-        let fullPath = URL(fileURLWithPath: baseDir).appendingPathComponent(path).path
-        for buffer in rebuilt.buffers.values {
-            buffer.fullDiskPath = fullPath
-        }
-        var newExcerpts = rebuilt.excerpts
-        if collapsed {
-            for index in newExcerpts.indices {
-                newExcerpts[index].isCollapsed = true
-            }
-        }
-        multiBuffer.replaceFile(
-            filePath: path,
-            buffers: Array(rebuilt.buffers.values),
-            excerpts: newExcerpts
-        )
-    }
-
-    @discardableResult
-    private func applyWatchedFileToSearch(path: String) -> Bool {
-        guard hasExecutedSearch, !searchQuery.isEmpty else { return false }
-        guard !searchMultiBuffer.isFileDirty(filePath: path) else { return false }
-        guard let fullPath = externalFilePath(for: path) else { return false }
-
-        let wasInSearch = searchMultiBuffer.excerpts.contains { $0.filePath == path }
-        let (newBuffers, newExcerpts) = ProjectSearchEngine.shared.rescanFile(
-            filePath: path,
-            fullDiskPath: fullPath,
-            query: searchQuery
-        )
-
-        // If it was not in search before and still has no matches, do nothing
-        if !wasInSearch && newBuffers.isEmpty {
-            return false
-        }
-
-        searchMultiBuffer.replaceFile(
-            filePath: path,
-            buffers: newBuffers,
-            excerpts: newExcerpts
-        )
-        return true
-    }
-
-    private func externalFilePath(for relativePath: String) -> String? {
-        let base = effectiveBaseDirectory
-        guard !base.isEmpty else { return nil }
-        return URL(fileURLWithPath: base).appendingPathComponent(relativePath).path
-    }
-
-    private func runGit(arguments: [String]) -> String? {
-        if let data = runGitData(arguments: arguments) {
-            return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        return nil
-    }
-
-    private func runGitData(arguments: [String]) -> Data? {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        process.arguments = arguments
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-        do {
-            try process.run()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
-            return data.isEmpty ? nil : data
-        } catch {
-            return nil
-        }
-    }
-
-    // MARK: - Diff Loading & MultiBuffer Assembly
-
-    public func loadDiff(text: String) {
-        let data = Data(text.utf8)
-        loadDiff(data: data)
-    }
-
-    public func loadDiff(data: Data) {
-        let parsedFiles = GitDiffParser.shared.parseZeroCopy(data: data)
-        loadDiff(files: parsedFiles, rawData: data)
-    }
-
-    private func loadPlainText(data: Data, filePath: String, isReadOnly: Bool) {
-        let targetMB = isReadOnly ? readOnlyMultiBuffer : multiBuffer
-        let targetDM = isReadOnly ? readOnlyDisplayMap : displayMap
-        let text = String(decoding: data, as: UTF8.self)
-        let lines = text.components(separatedBy: "\n")
-        let displayPath = filePath.isEmpty ? "agent/output.txt" : filePath
-
-        if isReadOnly {
-            readOnlyFileDiffs = [FileDiff(oldPath: displayPath, newPath: displayPath)]
-        } else {
-            fileDiffs = [FileDiff(oldPath: displayPath, newPath: displayPath)]
-        }
-
-        targetMB.clear()
-        targetMB.setContentMode(.text)
-        targetDM.clear()
-        SyntaxHighlighter.shared.clearCache()
-
-        let buffer = Buffer(
-            filePath: displayPath,
-            lines: lines,
-            language: Buffer.detectLanguage(for: displayPath),
-            baselineLines: [],
-            totalAdditions: 0,
-            totalDeletions: 0,
-            startLineNumber: 1,
-            fullDiskPath: nil,
-            diskFileLineCount: lines.count
-        )
-        buffer.isFullFile = true
-        targetMB.addBuffer(buffer)
-        targetMB.addExcerpt(Excerpt(
-            bufferId: buffer.id,
-            filePath: displayPath,
-            fileStatus: .modified,
-            bufferRange: 0..<buffer.lineCount,
-            hunk: nil,
-            isCollapsed: false,
-            isFileStart: true
-        ))
-
-        targetDM.rebuild()
-        targetDM.markContentLoaded()
-        selectedFilePath = displayPath
-    }
-
-    public func loadDiff(files parsedFiles: [FileDiff], rawData: Data? = nil, isReadOnly: Bool = false) {
-        let targetMB = isReadOnly ? readOnlyMultiBuffer : multiBuffer
-        let targetDM = isReadOnly ? readOnlyDisplayMap : displayMap
-
-        let collapsedFilePaths = Set(targetMB.excerpts.filter { $0.isCollapsed }.map { $0.filePath })
-        var allFiles = parsedFiles
-        if !isReadOnly {
-            for cleanPath in manuallyOpenedFilePaths {
-                if !allFiles.contains(where: { $0.displayPath == cleanPath }) {
-                    let cleanDiff = FileDiff(oldPath: cleanPath, newPath: cleanPath, status: .unmodified, hunks: [])
-                    let insertIndex = allFiles.firstIndex(where: {
-                        $0.displayPath.localizedStandardCompare(cleanPath) == .orderedDescending
-                    }) ?? allFiles.count
-                    allFiles.insert(cleanDiff, at: insertIndex)
-                }
-            }
-        }
-
-        if isReadOnly {
-            self.readOnlyFileDiffs = allFiles
-        } else {
-            self.fileDiffs = allFiles
-        }
-
-        targetMB.clear()
-        targetMB.setContentMode(.diff)
-        targetDM.clear()
-        SyntaxHighlighter.shared.clearCache()
-
-        let baseDir = effectiveBaseDirectory
-
-        for file in allFiles {
-            let relativePath = file.displayPath
-            let wasCollapsed = collapsedFilePaths.contains(relativePath)
-            var fullPath = (baseDir as NSString).appendingPathComponent(relativePath)
-            if !FileManager.default.fileExists(atPath: fullPath) {
-                let components = relativePath.components(separatedBy: "/")
-                if components.count > 1 {
-                    let subPath = components.dropFirst().joined(separator: "/")
-                    let altPath = (baseDir as NSString).appendingPathComponent(subPath)
-                    if FileManager.default.fileExists(atPath: altPath) {
-                        fullPath = altPath
-                    }
-                }
-            }
-
-            let fileAdds = file.additions
-            let fileDels = file.deletions
-
-            if file.status == .unmodified {
-                let content = (try? String(contentsOfFile: fullPath, encoding: .utf8)) ?? ""
-                let lines = content.components(separatedBy: "\n")
-                let buffer = Buffer(
-                    filePath: file.displayPath,
-                    lines: lines,
-                    language: Buffer.detectLanguage(for: file.displayPath),
-                    baselineLines: lines,
-                    totalAdditions: 0,
-                    totalDeletions: 0,
-                    startLineNumber: 1,
-                    fullDiskPath: fullPath,
-                    diskFileLineCount: lines.count
-                )
-                buffer.isFullFile = true
-                targetMB.addBuffer(buffer)
-
-                let excerpt = Excerpt(
-                    bufferId: buffer.id,
-                    filePath: file.displayPath,
-                    fileStatus: .unmodified,
-                    bufferRange: 0..<lines.count,
-                    hunk: nil,
-                    isCollapsed: wasCollapsed,
-                    isFileStart: true
-                )
-                targetMB.addExcerpt(excerpt)
-            } else if file.hunks.isEmpty {
-                let buffer = Buffer(
-                    filePath: file.displayPath,
-                    lines: [],
-                    language: Buffer.detectLanguage(for: file.displayPath),
-                    baselineLines: [],
-                    totalAdditions: fileAdds,
-                    totalDeletions: fileDels,
-                    startLineNumber: 1,
-                    fullDiskPath: fullPath,
-                    diskFileLineCount: nil
-                )
-                buffer.isFullFile = true
-                targetMB.addBuffer(buffer)
-
-                let excerpt = Excerpt(
-                    bufferId: buffer.id,
-                    filePath: file.displayPath,
-                    fileStatus: file.status,
-                    bufferRange: 0..<0,
-                    hunk: nil,
-                    isCollapsed: wasCollapsed,
-                    isFileStart: true
-                )
-                targetMB.addExcerpt(excerpt)
-            } else if file.status == .deleted {
-                let hunk = file.hunks.first
-                let buffer: Buffer
-                if let rawData = rawData, let h = hunk, !h.lineSpans.isEmpty {
-                    buffer = Buffer(
-                        filePath: file.displayPath,
-                        storage: .makeDiffFlat(data: rawData, spans: h.lineSpans, side: .old),
-                        language: Buffer.detectLanguage(for: file.displayPath),
-                        totalAdditions: 0,
-                        totalDeletions: fileDels,
-                        startLineNumber: 1,
-                        fullDiskPath: fullPath,
-                        diskFileLineCount: h.lineSpans.count - h.addedLineCount
-                    )
-                } else {
-                    var oldLines: [String] = []
-                    for hunk in file.hunks {
-                        for line in hunk.lines {
-                            if line.kind == .deleted || line.kind == .unchanged {
-                                oldLines.append(line.text)
-                            }
-                        }
-                    }
-                    buffer = Buffer(
-                        filePath: file.displayPath,
-                        lines: [],
-                        language: Buffer.detectLanguage(for: file.displayPath),
-                        baselineLines: oldLines,
-                        totalAdditions: 0,
-                        totalDeletions: fileDels,
-                        startLineNumber: 1,
-                        fullDiskPath: fullPath,
-                        diskFileLineCount: oldLines.count
-                    )
-                }
-                buffer.isFullFile = true
-                targetMB.addBuffer(buffer)
-
-                let excerpt = Excerpt(
-                    bufferId: buffer.id,
-                    filePath: file.displayPath,
-                    fileStatus: .deleted,
-                    bufferRange: 0..<0,
-                    hunk: hunk,
-                    isCollapsed: wasCollapsed,
-                    isFileStart: true
-                )
-                targetMB.addExcerpt(excerpt)
-            } else {
-                for (hIdx, hunk) in file.hunks.enumerated() {
-                    let startLine = hunk.newRange.lowerBound
-                    let isLazy = (file.status != .added || file.hunks.count > 1)
-                    let buffer: Buffer
-
-                    if let rawData = rawData, !hunk.lineSpans.isEmpty {
-                        buffer = Buffer(
-                            filePath: file.displayPath,
-                            storage: .makeDiffFlat(data: rawData, spans: hunk.lineSpans, side: .new),
-                            language: Buffer.detectLanguage(for: file.displayPath),
-                            totalAdditions: fileAdds,
-                            totalDeletions: fileDels,
-                            startLineNumber: startLine,
-                            fullDiskPath: fullPath,
-                            diskFileLineCount: nil,
-                            isLazySlice: isLazy
-                        )
-                    } else {
-                        let newFileLines = hunk.lines.filter { $0.kind == .added || $0.kind == .unchanged }.map(\.text)
-                        let oldBaselineLines = hunk.lines.filter { $0.kind == .deleted || $0.kind == .unchanged }.map(\.text)
-                        buffer = Buffer(
-                            filePath: file.displayPath,
-                            lines: newFileLines,
-                            language: Buffer.detectLanguage(for: file.displayPath),
-                            baselineLines: oldBaselineLines,
-                            totalAdditions: fileAdds,
-                            totalDeletions: fileDels,
-                            startLineNumber: startLine,
-                            fullDiskPath: fullPath,
-                            diskFileLineCount: nil,
-                            isLazySlice: isLazy
-                        )
-                    }
-                    buffer.isFullFile = (file.status == .added && file.hunks.count == 1)
-                    targetMB.addBuffer(buffer)
-
-                    let excerpt = Excerpt(
-                        bufferId: buffer.id,
-                        filePath: file.displayPath,
-                        fileStatus: file.status,
-                        bufferRange: 0..<buffer.lineCount,
-                        hunk: hunk,
-                        isCollapsed: wasCollapsed,
-                        isFileStart: (hIdx == 0)
-                    )
-                    targetMB.addExcerpt(excerpt)
-                }
-            }
-        }
-
-        targetDM.rebuild()
-        targetDM.markContentLoaded()
-
-        let currentSelected = selectedFilePath
-        if let sel = currentSelected, parsedFiles.contains(where: { $0.displayPath == sel }) {
-            self.selectedFilePath = sel
-        } else if self.selectedFilePath == nil || !parsedFiles.contains(where: { $0.displayPath == self.selectedFilePath }) {
-            self.selectedFilePath = parsedFiles.first?.displayPath
-        }
-    }
-
-    private func openGitRepositoryFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.message = "Choose a Git repository to view uncommitted diffs"
-
-        if panel.runModal() == .OK, let url = panel.url {
-            let path = url.path
-            self.currentPath = path
-            // `loadCurrentDirectoryDiff` handles cancellation and the mode
-            // transition from a remote stream to the selected local project.
-            loadCurrentDirectoryDiff()
-        }
-    }
-
-    private func expandAllExcerpts() {
-        for i in 0..<activeMultiBuffer.excerpts.count {
-            activeMultiBuffer.expandExcerptAll(at: i)
-        }
-        activeDisplayMap.rebuild()
-    }
-
-    private func collapseAllExcerpts() {
-        activeMultiBuffer.collapseAll()
-        activeDisplayMap.rebuild()
-    }
-}
-
-struct IdentifiableCommentTarget: Identifiable {
-    var id: String { "\(filePath):\(lineNumber)" }
-    let filePath: String
-    let lineNumber: Int
-}
-
-public struct ToolbarHoverButtonStyle: ButtonStyle {
-    private let minWidth: CGFloat
-    private let minHeight: CGFloat
-    @State private var isHovered = false
-
-    public init(minWidth: CGFloat = 22, minHeight: CGFloat = 22) {
-        self.minWidth = minWidth
-        self.minHeight = minHeight
-    }
-
-    public func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .padding(.horizontal, 2)
-            .padding(.vertical, 2)
-            .frame(minWidth: minWidth, minHeight: minHeight)
-            .background(
-                RoundedRectangle(cornerRadius: 5)
-                    .fill(isHovered ? Color.secondary.opacity(configuration.isPressed ? 0.24 : 0.14) : Color.clear)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 5))
-            .contentShape(RoundedRectangle(cornerRadius: 5))
-            .onHover { hovering in
-                isHovered = hovering
-            }
-    }
-}
-
-public struct AgentToolbarActionButtonStyle: ButtonStyle {
-    private let accentColor: Color
-    private let isActive: Bool
-    @State private var isHovered = false
-
-    public init(accentColor: Color = .accentColor, isActive: Bool = false) {
-        self.accentColor = accentColor
-        self.isActive = isActive
-    }
-
-    public func makeBody(configuration: Configuration) -> some View {
-        let isHighlighted = isActive || isHovered || configuration.isPressed
-
-        configuration.label
-            .padding(.horizontal, 4)
-            .padding(.vertical, 3)
-            .frame(minWidth: 26, minHeight: 24)
-            .background(Color.clear, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(accentColor.opacity(isHighlighted ? 0.08 : 0))
-            )
-            .scaleEffect(isHovered ? 1.02 : 1)
-            .shadow(
-                color: isHighlighted ? accentColor.opacity(0.16) : Color.clear,
-                radius: isHighlighted ? 9 : 5,
-                y: isHighlighted ? 2 : 1
-            )
-            .onHover { isHovered = $0 }
-            .animation(.easeOut(duration: 0.16), value: isHovered)
-    }
-}
-
-private struct DiffLayoutToggleIcon: View {
-    let mode: DiffLayoutMode
-
-    var body: some View {
-        ZStack {
-            if mode == .unified {
-                // Unified mode: Two horizontal stacked pills (solid top, outlined bottom)
-                VStack(spacing: 2.5) {
-                    RoundedRectangle(cornerRadius: 1.8)
-                        .fill(Color.secondary)
-                        .frame(width: 13, height: 4.5)
-
-                    RoundedRectangle(cornerRadius: 1.8)
-                        .strokeBorder(Color.secondary.opacity(0.7), lineWidth: 1.0)
-                        .frame(width: 13, height: 4.5)
-                }
-                .frame(width: 16, height: 16)
-                .transition(.scale(scale: 0.85).combined(with: .opacity))
-            } else {
-                // Split mode: Two vertical side-by-side pills (outlined left, solid right)
-                HStack(spacing: 2.5) {
-                    RoundedRectangle(cornerRadius: 1.8)
-                        .strokeBorder(Color.secondary.opacity(0.7), lineWidth: 1.0)
-                        .frame(width: 4.5, height: 13)
-
-                    RoundedRectangle(cornerRadius: 1.8)
-                        .fill(Color.secondary)
-                        .frame(width: 4.5, height: 13)
-                }
-                .frame(width: 16, height: 16)
-                .transition(.scale(scale: 0.85).combined(with: .opacity))
-            }
-        }
-        .animation(.easeInOut(duration: 0.16), value: mode)
     }
 }
 
