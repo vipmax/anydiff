@@ -155,7 +155,95 @@ final class PanelLayoutTests: XCTestCase {
 
         // Other themes without explicit panelDivider fall back to NSColor.separatorColor
         XCTAssertEqual(Theme.githubDark.panelDivider, NSColor.separatorColor)
+        XCTAssertEqual(Theme.githubLight.panelDivider, NSColor.separatorColor)
         XCTAssertEqual(Theme.tokyoNight.panelDivider, NSColor.separatorColor)
         XCTAssertEqual(Theme.macOSLight.panelDivider, NSColor.separatorColor)
+        XCTAssertEqual(Theme.vscodeDarkPlus.panelDivider, NSColor.separatorColor)
+        XCTAssertEqual(Theme.vscodeLightModern.panelDivider, NSColor.separatorColor)
+        XCTAssertEqual(Theme.oneDarkPro.panelDivider, NSColor.separatorColor)
+        XCTAssertEqual(Theme.jetbrainsDarcula.panelDivider, NSColor.separatorColor)
+        XCTAssertEqual(Theme.intellijLight.panelDivider, NSColor.separatorColor)
+        XCTAssertEqual(Theme.xcodeDark.panelDivider, NSColor.separatorColor)
+        XCTAssertEqual(Theme.xcodeLight.panelDivider, NSColor.separatorColor)
+    }
+
+    func testVSCodeThemesPaletteAndRegistration() {
+        let ids = Set(Theme.allThemes.map(\.id))
+        let expectedIds: [String] = [
+            "github-light",
+            "vscode-dark-plus",
+            "vscode-light-modern",
+            "one-dark-pro",
+            "jetbrains-darcula",
+            "intellij-light",
+            "xcode-dark",
+            "xcode-light",
+            "catppuccin-mocha",
+            "catppuccin-latte",
+            "dracula",
+            "monokai-pro",
+            "nord",
+            "gruvbox-dark",
+            "gruvbox-light",
+            "solarized-dark",
+            "solarized-light",
+            "rose-pine",
+            "ayu-dark",
+            "night-owl",
+            "everforest-dark",
+            "everforest-light",
+            "matrix"
+        ]
+        for expectedId in expectedIds {
+            XCTAssertTrue(ids.contains(expectedId), "Missing theme \(expectedId)")
+        }
+        XCTAssertFalse(ids.contains("vscode-dark-modern"))
+
+        XCTAssertFalse(Theme.githubLight.isDark)
+        XCTAssertTrue(Theme.vscodeDarkPlus.isDark)
+        XCTAssertFalse(Theme.vscodeLightModern.isDark)
+        XCTAssertTrue(Theme.oneDarkPro.isDark)
+        XCTAssertTrue(Theme.jetbrainsDarcula.isDark)
+        XCTAssertFalse(Theme.intellijLight.isDark)
+        XCTAssertTrue(Theme.xcodeDark.isDark)
+        XCTAssertFalse(Theme.xcodeLight.isDark)
+        XCTAssertTrue(Theme.catppuccinMocha.isDark)
+        XCTAssertFalse(Theme.catppuccinLatte.isDark)
+        XCTAssertTrue(Theme.dracula.isDark)
+        XCTAssertTrue(Theme.monokaiPro.isDark)
+        XCTAssertTrue(Theme.nord.isDark)
+        XCTAssertTrue(Theme.gruvboxDark.isDark)
+        XCTAssertFalse(Theme.gruvboxLight.isDark)
+        XCTAssertTrue(Theme.solarizedDark.isDark)
+        XCTAssertFalse(Theme.solarizedLight.isDark)
+        XCTAssertTrue(Theme.rosePine.isDark)
+        XCTAssertTrue(Theme.ayuDark.isDark)
+        XCTAssertTrue(Theme.nightOwl.isDark)
+        XCTAssertTrue(Theme.everforestDark.isDark)
+        XCTAssertFalse(Theme.everforestLight.isDark)
+        XCTAssertTrue(Theme.matrix.isDark)
+
+        XCTAssertEqual(Theme.githubLight.focusColor, Theme.githubLight.diffModifiedGutter)
+        XCTAssertEqual(Theme.vscodeDarkPlus.focusColor, Theme.vscodeDarkPlus.diffModifiedGutter)
+        XCTAssertEqual(Theme.vscodeLightModern.focusColor, Theme.vscodeLightModern.diffModifiedGutter)
+        XCTAssertEqual(Theme.oneDarkPro.focusColor, Theme.oneDarkPro.function)
+        XCTAssertEqual(Theme.jetbrainsDarcula.focusColor, Theme.jetbrainsDarcula.diffModifiedGutter)
+        XCTAssertEqual(Theme.intellijLight.focusColor, Theme.intellijLight.diffModifiedGutter)
+        XCTAssertEqual(Theme.xcodeDark.focusColor, Theme.xcodeDark.diffModifiedGutter)
+        XCTAssertEqual(Theme.xcodeLight.focusColor, Theme.xcodeLight.diffModifiedGutter)
+        XCTAssertEqual(Theme.dracula.focusColor, Theme.dracula.diffModifiedGutter)
+        XCTAssertEqual(Theme.rosePine.focusColor, Theme.rosePine.diffModifiedGutter)
+        XCTAssertEqual(Theme.githubLight.inputBackground, .white)
+        XCTAssertEqual(Theme.vscodeLightModern.inputBackground, .white)
+        XCTAssertEqual(Theme.intellijLight.inputBackground, .white)
+        XCTAssertEqual(Theme.xcodeLight.inputBackground, .white)
+        XCTAssertEqual(Theme.catppuccinLatte.inputBackground, .white)
+        XCTAssertEqual(Theme.gruvboxLight.inputBackground, .white)
+        XCTAssertEqual(Theme.solarizedLight.inputBackground, .white)
+        XCTAssertEqual(Theme.everforestLight.inputBackground, .white)
+
+        let names = Theme.allThemes.map(\.name)
+        let sortedNames = names.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        XCTAssertEqual(names, sortedNames, "Theme.allThemes should be sorted alphabetically by display name")
     }
 }

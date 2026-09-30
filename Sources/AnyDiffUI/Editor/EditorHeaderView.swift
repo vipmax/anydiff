@@ -139,7 +139,7 @@ public struct EditorHeaderActionsView: View {
             .help(hasCollapsedFiles ? "Expand All Files in MultiBuffer" : "Collapse All Files in MultiBuffer")
 
             Button(action: onToggleLayout) {
-                DiffLayoutToggleIcon(mode: diffLayoutMode)
+                DiffLayoutToggleIcon(mode: diffLayoutMode, color: Color(theme.gutterForeground))
             }
             .buttonStyle(ToolbarHoverButtonStyle())
             .help(diffLayoutMode == .unified ? "Switch to Side-by-Side Diff (⌘D)" : "Switch to Unified Diff (⌘D)")

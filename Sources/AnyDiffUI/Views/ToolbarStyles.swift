@@ -69,17 +69,18 @@ public struct AgentToolbarActionButtonStyle: ButtonStyle {
 
 struct DiffLayoutToggleIcon: View {
     let mode: DiffLayoutMode
+    var color: Color = .secondary
 
     var body: some View {
         ZStack {
             if mode == .unified {
                 VStack(spacing: 2.5) {
                     RoundedRectangle(cornerRadius: 1.8)
-                        .fill(Color.secondary)
+                        .fill(color)
                         .frame(width: 13, height: 4.5)
 
                     RoundedRectangle(cornerRadius: 1.8)
-                        .strokeBorder(Color.secondary.opacity(0.7), lineWidth: 1.0)
+                        .strokeBorder(color.opacity(0.7), lineWidth: 1.0)
                         .frame(width: 13, height: 4.5)
                 }
                 .frame(width: 16, height: 16)
@@ -87,11 +88,11 @@ struct DiffLayoutToggleIcon: View {
             } else {
                 HStack(spacing: 2.5) {
                     RoundedRectangle(cornerRadius: 1.8)
-                        .strokeBorder(Color.secondary.opacity(0.7), lineWidth: 1.0)
+                        .strokeBorder(color.opacity(0.7), lineWidth: 1.0)
                         .frame(width: 4.5, height: 13)
 
                     RoundedRectangle(cornerRadius: 1.8)
-                        .fill(Color.secondary)
+                        .fill(color)
                         .frame(width: 4.5, height: 13)
                 }
                 .frame(width: 16, height: 16)

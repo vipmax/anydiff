@@ -865,9 +865,10 @@ public struct MainWindowView: View {
     }
 
     private func updateWindowAppearance() {
-        for window in NSApp.windows {
+        let targetAppearance = NSAppearance(named: activeTheme.isDark ? .darkAqua : .aqua)
+        for window in NSApp.windows where window.canBecomeMain && !(window is NSPanel) && window.level == .normal {
             window.backgroundColor = activeTheme.background
-            window.appearance = NSAppearance(named: activeTheme.isDark ? .darkAqua : .aqua)
+            window.appearance = targetAppearance
             window.titlebarAppearsTransparent = true
             window.titlebarSeparatorStyle = .none
             updateSplitViewDividers(in: window, color: activeTheme.panelDivider)
