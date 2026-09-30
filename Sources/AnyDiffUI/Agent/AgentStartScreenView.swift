@@ -284,24 +284,11 @@ public struct AgentStartScreenView: View {
 
                 // Centered text stack matching AgentCardButton
                 VStack(alignment: .center, spacing: 3) {
-                    HStack(spacing: 6) {
-                        Text("Browse ACP Registry")
-                            .font(.system(size: 14.5, weight: .semibold))
-                            .foregroundColor(isRegistryHovered ? Color.accentColor : Color(theme.foreground))
-                            .lineLimit(1)
-
-                        Text("Online")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundColor(.accentColor)
-                            .fixedSize(horizontal: true, vertical: false)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(
-                                Capsule()
-                                    .fill(Color.accentColor.opacity(0.14))
-                            )
-                    }
-                    .frame(maxWidth: .infinity, alignment: .center)
+                    Text("Browse ACP Registry")
+                        .font(.system(size: 14.5, weight: .semibold))
+                        .foregroundColor(Color(theme.foreground))
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .center)
 
                     Text("Explore, install, and run certified ACP agents")
                         .font(.system(size: 11))
@@ -315,13 +302,12 @@ public struct AgentStartScreenView: View {
                 Spacer(minLength: 4)
 
                 // Right arrow matching AgentCardButton
-                HStack(spacing: 6) {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(Color.accentColor.opacity(isRegistryHovered ? 1.0 : 0.45))
-                        .offset(x: isRegistryHovered ? 2 : 0)
-                        .animation(.easeOut(duration: 0.15), value: isRegistryHovered)
-                }
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(Color(theme.gutterForeground).opacity(isRegistryHovered ? 1.0 : 0.45))
+                    .offset(x: isRegistryHovered ? 2 : 0)
+                    .animation(.easeOut(duration: 0.15), value: isRegistryHovered)
+                    .frame(width: 20, height: 20)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 12)
@@ -633,41 +619,39 @@ private struct AgentCardButton: View {
             VStack(alignment: .center, spacing: 3) {
                 Button(action: onSelect) {
                     VStack(alignment: .center, spacing: 3) {
-                        HStack(spacing: 6) {
-                            Text(group.basePreset.name)
-                                .font(.system(size: 14.5, weight: .semibold))
-                                .foregroundColor(Color(theme.foreground))
-                                .lineLimit(1)
+                        Text(group.basePreset.name)
+                            .font(.system(size: 14.5, weight: .semibold))
+                            .foregroundColor(Color(theme.foreground))
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity, alignment: .center)
 
-                            if !group.basePreset.isExecutableAvailable {
-                                HStack(spacing: 3) {
-                                    Image(systemName: "exclamationmark.triangle.fill")
-                                        .font(.system(size: 8.5))
-                                    Text("Missing Binary")
-                                        .font(.system(size: 9.5, weight: .medium))
-                                }
-                                .foregroundColor(.orange)
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 1.5)
+                        if !group.basePreset.isExecutableAvailable {
+                            HStack(spacing: 3) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .font(.system(size: 8.5))
+                                Text("Missing Binary")
+                                    .font(.system(size: 9.5, weight: .medium))
+                            }
+                            .foregroundColor(.orange)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1.5)
+                            .background(
+                                Capsule()
+                                    .fill(Color.orange.opacity(0.12))
+                            )
+                            .help("Binary not found on disk. Open ACP Registry to re-download.")
+                        } else if !badgeTitle.isEmpty {
+                            Text(badgeTitle)
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundColor(presetColor)
+                                .fixedSize(horizontal: true, vertical: false)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
                                 .background(
                                     Capsule()
-                                        .fill(Color.orange.opacity(0.12))
+                                        .fill(presetColor.opacity(0.12))
                                 )
-                                .help("Binary not found on disk. Open ACP Registry to re-download.")
-                            } else if !badgeTitle.isEmpty {
-                                Text(badgeTitle)
-                                    .font(.system(size: 10, weight: .semibold))
-                                    .foregroundColor(presetColor)
-                                    .fixedSize(horizontal: true, vertical: false)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(
-                                        Capsule()
-                                            .fill(presetColor.opacity(0.12))
-                                    )
-                            }
                         }
-                        .frame(maxWidth: .infinity, alignment: .center)
 
                         Text(descriptionText)
                             .font(.system(size: 11))
@@ -746,63 +730,103 @@ private struct AgentCardButton: View {
 
     @ViewBuilder
     private var profileSelectorMenu: some View {
-        Menu {
-            Section("Account Profiles") {
-                ForEach(group.profiles) { p in
-                    Button {
-                        onSelectProfile(p)
-                    } label: {
-                        if p.id == preset.id {
-                            Label(p.profileDisplayName, systemImage: "checkmark")
-                        } else {
-                            Text(p.profileDisplayName)
-                        }
-                    }
-                }
-            }
-
-            Divider()
-
-            Button {
-                onAddProfile()
-            } label: {
-                Label("New Profile…", systemImage: "plus")
-            }
-
-            if let customProfile = preset.profile, !customProfile.isEmpty {
-                Divider()
-                Button(role: .destructive) {
-                    onDeleteProfile(preset)
-                } label: {
-                    Label("Delete Profile \"\(customProfile)\"…", systemImage: "trash")
-                }
-            }
-        } label: {
-            HStack(spacing: 3.5) {
+        Button(action: showProfileMenu) {
+            HStack(spacing: 4) {
                 Image(systemName: "person.crop.circle")
-                    .font(.system(size: 9, weight: .medium))
+                    .font(.system(size: 9.5, weight: .medium))
                 Text(preset.profileDisplayName)
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(.system(size: 10.5, weight: .medium))
                     .lineLimit(1)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 7, weight: .bold))
-                    .foregroundColor(presetColor.opacity(0.85))
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 7.5, weight: .bold))
             }
-            .foregroundColor(presetColor)
-            .padding(.horizontal, 6)
+            .foregroundColor(Color(theme.gutterForeground).opacity(isProfileHovered ? 1.0 : 0.72))
+            .padding(.horizontal, 5)
             .padding(.vertical, 2)
             .background(
                 RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(presetColor.opacity(isProfileHovered ? 0.22 : 0.13))
+                    .fill(isProfileHovered ? Color(theme.foreground).opacity(0.08) : Color.clear)
             )
-            .overlay(
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .stroke(presetColor.opacity(isProfileHovered ? 0.45 : 0.25), lineWidth: 0.8)
-            )
+            .contentShape(Rectangle())
         }
-        .menuStyle(.borderlessButton)
+        .buttonStyle(.plain)
         .fixedSize()
         .onHover { isProfileHovered = $0 }
         .help("Select or create an isolated account profile in ~/.anydiff/profiles")
+    }
+
+    private func showProfileMenu() {
+        let menu = NSMenu(title: "Account Profiles")
+        var targets: [ProfileMenuActionTarget] = []
+
+        if #available(macOS 14.0, *) {
+            menu.addItem(.sectionHeader(title: "Account Profiles"))
+        } else {
+            let header = NSMenuItem(title: "Account Profiles", action: nil, keyEquivalent: "")
+            header.isEnabled = false
+            menu.addItem(header)
+        }
+
+        for p in group.profiles {
+            let target = ProfileMenuActionTarget {
+                onSelectProfile(p)
+            }
+            targets.append(target)
+            let item = NSMenuItem(
+                title: p.profileDisplayName,
+                action: #selector(ProfileMenuActionTarget.invoke(_:)),
+                keyEquivalent: ""
+            )
+            item.target = target
+            item.state = (p.id == preset.id) ? .on : .off
+            menu.addItem(item)
+        }
+
+        menu.addItem(.separator())
+
+        let addTarget = ProfileMenuActionTarget {
+            onAddProfile()
+        }
+        targets.append(addTarget)
+        let addItem = NSMenuItem(
+            title: "New Profile…",
+            action: #selector(ProfileMenuActionTarget.invoke(_:)),
+            keyEquivalent: ""
+        )
+        addItem.target = addTarget
+        addItem.image = NSImage(systemSymbolName: "plus", accessibilityDescription: nil)
+        menu.addItem(addItem)
+
+        if let customProfile = preset.profile, !customProfile.isEmpty {
+            menu.addItem(.separator())
+            let deleteTarget = ProfileMenuActionTarget {
+                onDeleteProfile(preset)
+            }
+            targets.append(deleteTarget)
+            let deleteItem = NSMenuItem(
+                title: "Delete Profile \"\(customProfile)\"…",
+                action: #selector(ProfileMenuActionTarget.invoke(_:)),
+                keyEquivalent: ""
+            )
+            deleteItem.target = deleteTarget
+            deleteItem.image = NSImage(systemSymbolName: "trash", accessibilityDescription: nil)
+            menu.addItem(deleteItem)
+        }
+
+        withExtendedLifetime(targets) {
+            _ = menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
+        }
+    }
+}
+
+private final class ProfileMenuActionTarget: NSObject {
+    private let action: () -> Void
+
+    init(_ action: @escaping () -> Void) {
+        self.action = action
+    }
+
+    @objc func invoke(_ sender: NSMenuItem) {
+        action()
     }
 }

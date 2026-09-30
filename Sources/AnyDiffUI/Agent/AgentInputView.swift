@@ -871,48 +871,13 @@ public struct AgentInputView: View {
     }
 
     private var agentSettingsMenu: some View {
-        Menu {
-            ForEach(agentManager.availableAgentSettings) { option in
-                if let values = option.options, !values.isEmpty {
-                    Menu {
-                        if values.count > 20 {
-                            let groups = groupOptionsByPrefix(values)
-                            if groups.count > 1 {
-                                ForEach(groups) { group in
-                                    Menu(group.groupName) {
-                                        ForEach(group.items, id: \.value) { value in
-                                            optionValueItem(option: option, value: value)
-                                        }
-                                    }
-                                }
-                            } else {
-                                ForEach(values, id: \.value) { value in
-                                    optionValueItem(option: option, value: value)
-                                }
-                            }
-                        } else {
-                            ForEach(values, id: \.value) { value in
-                                optionValueItem(option: option, value: value)
-                            }
-                        }
-                    } label: {
-                        settingsOptionRow(option)
-                    }
-                } else if option.isBoolean {
-                    Toggle(isOn: Binding<Bool>(
-                        get: { option.boolValue },
-                        set: { next in
-                            agentManager.selectConfigOption(id: option.id, value: next ? "true" : "false")
-                        }
-                    )) {
-                        Text(settingsTitle(for: option))
-                    }
-                }
-            }
-        } label: {
+        Button(action: showAgentSettingsMenu) {
             HStack(spacing: 5) {
                 Text(agentSettingsSummary)
                     .font(.system(size: 11.5, weight: .medium))
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8.5, weight: .bold))
+                    .opacity(0.75)
             }
             .foregroundColor(Color(theme.foreground).opacity(0.92))
             .padding(.horizontal, 11)
@@ -925,11 +890,87 @@ public struct AgentInputView: View {
                 Capsule(style: .continuous)
                     .stroke(Color(theme.excerptHeaderBorder).opacity(0.7), lineWidth: 1)
             )
+            .contentShape(Capsule(style: .continuous))
         }
-        .menuStyle(.borderlessButton)
+        .buttonStyle(.plain)
         .fixedSize()
         .help("Agent settings")
         .agentInputInteractiveHover(cornerRadius: 15, horizontalPadding: 2, verticalPadding: 2)
+    }
+
+    private func showAgentSettingsMenu() {
+        let menu = NSMenu(title: "Agent Settings")
+        var targets: [AgentSettingsMenuActionTarget] = []
+
+        func makeValueItem(option: ACPConfigOption, value: ACPConfigOption.OptionValue) -> NSMenuItem {
+            let target = AgentSettingsMenuActionTarget { [weak agentManager] in
+                agentManager?.selectConfigOption(id: option.id, value: value.value)
+            }
+            targets.append(target)
+            let item = NSMenuItem(
+                title: value.name,
+                action: #selector(AgentSettingsMenuActionTarget.invoke(_:)),
+                keyEquivalent: ""
+            )
+            item.target = target
+            item.state = isOptionSelected(option: option, value: value) ? .on : .off
+            return item
+        }
+
+        for option in agentManager.availableAgentSettings {
+            if let values = option.options, !values.isEmpty {
+                let currentText = settingsValue(for: option)
+                let parentTitle = currentText.isEmpty
+                    ? settingsTitle(for: option)
+                    : "\(settingsTitle(for: option)) — \(currentText)"
+                let parentItem = NSMenuItem(title: parentTitle, action: nil, keyEquivalent: "")
+                let subMenu = NSMenu(title: settingsTitle(for: option))
+
+                if values.count > 20 {
+                    let groups = groupOptionsByPrefix(values)
+                    if groups.count > 1 {
+                        for group in groups {
+                            let groupItem = NSMenuItem(title: group.groupName, action: nil, keyEquivalent: "")
+                            let groupMenu = NSMenu(title: group.groupName)
+                            for value in group.items {
+                                groupMenu.addItem(makeValueItem(option: option, value: value))
+                            }
+                            groupItem.submenu = groupMenu
+                            subMenu.addItem(groupItem)
+                        }
+                    } else {
+                        for value in values {
+                            subMenu.addItem(makeValueItem(option: option, value: value))
+                        }
+                    }
+                } else {
+                    for value in values {
+                        subMenu.addItem(makeValueItem(option: option, value: value))
+                    }
+                }
+
+                parentItem.submenu = subMenu
+                menu.addItem(parentItem)
+            } else if option.isBoolean {
+                let nextValue = option.boolValue ? "false" : "true"
+                let target = AgentSettingsMenuActionTarget { [weak agentManager] in
+                    agentManager?.selectConfigOption(id: option.id, value: nextValue)
+                }
+                targets.append(target)
+                let item = NSMenuItem(
+                    title: settingsTitle(for: option),
+                    action: #selector(AgentSettingsMenuActionTarget.invoke(_:)),
+                    keyEquivalent: ""
+                )
+                item.target = target
+                item.state = option.boolValue ? .on : .off
+                menu.addItem(item)
+            }
+        }
+
+        withExtendedLifetime(targets) {
+            _ = menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
+        }
     }
 
     private func optionValueItem(option: ACPConfigOption, value: ACPConfigOption.OptionValue) -> some View {
@@ -1577,4 +1618,17 @@ private struct AgentInputBlocksHeightPreferenceKey: PreferenceKey {
         }
     }
 }
+
+private final class AgentSettingsMenuActionTarget: NSObject {
+    private let action: () -> Void
+
+    init(_ action: @escaping () -> Void) {
+        self.action = action
+    }
+
+    @objc func invoke(_ sender: NSMenuItem) {
+        action()
+    }
+}
+
 
