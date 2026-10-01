@@ -6,6 +6,7 @@ public struct AgentSessionRowView: View {
     @ObservedObject public var session: AgentSessionItem
     public let isActive: Bool
     public let canClose: Bool
+    public let theme: Theme
     public let onSelect: () -> Void
     public let onClose: () -> Void
 
@@ -16,17 +17,20 @@ public struct AgentSessionRowView: View {
         session: AgentSessionItem,
         isActive: Bool,
         canClose: Bool = true,
+        theme: Theme = .zedDark,
         onSelect: @escaping () -> Void,
         onClose: @escaping () -> Void
     ) {
         self.session = session
         self.isActive = isActive
         self.canClose = canClose
+        self.theme = theme
         self.onSelect = onSelect
         self.onClose = onClose
     }
 
     public var body: some View {
+        let accentColor = Color(theme.accentColor)
         HStack(spacing: 8) {
             Button(action: onSelect) {
                 HStack(spacing: 8) {
@@ -36,18 +40,18 @@ public struct AgentSessionRowView: View {
                         HStack(spacing: 5) {
                             Text(session.title)
                                 .font(.system(size: 11.5, weight: (isActive || session.hasUnreadUpdates) ? .semibold : .regular))
-                                .foregroundColor(.primary)
+                                .foregroundColor(isActive ? Color(theme.foreground) : .primary)
                                 .lineLimit(1)
 
                             if let profile = session.preset.profile, !profile.isEmpty {
                                 Text(profile)
                                     .font(.system(size: 8.5, weight: .bold))
-                                    .foregroundColor(Color.accentColor)
+                                    .foregroundColor(accentColor)
                                     .padding(.horizontal, 4)
                                     .padding(.vertical, 1)
                                     .background(
                                         RoundedRectangle(cornerRadius: 3.5, style: .continuous)
-                                            .fill(Color.accentColor.opacity(0.14))
+                                            .fill(accentColor.opacity(0.14))
                                     )
                                     .layoutPriority(1)
                             }
@@ -55,31 +59,30 @@ public struct AgentSessionRowView: View {
                             if let shortId = session.shortSessionId, !session.title.contains(shortId) {
                                 Text(shortId)
                                     .font(.system(size: 8.5, weight: .medium, design: .monospaced))
-                                    .foregroundColor(.secondary.opacity(0.85))
+                                    .foregroundColor(isActive ? accentColor : .secondary.opacity(0.85))
                                     .padding(.horizontal, 4)
                                     .padding(.vertical, 1)
                                     .background(
                                         RoundedRectangle(cornerRadius: 3.5, style: .continuous)
-                                            .fill(Color.primary.opacity(0.06))
+                                            .fill(isActive ? accentColor.opacity(0.16) : Color.primary.opacity(0.06))
                                     )
                                     .layoutPriority(1)
                             }
 
                             if session.hasUnreadUpdates {
                                 Circle()
-                                    .fill(Color.accentColor)
+                                    .fill(accentColor)
                                     .frame(width: 5, height: 5)
                             }
                         }
 
                         Text(sessionSubtitle)
                             .font(.system(size: 9.5, weight: session.hasUnreadUpdates ? .medium : .regular))
-                            .foregroundColor(session.hasUnreadUpdates ? .accentColor : .secondary)
+                            .foregroundColor(session.hasUnreadUpdates ? accentColor : (isActive ? Color(theme.foreground).opacity(0.72) : .secondary))
                             .lineLimit(1)
                     }
 
                     Spacer()
-
                 }
                 .contentShape(Rectangle())
             }
@@ -90,7 +93,7 @@ public struct AgentSessionRowView: View {
             }) {
                 Image(systemName: session.isNotificationsEnabled ? "bell.fill" : "bell")
                     .font(.system(size: 9.5))
-                    .foregroundColor(session.isNotificationsEnabled ? Color.accentColor : Color.secondary.opacity(0.45))
+                    .foregroundColor(session.isNotificationsEnabled ? accentColor : Color.secondary.opacity(0.45))
                     .frame(width: 16, height: 16)
                     .contentShape(Rectangle())
             }
@@ -122,7 +125,7 @@ public struct AgentSessionRowView: View {
         .padding(.vertical, 5)
         .background(
             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(isActive ? Color.accentColor.opacity(0.12) : (isHovered ? Color.secondary.opacity(0.10) : Color.clear))
+                .fill(isActive ? accentColor.opacity(0.18) : (isHovered ? Color.secondary.opacity(0.10) : Color.clear))
                 .animation(.easeInOut(duration: 0.1), value: isHovered)
         )
         .contentShape(Rectangle())
@@ -150,6 +153,7 @@ public struct AgentSessionRowView: View {
 
     @ViewBuilder
     private var statusIconView: some View {
+        let accentColor = Color(theme.accentColor)
         if session.manager.pendingPermission != nil {
             Image(systemName: "hand.raised.fill")
                 .font(.system(size: 11))
@@ -160,14 +164,14 @@ public struct AgentSessionRowView: View {
             case .busy:
                 ZStack {
                     Circle()
-                        .fill(Color.accentColor.opacity(0.2))
+                        .fill(accentColor.opacity(0.2))
                         .frame(width: 14, height: 14)
                     Circle()
-                        .stroke(Color.accentColor, lineWidth: 1.5)
+                        .stroke(accentColor, lineWidth: 1.5)
                         .frame(width: 10, height: 10)
                     Image(systemName: "sparkle")
                         .font(.system(size: 7, weight: .bold))
-                        .foregroundColor(.accentColor)
+                        .foregroundColor(accentColor)
                 }
                 .frame(width: 14)
             case .connecting:
@@ -182,16 +186,16 @@ public struct AgentSessionRowView: View {
                     .frame(width: 14)
             case .idle:
                 Circle()
-                    .fill(sessionColor)
+                    .fill(isActive ? accentColor : sessionColor)
                     .frame(width: 8, height: 8)
                     .overlay(
                         Circle()
-                            .stroke(Color.primary.opacity(0.18), lineWidth: 0.8)
+                            .stroke(isActive ? Color.white.opacity(0.25) : Color.primary.opacity(0.18), lineWidth: 0.8)
                     )
                     .frame(width: 14)
             case .disconnected:
                 Circle()
-                    .fill(Color.secondary.opacity(0.5))
+                    .fill(isActive ? accentColor.opacity(0.8) : Color.secondary.opacity(0.5))
                     .frame(width: 8, height: 8)
                     .frame(width: 14)
             }

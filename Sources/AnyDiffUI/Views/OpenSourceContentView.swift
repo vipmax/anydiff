@@ -244,6 +244,7 @@ public struct OpenSourceContentView: View {
                             RecentLocalRowView(
                                 path: path,
                                 isCurrent: (path == currentLocalPath),
+                                accentColor: Color(theme.accentColor),
                                 onSelect: { onSelectLocalPath(path) },
                                 onRemove: {
                                     withAnimation(.easeInOut(duration: 0.15)) {
@@ -274,6 +275,7 @@ public struct OpenSourceContentView: View {
                     ForEach(visiblePresets) { preset in
                         PresetChipView(
                             preset: preset,
+                            accentColor: Color(theme.accentColor),
                             onSelect: { onOpenRemoteURL(preset.url) },
                             onDismiss: {
                                 withAnimation(.easeInOut(duration: 0.15)) {
@@ -298,7 +300,7 @@ public struct OpenSourceContentView: View {
                 VStack(spacing: 8) {
                     Image(systemName: "folder.badge.plus")
                         .font(.system(size: 28))
-                        .foregroundColor(.accentColor)
+                        .foregroundColor(Color(theme.accentColor))
                     Text("Drop folder or URL here")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundColor(.white)
@@ -306,7 +308,7 @@ public struct OpenSourceContentView: View {
             }
             .overlay(
                 RoundedRectangle(cornerRadius: 8)
-                    .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+                    .stroke(Color(theme.accentColor), style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
             )
             .padding(4)
         }
@@ -414,6 +416,7 @@ public struct OpenSourceContentView: View {
 private struct RecentLocalRowView: View {
     let path: String
     let isCurrent: Bool
+    let accentColor: Color
     let onSelect: () -> Void
     let onRemove: () -> Void
 
@@ -428,7 +431,7 @@ private struct RecentLocalRowView: View {
                 HStack(spacing: 8) {
                     Image(systemName: isCurrent ? "folder.fill" : "folder")
                         .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(isCurrent ? .accentColor : .secondary)
+                        .foregroundColor(isCurrent ? accentColor : .secondary)
                         .frame(width: 14)
 
                     VStack(alignment: .leading, spacing: 1) {
@@ -449,7 +452,7 @@ private struct RecentLocalRowView: View {
                     if isCurrent {
                         Image(systemName: "checkmark")
                             .font(.system(size: 10, weight: .bold))
-                            .foregroundColor(.accentColor)
+                            .foregroundColor(accentColor)
                     }
                 }
                 .contentShape(Rectangle())
@@ -476,7 +479,7 @@ private struct RecentLocalRowView: View {
         .padding(.vertical, 4)
         .background(
             RoundedRectangle(cornerRadius: 5)
-                .fill(isHovered ? Color.secondary.opacity(0.12) : Color.clear)
+                .fill(isCurrent ? accentColor.opacity(0.16) : (isHovered ? Color.secondary.opacity(0.12) : Color.clear))
                 .animation(.easeInOut(duration: 0.1), value: isHovered)
         )
         .contentShape(Rectangle())
@@ -488,6 +491,7 @@ private struct RecentLocalRowView: View {
 
 private struct PresetChipView: View {
     let preset: OpenSourceContentView.PresetExample
+    let accentColor: Color
     let onSelect: () -> Void
     let onDismiss: () -> Void
 
@@ -539,7 +543,7 @@ private struct PresetChipView: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: 5)
-                .stroke(isHovered ? Color.accentColor.opacity(0.5) : Color.secondary.opacity(0.12), lineWidth: 0.8)
+                .stroke(isHovered ? accentColor.opacity(0.5) : Color.secondary.opacity(0.12), lineWidth: 0.8)
                 .animation(.easeInOut(duration: 0.1), value: isHovered)
         )
         .onHover { hovering in

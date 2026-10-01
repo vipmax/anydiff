@@ -31,6 +31,7 @@ public struct MainWindowToolbarLeadingView: View {
                         currentBranch: repo.currentBranch,
                         localBranches: repo.localBranches,
                         remoteBranches: repo.remoteBranches,
+                        theme: theme,
                         comparisonTarget: $repo.comparisonTarget,
                         onSelectTarget: { target in
                             repo.comparisonTarget = target
@@ -51,7 +52,7 @@ public struct MainWindowToolbarLeadingView: View {
             HStack(spacing: 5) {
                 Image(systemName: "globe")
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(.accentColor)
+                    .foregroundColor(Color(theme.accentColor))
                 Text(ref.displayTitle)
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(.primary)

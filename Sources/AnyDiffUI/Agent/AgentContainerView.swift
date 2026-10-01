@@ -38,7 +38,7 @@ public struct AgentContainerView: View {
     }
 
     private var accentColor: Color {
-        coordinator.activeSession?.preset.color ?? .accentColor
+        coordinator.activeSession?.preset.color ?? Color(theme.accentColor)
     }
 
     private var isShowingStartScreen: Bool {

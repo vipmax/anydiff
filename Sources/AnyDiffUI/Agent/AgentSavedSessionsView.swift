@@ -392,7 +392,7 @@ public struct AgentSavedSessionsView: View {
                 .padding(.vertical, 7)
                 .background(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(Color.accentColor)
+                        .fill(Color(theme.accentColor))
                 )
             }
             .buttonStyle(.plain)

@@ -106,7 +106,7 @@ public struct SidebarFileListView: View {
                 Button(action: onSwitch) {
                     Text(repo.isStreaming ? "Loading..." : "CHANGES")
                         .font(.system(size: 10.5, weight: .bold))
-                        .foregroundColor(repo.isStreaming ? .accentColor : Color(theme.foreground))
+                        .foregroundColor(repo.isStreaming ? Color(theme.accentColor) : Color(theme.foreground))
                         .padding(.horizontal, 4)
                         .padding(.vertical, 2)
                         .background(
@@ -123,7 +123,7 @@ public struct SidebarFileListView: View {
             } else {
                 Text(repo.isStreaming ? "Loading..." : "CHANGES")
                     .font(.system(size: 10.5, weight: .bold))
-                    .foregroundColor(repo.isStreaming ? .accentColor : Color(theme.foreground))
+                    .foregroundColor(repo.isStreaming ? Color(theme.accentColor) : Color(theme.foreground))
                     .padding(.horizontal, 4)
                     .padding(.vertical, 2)
                     .lineLimit(1)
@@ -185,7 +185,7 @@ public struct SidebarFileListView: View {
                 }) {
                     Image(systemName: "magnifyingglass")
                         .font(.system(size: 10.5))
-                        .foregroundColor(isSearchVisible ? Color(theme.foreground) : Color(theme.gutterForeground))
+                        .foregroundColor(isSearchVisible ? Color(theme.accentColor) : Color(theme.gutterForeground))
                         .frame(width: 14, height: 14)
                 }
                 .buttonStyle(ToolbarHoverButtonStyle())
@@ -206,27 +206,27 @@ public struct SidebarFileListView: View {
         case .baseBranch(let base):
             Text("\(base)...")
                 .font(.system(size: 9.5, weight: .medium))
-                .foregroundColor(.accentColor)
+                .foregroundColor(Color(theme.accentColor))
                 .padding(.horizontal, 4)
                 .padding(.vertical, 1)
-                .background(Color.accentColor.opacity(0.12))
+                .background(Color(theme.accentColor).opacity(0.12))
                 .cornerRadius(4)
                 .lineLimit(1)
         case .directBranch(let branch):
             Text("→ \(branch)")
                 .font(.system(size: 9.5, weight: .medium))
-                .foregroundColor(.accentColor)
+                .foregroundColor(Color(theme.accentColor))
                 .padding(.horizontal, 4)
                 .padding(.vertical, 1)
-                .background(Color.accentColor.opacity(0.12))
+                .background(Color(theme.accentColor).opacity(0.12))
         case .commit(let hash, _):
             HStack(spacing: 5) {
                 Text(String(hash.prefix(7)))
                     .font(.system(size: 9.5, weight: .medium, design: .monospaced))
-                    .foregroundColor(.accentColor)
+                    .foregroundColor(Color(theme.accentColor))
                     .padding(.horizontal, 4)
                     .padding(.vertical, 1)
-                    .background(Color.accentColor.opacity(0.12))
+                    .background(Color(theme.accentColor).opacity(0.12))
                     .cornerRadius(4)
                     .lineLimit(1)
 

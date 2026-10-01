@@ -70,6 +70,15 @@ public struct VirtualizedFileListView: NSViewRepresentable {
             context.coordinator.cachedReviewedSet = reviewManager.reviewedFiles
             context.coordinator.needsFullReload = false
             tableView.reloadData()
+            if themeChanged {
+                let selectionColor = theme.accentColor.withAlphaComponent(0.18)
+                tableView.enumerateAvailableRowViews { rowView, _ in
+                    if let customRow = rowView as? CustomTableRowView {
+                        customRow.selectionColor = selectionColor
+                        customRow.needsDisplay = true
+                    }
+                }
+            }
         }
 
         // Sync selection
@@ -114,6 +123,7 @@ public struct VirtualizedFileListView: NSViewRepresentable {
                 rowView = CustomTableRowView()
                 rowView?.identifier = identifier
             }
+            rowView?.selectionColor = parent.theme.accentColor.withAlphaComponent(0.18)
             return rowView
         }
 
@@ -162,6 +172,7 @@ public struct VirtualizedFileListView: NSViewRepresentable {
 // MARK: - Custom Table Row View with rounded selection & hover
 final class CustomTableRowView: NSTableRowView {
     private var trackingArea: NSTrackingArea?
+    var selectionColor: NSColor = NSColor.controlAccentColor.withAlphaComponent(0.18)
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -181,7 +192,7 @@ final class CustomTableRowView: NSTableRowView {
         if isSelected {
             let selectionRect = bounds.insetBy(dx: 12, dy: 3)
             let path = NSBezierPath(roundedRect: selectionRect, xRadius: 6, yRadius: 6)
-            NSColor.controlAccentColor.withAlphaComponent(0.18).setFill()
+            selectionColor.setFill()
             path.fill()
         }
     }

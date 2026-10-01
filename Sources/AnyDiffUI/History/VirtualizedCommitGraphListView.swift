@@ -119,6 +119,15 @@ public struct VirtualizedCommitGraphListView: NSViewRepresentable {
             context.coordinator.cachedThemeId = theme.id
             context.coordinator.cachedWorkingChangesCount = workingChangesFileCount
             tableView.reloadData()
+            if themeChanged {
+                let selectionColor = theme.accentColor.withAlphaComponent(0.18)
+                tableView.enumerateAvailableRowViews { rowView, _ in
+                    if let commitRow = rowView as? CommitTableRowView {
+                        commitRow.selectionColor = selectionColor
+                        commitRow.needsDisplay = true
+                    }
+                }
+            }
         }
 
         // Sync table selection
@@ -199,6 +208,7 @@ public struct VirtualizedCommitGraphListView: NSViewRepresentable {
                 rowView = CommitTableRowView()
                 rowView?.identifier = identifier
             }
+            rowView?.selectionColor = parent.theme.accentColor.withAlphaComponent(0.18)
             return rowView
         }
 
@@ -264,6 +274,7 @@ public struct VirtualizedCommitGraphListView: NSViewRepresentable {
 // MARK: - Custom Table Row View for History with balanced selection & hover
 final class CommitTableRowView: NSTableRowView {
     private var trackingArea: NSTrackingArea?
+    var selectionColor: NSColor = NSColor.controlAccentColor.withAlphaComponent(0.18)
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -283,7 +294,7 @@ final class CommitTableRowView: NSTableRowView {
         if isSelected {
             let selectionRect = bounds.insetBy(dx: 6, dy: 2)
             let path = NSBezierPath(roundedRect: selectionRect, xRadius: 6, yRadius: 6)
-            NSColor.controlAccentColor.withAlphaComponent(0.18).setFill()
+            selectionColor.setFill()
             path.fill()
         }
     }
@@ -337,12 +348,12 @@ final class RefBadgeItemView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func configure(with ref: GitRef) {
+    func configure(with ref: GitRef, accentColor: NSColor) {
         let isHead = ref.type == .head
-        let bgColor = isHead ? NSColor.controlAccentColor.withAlphaComponent(0.20) : NSColor.secondaryLabelColor.withAlphaComponent(0.12)
+        let bgColor = isHead ? accentColor.withAlphaComponent(0.20) : NSColor.secondaryLabelColor.withAlphaComponent(0.12)
         layer?.backgroundColor = bgColor.cgColor
 
-        let tint = isHead ? NSColor.controlAccentColor : NSColor.secondaryLabelColor
+        let tint = isHead ? accentColor : NSColor.secondaryLabelColor
         icon.image = ref.type.isTag ? Self.tagImage : Self.branchImage
         icon.contentTintColor = tint
         label.textColor = tint
@@ -654,10 +665,10 @@ final class CommitGraphTableCellView: NSTableCellView {
             } else {
                 refBadgeStack.isHidden = false
                 topRowStack.setVisibilityPriority(.mustHold, for: refBadgeStack)
-                refBadge0.configure(with: refs[0])
+                refBadge0.configure(with: refs[0], accentColor: theme.accentColor)
                 refBadge0.isHidden = false
                 if refs.count > 1 {
-                    refBadge1.configure(with: refs[1])
+                    refBadge1.configure(with: refs[1], accentColor: theme.accentColor)
                     refBadge1.isHidden = false
                 } else {
                     refBadge1.isHidden = true

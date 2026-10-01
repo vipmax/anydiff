@@ -15,14 +15,12 @@ public struct Theme: Identifiable, Sendable {
     public var inputBackground: NSColor {
         isDark ? excerptHeaderBackground : .white
     }
+    /// Primary accent color for list selections, active badges, and UI highlights.
+    public let accentColor: NSColor
+
     /// Accent and focus glow color for controls and inputs derived from the theme palette.
     public var focusColor: NSColor {
-        switch id {
-        case "github-dark", "github-light", "vscode-dark-plus", "vscode-light-modern", "jetbrains-darcula", "intellij-light", "xcode-dark", "xcode-light", "dracula", "rose-pine":
-            return diffModifiedGutter
-        default:
-            return function
-        }
+        accentColor
     }
     public let currentLineBackground: NSColor
     public let selectionBackground: NSColor
@@ -66,6 +64,7 @@ public struct Theme: Identifiable, Sendable {
         id: String,
         name: String,
         isDark: Bool,
+        accentColor: NSColor? = nil,
         background: NSColor,
         gutterBackground: NSColor,
         currentLineBackground: NSColor,
@@ -97,6 +96,7 @@ public struct Theme: Identifiable, Sendable {
         self.id = id
         self.name = name
         self.isDark = isDark
+        self.accentColor = accentColor ?? function
         self.background = background
         self.gutterBackground = gutterBackground
         self.currentLineBackground = currentLineBackground
@@ -132,6 +132,7 @@ public struct Theme: Identifiable, Sendable {
         id: "zed-dark",
         name: "Zed Dark",
         isDark: true,
+        accentColor: NSColor(red: 0.40, green: 0.68, blue: 0.95, alpha: 1.0),
         background: NSColor(red: 0.11, green: 0.12, blue: 0.14, alpha: 1.0),
         gutterBackground: NSColor(red: 0.09, green: 0.10, blue: 0.12, alpha: 1.0),
         currentLineBackground: NSColor(red: 0.15, green: 0.16, blue: 0.19, alpha: 1.0),
@@ -164,6 +165,7 @@ public struct Theme: Identifiable, Sendable {
         id: "tokyo-night",
         name: "Tokyo Night",
         isDark: true,
+        accentColor: NSColor(red: 0.49, green: 0.69, blue: 0.99, alpha: 1.0),
         background: NSColor(red: 0.10, green: 0.11, blue: 0.18, alpha: 1.0),
         gutterBackground: NSColor(red: 0.08, green: 0.09, blue: 0.15, alpha: 1.0),
         currentLineBackground: NSColor(red: 0.16, green: 0.18, blue: 0.27, alpha: 1.0),
@@ -196,6 +198,7 @@ public struct Theme: Identifiable, Sendable {
         id: "github-dark",
         name: "GitHub Dark",
         isDark: true,
+        accentColor: NSColor(red: 0.30, green: 0.60, blue: 0.95, alpha: 1.0),
         background: NSColor(red: 0.05, green: 0.07, blue: 0.09, alpha: 1.0),
         gutterBackground: NSColor(red: 0.04, green: 0.06, blue: 0.08, alpha: 1.0),
         currentLineBackground: NSColor(red: 0.10, green: 0.13, blue: 0.16, alpha: 1.0),
@@ -228,6 +231,7 @@ public struct Theme: Identifiable, Sendable {
         id: "zed-gray",
         name: "Zed Slate Gray",
         isDark: true,
+        accentColor: NSColor(red: 0.42, green: 0.70, blue: 0.96, alpha: 1.0),
         background: NSColor(red: 0.158, green: 0.162, blue: 0.178, alpha: 1.0),
         gutterBackground: NSColor(red: 0.133, green: 0.137, blue: 0.150, alpha: 1.0),
         currentLineBackground: NSColor(red: 0.190, green: 0.195, blue: 0.215, alpha: 1.0),
@@ -260,6 +264,7 @@ public struct Theme: Identifiable, Sendable {
         id: "macos-light",
         name: "macOS Light",
         isDark: false,
+        accentColor: NSColor(red: 0.08, green: 0.30, blue: 0.68, alpha: 1.0),
         background: NSColor(red: 0.98, green: 0.98, blue: 0.99, alpha: 1.0),
         gutterBackground: NSColor(red: 0.94, green: 0.95, blue: 0.97, alpha: 1.0),
         currentLineBackground: NSColor(red: 0.93, green: 0.95, blue: 0.98, alpha: 1.0),
@@ -292,6 +297,7 @@ public struct Theme: Identifiable, Sendable {
         id: "unified-dark",
         name: "macOS Dark",
         isDark: true,
+        accentColor: NSColor(red: 0.42, green: 0.72, blue: 0.98, alpha: 1.0),
         background: NSColor(red: 43.0 / 255.0, green: 41.0 / 255.0, blue: 40.0 / 255.0, alpha: 1.0),
         gutterBackground: NSColor(red: 43.0 / 255.0, green: 41.0 / 255.0, blue: 40.0 / 255.0, alpha: 1.0),
         currentLineBackground: NSColor(red: 0.182, green: 0.184, blue: 0.194, alpha: 1.0),
@@ -324,6 +330,7 @@ public struct Theme: Identifiable, Sendable {
         id: "vesper",
         name: "Vesper",
         isDark: true,
+        accentColor: NSColor(red: 1.0, green: 0.780, blue: 0.600, alpha: 1.0),
         background: NSColor(red: 0.063, green: 0.063, blue: 0.063, alpha: 1.0),
         gutterBackground: NSColor(red: 0.063, green: 0.063, blue: 0.063, alpha: 1.0),
         currentLineBackground: NSColor(red: 0.094, green: 0.094, blue: 0.094, alpha: 1.0),
@@ -357,6 +364,7 @@ public struct Theme: Identifiable, Sendable {
         id: "vscode-dark-plus",
         name: "VS Code Dark+",
         isDark: true,
+        accentColor: NSColor(red: 0.000, green: 0.478, blue: 0.800, alpha: 1.0),
         background: NSColor(red: 0.118, green: 0.118, blue: 0.118, alpha: 1.0),
         gutterBackground: NSColor(red: 0.094, green: 0.094, blue: 0.094, alpha: 1.0),
         currentLineBackground: NSColor(red: 0.157, green: 0.157, blue: 0.157, alpha: 1.0),
@@ -389,6 +397,7 @@ public struct Theme: Identifiable, Sendable {
         id: "vscode-light-modern",
         name: "VS Code Light+",
         isDark: false,
+        accentColor: NSColor(red: 0.000, green: 0.373, blue: 0.722, alpha: 1.0),
         background: NSColor(red: 1.000, green: 1.000, blue: 1.000, alpha: 1.0),
         gutterBackground: NSColor(red: 0.973, green: 0.973, blue: 0.973, alpha: 1.0),
         currentLineBackground: NSColor(red: 0.953, green: 0.957, blue: 0.965, alpha: 1.0),
@@ -421,6 +430,7 @@ public struct Theme: Identifiable, Sendable {
         id: "one-dark-pro",
         name: "One Dark Pro",
         isDark: true,
+        accentColor: NSColor(red: 0.380, green: 0.686, blue: 0.937, alpha: 1.0),
         background: NSColor(red: 0.157, green: 0.173, blue: 0.204, alpha: 1.0),
         gutterBackground: NSColor(red: 0.129, green: 0.145, blue: 0.169, alpha: 1.0),
         currentLineBackground: NSColor(red: 0.173, green: 0.192, blue: 0.235, alpha: 1.0),
@@ -453,6 +463,7 @@ public struct Theme: Identifiable, Sendable {
         id: "github-light",
         name: "GitHub Light",
         isDark: false,
+        accentColor: NSColor(red: 0.035, green: 0.412, blue: 0.855, alpha: 1.0),
         background: NSColor(red: 1.000, green: 1.000, blue: 1.000, alpha: 1.0),
         gutterBackground: NSColor(red: 0.965, green: 0.973, blue: 0.980, alpha: 1.0),
         currentLineBackground: NSColor(red: 0.945, green: 0.961, blue: 0.976, alpha: 1.0),
@@ -485,6 +496,7 @@ public struct Theme: Identifiable, Sendable {
         id: "jetbrains-darcula",
         name: "JetBrains Darcula",
         isDark: true,
+        accentColor: NSColor(red: 0.408, green: 0.592, blue: 0.733, alpha: 1.0),
         background: NSColor(red: 0.169, green: 0.169, blue: 0.169, alpha: 1.0),
         gutterBackground: NSColor(red: 0.192, green: 0.200, blue: 0.208, alpha: 1.0),
         currentLineBackground: NSColor(red: 0.196, green: 0.196, blue: 0.196, alpha: 1.0),
@@ -517,6 +529,7 @@ public struct Theme: Identifiable, Sendable {
         id: "intellij-light",
         name: "IntelliJ Light",
         isDark: false,
+        accentColor: NSColor(red: 0.000, green: 0.200, blue: 0.702, alpha: 1.0),
         background: NSColor(red: 1.000, green: 1.000, blue: 1.000, alpha: 1.0),
         gutterBackground: NSColor(red: 0.949, green: 0.949, blue: 0.949, alpha: 1.0),
         currentLineBackground: NSColor(red: 0.988, green: 0.980, blue: 0.929, alpha: 1.0),
@@ -549,6 +562,7 @@ public struct Theme: Identifiable, Sendable {
         id: "xcode-dark",
         name: "Xcode Dark",
         isDark: true,
+        accentColor: NSColor(red: 0.330, green: 0.511, blue: 0.999, alpha: 1.0),
         background: NSColor(red: 0.121, green: 0.123, blue: 0.141, alpha: 1.0),
         gutterBackground: NSColor(red: 0.102, green: 0.104, blue: 0.120, alpha: 1.0),
         currentLineBackground: NSColor(red: 0.139, green: 0.147, blue: 0.169, alpha: 1.0),
@@ -581,6 +595,7 @@ public struct Theme: Identifiable, Sendable {
         id: "xcode-light",
         name: "Xcode Light",
         isDark: false,
+        accentColor: NSColor(red: 0.059, green: 0.408, blue: 0.627, alpha: 1.0),
         background: NSColor(red: 1.000, green: 1.000, blue: 1.000, alpha: 1.0),
         gutterBackground: NSColor(red: 0.960, green: 0.960, blue: 0.960, alpha: 1.0),
         currentLineBackground: NSColor(red: 0.910, green: 0.949, blue: 1.000, alpha: 1.0),
@@ -613,6 +628,7 @@ public struct Theme: Identifiable, Sendable {
         id: "catppuccin-mocha",
         name: "Catppuccin Mocha",
         isDark: true,
+        accentColor: NSColor(red: 0.537, green: 0.706, blue: 0.980, alpha: 1.0),
         background: NSColor(red: 0.118, green: 0.118, blue: 0.180, alpha: 1.0),
         gutterBackground: NSColor(red: 0.094, green: 0.094, blue: 0.145, alpha: 1.0),
         currentLineBackground: NSColor(red: 0.192, green: 0.196, blue: 0.267, alpha: 1.0),
@@ -645,6 +661,7 @@ public struct Theme: Identifiable, Sendable {
         id: "catppuccin-latte",
         name: "Catppuccin Latte",
         isDark: false,
+        accentColor: NSColor(red: 0.118, green: 0.400, blue: 0.961, alpha: 1.0),
         background: NSColor(red: 0.937, green: 0.945, blue: 0.961, alpha: 1.0),
         gutterBackground: NSColor(red: 0.902, green: 0.914, blue: 0.937, alpha: 1.0),
         currentLineBackground: NSColor(red: 0.855, green: 0.871, blue: 0.910, alpha: 1.0),
@@ -677,6 +694,7 @@ public struct Theme: Identifiable, Sendable {
         id: "dracula",
         name: "Dracula",
         isDark: true,
+        accentColor: NSColor(red: 0.741, green: 0.576, blue: 0.976, alpha: 1.0),
         background: NSColor(red: 0.157, green: 0.165, blue: 0.212, alpha: 1.0),
         gutterBackground: NSColor(red: 0.129, green: 0.133, blue: 0.173, alpha: 1.0),
         currentLineBackground: NSColor(red: 0.200, green: 0.212, blue: 0.275, alpha: 1.0),
@@ -709,6 +727,7 @@ public struct Theme: Identifiable, Sendable {
         id: "monokai-pro",
         name: "Monokai Pro",
         isDark: true,
+        accentColor: NSColor(red: 0.663, green: 0.863, blue: 0.463, alpha: 1.0),
         background: NSColor(red: 0.176, green: 0.165, blue: 0.180, alpha: 1.0),
         gutterBackground: NSColor(red: 0.133, green: 0.122, blue: 0.133, alpha: 1.0),
         currentLineBackground: NSColor(red: 0.212, green: 0.200, blue: 0.216, alpha: 1.0),
@@ -741,6 +760,7 @@ public struct Theme: Identifiable, Sendable {
         id: "nord",
         name: "Nord",
         isDark: true,
+        accentColor: NSColor(red: 0.533, green: 0.753, blue: 0.816, alpha: 1.0),
         background: NSColor(red: 0.180, green: 0.204, blue: 0.251, alpha: 1.0),
         gutterBackground: NSColor(red: 0.153, green: 0.173, blue: 0.212, alpha: 1.0),
         currentLineBackground: NSColor(red: 0.231, green: 0.259, blue: 0.322, alpha: 1.0),
@@ -773,6 +793,7 @@ public struct Theme: Identifiable, Sendable {
         id: "gruvbox-dark",
         name: "Gruvbox Dark",
         isDark: true,
+        accentColor: NSColor(red: 0.722, green: 0.733, blue: 0.149, alpha: 1.0),
         background: NSColor(red: 0.157, green: 0.157, blue: 0.157, alpha: 1.0),
         gutterBackground: NSColor(red: 0.114, green: 0.125, blue: 0.129, alpha: 1.0),
         currentLineBackground: NSColor(red: 0.235, green: 0.220, blue: 0.212, alpha: 1.0),
@@ -805,6 +826,7 @@ public struct Theme: Identifiable, Sendable {
         id: "gruvbox-light",
         name: "Gruvbox Light",
         isDark: false,
+        accentColor: NSColor(red: 0.259, green: 0.482, blue: 0.345, alpha: 1.0),
         background: NSColor(red: 0.984, green: 0.945, blue: 0.780, alpha: 1.0),
         gutterBackground: NSColor(red: 0.922, green: 0.859, blue: 0.698, alpha: 1.0),
         currentLineBackground: NSColor(red: 0.949, green: 0.898, blue: 0.737, alpha: 1.0),
@@ -837,6 +859,7 @@ public struct Theme: Identifiable, Sendable {
         id: "solarized-dark",
         name: "Solarized Dark",
         isDark: true,
+        accentColor: NSColor(red: 0.149, green: 0.545, blue: 0.824, alpha: 1.0),
         background: NSColor(red: 0.000, green: 0.169, blue: 0.212, alpha: 1.0),
         gutterBackground: NSColor(red: 0.027, green: 0.212, blue: 0.259, alpha: 1.0),
         currentLineBackground: NSColor(red: 0.027, green: 0.212, blue: 0.259, alpha: 1.0),
@@ -869,6 +892,7 @@ public struct Theme: Identifiable, Sendable {
         id: "solarized-light",
         name: "Solarized Light",
         isDark: false,
+        accentColor: NSColor(red: 0.149, green: 0.545, blue: 0.824, alpha: 1.0),
         background: NSColor(red: 0.992, green: 0.965, blue: 0.890, alpha: 1.0),
         gutterBackground: NSColor(red: 0.933, green: 0.910, blue: 0.835, alpha: 1.0),
         currentLineBackground: NSColor(red: 0.933, green: 0.910, blue: 0.835, alpha: 1.0),
@@ -901,6 +925,7 @@ public struct Theme: Identifiable, Sendable {
         id: "rose-pine",
         name: "Rosé Pine",
         isDark: true,
+        accentColor: NSColor(red: 0.769, green: 0.655, blue: 0.906, alpha: 1.0),
         background: NSColor(red: 0.098, green: 0.090, blue: 0.141, alpha: 1.0),
         gutterBackground: NSColor(red: 0.122, green: 0.114, blue: 0.180, alpha: 1.0),
         currentLineBackground: NSColor(red: 0.149, green: 0.137, blue: 0.227, alpha: 1.0),
@@ -933,6 +958,7 @@ public struct Theme: Identifiable, Sendable {
         id: "ayu-dark",
         name: "Ayu Dark",
         isDark: true,
+        accentColor: NSColor(red: 1.000, green: 0.706, blue: 0.329, alpha: 1.0),
         background: NSColor(red: 0.043, green: 0.055, blue: 0.078, alpha: 1.0),
         gutterBackground: NSColor(red: 0.051, green: 0.063, blue: 0.090, alpha: 1.0),
         currentLineBackground: NSColor(red: 0.075, green: 0.090, blue: 0.129, alpha: 1.0),
@@ -965,6 +991,7 @@ public struct Theme: Identifiable, Sendable {
         id: "night-owl",
         name: "Night Owl",
         isDark: true,
+        accentColor: NSColor(red: 0.510, green: 0.667, blue: 1.000, alpha: 1.0),
         background: NSColor(red: 0.004, green: 0.086, blue: 0.153, alpha: 1.0),
         gutterBackground: NSColor(red: 0.004, green: 0.067, blue: 0.114, alpha: 1.0),
         currentLineBackground: NSColor(red: 0.043, green: 0.145, blue: 0.227, alpha: 1.0),
@@ -997,6 +1024,7 @@ public struct Theme: Identifiable, Sendable {
         id: "everforest-dark",
         name: "Everforest Dark",
         isDark: true,
+        accentColor: NSColor(red: 0.655, green: 0.753, blue: 0.502, alpha: 1.0),
         background: NSColor(red: 0.176, green: 0.208, blue: 0.231, alpha: 1.0),
         gutterBackground: NSColor(red: 0.137, green: 0.165, blue: 0.180, alpha: 1.0),
         currentLineBackground: NSColor(red: 0.204, green: 0.247, blue: 0.267, alpha: 1.0),
@@ -1029,6 +1057,7 @@ public struct Theme: Identifiable, Sendable {
         id: "everforest-light",
         name: "Everforest Light",
         isDark: false,
+        accentColor: NSColor(red: 0.553, green: 0.631, blue: 0.004, alpha: 1.0),
         background: NSColor(red: 0.992, green: 0.965, blue: 0.890, alpha: 1.0),
         gutterBackground: NSColor(red: 0.937, green: 0.922, blue: 0.831, alpha: 1.0),
         currentLineBackground: NSColor(red: 0.957, green: 0.941, blue: 0.851, alpha: 1.0),
@@ -1061,6 +1090,7 @@ public struct Theme: Identifiable, Sendable {
         id: "matrix",
         name: "Matrix",
         isDark: true,
+        accentColor: NSColor(red: 0.600, green: 1.000, blue: 0.200, alpha: 1.0),
         background: NSColor(red: 0.020, green: 0.039, blue: 0.024, alpha: 1.0),
         gutterBackground: NSColor(red: 0.012, green: 0.024, blue: 0.016, alpha: 1.0),
         currentLineBackground: NSColor(red: 0.039, green: 0.094, blue: 0.055, alpha: 1.0),

@@ -6,6 +6,7 @@ public struct BranchPickerView: View {
     public var currentBranch: String
     public var localBranches: [String]
     public var remoteBranches: [String]
+    public var theme: Theme
     @Binding public var comparisonTarget: ComparisonTarget
     public var onSelectTarget: (ComparisonTarget) -> Void
 
@@ -16,12 +17,14 @@ public struct BranchPickerView: View {
         currentBranch: String,
         localBranches: [String],
         remoteBranches: [String] = [],
+        theme: Theme = .zedDark,
         comparisonTarget: Binding<ComparisonTarget>,
         onSelectTarget: @escaping (ComparisonTarget) -> Void
     ) {
         self.currentBranch = currentBranch
         self.localBranches = localBranches
         self.remoteBranches = remoteBranches
+        self.theme = theme
         self._comparisonTarget = comparisonTarget
         self.onSelectTarget = onSelectTarget
     }
@@ -47,7 +50,7 @@ public struct BranchPickerView: View {
             HStack(spacing: 5) {
                 Image(systemName: "arrow.triangle.branch")
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(comparisonTarget == .workingTree ? .secondary : .accentColor)
+                    .foregroundColor(comparisonTarget == .workingTree ? .secondary : Color(theme.accentColor))
 
                 Text(buttonLabelText)
                     .font(.system(size: 12, weight: .medium))
@@ -75,6 +78,7 @@ public struct BranchPickerView: View {
                 currentBranch: currentBranch,
                 localBranches: localBranches,
                 remoteBranches: remoteBranches,
+                theme: theme,
                 comparisonTarget: comparisonTarget,
                 searchText: searchText,
                 onSelectTarget: { target in
@@ -139,6 +143,7 @@ public struct VirtualizedBranchTableView: NSViewRepresentable {
     public var currentBranch: String
     public var localBranches: [String]
     public var remoteBranches: [String]
+    public var theme: Theme
     public var comparisonTarget: ComparisonTarget
     public var searchText: String
     public var onSelectTarget: (ComparisonTarget) -> Void
@@ -147,6 +152,7 @@ public struct VirtualizedBranchTableView: NSViewRepresentable {
         currentBranch: String,
         localBranches: [String],
         remoteBranches: [String],
+        theme: Theme = .zedDark,
         comparisonTarget: ComparisonTarget,
         searchText: String,
         onSelectTarget: @escaping (ComparisonTarget) -> Void
@@ -154,6 +160,7 @@ public struct VirtualizedBranchTableView: NSViewRepresentable {
         self.currentBranch = currentBranch
         self.localBranches = localBranches
         self.remoteBranches = remoteBranches
+        self.theme = theme
         self.comparisonTarget = comparisonTarget
         self.searchText = searchText
         self.onSelectTarget = onSelectTarget
@@ -290,17 +297,20 @@ public struct VirtualizedBranchTableView: NSViewRepresentable {
         var parent: VirtualizedBranchTableView
         weak var tableView: BranchTableView?
         var rows: [BranchPickerRow] = []
+        var cachedThemeId: String = ""
 
         init(_ parent: VirtualizedBranchTableView) {
             self.parent = parent
             self.rows = parent.computeRows()
+            self.cachedThemeId = parent.theme.id
         }
 
         func update(parent: VirtualizedBranchTableView) {
             self.parent = parent
             let newRows = parent.computeRows()
-            if self.rows != newRows {
+            if self.rows != newRows || self.cachedThemeId != parent.theme.id {
                 self.rows = newRows
+                self.cachedThemeId = parent.theme.id
                 tableView?.hoveredRow = nil
                 tableView?.reloadData()
             }
@@ -347,6 +357,12 @@ public struct VirtualizedBranchTableView: NSViewRepresentable {
                 rowView?.identifier = identifier
             }
             rowView?.rowIndex = row
+            if row >= 0 && row < rows.count, case .item(_, _, _, let isSelected, _) = rows[row] {
+                rowView?.isRowSelected = isSelected
+            } else {
+                rowView?.isRowSelected = false
+            }
+            rowView?.selectionColor = parent.theme.accentColor.withAlphaComponent(0.16)
             return rowView
         }
 
@@ -372,7 +388,13 @@ public struct VirtualizedBranchTableView: NSViewRepresentable {
                     cell = BranchItemCellView()
                     cell?.identifier = identifier
                 }
-                cell?.configure(title: title, subtitle: subtitle, iconName: iconName, isSelected: isSelected)
+                cell?.configure(
+                    title: title,
+                    subtitle: subtitle,
+                    iconName: iconName,
+                    isSelected: isSelected,
+                    accentColor: parent.theme.accentColor
+                )
                 return cell
             }
         }
@@ -432,13 +454,20 @@ final class BranchTableView: NSTableView {
     }
 }
 
-// MARK: - Custom Table Row View with Centralized Hover Drawing
+// MARK: - Custom Table Row View with Centralized Hover & Selection Drawing
 
 final class BranchTableRowView: NSTableRowView {
     var rowIndex: Int = -1
+    var isRowSelected: Bool = false
+    var selectionColor: NSColor = NSColor.controlAccentColor.withAlphaComponent(0.16)
 
     override func drawBackground(in dirtyRect: NSRect) {
-        if let tv = superview as? BranchTableView ?? (superview?.superview as? BranchTableView),
+        if isRowSelected {
+            let selectionRect = bounds.insetBy(dx: 4, dy: 1)
+            let path = NSBezierPath(roundedRect: selectionRect, xRadius: 5, yRadius: 5)
+            selectionColor.setFill()
+            path.fill()
+        } else if let tv = superview as? BranchTableView ?? (superview?.superview as? BranchTableView),
            tv.hoveredRow == rowIndex {
             let hoverRect = bounds.insetBy(dx: 4, dy: 1)
             let path = NSBezierPath(roundedRect: hoverRect, xRadius: 5, yRadius: 5)
@@ -544,9 +573,9 @@ final class BranchItemCellView: NSTableCellView {
         ])
     }
 
-    func configure(title: String, subtitle: String, iconName: String, isSelected: Bool) {
+    func configure(title: String, subtitle: String, iconName: String, isSelected: Bool, accentColor: NSColor) {
         iconView.image = NSImage(systemSymbolName: iconName, accessibilityDescription: nil)
-        iconView.contentTintColor = isSelected ? .controlAccentColor : .secondaryLabelColor
+        iconView.contentTintColor = isSelected ? accentColor : .secondaryLabelColor
 
         titleLabel.stringValue = title
         titleLabel.font = .systemFont(ofSize: 12, weight: isSelected ? .semibold : .regular)
@@ -554,6 +583,7 @@ final class BranchItemCellView: NSTableCellView {
         subtitleLabel.stringValue = subtitle
         subtitleLabel.isHidden = subtitle.isEmpty
 
+        checkmarkView.contentTintColor = accentColor
         checkmarkView.isHidden = !isSelected
     }
 }

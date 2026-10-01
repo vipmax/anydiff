@@ -145,10 +145,10 @@ public struct CommitDetailPopoverView: View {
                         Text(ref.shortName)
                             .font(.system(size: 10, weight: .medium))
                     }
-                    .foregroundColor(.accentColor)
+                    .foregroundColor(Color(theme.accentColor))
                     .padding(.horizontal, 5)
                     .padding(.vertical, 2)
-                    .background(Color.accentColor.opacity(0.12))
+                    .background(Color(theme.accentColor).opacity(0.12))
                     .cornerRadius(4)
                 }
             }

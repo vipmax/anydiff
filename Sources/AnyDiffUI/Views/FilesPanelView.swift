@@ -235,7 +235,7 @@ public struct FilesPanelView: View {
             }) {
                 Image(systemName: isSearchVisible ? "magnifyingglass.circle.fill" : "magnifyingglass")
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(isSearchVisible ? Color.accentColor : Color(theme.gutterForeground))
+                    .foregroundColor(isSearchVisible ? Color(theme.accentColor) : Color(theme.gutterForeground))
                     .frame(width: 14, height: 14)
             }
             .buttonStyle(ToolbarHoverButtonStyle())

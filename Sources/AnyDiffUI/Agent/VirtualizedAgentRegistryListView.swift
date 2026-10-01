@@ -397,6 +397,7 @@ final class DownloadProgressPillButton: NSControl {
 
     var themeForeground: NSColor = .labelColor { didSet { updateContent() } }
     var themeGutterForeground: NSColor = .secondaryLabelColor { didSet { updateContent() } }
+    var themeAccentColor: NSColor = .controlAccentColor { didSet { updateContent() } }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -490,7 +491,7 @@ final class DownloadProgressPillButton: NSControl {
             titleLabel.attributedStringValue = attr
             toolTip = "Cancel download"
         } else {
-            let accent = NSColor.controlAccentColor
+            let accent = themeAccentColor
             layer?.backgroundColor = themeForeground.withAlphaComponent(0.04).cgColor
             layer?.borderColor = accent.withAlphaComponent(0.35).cgColor
             fillView.layer?.backgroundColor = accent.withAlphaComponent(0.22).cgColor
@@ -782,8 +783,8 @@ final class AgentRegistryTableCellView: NSTableCellView {
         } else if hasUpdate {
             versionBadge.configure(
                 text: "Update: v\(agent.version)",
-                textColor: NSColor.controlAccentColor,
-                bgColor: NSColor.controlAccentColor.withAlphaComponent(0.12)
+                textColor: theme.accentColor,
+                bgColor: theme.accentColor.withAlphaComponent(0.12)
             )
         } else {
             versionBadge.configure(
@@ -828,7 +829,7 @@ final class AgentRegistryTableCellView: NSTableCellView {
             if let targetUrl = URL(string: finalUrlString) {
                 linkButton.isHidden = false
                 linkButton.defaultTintColor = theme.gutterForeground.withAlphaComponent(0.65)
-                linkButton.hoverTintColor = .controlAccentColor
+                linkButton.hoverTintColor = theme.accentColor
                 linkButton.toolTip = "Visit agent website: \(finalUrlString)"
                 linkButton.onClick = {
                     NSWorkspace.shared.open(targetUrl)
@@ -875,7 +876,7 @@ final class AgentRegistryTableCellView: NSTableCellView {
         }
 
         // Install button styling
-        let accent = NSColor.controlAccentColor
+        let accent = theme.accentColor
         installButton.defaultBgColor = accent.withAlphaComponent(0.12)
         installButton.hoverBgColor = accent.withAlphaComponent(0.24)
         installButton.defaultBorderColor = accent.withAlphaComponent(0.35)
@@ -895,6 +896,7 @@ final class AgentRegistryTableCellView: NSTableCellView {
         // Progress button styling
         progressButton.themeForeground = theme.foreground
         progressButton.themeGutterForeground = theme.gutterForeground
+        progressButton.themeAccentColor = theme.accentColor
         progressButton.progress = progress
 
         // Button state handling

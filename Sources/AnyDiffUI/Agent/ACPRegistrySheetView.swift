@@ -102,7 +102,7 @@ public struct ACPRegistrySheetView: View {
             HStack(spacing: 7) {
                 Image(systemName: "globe")
                     .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(.accentColor)
+                    .foregroundColor(Color(theme.accentColor))
 
                 Text("ACP Registry")
                     .font(.system(size: 13, weight: .semibold))
@@ -119,7 +119,7 @@ public struct ACPRegistrySheetView: View {
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundColor(
                             selectedFilter == .installed
-                                ? Color.accentColor
+                                ? Color(theme.accentColor)
                                 : (isBadgeHovered && installedCount > 0 ? Color(theme.foreground) : Color(theme.gutterForeground))
                         )
                         .padding(.horizontal, 6)
@@ -128,7 +128,7 @@ public struct ACPRegistrySheetView: View {
                             Capsule()
                                 .fill(
                                     selectedFilter == .installed
-                                        ? Color.accentColor.opacity(isBadgeHovered ? 0.22 : 0.15)
+                                        ? Color(theme.accentColor).opacity(isBadgeHovered ? 0.22 : 0.15)
                                         : Color(theme.foreground).opacity(isBadgeHovered && installedCount > 0 ? 0.10 : 0.06)
                                 )
                         )
@@ -165,11 +165,11 @@ public struct ACPRegistrySheetView: View {
                 }) {
                     Image(systemName: "magnifyingglass")
                         .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(isSearchVisible ? .accentColor : (isSearchHovered ? Color(theme.foreground) : Color(theme.gutterForeground)))
+                        .foregroundColor(isSearchVisible ? Color(theme.accentColor) : (isSearchHovered ? Color(theme.foreground) : Color(theme.gutterForeground)))
                         .frame(width: 24, height: 24)
                         .background(
                             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(isSearchVisible ? Color.accentColor.opacity(0.12) : Color(theme.foreground).opacity(isSearchHovered ? 0.08 : 0))
+                                .fill(isSearchVisible ? Color(theme.accentColor).opacity(0.12) : Color(theme.foreground).opacity(isSearchHovered ? 0.08 : 0))
                         )
                 }
                 .buttonStyle(.plain)
@@ -317,7 +317,7 @@ public struct ACPRegistrySheetView: View {
                     }
                     .buttonStyle(.plain)
                     .font(.system(size: 11.5, weight: .medium))
-                    .foregroundColor(.accentColor)
+                    .foregroundColor(Color(theme.accentColor))
                     .padding(.top, 4)
                 }
             }

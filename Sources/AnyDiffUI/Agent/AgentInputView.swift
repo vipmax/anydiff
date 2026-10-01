@@ -531,18 +531,15 @@ public struct AgentInputView: View {
     private var expandedView: some View {
         VStack(spacing: 8) {
             // Live changed files top banner
-            ZStack {
-                if shouldShowLiveEditedSummary, let liveSummary = agentManager.liveEditedSummary {
-                    AgentLiveChangesBannerView(
-                        summary: liveSummary,
-                        theme: theme,
-                        accentColor: accentColor,
-                        onReview: onReview
-                    )
-                    .transition(.opacity)
-                }
+            if shouldShowLiveEditedSummary, let liveSummary = agentManager.liveEditedSummary {
+                AgentLiveChangesBannerView(
+                    summary: liveSummary,
+                    theme: theme,
+                    accentColor: accentColor,
+                    onReview: onReview
+                )
+                .transition(.opacity)
             }
-            .animation(.easeInOut(duration: 0.14), value: shouldShowLiveEditedSummary)
 
             if !agentManager.promptQueue.isEmpty {
                 AgentPromptQueueView(
@@ -791,7 +788,9 @@ public struct AgentInputView: View {
             .animation(.easeOut(duration: 0.16), value: isInputFocused)
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+        .padding(.top, 4)
+        .padding(.bottom, 8)
+        .animation(.easeInOut(duration: 0.14), value: shouldShowLiveEditedSummary)
     }
 
     @ViewBuilder

@@ -38,6 +38,7 @@ public struct AgentSettingsPopoverView: View {
                             session: session,
                             isActive: session.id == coordinator.activeSessionId,
                             canClose: coordinator.sessions.count > 1,
+                            theme: theme,
                             onSelect: {
                                 withAnimation(.easeInOut(duration: 0.15)) {
                                     coordinator.selectSession(id: session.id)

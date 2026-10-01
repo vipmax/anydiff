@@ -157,6 +157,17 @@ public struct VirtualizedFileTreeView: NSViewRepresentable {
             context.coordinator.cachedThemeId = theme.id
             context.coordinator.needsFullReload = false
             tableView.reloadData()
+            if themeChanged {
+                let hoverColor = theme.gutterForeground.withAlphaComponent(0.08)
+                let selectionColor = theme.accentColor.withAlphaComponent(0.18)
+                tableView.enumerateAvailableRowViews { rowView, _ in
+                    if let treeRow = rowView as? FileTreeTableRowView {
+                        treeRow.hoverColor = hoverColor
+                        treeRow.selectionColor = selectionColor
+                        treeRow.needsDisplay = true
+                    }
+                }
+            }
         }
 
         // Sync selection
@@ -207,6 +218,7 @@ public struct VirtualizedFileTreeView: NSViewRepresentable {
             }
             rowView?.tableView = tableView as? FileTreeTableView
             rowView?.hoverColor = parent.theme.gutterForeground.withAlphaComponent(0.08)
+            rowView?.selectionColor = parent.theme.accentColor.withAlphaComponent(0.18)
             return rowView
         }
 
@@ -466,6 +478,7 @@ final class FileTreeTableView: NSTableView {
 final class FileTreeTableRowView: NSTableRowView {
     weak var tableView: FileTreeTableView?
     var hoverColor: NSColor = NSColor.textColor.withAlphaComponent(0.06)
+    var selectionColor: NSColor = NSColor.controlAccentColor.withAlphaComponent(0.18)
 
     override func prepareForReuse() {
         super.prepareForReuse()
@@ -476,7 +489,7 @@ final class FileTreeTableRowView: NSTableRowView {
         if isSelected {
             let selectionRect = bounds.insetBy(dx: 4, dy: 1)
             let path = NSBezierPath(roundedRect: selectionRect, xRadius: 4, yRadius: 4)
-            NSColor.controlAccentColor.withAlphaComponent(0.18).setFill()
+            selectionColor.setFill()
             path.fill()
         }
     }
@@ -628,7 +641,7 @@ final class FileTreeTableCellView: NSTableCellView {
         // Icon
         if item.isDirectory {
             setExpanded(isExpanded)
-            iconImageView.contentTintColor = NSColor.controlAccentColor.withAlphaComponent(0.85)
+            iconImageView.contentTintColor = theme.accentColor.withAlphaComponent(0.85)
         } else {
             iconImageView.layer?.removeAnimation(forKey: "folderIconTransition")
             iconImageView.contentTintColor = nil
@@ -659,6 +672,7 @@ final class FileTreeTableCellView: NSTableCellView {
         }
 
         // Open in Buffer Indicator
+        openIndicatorView.layer?.backgroundColor = theme.accentColor.cgColor
         openIndicatorView.isHidden = !(isOpen && !item.isDirectory)
 
         // Status Badge

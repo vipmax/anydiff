@@ -183,7 +183,7 @@ public struct HistoryPanelView: View {
             }) {
                 Image(systemName: showAllBranches ? "arrow.triangle.branch" : "point.topleft.down.to.point.bottomright.curvepath")
                     .font(.system(size: 11))
-                    .foregroundColor(showAllBranches ? .accentColor : Color(theme.gutterForeground))
+                    .foregroundColor(showAllBranches ? Color(theme.accentColor) : Color(theme.gutterForeground))
                     .frame(width: 20, height: 20)
             }
             .buttonStyle(ToolbarHoverButtonStyle())
@@ -216,7 +216,7 @@ public struct HistoryPanelView: View {
             }) {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 11))
-                    .foregroundColor(isSearchVisible ? .accentColor : Color(theme.gutterForeground))
+                    .foregroundColor(isSearchVisible ? Color(theme.accentColor) : Color(theme.gutterForeground))
                     .frame(width: 20, height: 20)
             }
             .buttonStyle(ToolbarHoverButtonStyle())

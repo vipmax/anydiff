@@ -186,6 +186,7 @@ public struct AgentStartScreenView: View {
                         session: session,
                         isActive: session.id == coordinator.activeSessionId,
                         canClose: true,
+                        theme: theme,
                         onSelect: {
                             withAnimation(.easeInOut(duration: 0.18)) {
                                 coordinator.selectSession(id: session.id)
@@ -225,23 +226,23 @@ public struct AgentStartScreenView: View {
                 ZStack {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .stroke(
-                            isAddCustomHovered ? Color.accentColor.opacity(0.7) : Color(theme.gutterForeground).opacity(0.4),
+                            isAddCustomHovered ? Color(theme.accentColor).opacity(0.7) : Color(theme.gutterForeground).opacity(0.4),
                             style: StrokeStyle(lineWidth: 1, dash: [3])
                         )
                         .background(
                             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .fill(isAddCustomHovered ? Color.accentColor.opacity(0.12) : Color.clear)
+                                .fill(isAddCustomHovered ? Color(theme.accentColor).opacity(0.12) : Color.clear)
                         )
                         .frame(width: 34, height: 34)
                     Image(systemName: "plus")
                         .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(isAddCustomHovered ? .accentColor : Color(theme.gutterForeground))
+                        .foregroundColor(isAddCustomHovered ? Color(theme.accentColor) : Color(theme.gutterForeground))
                 }
 
                 VStack(alignment: .center, spacing: 2) {
                     Text("Add Custom Agent")
                         .font(.system(size: 12.5, weight: .semibold))
-                        .foregroundColor(isAddCustomHovered ? Color.accentColor : Color(theme.foreground))
+                        .foregroundColor(isAddCustomHovered ? Color(theme.accentColor) : Color(theme.foreground))
                         .multilineTextAlignment(.center)
 
                     Text("Run any ACP-compatible command or local server")
@@ -275,11 +276,11 @@ public struct AgentStartScreenView: View {
                 // Globe icon container exactly matching AgentCardButton dimensions (40x40)
                 ZStack {
                     RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .fill(Color.accentColor.opacity(isRegistryHovered ? 0.18 : 0.10))
+                        .fill(Color(theme.accentColor).opacity(isRegistryHovered ? 0.18 : 0.10))
                         .frame(width: 40, height: 40)
                     Image(systemName: "globe")
                         .font(.system(size: 20, weight: .medium))
-                        .foregroundColor(.accentColor)
+                        .foregroundColor(Color(theme.accentColor))
                 }
 
                 // Centered text stack matching AgentCardButton
@@ -457,7 +458,7 @@ public struct AgentStartScreenView: View {
                             )
                             .overlay(
                                 Circle()
-                                    .stroke(Color.accentColor, lineWidth: selectedColorName == cName ? 2 : 0)
+                                    .stroke(Color(theme.accentColor), lineWidth: selectedColorName == cName ? 2 : 0)
                             )
                             .scaleEffect(selectedColorName == cName ? 1.15 : 1.0)
                             .onTapGesture {
@@ -495,7 +496,7 @@ public struct AgentStartScreenView: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.accentColor.opacity(0.4), lineWidth: 1)
+                .stroke(Color(theme.accentColor).opacity(0.4), lineWidth: 1)
         )
     }
 
