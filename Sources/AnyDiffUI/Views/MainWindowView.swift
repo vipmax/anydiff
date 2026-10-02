@@ -14,6 +14,7 @@ public struct MainWindowView: View {
     @StateObject private var systemAppearance = SystemAppearanceObserver()
     @StateObject private var agentCoordinator = AgentSessionCoordinator(enablePeriodicAutoUpdate: true)
     @StateObject private var panelLayout = PanelLayoutManager()
+    @StateObject private var terminalSession: TerminalSession
 
     @State private var toolcallColorMode = AgentDisplayPreferences.toolcallColorMode
     @State private var activeMarkdownPreviewPath: String? = nil
@@ -79,6 +80,7 @@ public struct MainWindowView: View {
         self._reviewManager = StateObject(wrappedValue: rm)
         self._review = StateObject(wrappedValue: review)
         self._search = StateObject(wrappedValue: search)
+        self._terminalSession = StateObject(wrappedValue: TerminalSession(workingDirectory: repo.effectiveWorkingDirectory))
     }
 
     private var diffLayoutMode: DiffLayoutMode {
@@ -226,8 +228,14 @@ public struct MainWindowView: View {
         .onChange(of: repo.isWatchModeEnabled) { enabled in
             repo.setWatchModeEnabled(enabled)
         }
+        .onChange(of: effectiveWorkingDirectory) { newDir in
+            if !terminalSession.isRunning && terminalSession.exitCode == nil {
+                terminalSession.restart(workingDirectory: newDir)
+            }
+        }
         .onDisappear {
             repo.stopWatcher()
+            terminalSession.terminateProcess()
         }
         .modifier(MainWindowEventsModifier(
             onUpdateAppearance: { updateWindowAppearance() },
@@ -283,8 +291,28 @@ public struct MainWindowView: View {
             },
             onToolcallColorModeChanged: { mode in
                 toolcallColorMode = mode
+            },
+            onToggleTerminal: {
+                toggleTerminalPanel()
             }
         ))
+    }
+
+    private func toggleTerminalPanel() {
+        withAnimation(.easeInOut(duration: 0.18)) {
+            if let existingSlot = panelLayout.slot(for: .terminal) {
+                if existingSlot == .right && !panelLayout.isRightPanelOpen {
+                    panelLayout.isRightPanelOpen = true
+                } else if existingSlot == .left && columnVisibility != .all {
+                    columnVisibility = .all
+                } else {
+                    panelLayout.clear(existingSlot)
+                }
+            } else {
+                panelLayout.assign(.terminal, to: .right)
+                panelLayout.isRightPanelOpen = true
+            }
+        }
     }
 
 
@@ -293,30 +321,51 @@ public struct MainWindowView: View {
         if slot == .right && !panelLayout.isRightPanelOpen {
             Color.clear
         } else {
-            switch panelLayout.content(for: slot) {
-            case .changes:
-                changesPanelView(for: slot)
-            case .files:
-                filesPanelView(for: slot)
-            case .history:
-                historyPanelView(for: slot)
-            case .editor:
-                editorPanelView(for: slot)
-            case .agent:
-                agentPanelView(for: slot)
-            case nil:
-                EmptyPanelView(
-                    slot: slot,
-                    theme: activeTheme,
-                    currentOccupant: { panelLayout.slot(for: $0) },
-                    onSelect: { content in
-                        withAnimation(.easeInOut(duration: 0.18)) {
-                            panelLayout.assign(content, to: slot)
-                        }
-                    }
-                )
-            }
+            panelContent(for: slot)
         }
+    }
+
+    @ViewBuilder
+    private func panelContent(for slot: PanelSlot) -> some View {
+        switch panelLayout.content(for: slot) {
+        case .changes:
+            changesPanelView(for: slot)
+        case .files:
+            filesPanelView(for: slot)
+        case .history:
+            historyPanelView(for: slot)
+        case .editor:
+            editorPanelView(for: slot)
+        case .agent:
+            agentPanelView(for: slot)
+        case .terminal:
+            terminalPanelView(for: slot)
+        case nil:
+            EmptyPanelView(
+                slot: slot,
+                theme: activeTheme,
+                currentOccupant: { panelLayout.slot(for: $0) },
+                onSelect: { content in
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        panelLayout.assign(content, to: slot)
+                    }
+                }
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func terminalPanelView(for slot: PanelSlot) -> some View {
+        TerminalPanelView(
+            session: terminalSession,
+            theme: activeTheme,
+            fontSize: fontSize,
+            onBack: {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    panelLayout.clear(slot)
+                }
+            }
+        )
     }
 
     @ViewBuilder

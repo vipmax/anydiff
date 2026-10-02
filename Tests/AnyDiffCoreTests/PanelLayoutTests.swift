@@ -149,6 +149,51 @@ final class PanelLayoutTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(dividerCount, 2, "Both left and right split dividers must be present")
     }
 
+    func testTerminalPanelHeaderPositionInMainWindowView() {
+        let testDefaults = UserDefaults(suiteName: "testTerminalPosition_\(UUID().uuidString)")!
+        testDefaults.set("terminal", forKey: PanelLayoutManager.centerSlotKey)
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        window.toolbarStyle = .unified
+        let windowToolbar = NSToolbar(identifier: "AnyDiffWindowToolbar")
+        window.toolbar = windowToolbar
+
+        let hosting = NSHostingView(rootView: MainWindowView(initialPath: nil))
+        window.contentView = hosting
+        window.layoutIfNeeded()
+
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.3))
+
+        // Find TerminalNSView inside window content
+        func findTerminalView(in view: NSView) -> NSView? {
+            if String(describing: type(of: view)).contains("TerminalNSView") {
+                return view
+            }
+            for sub in view.subviews {
+                if let found = findTerminalView(in: sub) { return found }
+            }
+            return nil
+        }
+
+        // Print window hierarchy
+        print("Looking for TerminalNSView...")
+        if let termView = findTerminalView(in: hosting) {
+            let pt = termView.convert(NSPoint.zero, to: nil)
+            print("TerminalNSView window point:", pt, "height:", termView.frame.height)
+            // In AppKit, y=0 is bottom, so top of terminal is pt.y + frame.height.
+            // Window is 700 tall. If top padding 52 + header 28 is present,
+            // top of terminal is 700 - 52 - 28 = 620.
+            let topOfTerminal = pt.y + termView.frame.height
+            print("Top of Terminal in window:", topOfTerminal)
+            XCTAssertLessThanOrEqual(topOfTerminal, 630.0, "Terminal view must start below window toolbar and panel header")
+        }
+    }
+
     func testThemePanelDividerColor() {
         // Vesper should have custom coal black separator
         XCTAssertEqual(Theme.vesper.panelDivider, NSColor.black)

@@ -66,6 +66,8 @@ public struct MainWindowShortcuts: View {
                 .keyboardShortcut("2", modifiers: .command)
             Button(action: { onSelectPanel(.history) }) {}
                 .keyboardShortcut("3", modifiers: .command)
+            Button(action: { onSelectPanel(.terminal) }) {}
+                .keyboardShortcut("4", modifiers: .command)
             Button(action: onToggleDiffLayout) {}
                 .keyboardShortcut("d", modifiers: .command)
             Button(action: onReload) {}

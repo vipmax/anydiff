@@ -23,6 +23,7 @@ public enum PanelContent: String, CaseIterable, Codable, Hashable, Identifiable,
     case history
     case editor
     case agent
+    case terminal
 
     public var id: String { rawValue }
 
@@ -33,6 +34,7 @@ public enum PanelContent: String, CaseIterable, Codable, Hashable, Identifiable,
         case .history: return "History"
         case .editor: return "Editor"
         case .agent: return "Agent"
+        case .terminal: return "Terminal"
         }
     }
 
@@ -43,6 +45,7 @@ public enum PanelContent: String, CaseIterable, Codable, Hashable, Identifiable,
         case .history: return "clock.arrow.circlepath"
         case .editor: return "doc.text"
         case .agent: return "sparkles"
+        case .terminal: return "terminal"
         }
     }
 
@@ -53,6 +56,7 @@ public enum PanelContent: String, CaseIterable, Codable, Hashable, Identifiable,
         case .history: return "Git commit history & visual graph"
         case .editor: return "Multi-buffer unified & split diff viewer"
         case .agent: return "AI coding sessions & chat"
+        case .terminal: return "Integrated interactive shell terminal"
         }
     }
 }

@@ -90,6 +90,9 @@ extension AppDelegate {
         let toggleRightPanelItem = NSMenuItem(title: "Toggle Right Panel", action: #selector(toggleRightPanelAction(_:)), keyEquivalent: "a")
         toggleRightPanelItem.keyEquivalentModifierMask = [.command, .option]
         viewMenu.addItem(toggleRightPanelItem)
+        let toggleTerminalItem = NSMenuItem(title: "Toggle Terminal", action: #selector(toggleTerminalAction(_:)), keyEquivalent: "t")
+        toggleTerminalItem.keyEquivalentModifierMask = [.command, .control]
+        viewMenu.addItem(toggleTerminalItem)
         viewMenu.addItem(NSMenuItem(title: "Reset Panels to Default", action: #selector(resetPanelsLayoutAction(_:)), keyEquivalent: ""))
         viewMenu.addItem(NSMenuItem.separator())
         viewMenu.addItem(NSMenuItem(title: "Zoom In", action: #selector(zoomInAction(_:)), keyEquivalent: "+"))
@@ -282,6 +285,10 @@ extension AppDelegate {
 
     @objc func toggleRightPanelAction(_ sender: Any?) {
         NotificationCenter.default.post(name: Notification.Name("anyDiffToggleRightPanel"), object: nil)
+    }
+
+    @objc func toggleTerminalAction(_ sender: Any?) {
+        NotificationCenter.default.post(name: Notification.Name("anyDiffToggleTerminal"), object: nil)
     }
 
     @objc func resetPanelsLayoutAction(_ sender: Any?) {

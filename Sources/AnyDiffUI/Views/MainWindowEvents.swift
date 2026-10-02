@@ -21,6 +21,7 @@ public struct MainWindowEventsModifier: ViewModifier {
     public let onResetZoom: () -> Void
     public let onResetPanelsLayout: () -> Void
     public let onToolcallColorModeChanged: (ToolcallColorMode) -> Void
+    public let onToggleTerminal: (() -> Void)?
 
     public init(
         onUpdateAppearance: @escaping () -> Void,
@@ -40,7 +41,8 @@ public struct MainWindowEventsModifier: ViewModifier {
         onZoomOut: @escaping () -> Void,
         onResetZoom: @escaping () -> Void,
         onResetPanelsLayout: @escaping () -> Void,
-        onToolcallColorModeChanged: @escaping (ToolcallColorMode) -> Void
+        onToolcallColorModeChanged: @escaping (ToolcallColorMode) -> Void,
+        onToggleTerminal: (() -> Void)? = nil
     ) {
         self.onUpdateAppearance = onUpdateAppearance
         self.onFocusEditor = onFocusEditor
@@ -60,6 +62,7 @@ public struct MainWindowEventsModifier: ViewModifier {
         self.onResetZoom = onResetZoom
         self.onResetPanelsLayout = onResetPanelsLayout
         self.onToolcallColorModeChanged = onToolcallColorModeChanged
+        self.onToggleTerminal = onToggleTerminal
     }
 
     public func body(content: Content) -> some View {
@@ -126,6 +129,9 @@ public struct MainWindowEventsModifier: ViewModifier {
             }
             .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffToggleSidebar"))) { _ in
                 onToggleLeftPanel()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffToggleTerminal"))) { _ in
+                onToggleTerminal?()
             }
             .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffSelectTheme"))) { notif in
                 if let themeId = notif.userInfo?["themeId"] as? String {
