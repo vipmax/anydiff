@@ -1021,12 +1021,36 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
     @discardableResult
     public func installRegistryAgent(_ entry: ACPRegistryAgentEntry, binaryPath: String? = nil) -> AgentPreset {
         let wasSelected = (selectedPresetId == entry.id)
+        let existing = customPresets.first(where: { $0.id == entry.id })
         deleteCustomPreset(id: entry.id)
-        let preset = entry.toAgentPreset(binaryInstalledPath: binaryPath)
+        var preset = entry.toAgentPreset(binaryInstalledPath: binaryPath)
+        if let existing = existing {
+            if let customEnv = existing.environment {
+                var merged = preset.environment ?? [:]
+                for (k, v) in customEnv {
+                    merged[k] = v
+                }
+                preset.environment = merged
+            }
+            if !existing.arguments.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                preset.arguments = existing.arguments
+            }
+        }
         customPresets.append(preset)
+
+        // Also update executable path and version for all child profiles of this agent
+        let baseId = entry.id
+        for i in 0..<customPresets.count {
+            if customPresets[i].effectiveBaseId == baseId && customPresets[i].id != entry.id {
+                customPresets[i].command = preset.command
+                customPresets[i].version = preset.version
+            }
+        }
+        saveCustomPresets()
         if wasSelected {
             selectedPresetId = entry.id
         }
+        objectWillChange.send()
         return preset
     }
 

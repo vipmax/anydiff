@@ -457,8 +457,13 @@ public struct ACPSavedSessionItem: Codable, Sendable, Identifiable, Equatable {
     }
 
     public var displayTitle: String {
-        if let t = title, !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return t
+        guard let t = title else { return "Session \(shortId)" }
+        let flattened = t
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        if !flattened.isEmpty {
+            return flattened
         }
         return "Session \(shortId)"
     }

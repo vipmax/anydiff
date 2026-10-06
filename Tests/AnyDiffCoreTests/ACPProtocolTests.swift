@@ -450,4 +450,52 @@ final class ACPProtocolTests: XCTestCase {
         XCTAssertEqual(decoded.locations?.first?.path, "/path/to/AgentMessageRowView.swift")
         XCTAssertEqual(decoded.locations?.first?.line, 42)
     }
+
+    func testSavedSessionDisplayTitleFlattensNewlinesAndWhitespace() {
+        let multilineTitle = """
+        git show 01a03a71 --name-status
+        diff --git a/Sources/AnyDiffUI/Agent/AgentChatScrollView.swift b/Sources/AnyDiffUI/Agent/AgentChatScrollView.swift
+        выполни ка
+        """
+        let item = ACPSavedSessionItem(
+            sessionId: "01a03a71b2c3d4e5",
+            cwd: "/tmp/project",
+            title: multilineTitle,
+            updatedAt: "2026-08-26T23:09:00Z"
+        )
+
+        XCTAssertFalse(item.displayTitle.contains("\n"))
+        XCTAssertFalse(item.displayTitle.contains("\r"))
+        XCTAssertEqual(
+            item.displayTitle,
+            "git show 01a03a71 --name-status diff --git a/Sources/AnyDiffUI/Agent/AgentChatScrollView.swift b/Sources/AnyDiffUI/Agent/AgentChatScrollView.swift выполни ка"
+        )
+
+        let whitespaceOnlyItem = ACPSavedSessionItem(
+            sessionId: "01a03a71b2c3d4e5",
+            cwd: "/tmp/project",
+            title: "   \n\n\t  \r  ",
+            updatedAt: nil
+        )
+        XCTAssertEqual(whitespaceOnlyItem.displayTitle, "Session 01a03a71")
+
+        let nilTitleItem = ACPSavedSessionItem(
+            sessionId: "abcdef123456",
+            cwd: nil,
+            title: nil,
+            updatedAt: nil
+        )
+        XCTAssertEqual(nilTitleItem.displayTitle, "Session abcdef12")
+    }
+
+    func testAgentSessionItemSanitizesMultilineTitle() {
+        let mockManager = MockAgentSessionManager()
+        let session = AgentSessionItem(
+            title: "Line 1\nLine 2\r\nLine 3",
+            manager: mockManager,
+            isMock: true
+        )
+        XCTAssertFalse(session.title.contains("\n"))
+        XCTAssertEqual(session.title, "Line 1 Line 2 Line 3")
+    }
 }
