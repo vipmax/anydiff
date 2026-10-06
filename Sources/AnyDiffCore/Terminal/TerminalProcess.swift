@@ -7,6 +7,8 @@ public final class TerminalProcess: @unchecked Sendable {
     public private(set) var masterFd: Int32 = -1
     public private(set) var isRunning: Bool = false
     public let workingDirectory: String
+    public let environment: [String: String]?
+    public let disableEcho: Bool
 
     private let readQueue = DispatchQueue(label: "com.anydiff.terminal.read", qos: .userInteractive)
     private var readSource: DispatchSourceRead?
@@ -15,16 +17,22 @@ public final class TerminalProcess: @unchecked Sendable {
     public var onOutput: ((Data) -> Void)?
     public var onTerminated: ((Int32) -> Void)?
 
-    public init(workingDirectory: String = FileManager.default.currentDirectoryPath) {
+    public init(
+        workingDirectory: String = FileManager.default.currentDirectoryPath,
+        environment: [String: String]? = nil,
+        disableEcho: Bool = false
+    ) {
         self.workingDirectory = workingDirectory
+        self.environment = environment
+        self.disableEcho = disableEcho
     }
 
     deinit {
         terminate()
     }
 
-    /// Spawns the interactive login shell attached to a newly created PTY master/slave pair.
-    public func start(cols: Int = 80, rows: Int = 24) throws {
+    /// Spawns the interactive login shell or a specific command attached to a newly created PTY master/slave pair.
+    public func start(command: String? = nil, cols: Int = 80, rows: Int = 24) throws {
         guard !isRunning else { return }
 
         var master: Int32 = -1
@@ -54,17 +62,74 @@ public final class TerminalProcess: @unchecked Sendable {
             // Child process: controlling terminal is already established by forkpty
             chdir(targetDir)
 
+            if disableEcho {
+                var attrs = termios()
+                if tcgetattr(STDIN_FILENO, &attrs) == 0 {
+                    attrs.c_lflag &= ~tcflag_t(ECHO)
+                    tcsetattr(STDIN_FILENO, TCSANOW, &attrs)
+                }
+            }
+
+            if let customEnv = environment {
+                var ptr = environ
+                var toUnset: [String] = []
+                while let cstr = ptr.pointee {
+                    let entry = String(cString: cstr)
+                    if let eq = entry.firstIndex(of: "=") {
+                        let k = String(entry[..<eq])
+                        if customEnv[k] == nil && k != "PWD" && k != "OLDPWD" && k != "SHLVL" && k != "_" {
+                            toUnset.append(k)
+                        }
+                    }
+                    ptr = ptr.advanced(by: 1)
+                }
+                for k in toUnset {
+                    unsetenv(k)
+                }
+                for (k, v) in customEnv {
+                    setenv(k, v, 1)
+                }
+            }
+
             setenv("TERM", "xterm-256color", 1)
             setenv("COLORTERM", "truecolor", 1)
             setenv("PWD", targetDir, 1)
+            if getenv("PAGER") == nil {
+                setenv("PAGER", "cat", 1)
+            }
+            if getenv("GIT_PAGER") == nil {
+                setenv("GIT_PAGER", "cat", 1)
+            }
             if getenv("LANG") == nil {
                 setenv("LANG", "en_US.UTF-8", 1)
             }
 
-            let cShell = strdup(shellPath)
-            let cArg1 = strdup("-l")
-            var argv: [UnsafeMutablePointer<CChar>?] = [cShell, cArg1, nil]
-            execv(shellPath, &argv)
+            if let currentPath = getenv("PATH") {
+                let pathStr = String(cString: currentPath)
+                if !pathStr.contains("/opt/homebrew/bin") && FileManager.default.fileExists(atPath: "/opt/homebrew/bin") {
+                    setenv("PATH", "/opt/homebrew/bin:/opt/homebrew/sbin:" + pathStr, 1)
+                }
+            }
+
+            if let cmd = command {
+                let cShell = strdup(shellPath)
+                let cArg1 = strdup("-i")
+                let cArg2 = strdup("-c")
+                let cArg3 = strdup(cmd)
+                var argv: [UnsafeMutablePointer<CChar>?] = [cShell, cArg1, cArg2, cArg3, nil]
+                execv(shellPath, &argv)
+            } else if disableEcho {
+                let cShell = strdup(shellPath)
+                let cArg1 = strdup("-i")
+                let cArg2 = strdup("+Z")
+                var argv: [UnsafeMutablePointer<CChar>?] = [cShell, cArg1, cArg2, nil]
+                execv(shellPath, &argv)
+            } else {
+                let cShell = strdup(shellPath)
+                let cArg1 = strdup("-i")
+                var argv: [UnsafeMutablePointer<CChar>?] = [cShell, cArg1, nil]
+                execv(shellPath, &argv)
+            }
             _exit(127)
         }
 
@@ -144,6 +209,13 @@ public final class TerminalProcess: @unchecked Sendable {
             Darwin.kill(pid, SIGWINCH)
             Darwin.kill(-pid, SIGWINCH)
         }
+    }
+
+    /// Sends a POSIX signal (such as SIGINT or SIGTERM) to the child process group.
+    public func sendSignal(_ signal: Int32) {
+        guard isRunning, pid > 0 else { return }
+        Darwin.kill(pid, signal)
+        Darwin.kill(-pid, signal)
     }
 
     /// Gracefully sends SIGHUP/SIGTERM or forces SIGKILL on the child process.

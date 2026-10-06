@@ -3,11 +3,14 @@ import Combine
 
 /// High-level terminal session coordinating the PTY process, screen buffer, and escape parser.
 @MainActor
-public final class TerminalSession: ObservableObject {
+public final class TerminalSession: ObservableObject, Identifiable {
+    public let id: UUID
     @Published public private(set) var title: String = "Terminal"
     @Published public private(set) var isRunning: Bool = false
     @Published public private(set) var exitCode: Int32? = nil
     @Published public private(set) var currentDirectory: String
+    public var environment: [String: String]?
+    public let disableEcho: Bool
     public private(set) var renderVersion: UInt64 = 0
 
     public let screen: TerminalScreen
@@ -21,13 +24,22 @@ public final class TerminalSession: ObservableObject {
     public var onScreenUpdated: (() -> Void)?
     public var onBell: (() -> Void)?
     public var onInputSent: ((Data) -> Void)?
+    public var onAlternateBufferToggled: ((Bool) -> Void)?
+    public var onOutputReceived: ((Data) -> Void)?
+    public var onTerminated: ((Int32) -> Void)?
 
     public init(
+        id: UUID = UUID(),
         workingDirectory: String = FileManager.default.currentDirectoryPath,
+        environment: [String: String]? = nil,
+        disableEcho: Bool = false,
         cols: Int = 80,
         rows: Int = 24
     ) {
+        self.id = id
         self.currentDirectory = workingDirectory
+        self.environment = environment
+        self.disableEcho = disableEcho
         let scr = TerminalScreen(cols: cols, rows: rows)
         self.screen = scr
         self.parser = TerminalEscapeParser(screen: scr)
@@ -46,12 +58,21 @@ public final class TerminalSession: ObservableObject {
         }
     }
 
-    /// Starts or restarts the interactive shell process in the target directory.
-    public func start() {
+    /// Updates the session's tracked current working directory.
+    public func updateCurrentDirectory(_ dir: String) {
+        self.currentDirectory = dir
+    }
+
+    /// Starts or restarts the interactive shell process or runs a specific command in the target directory.
+    public func start(command: String? = nil) {
         terminateProcess()
 
         exitCode = nil
-        let proc = TerminalProcess(workingDirectory: currentDirectory)
+        let proc = TerminalProcess(
+            workingDirectory: currentDirectory,
+            environment: environment,
+            disableEcho: disableEcho
+        )
         self.process = proc
 
         parser.onResponseRequired = { [weak proc] data in
@@ -60,6 +81,7 @@ public final class TerminalSession: ObservableObject {
 
         proc.onOutput = { [weak self] data in
             guard let self = self else { return }
+            self.onOutputReceived?(data)
             self.outputBufferLock.lock()
             self.pendingOutput.append(data)
             let needsSchedule = !self.flushScheduled
@@ -76,8 +98,12 @@ public final class TerminalSession: ObservableObject {
                     self.outputBufferLock.unlock()
 
                     guard !chunk.isEmpty else { return }
+                    let wasAlt = self.screen.isAlternateBufferActive
                     self.parser.feed(chunk)
                     self.renderVersion &+= 1
+                    if wasAlt != self.screen.isAlternateBufferActive {
+                        self.onAlternateBufferToggled?(self.screen.isAlternateBufferActive)
+                    }
                     self.onScreenUpdated?()
                 }
             }
@@ -88,12 +114,13 @@ public final class TerminalSession: ObservableObject {
                 guard let self = self else { return }
                 self.isRunning = false
                 self.exitCode = code
+                self.onTerminated?(code)
                 self.scheduleRedraw()
             }
         }
 
         do {
-            try proc.start(cols: screen.cols, rows: screen.rows)
+            try proc.start(command: command, cols: screen.cols, rows: screen.rows)
             isRunning = true
             scheduleRedraw()
         } catch {
@@ -152,6 +179,11 @@ public final class TerminalSession: ObservableObject {
         process?.terminate()
         process = nil
         isRunning = false
+    }
+
+    /// Sends a POSIX signal (such as SIGINT) to the running process.
+    public func sendSignal(_ signal: Int32) {
+        process?.sendSignal(signal)
     }
 
     /// Redraw notification to update the UI on the main thread.

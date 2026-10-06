@@ -14,7 +14,7 @@ public struct MainWindowView: View {
     @StateObject private var systemAppearance = SystemAppearanceObserver()
     @StateObject private var agentCoordinator = AgentSessionCoordinator(enablePeriodicAutoUpdate: true)
     @StateObject private var panelLayout = PanelLayoutManager()
-    @StateObject private var terminalSession: TerminalSession
+    @StateObject private var terminalCoordinator: TerminalCoordinator
 
     @State private var toolcallColorMode = AgentDisplayPreferences.toolcallColorMode
     @State private var activeMarkdownPreviewPath: String? = nil
@@ -80,7 +80,7 @@ public struct MainWindowView: View {
         self._reviewManager = StateObject(wrappedValue: rm)
         self._review = StateObject(wrappedValue: review)
         self._search = StateObject(wrappedValue: search)
-        self._terminalSession = StateObject(wrappedValue: TerminalSession(workingDirectory: repo.effectiveWorkingDirectory))
+        self._terminalCoordinator = StateObject(wrappedValue: TerminalCoordinator(workingDirectory: repo.effectiveWorkingDirectory))
     }
 
     private var diffLayoutMode: DiffLayoutMode {
@@ -229,13 +229,11 @@ public struct MainWindowView: View {
             repo.setWatchModeEnabled(enabled)
         }
         .onChange(of: effectiveWorkingDirectory) { newDir in
-            if !terminalSession.isRunning && terminalSession.exitCode == nil {
-                terminalSession.restart(workingDirectory: newDir)
-            }
+            terminalCoordinator.defaultWorkingDirectory = newDir
         }
         .onDisappear {
             repo.stopWatcher()
-            terminalSession.terminateProcess()
+            terminalCoordinator.terminateAll()
         }
         .modifier(MainWindowEventsModifier(
             onUpdateAppearance: { updateWindowAppearance() },
@@ -357,7 +355,7 @@ public struct MainWindowView: View {
     @ViewBuilder
     private func terminalPanelView(for slot: PanelSlot) -> some View {
         TerminalPanelView(
-            session: terminalSession,
+            coordinator: terminalCoordinator,
             theme: activeTheme,
             fontSize: fontSize,
             onBack: {

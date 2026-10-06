@@ -126,6 +126,25 @@ public final class TerminalScreen: @unchecked Sendable {
             lines[i].resize(to: targetCols)
         }
 
+        // Also resize primaryLines if we are currently in alternate screen buffer
+        if isAlternateBufferActive {
+            for i in 0..<primaryLines.count {
+                primaryLines[i].resize(to: targetCols)
+            }
+            if targetRows > primaryLines.count {
+                let needed = targetRows - primaryLines.count
+                for _ in 0..<needed {
+                    primaryLines.append(TerminalLine(width: targetCols))
+                }
+            } else if targetRows < primaryLines.count {
+                let excess = primaryLines.count - targetRows
+                primaryLines.removeFirst(excess)
+                primaryCursor.y = max(0, primaryCursor.y - excess)
+            }
+            primaryCursor.x = min(primaryCursor.x, targetCols - 1)
+            primaryCursor.y = min(primaryCursor.y, targetRows - 1)
+        }
+
         if targetRows > lines.count {
             let needed = targetRows - lines.count
             // If we have lines in scrollback, pull them back into the visible screen
@@ -194,6 +213,8 @@ public final class TerminalScreen: @unchecked Sendable {
         }
 
         clampCursor()
+        guard lines.indices.contains(cursorY),
+              lines[cursorY].cells.indices.contains(cursorX) else { return }
         let cell = TerminalCell(
             character: char,
             fg: currentFg,
@@ -254,25 +275,44 @@ public final class TerminalScreen: @unchecked Sendable {
     }
 
     private func clampCursor() {
-        cursorX = max(0, min(cols - 1, cursorX))
-        cursorY = max(0, min(rows - 1, cursorY))
+        guard !lines.isEmpty else {
+            cursorX = 0
+            cursorY = 0
+            return
+        }
+        cursorY = max(0, min(lines.count - 1, min(rows - 1, cursorY)))
+        let lineCellCount = lines[cursorY].cells.count
+        let maxCol = max(0, min(cols - 1, lineCellCount - 1))
+        cursorX = max(0, min(maxCol, cursorX))
     }
 
     // MARK: - Erasing
 
     public func eraseInLine(mode: Int) {
         clampCursor()
+        guard lines.indices.contains(cursorY) else { return }
+        let cellCount = lines[cursorY].cells.count
+        guard cellCount > 0 else { return }
+
         switch mode {
         case 0: // From cursor to end of line
-            for x in cursorX..<cols {
-                lines[cursorY].cells[x] = .empty
+            let start = max(0, min(cursorX, cellCount))
+            let end = min(cols, cellCount)
+            if start < end {
+                for x in start..<end {
+                    lines[cursorY].cells[x] = .empty
+                }
             }
         case 1: // From start of line to cursor
-            for x in 0...cursorX {
-                lines[cursorY].cells[x] = .empty
+            let end = min(cursorX, cellCount - 1)
+            if end >= 0 {
+                for x in 0...end {
+                    lines[cursorY].cells[x] = .empty
+                }
             }
         case 2: // Entire line
-            for x in 0..<cols {
+            let end = min(cols, cellCount)
+            for x in 0..<end {
                 lines[cursorY].cells[x] = .empty
             }
         default:
@@ -286,23 +326,30 @@ public final class TerminalScreen: @unchecked Sendable {
         case 0: // From cursor to end of display
             eraseInLine(mode: 0)
             if cursorY + 1 < rows {
-                for y in (cursorY + 1)..<rows {
-                    lines[y] = TerminalLine(width: cols)
+                let startY = cursorY + 1
+                let endY = min(rows, lines.count)
+                if startY < endY {
+                    for y in startY..<endY {
+                        lines[y] = TerminalLine(width: cols)
+                    }
                 }
             }
         case 1: // From top to cursor
             if cursorY > 0 {
-                for y in 0..<cursorY {
+                let endY = min(cursorY, lines.count)
+                for y in 0..<endY {
                     lines[y] = TerminalLine(width: cols)
                 }
             }
             eraseInLine(mode: 1)
         case 2: // Entire display
-            for y in 0..<rows {
+            let endY = min(rows, lines.count)
+            for y in 0..<endY {
                 lines[y] = TerminalLine(width: cols)
             }
         case 3: // Clear display and scrollback
-            for y in 0..<rows {
+            let endY = min(rows, lines.count)
+            for y in 0..<endY {
                 lines[y] = TerminalLine(width: cols)
             }
             scrollback.removeAll(keepingCapacity: false)
@@ -323,12 +370,12 @@ public final class TerminalScreen: @unchecked Sendable {
 
     public func resetScrollRegion() {
         self.scrollTop = 0
-        self.scrollBottom = rows - 1
+        self.scrollBottom = max(0, rows - 1)
         setCursorPosition(col: 0, row: 0)
     }
 
     public func scrollUp(lines count: Int) {
-        guard count > 0 else { return }
+        guard count > 0, !lines.isEmpty else { return }
         for _ in 0..<count {
             if scrollTop == 0 && scrollBottom == rows - 1 {
                 if !isAlternateBufferActive {
@@ -337,7 +384,7 @@ public final class TerminalScreen: @unchecked Sendable {
                 }
                 lines.removeFirst()
                 lines.append(TerminalLine(width: cols))
-            } else {
+            } else if lines.indices.contains(scrollTop) && lines.indices.contains(scrollBottom) {
                 lines.remove(at: scrollTop)
                 lines.insert(TerminalLine(width: cols), at: scrollBottom)
             }
@@ -345,10 +392,12 @@ public final class TerminalScreen: @unchecked Sendable {
     }
 
     public func scrollDown(lines count: Int) {
-        guard count > 0 else { return }
+        guard count > 0, !lines.isEmpty else { return }
         for _ in 0..<count {
-            lines.remove(at: scrollBottom)
-            lines.insert(TerminalLine(width: cols), at: scrollTop)
+            if lines.indices.contains(scrollTop) && lines.indices.contains(scrollBottom) {
+                lines.remove(at: scrollBottom)
+                lines.insert(TerminalLine(width: cols), at: scrollTop)
+            }
         }
     }
 
@@ -356,8 +405,10 @@ public final class TerminalScreen: @unchecked Sendable {
         clampCursor()
         guard cursorY >= scrollTop && cursorY <= scrollBottom else { return }
         for _ in 0..<count {
-            lines.remove(at: scrollBottom)
-            lines.insert(TerminalLine(width: cols), at: cursorY)
+            if lines.indices.contains(scrollBottom) && lines.indices.contains(cursorY) {
+                lines.remove(at: scrollBottom)
+                lines.insert(TerminalLine(width: cols), at: cursorY)
+            }
         }
     }
 
@@ -365,14 +416,18 @@ public final class TerminalScreen: @unchecked Sendable {
         clampCursor()
         guard cursorY >= scrollTop && cursorY <= scrollBottom else { return }
         for _ in 0..<count {
-            lines.remove(at: cursorY)
-            lines.insert(TerminalLine(width: cols), at: scrollBottom)
+            if lines.indices.contains(scrollBottom) && lines.indices.contains(cursorY) {
+                lines.remove(at: cursorY)
+                lines.insert(TerminalLine(width: cols), at: scrollBottom)
+            }
         }
     }
 
     public func insertCharacters(count: Int) {
         clampCursor()
-        let count = min(count, cols - cursorX)
+        guard lines.indices.contains(cursorY) else { return }
+        let cellCount = lines[cursorY].cells.count
+        let count = min(count, max(0, cellCount - cursorX))
         for _ in 0..<count {
             lines[cursorY].cells.removeLast()
             lines[cursorY].cells.insert(.empty, at: cursorX)
@@ -381,7 +436,9 @@ public final class TerminalScreen: @unchecked Sendable {
 
     public func deleteCharacters(count: Int) {
         clampCursor()
-        let count = min(count, cols - cursorX)
+        guard lines.indices.contains(cursorY) else { return }
+        let cellCount = lines[cursorY].cells.count
+        let count = min(count, max(0, cellCount - cursorX))
         for _ in 0..<count {
             lines[cursorY].cells.remove(at: cursorX)
             lines[cursorY].cells.append(.empty)
@@ -390,7 +447,9 @@ public final class TerminalScreen: @unchecked Sendable {
 
     public func eraseCharacters(count: Int) {
         clampCursor()
-        let count = min(count, cols - cursorX)
+        guard lines.indices.contains(cursorY) else { return }
+        let cellCount = lines[cursorY].cells.count
+        let count = min(count, max(0, cellCount - cursorX))
         for i in 0..<count {
             lines[cursorY].cells[cursorX + i] = .empty
         }
@@ -408,12 +467,27 @@ public final class TerminalScreen: @unchecked Sendable {
             isAlternateBufferActive = true
             resetScrollRegion()
         } else if !enable && isAlternateBufferActive {
+            // Restore primary lines and ensure they are sized to current cols and rows
+            for i in 0..<primaryLines.count {
+                primaryLines[i].resize(to: cols)
+            }
+            if rows > primaryLines.count {
+                let needed = rows - primaryLines.count
+                for _ in 0..<needed {
+                    primaryLines.append(TerminalLine(width: cols))
+                }
+            } else if rows < primaryLines.count {
+                let excess = primaryLines.count - rows
+                primaryLines.removeFirst(excess)
+                primaryCursor.y = max(0, primaryCursor.y - excess)
+            }
             lines = primaryLines
-            cursorX = primaryCursor.x
-            cursorY = primaryCursor.y
+            cursorX = min(primaryCursor.x, cols - 1)
+            cursorY = min(primaryCursor.y, rows - 1)
             primaryLines = []
             isAlternateBufferActive = false
             resetScrollRegion()
+            clampCursor()
         }
     }
 

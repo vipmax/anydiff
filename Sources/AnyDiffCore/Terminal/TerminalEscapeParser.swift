@@ -226,8 +226,16 @@ public final class TerminalEscapeParser: @unchecked Sendable {
         case 0x73: // 's' -> Save Cursor
             screen.saveCursor()
 
-        case 0x75: // 'u' -> Restore Cursor
-            screen.restoreCursor()
+        case 0x75: // 'u'
+            if isPrivateMode {
+                // Kitty keyboard query response: not supported (0)
+                let response = "\u{1B}[?0u"
+                if let data = response.data(using: .utf8) {
+                    onResponseRequired?(data)
+                }
+            } else {
+                screen.restoreCursor()
+            }
 
         case 0x68: // 'h' -> Set Mode
             if isPrivateMode {
@@ -280,6 +288,21 @@ public final class TerminalEscapeParser: @unchecked Sendable {
                     default:
                         break
                     }
+                }
+            }
+
+        case 0x63: // 'c' -> Device Attributes (DA)
+            if isPrivateMode {
+                // Secondary DA response: ESC [ > 0 ; 10 ; 0 c
+                let response = "\u{1B}[>0;10;0c"
+                if let data = response.data(using: .utf8) {
+                    onResponseRequired?(data)
+                }
+            } else {
+                // Primary DA response: ESC [ ? 1 ; 2 c (VT100 with AVO)
+                let response = "\u{1B}[?1;2c"
+                if let data = response.data(using: .utf8) {
+                    onResponseRequired?(data)
                 }
             }
 
@@ -393,6 +416,18 @@ public final class TerminalEscapeParser: @unchecked Sendable {
         if oscBuffer.hasPrefix("0;") || oscBuffer.hasPrefix("2;") {
             let title = String(oscBuffer.dropFirst(2))
             onTitleChanged?(title)
+        } else if oscBuffer.hasPrefix("10;?") {
+            // Query foreground color: response format ESC ] 10 ; rgb:ffff/ffff/ffff ESC \
+            let response = "\u{1B}]10;rgb:ffff/ffff/ffff\u{1B}\\"
+            if let data = response.data(using: .utf8) {
+                onResponseRequired?(data)
+            }
+        } else if oscBuffer.hasPrefix("11;?") {
+            // Query background color: response format ESC ] 11 ; rgb:0000/0000/0000 ESC \
+            let response = "\u{1B}]11;rgb:0000/0000/0000\u{1B}\\"
+            if let data = response.data(using: .utf8) {
+                onResponseRequired?(data)
+            }
         }
     }
 }

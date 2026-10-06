@@ -138,6 +138,36 @@ final class TerminalTests: XCTestCase {
         XCTAssertEqual(screen.lines[0].plainText(), "MAIN")
     }
 
+    func testAlternateScreenResizeAndEraseRegression() {
+        let screen = TerminalScreen(cols: 80, rows: 24)
+        let parser = TerminalEscapeParser(screen: screen)
+
+        // Simulate interactive program entering alternate screen buffer
+        parser.feed("\u{1B}[?1049h".data(using: .utf8)!)
+        XCTAssertTrue(screen.isAlternateBufferActive)
+
+        // View resizes grid while in alternate screen buffer
+        screen.resize(cols: 120, rows: 35)
+        XCTAssertEqual(screen.cols, 120)
+        XCTAssertEqual(screen.rows, 35)
+
+        // Interactive program exits alternate screen buffer
+        parser.feed("\u{1B}[?1049l".data(using: .utf8)!)
+        XCTAssertFalse(screen.isAlternateBufferActive)
+        XCTAssertEqual(screen.cols, 120)
+        XCTAssertEqual(screen.rows, 35)
+        XCTAssertEqual(screen.lines.count, 35)
+        XCTAssertEqual(screen.lines[0].cells.count, 120)
+
+        // Now program or shell issues erase in display / erase in line
+        // (Previously crashed with Index out of range: lines[cursorY].cells[x])
+        parser.feed("\u{1B}[J".data(using: .utf8)!)
+        parser.feed("\u{1B}[2J".data(using: .utf8)!)
+        parser.feed("\u{1B}[K".data(using: .utf8)!)
+
+        XCTAssertEqual(screen.lines[0].cells.count, 120)
+    }
+
     func testScreenResize() {
         let screen = TerminalScreen(cols: 20, rows: 5)
         for c in "Hello, World!" {
@@ -877,6 +907,566 @@ final class TerminalTests: XCTestCase {
 
         XCTAssertEqual(receivedData, Data([0x04]), "Ctrl+D under Russian layout should send EOF 0x04")
     }
+
+    // MARK: - TerminalMultiBuffer & Command Block Tests
+
+    func testTerminalMultiBufferBlockCreationAndANSIOutput() {
+        let multiBuffer = TerminalMultiBuffer()
+        XCTAssertEqual(multiBuffer.blocks.count, 0)
+
+        let block = multiBuffer.createBlock(
+            command: "cargo test",
+            workingDirectory: "/tmp/project",
+            gitBranch: "main"
+        )
+        XCTAssertEqual(block.command, "cargo test")
+        XCTAssertEqual(block.status, .running)
+        XCTAssertEqual(multiBuffer.blocks.count, 1)
+        XCTAssertEqual(multiBuffer.activeBlockId, block.id)
+
+        // Stream output with ANSI green and red colors
+        let rawOutput = "Compiling project v0.1\n\u{1B}[32mtest passed\u{1B}[0m\n\u{1B}[31mtest failed\u{1B}[0m\n"
+        multiBuffer.appendOutput(to: block.id, text: rawOutput)
+
+        XCTAssertEqual(block.lines.count, 3)
+        XCTAssertEqual(block.lines[0].rawText, "Compiling project v0.1")
+        XCTAssertEqual(block.lines[1].rawText, "test passed")
+        XCTAssertEqual(block.lines[1].spans.count, 1)
+        XCTAssertEqual(block.lines[1].spans[0].fg, .standard(2)) // Green = standard(2)
+
+        XCTAssertEqual(block.lines[2].rawText, "test failed")
+        XCTAssertEqual(block.lines[2].spans[0].fg, .standard(1)) // Red = standard(1)
+
+        // Complete block
+        multiBuffer.completeBlock(id: block.id, exitCode: 0)
+        XCTAssertEqual(block.status, .success)
+        XCTAssertEqual(block.exitCode, 0)
+        XCTAssertNotNil(block.endTime)
+        XCTAssertNil(multiBuffer.activeBlockId)
+    }
+
+    func testTerminalMultiBufferCarriageReturnOverwrite() {
+        let multiBuffer = TerminalMultiBuffer()
+        let block = multiBuffer.createBlock(command: "curl download", workingDirectory: "/tmp")
+
+        // First progress update
+        multiBuffer.appendOutput(to: block.id, text: "Downloading: [==   ] 20%\r")
+        XCTAssertEqual(block.lines.count, 1)
+        XCTAssertEqual(block.lines.last?.rawText, "Downloading: [==   ] 20%")
+
+        // Second progress update with \r overwriting the line on-the-fly
+        multiBuffer.appendOutput(to: block.id, text: "Downloading: [==== ] 80%\r")
+        XCTAssertEqual(block.lines.count, 1, "Carriage return without newline should update line in place")
+        XCTAssertEqual(block.lines.last?.rawText, "Downloading: [==== ] 80%")
+
+        // Final completion with newline
+        multiBuffer.appendOutput(to: block.id, text: "Downloading: [=====] 100%\nDone!\n")
+        XCTAssertEqual(block.lines.count, 3)
+        XCTAssertEqual(block.lines[1].rawText, "Downloading: [=====] 100%")
+        XCTAssertEqual(block.lines[2].rawText, "Done!")
+    }
+
+    func testTerminalMultiBufferCollapseAndClear() {
+        let multiBuffer = TerminalMultiBuffer()
+        let b1 = multiBuffer.createBlock(command: "ls -la", workingDirectory: "/tmp")
+        multiBuffer.appendOutput(to: b1.id, text: "file1\nfile2\n")
+        multiBuffer.completeBlock(id: b1.id, exitCode: 0)
+
+        XCTAssertFalse(b1.isCollapsed)
+        multiBuffer.toggleCollapse(id: b1.id)
+        XCTAssertTrue(b1.isCollapsed)
+        multiBuffer.toggleCollapse(id: b1.id)
+        XCTAssertFalse(b1.isCollapsed)
+
+        multiBuffer.clear()
+        XCTAssertEqual(multiBuffer.blocks.count, 0)
+        XCTAssertNil(multiBuffer.activeBlockId)
+    }
+
+    @MainActor
+    func testBlockTerminalSessionLsLah() {
+        let session = BlockTerminalSession(workingDirectory: FileManager.default.currentDirectoryPath)
+        let exp = expectation(description: "ls -lah completes")
+
+        session.execute(command: "ls -lah")
+        guard let block = session.multiBuffer.blocks.first else {
+            XCTFail("No block created")
+            return
+        }
+
+        func checkOutput(attempts: Int) {
+            if block.lines.count > 5 || block.status != .running || attempts <= 0 {
+                XCTAssertGreaterThan(block.lines.count, 5, "Expected more than 5 lines for ls -lah")
+                exp.fulfill()
+            } else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    checkOutput(attempts: attempts - 1)
+                }
+            }
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            checkOutput(attempts: 20)
+        }
+
+        wait(for: [exp], timeout: 5.0)
+    }
+
+    @MainActor
+    func testBlockTerminalSessionNativeCd() {
+        let initialDir = FileManager.default.currentDirectoryPath
+        let session = BlockTerminalSession(workingDirectory: initialDir)
+        let exp = expectation(description: "cd completes")
+
+        session.execute(command: "cd /tmp")
+
+        func checkCd(attempts: Int) {
+            guard let block = session.multiBuffer.blocks.first else {
+                XCTFail("No block created for cd")
+                return
+            }
+            if block.status != .running || attempts <= 0 {
+                XCTAssertTrue(
+                    session.currentDirectory == "/private/tmp" || session.currentDirectory == "/tmp",
+                    "Expected directory to change to /private/tmp or /tmp, got: \(session.currentDirectory)"
+                )
+                XCTAssertEqual(block.status, .success)
+                XCTAssertEqual(block.exitCode, 0)
+                exp.fulfill()
+            } else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    checkCd(attempts: attempts - 1)
+                }
+            }
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            checkCd(attempts: 20)
+        }
+
+        wait(for: [exp], timeout: 5.0)
+    }
+
+    @MainActor
+    func testBlockTerminalSessionEnvironmentPersistence() {
+        let session = BlockTerminalSession(workingDirectory: FileManager.default.currentDirectoryPath)
+        let exp = expectation(description: "export and echo complete")
+
+        session.execute(command: "export TTEST=123")
+
+        func checkEcho(attempts: Int) {
+            guard attempts > 0 else {
+                XCTFail("Timeout waiting for echo block")
+                exp.fulfill()
+                return
+            }
+
+            if session.multiBuffer.blocks.count >= 2 {
+                let echoBlock = session.multiBuffer.blocks[1]
+                if echoBlock.status != .running {
+                    let fullText = echoBlock.lines.map(\.rawText).joined(separator: "\n")
+                    XCTAssertTrue(fullText.contains("123"), "Expected echo block to contain 123, got: \(fullText)")
+                    XCTAssertEqual(echoBlock.exitCode, 0)
+                    exp.fulfill()
+                    return
+                }
+            } else if session.multiBuffer.blocks.count == 1 {
+                let exportBlock = session.multiBuffer.blocks[0]
+                if exportBlock.status != .running && !session.isProcessRunning {
+                    session.execute(command: "echo $TTEST")
+                }
+            }
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                checkEcho(attempts: attempts - 1)
+            }
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            checkEcho(attempts: 30)
+        }
+
+        wait(for: [exp], timeout: 5.0)
+    }
+
+    @MainActor
+    func testBlockTerminalNSViewLayoutAndCollapse() {
+        let multiBuffer = TerminalMultiBuffer()
+        let block1 = multiBuffer.createBlock(command: "git status", workingDirectory: "/Users/test")
+        multiBuffer.appendOutput(to: block1.id, text: "On branch main\nNothing to commit\n")
+        multiBuffer.completeBlock(id: block1.id, exitCode: 0)
+
+        let block2 = multiBuffer.createBlock(command: "ls -la", workingDirectory: "/Users/test")
+        multiBuffer.appendOutput(to: block2.id, text: "file1.txt\nfile2.txt\nfile3.txt\n")
+        multiBuffer.completeBlock(id: block2.id, exitCode: 0)
+
+        let session = BlockTerminalSession(workingDirectory: "/Users/test", multiBuffer: multiBuffer)
+        let canvas = BlockTerminalNSView(session: session, theme: .vesper, fontSize: 12)
+        canvas.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        canvas.rebuildLayout()
+
+        XCTAssertEqual(canvas.blockLayouts.count, 2)
+        let initialH = canvas.totalDocumentHeight
+        XCTAssertGreaterThan(initialH, 100)
+
+        // Collapse block 1
+        multiBuffer.toggleCollapse(id: block1.id)
+        canvas.rebuildLayout()
+
+        XCTAssertTrue(canvas.blockLayouts[0].isCollapsed)
+        XCTAssertLessThan(canvas.totalDocumentHeight, initialH)
+
+        // Expand block 1 again
+        multiBuffer.toggleCollapse(id: block1.id)
+        canvas.rebuildLayout()
+        XCTAssertFalse(canvas.blockLayouts[0].isCollapsed)
+        XCTAssertEqual(canvas.totalDocumentHeight, initialH)
+    }
+
+    @MainActor
+    func testBlockTerminalNSViewSelectionAndExtraction() {
+        let multiBuffer = TerminalMultiBuffer()
+        let block = multiBuffer.createBlock(command: "echo hello", workingDirectory: "/Users/test")
+        multiBuffer.appendOutput(to: block.id, text: "hello world\nsecond line\n")
+        multiBuffer.completeBlock(id: block.id, exitCode: 0)
+
+        let session = BlockTerminalSession(workingDirectory: "/Users/test", multiBuffer: multiBuffer)
+        let canvas = BlockTerminalNSView(session: session, theme: .vesper, fontSize: 12)
+        canvas.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        canvas.rebuildLayout()
+
+        // Select all
+        canvas.selectAll(nil)
+        XCTAssertTrue(canvas.hasSelection)
+        guard let sel = canvas.normalizedSelection else {
+            XCTFail("Expected normalized selection")
+            return
+        }
+        XCTAssertEqual(sel.start.blockIndex, 0)
+        XCTAssertEqual(sel.start.lineIndex, 0)
+        XCTAssertEqual(sel.start.columnIndex, 0)
+    }
+
+    @MainActor
+    func testBlockTerminalNSViewRenderingIntoBitmap() {
+        let multiBuffer = TerminalMultiBuffer()
+        let block = multiBuffer.createBlock(command: "swift build", workingDirectory: "/Users/test")
+        multiBuffer.appendOutput(to: block.id, text: "Building target AnyDiff...\nBuild complete!\n")
+        multiBuffer.completeBlock(id: block.id, exitCode: 0)
+
+        let session = BlockTerminalSession(workingDirectory: "/Users/test", multiBuffer: multiBuffer)
+        let canvas = BlockTerminalNSView(session: session, theme: .vesper, fontSize: 12)
+        canvas.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        canvas.rebuildLayout()
+
+        guard let rep = canvas.bitmapImageRepForCachingDisplay(in: canvas.bounds) else {
+            XCTFail("Failed to allocate bitmapImageRep")
+            return
+        }
+        canvas.cacheDisplay(in: canvas.bounds, to: rep)
+        XCTAssertEqual(rep.size.width, 600)
+        XCTAssertEqual(rep.size.height, 400)
+    }
+
+    @MainActor
+    func testBlockTerminalCommandHeaderSelectionAndCopy() {
+        let multiBuffer = TerminalMultiBuffer()
+        let block = multiBuffer.createBlock(command: "git commit -m \"feat: terminal\"", workingDirectory: "/Users/test")
+        multiBuffer.appendOutput(to: block.id, text: "[feat/terminal 123456] feat: terminal\n 1 file changed\n")
+        multiBuffer.completeBlock(id: block.id, exitCode: 0)
+
+        let session = BlockTerminalSession(workingDirectory: "/Users/test", multiBuffer: multiBuffer)
+        let canvas = BlockTerminalNSView(session: session, theme: .vesper, fontSize: 12)
+        canvas.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        canvas.rebuildLayout()
+
+        // 1. Select just the word "commit" in the command header (lineIndex: -1)
+        canvas.selectionAnchor = TerminalDocumentPoint(blockIndex: 0, lineIndex: -1, columnIndex: 4)
+        canvas.cursorPoint = TerminalDocumentPoint(blockIndex: 0, lineIndex: -1, columnIndex: 10)
+        XCTAssertTrue(canvas.hasSelection)
+
+        guard let sel = canvas.normalizedSelection else {
+            XCTFail("Expected normalized selection")
+            return
+        }
+        let extractedCmd = canvas.extractText(in: sel)
+        XCTAssertEqual(extractedCmd, "commit")
+
+        // 2. Perform copy
+        canvas.copy(nil)
+        let clipboard = NSPasteboard.general.string(forType: .string)
+        XCTAssertEqual(clipboard, "commit")
+
+        // 3. Select from command line into output
+        canvas.selectionAnchor = TerminalDocumentPoint(blockIndex: 0, lineIndex: -1, columnIndex: 0)
+        canvas.cursorPoint = TerminalDocumentPoint(blockIndex: 0, lineIndex: 0, columnIndex: 22)
+        guard let multiSel = canvas.normalizedSelection else {
+            XCTFail("Expected multi-line selection")
+            return
+        }
+        let multiText = canvas.extractText(in: multiSel)
+        XCTAssertTrue(multiText.contains("git commit -m \"feat: terminal\""))
+        XCTAssertTrue(multiText.contains("[feat/terminal 123456]"))
+    }
+
+    @MainActor
+    func testBlockTerminalDragClampingNeverFreezes() {
+        let multiBuffer = TerminalMultiBuffer()
+        let block1 = multiBuffer.createBlock(command: "echo first", workingDirectory: "/Users/test")
+        multiBuffer.appendOutput(to: block1.id, text: "output 1\n")
+        multiBuffer.completeBlock(id: block1.id, exitCode: 0)
+
+        let block2 = multiBuffer.createBlock(command: "echo second", workingDirectory: "/Users/test")
+        multiBuffer.appendOutput(to: block2.id, text: "output 2\n")
+        multiBuffer.completeBlock(id: block2.id, exitCode: 0)
+
+        let session = BlockTerminalSession(workingDirectory: "/Users/test", multiBuffer: multiBuffer)
+        let canvas = BlockTerminalNSView(session: session, theme: .vesper, fontSize: 12)
+        canvas.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        canvas.rebuildLayout()
+
+        // Drag above top (negative Y) clamps to start
+        let topPoint = canvas.documentPoint(at: CGPoint(x: 50, y: -100), clampForDrag: true)
+        XCTAssertNotNil(topPoint)
+        XCTAssertEqual(topPoint?.blockIndex, 0)
+        XCTAssertEqual(topPoint?.lineIndex, -1)
+        XCTAssertEqual(topPoint?.columnIndex, 0)
+
+        // Drag below bottom clamps to end of last block
+        let bottomPoint = canvas.documentPoint(at: CGPoint(x: 50, y: 5000), clampForDrag: true)
+        XCTAssertNotNil(bottomPoint)
+        XCTAssertEqual(bottomPoint?.blockIndex, 1)
+
+        // Drag into gap between blocks clamps to valid coordinate
+        let b1ContentMaxY = canvas.blockLayouts[0].contentMaxY
+        let gapPoint = canvas.documentPoint(at: CGPoint(x: 50, y: b1ContentMaxY + 2.0), clampForDrag: true)
+        XCTAssertNotNil(gapPoint)
+    }
+
+    @MainActor
+    func testBlockTerminalContextMenu() {
+        let multiBuffer = TerminalMultiBuffer()
+        let block = multiBuffer.createBlock(command: "ls -la", workingDirectory: "/Users/test")
+        multiBuffer.appendOutput(to: block.id, text: "total 0\n")
+        multiBuffer.completeBlock(id: block.id, exitCode: 0)
+
+        let session = BlockTerminalSession(workingDirectory: "/Users/test", multiBuffer: multiBuffer)
+        let canvas = BlockTerminalNSView(session: session, theme: .vesper, fontSize: 12)
+        canvas.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        canvas.rebuildLayout()
+
+        let dummyEvent = NSEvent.mouseEvent(
+            with: .rightMouseDown,
+            location: NSPoint(x: 100, y: 350),
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 1,
+            pressure: 1.0
+        )!
+
+        let menu = canvas.menu(for: dummyEvent)
+        XCTAssertNotNil(menu)
+        let itemTitles = menu?.items.map(\.title) ?? []
+        XCTAssertTrue(itemTitles.contains("Copy"))
+        XCTAssertTrue(itemTitles.contains("Copy Command"))
+        XCTAssertTrue(itemTitles.contains("Copy Output"))
+        XCTAssertTrue(itemTitles.contains("Select All"))
+        XCTAssertTrue(itemTitles.contains("Clear"))
+    }
+
+    @MainActor
+    func testBlockTerminalHorizontalScrolling() {
+        let multiBuffer = TerminalMultiBuffer()
+        let block = multiBuffer.createBlock(command: "echo long line", workingDirectory: "/Users/test")
+        let longLine = String(repeating: "A", count: 200)
+        multiBuffer.appendOutput(to: block.id, text: longLine + "\n")
+        multiBuffer.completeBlock(id: block.id, exitCode: 0)
+
+        let session = BlockTerminalSession(workingDirectory: "/Users/test", multiBuffer: multiBuffer)
+        let canvas = BlockTerminalNSView(session: session, theme: .vesper, fontSize: 12)
+        canvas.frame = NSRect(x: 0, y: 0, width: 400, height: 300)
+
+        canvas.rebuildLayout()
+
+        // Verify totalDocumentWidth exceeds the 400 pt bounds width
+        XCTAssertGreaterThan(canvas.totalDocumentWidth, 400.0)
+        let maxScrollX = canvas.totalDocumentWidth - 400.0
+
+        // Initially scrollOffsetX should be 0
+        XCTAssertEqual(canvas.scrollOffsetX, 0.0)
+
+        // Simulate horizontal scroll wheel
+        if let cgEvent = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: 0, wheel2: -25, wheel3: 0),
+           let nsEvent = NSEvent(cgEvent: cgEvent) {
+            canvas.scrollWheel(with: nsEvent)
+            XCTAssertGreaterThan(canvas.scrollOffsetX, 0.0)
+        }
+
+        // Set scrollOffsetX beyond maxScrollX and verify clamping via setFrameSize
+        canvas.scrollOffsetX = maxScrollX + 100.0
+        canvas.setFrameSize(NSSize(width: 400, height: 300))
+        XCTAssertEqual(canvas.scrollOffsetX, maxScrollX, accuracy: 0.01)
+
+        // Set negative scrollOffsetX and verify clamping
+        canvas.scrollOffsetX = -50.0
+        canvas.setFrameSize(NSSize(width: 400, height: 300))
+        XCTAssertEqual(canvas.scrollOffsetX, 0.0)
+    }
+
+    @MainActor
+    func testBlockTerminalScrollAxisLocking() {
+        let multiBuffer = TerminalMultiBuffer()
+        let block = multiBuffer.createBlock(command: "long command", workingDirectory: "/Users/test")
+        let longText = (0..<50).map { "line \($0): " + String(repeating: "X", count: 120) }.joined(separator: "\n")
+        multiBuffer.appendOutput(to: block.id, text: longText + "\n")
+        multiBuffer.completeBlock(id: block.id, exitCode: 0)
+
+        let session = BlockTerminalSession(workingDirectory: "/Users/test", multiBuffer: multiBuffer)
+        let canvas = BlockTerminalNSView(session: session, theme: .vesper, fontSize: 12)
+        canvas.frame = NSRect(x: 0, y: 0, width: 400, height: 300)
+        canvas.rebuildLayout()
+
+        // 1. Dominant vertical scroll: wheel1 (Y) is -40, wheel2 (X) is -10
+        if let cgEvent = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: -40, wheel2: -10, wheel3: 0),
+           let nsEvent = NSEvent(cgEvent: cgEvent) {
+            canvas.scrollWheel(with: nsEvent)
+            // Vertical axis is locked: scrollOffsetY should increase, scrollOffsetX should remain 0
+            XCTAssertGreaterThan(canvas.scrollOffsetY, 0.0)
+            XCTAssertEqual(canvas.scrollOffsetX, 0.0)
+        }
+
+        // Reset offsets
+        canvas.scrollOffsetY = 0
+        canvas.scrollOffsetX = 0
+
+        // 2. Dominant horizontal scroll: wheel1 (Y) is -5, wheel2 (X) is -40
+        // Wait slightly or simulate fresh gesture so timeSinceLastEvent > 0.35
+        Thread.sleep(forTimeInterval: 0.4)
+        if let cgEvent = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: -5, wheel2: -40, wheel3: 0),
+           let nsEvent = NSEvent(cgEvent: cgEvent) {
+            canvas.scrollWheel(with: nsEvent)
+            // Horizontal axis is locked: scrollOffsetX should increase, scrollOffsetY should remain 0
+            XCTAssertGreaterThan(canvas.scrollOffsetX, 0.0)
+            XCTAssertEqual(canvas.scrollOffsetY, 0.0)
+        }
+    }
+
+    @MainActor
+    func testBlockTerminalStickyHeaderFadeWhenPushed() {
+        let multiBuffer = TerminalMultiBuffer()
+        let block1 = multiBuffer.createBlock(command: "command 1", workingDirectory: "/Users/test")
+        multiBuffer.appendOutput(to: block1.id, text: "output 1\noutput 2\noutput 3\noutput 4\noutput 5\n")
+        multiBuffer.completeBlock(id: block1.id, exitCode: 0)
+
+        let block2 = multiBuffer.createBlock(command: "command 2", workingDirectory: "/Users/test")
+        multiBuffer.appendOutput(to: block2.id, text: "output line\n")
+        multiBuffer.completeBlock(id: block2.id, exitCode: 0)
+
+        let session = BlockTerminalSession(workingDirectory: "/Users/test", multiBuffer: multiBuffer)
+        let canvas = BlockTerminalNSView(session: session, theme: .vesper, fontSize: 12)
+        canvas.frame = NSRect(x: 0, y: 0, width: 400, height: 300)
+        canvas.rebuildLayout()
+
+        // Scroll so block 2 pushes block 1's sticky header halfway
+        let block2StartY = canvas.blockLayouts[1].startY
+        canvas.scrollOffsetY = block2StartY - 10.0 // stickyScreenY = 10 - 28 = -18 < 0
+
+        // Render into a bitmap context to exercise drawHeader with negative minY (contentAlpha fade)
+        let rep = canvas.bitmapImageRepForCachingDisplay(in: canvas.bounds)!
+        canvas.cacheDisplay(in: canvas.bounds, to: rep)
+        XCTAssertEqual(rep.size.width, 400)
+        XCTAssertEqual(rep.size.height, 300)
+    }
+
+    // MARK: - Multi-Terminal Coordinator & Background Execution Tests
+
+    @MainActor
+    func testTerminalCoordinatorTabManagement() {
+        let coordinator = TerminalCoordinator(workingDirectory: "/tmp")
+        XCTAssertEqual(coordinator.tabs.count, 1)
+        XCTAssertEqual(coordinator.tabs[0].title, "Terminal 1")
+        XCTAssertEqual(coordinator.activeTabId, coordinator.tabs[0].id)
+
+        // Create second tab
+        let tab2 = coordinator.createTab(workingDirectory: "/tmp", title: "Tab Two")
+        XCTAssertEqual(coordinator.tabs.count, 2)
+        XCTAssertEqual(coordinator.activeTabId, tab2.id)
+        XCTAssertEqual(coordinator.activeTab?.id, tab2.id)
+        XCTAssertEqual(tab2.title, "Tab Two")
+
+        // Create third tab
+        let tab3 = coordinator.createTab(workingDirectory: "/tmp")
+        XCTAssertEqual(coordinator.tabs.count, 3)
+        XCTAssertEqual(coordinator.tabs[2].title, "Terminal 3")
+        XCTAssertEqual(coordinator.activeTabId, tab3.id)
+
+        // Select first tab
+        coordinator.selectTab(id: coordinator.tabs[0].id)
+        XCTAssertEqual(coordinator.activeTabId, coordinator.tabs[0].id)
+
+        // Select next / previous
+        coordinator.selectNextTab()
+        XCTAssertEqual(coordinator.activeTabId, tab2.id)
+        coordinator.selectNextTab()
+        XCTAssertEqual(coordinator.activeTabId, tab3.id)
+        coordinator.selectPreviousTab()
+        XCTAssertEqual(coordinator.activeTabId, tab2.id)
+
+        // Close middle tab
+        coordinator.closeTab(id: tab2.id)
+        XCTAssertEqual(coordinator.tabs.count, 2)
+        XCTAssertEqual(coordinator.activeTabId, tab3.id)
+
+        // Close others
+        coordinator.closeOtherTabs(except: tab3.id)
+        XCTAssertEqual(coordinator.tabs.count, 1)
+        XCTAssertEqual(coordinator.tabs[0].id, tab3.id)
+
+        // Clean up
+        coordinator.terminateAll()
+        XCTAssertTrue(coordinator.tabs.isEmpty)
+    }
+
+    @MainActor
+    func testTerminalTabDisplayTitleAndRename() {
+        let tab = TerminalTab(title: "Terminal 1", workingDirectory: "/tmp")
+        XCTAssertEqual(tab.displayTitle, "tmp")
+
+        tab.rename(to: "Dev Server")
+        XCTAssertEqual(tab.displayTitle, "Dev Server")
+
+        tab.rename(to: "")
+        XCTAssertEqual(tab.displayTitle, "tmp")
+
+        tab.terminate()
+    }
+
+    @MainActor
+    func testMultipleTerminalsBackgroundExecution() {
+        let coordinator = TerminalCoordinator(workingDirectory: "/tmp")
+        let tab1 = coordinator.tabs[0]
+        let tab2 = coordinator.createTab(workingDirectory: "/tmp")
+
+        // Both tabs have active, distinct sessions
+        XCTAssertNotEqual(tab1.id, tab2.id)
+        XCTAssertNotEqual(tab1.blockSession.persistentSession.id, tab2.blockSession.persistentSession.id)
+
+        // Tab 1 executes command
+        tab1.blockSession.execute(command: "echo test-bg-1")
+        // Tab 2 executes different command
+        tab2.blockSession.execute(command: "echo test-bg-2")
+
+        XCTAssertEqual(tab1.blockSession.multiBuffer.blocks.count, 1)
+        XCTAssertEqual(tab2.blockSession.multiBuffer.blocks.count, 1)
+        XCTAssertEqual(tab1.blockSession.multiBuffer.blocks[0].command, "echo test-bg-1")
+        XCTAssertEqual(tab2.blockSession.multiBuffer.blocks[0].command, "echo test-bg-2")
+
+        coordinator.terminateAll()
+    }
 }
+
 
 
