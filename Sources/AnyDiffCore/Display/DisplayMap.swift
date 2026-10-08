@@ -1135,25 +1135,55 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
         let targetDisplayIdx = loc.displayRange.lowerBound + (loc.hasHeader ? 1 : 0) + (loc.hasTopGap ? 1 : 0) + offset
         let items = generateVisibleLineItems(for: loc, requestedDisplayRange: targetDisplayIdx..<(targetDisplayIdx + 1))
         for item in items {
-            if case .code(let info) = item.line {
+            if case .code(let info) = item.line, info.multiBufferRow == multiBufferRow {
                 return info
             } else if case .splitCode(let sInfo) = item.line {
                 let cell = sInfo.right.isSpacer ? sInfo.left : sInfo.right
-                return DisplayCodeLineInfo(
-                    excerptIndex: sInfo.excerptIndex,
-                    multiBufferRow: multiBufferRow,
-                    bufferRow: cell.bufferRow ?? 0,
-                    displayLineIndex: sInfo.displayLineIndex,
-                    oldLineNumber: sInfo.left.lineNumber,
-                    newLineNumber: sInfo.right.lineNumber,
-                    diffKind: cell.diffKind,
-                    text: cell.text,
-                    language: sInfo.language,
-                    wordDiffRanges: cell.wordDiffRanges,
-                    expandInfo: sInfo.expandInfo
-                )
+                let r = sInfo.right.multiBufferRow ?? sInfo.left.multiBufferRow
+                if r == multiBufferRow {
+                    return DisplayCodeLineInfo(
+                        excerptIndex: sInfo.excerptIndex,
+                        multiBufferRow: multiBufferRow,
+                        bufferRow: cell.bufferRow ?? 0,
+                        displayLineIndex: sInfo.displayLineIndex,
+                        oldLineNumber: sInfo.left.lineNumber,
+                        newLineNumber: sInfo.right.lineNumber,
+                        diffKind: cell.diffKind,
+                        text: cell.text,
+                        language: sInfo.language,
+                        wordDiffRanges: cell.wordDiffRanges,
+                        expandInfo: sInfo.expandInfo
+                    )
+                }
             }
         }
+
+        // Fallback: scan within excerpt if diff hunks or gap lines shifted line offsets
+        let allItems = generateVisibleLineItems(for: loc, requestedDisplayRange: loc.displayRange)
+        for item in allItems {
+            if case .code(let info) = item.line, info.multiBufferRow == multiBufferRow {
+                return info
+            } else if case .splitCode(let sInfo) = item.line {
+                let cell = sInfo.right.isSpacer ? sInfo.left : sInfo.right
+                let r = sInfo.right.multiBufferRow ?? sInfo.left.multiBufferRow
+                if r == multiBufferRow {
+                    return DisplayCodeLineInfo(
+                        excerptIndex: sInfo.excerptIndex,
+                        multiBufferRow: multiBufferRow,
+                        bufferRow: cell.bufferRow ?? 0,
+                        displayLineIndex: sInfo.displayLineIndex,
+                        oldLineNumber: sInfo.left.lineNumber,
+                        newLineNumber: sInfo.right.lineNumber,
+                        diffKind: cell.diffKind,
+                        text: cell.text,
+                        language: sInfo.language,
+                        wordDiffRanges: cell.wordDiffRanges,
+                        expandInfo: sInfo.expandInfo
+                    )
+                }
+            }
+        }
+
         return nil
     }
 

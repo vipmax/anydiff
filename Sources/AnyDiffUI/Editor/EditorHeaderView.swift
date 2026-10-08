@@ -64,11 +64,15 @@ public struct EditorHeaderActionsView: View {
     public let totalAdds: Int
     public let totalDels: Int
     public let disableHunkNavigation: Bool
+    public var workingDirectory: String? = nil
     public let onPreviousHunk: () -> Void
     public let onNextHunk: () -> Void
     public let onToggleCollapse: () -> Void
     public let onToggleLayout: () -> Void
     public let onToggleSearch: () -> Void
+
+    @State private var isShowingLSPPopover: Bool = false
+    @State private var activeLSPCount: Int = 0
 
     public init(
         theme: Theme,
@@ -79,6 +83,7 @@ public struct EditorHeaderActionsView: View {
         totalAdds: Int = 0,
         totalDels: Int = 0,
         disableHunkNavigation: Bool = false,
+        workingDirectory: String? = nil,
         onPreviousHunk: @escaping () -> Void,
         onNextHunk: @escaping () -> Void,
         onToggleCollapse: @escaping () -> Void,
@@ -93,6 +98,7 @@ public struct EditorHeaderActionsView: View {
         self.totalAdds = totalAdds
         self.totalDels = totalDels
         self.disableHunkNavigation = disableHunkNavigation
+        self.workingDirectory = workingDirectory
         self.onPreviousHunk = onPreviousHunk
         self.onNextHunk = onNextHunk
         self.onToggleCollapse = onToggleCollapse
@@ -144,6 +150,37 @@ public struct EditorHeaderActionsView: View {
             .buttonStyle(ToolbarHoverButtonStyle())
             .help(diffLayoutMode == .unified ? "Switch to Side-by-Side Diff (⌘D)" : "Switch to Unified Diff (⌘D)")
 
+            // LSP Status & Controls Popover Button (placed before Search)
+            Button(action: { isShowingLSPPopover.toggle() }) {
+                ZStack(alignment: .topTrailing) {
+                    Image(systemName: "bolt.fill")
+                        .font(.system(size: 10.5, weight: .medium))
+                        .frame(width: 14, height: 14)
+                        .foregroundColor(activeLSPCount > 0 ? Color(theme.foreground) : Color(theme.gutterForeground))
+
+                    if activeLSPCount > 0 {
+                        Circle()
+                            .fill(Color.green)
+                            .frame(width: 4, height: 4)
+                            .offset(x: 2, y: -2)
+                    }
+                }
+            }
+            .buttonStyle(ToolbarHoverButtonStyle())
+            .help("Language Servers (LSP) Status & Controls")
+            .popover(isPresented: $isShowingLSPPopover, arrowEdge: .bottom) {
+                LSPStatusPopoverView(
+                    theme: theme,
+                    workingDirectory: workingDirectory
+                )
+            }
+            .onAppear {
+                updateLSPCount()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: LSPWorkspaceService.serversDidChangeNotification)) { _ in
+                updateLSPCount()
+            }
+
             if availableWidth >= 290 || isSearchActive {
                 Button(action: onToggleSearch) {
                     Image(systemName: "magnifyingglass")
@@ -176,5 +213,12 @@ public struct EditorHeaderActionsView: View {
         }
         .lineLimit(1)
         .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private func updateLSPCount() {
+        Task { @MainActor in
+            let statuses = await LSPWorkspaceService.shared.activeServerStatuses()
+            self.activeLSPCount = statuses.filter { $0.state == .ready || $0.state == .initializing }.count
+        }
     }
 }

@@ -2342,4 +2342,39 @@ final class MultiBufferTests: XCTestCase {
         XCTAssertEqual(mb.excerpts[1].filePath, "File2.swift")
         XCTAssertEqual(mb.excerpts[2].filePath, "File10.swift")
     }
+
+    func testExpandFoldToIncludeLineNumber() {
+        let fullLines = (1...100).map { "Line \($0)" }
+        let buf = Buffer(filePath: "Source.swift", lines: fullLines, language: "swift", baselineLines: fullLines)
+        let mb = MultiBuffer()
+        mb.addBuffer(buf)
+
+        // Excerpt only exposes lines 50..60 (0-based: 49..<60)
+        let exc = Excerpt(bufferId: buf.id, filePath: "Source.swift", bufferRange: 49..<60)
+        mb.setExcerpts([exc])
+
+        // Verify line 20 is not currently exposed
+        XCTAssertFalse(mb.excerpts[0].bufferRange.contains(19))
+
+        // Expand fold to include line 20
+        let expanded = mb.expandFoldToInclude(filePath: "Source.swift", lineNumber: 20, padding: 2)
+        XCTAssertTrue(expanded)
+        XCTAssertTrue(mb.excerpts[0].bufferRange.contains(19), "Line 20 (0-based 19) should now be in excerpt")
+
+        // Expand fold downwards to include line 90
+        let expandedDown = mb.expandFoldToInclude(filePath: "Source.swift", lineNumber: 90, padding: 2)
+        XCTAssertTrue(expandedDown)
+        XCTAssertTrue(mb.excerpts[0].bufferRange.contains(89), "Line 90 (0-based 89) should now be in excerpt")
+    }
+
+    func testFullFileContentResolution() {
+        let mb = MultiBuffer()
+        let buf = Buffer(filePath: "Main.swift", text: "import Foundation\nlet x = 1\nlet y = 2")
+        buf.isFullFile = true
+        buf.isLazySlice = false
+        mb.addBuffer(buf)
+
+        let content = mb.fullFileContent(for: "Main.swift")
+        XCTAssertEqual(content, "import Foundation\nlet x = 1\nlet y = 2")
+    }
 }

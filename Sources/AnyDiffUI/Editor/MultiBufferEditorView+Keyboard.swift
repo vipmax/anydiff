@@ -92,6 +92,61 @@ extension MultiBufferEditorView {
     public override func keyDown(with event: NSEvent) {
         guard let displayMap = displayMap else { return }
 
+        if isCompletionMenuVisible {
+            switch event.keyCode {
+            case 53: // Escape
+                hideCompletionMenu()
+                return
+            case 125: // Down Arrow
+                if !event.modifierFlags.contains([.command, .option, .control]) {
+                    selectNextCompletion()
+                    return
+                }
+            case 126: // Up Arrow
+                if !event.modifierFlags.contains([.command, .option, .control]) {
+                    selectPreviousCompletion()
+                    return
+                }
+            case 123: // Left Arrow
+                if !event.modifierFlags.contains([.command, .control, .shift]) {
+                    moveCompletionCursorLeft()
+                    return
+                }
+            case 124: // Right Arrow
+                if !event.modifierFlags.contains([.command, .control, .shift]) {
+                    moveCompletionCursorRight()
+                    return
+                }
+            case 48: // Tab
+                if !event.modifierFlags.contains([.command, .option, .control]) {
+                    confirmSelectedCompletion()
+                    return
+                }
+            case 36: // Return / Enter
+                if !event.modifierFlags.contains([.command, .option, .control, .shift]) {
+                    confirmSelectedCompletion()
+                    return
+                }
+            default:
+                break
+            }
+        }
+
+        // Active hover popup dismissal
+        if isHoverVisible {
+            if event.keyCode == 53 { // Escape
+                hideHover()
+                return
+            }
+            hideHover()
+        }
+
+        // Shortcut: Cmd+Shift+I or F1 to show Hover at cursor
+        if (event.keyCode == 34 && event.modifierFlags.contains([.command, .shift])) || event.keyCode == 122 {
+            showHoverAtCursor()
+            return
+        }
+
         // Shift + Enter (Expand Excerpt around current cursor location)
         if event.keyCode == 36 && event.modifierFlags.contains(.shift) {
             let cursorRow = cursorPoint.row
@@ -152,6 +207,11 @@ extension MultiBufferEditorView {
     }
 
     public override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        // Ctrl+Space: Show Code Completions (Zed / VS Code standard)
+        if event.keyCode == 49 && event.modifierFlags.contains(.control) && !event.modifierFlags.contains(.command) {
+            showCompletions()
+            return true
+        }
         if event.keyCode == 100 && event.modifierFlags.contains(.command) {
             if event.modifierFlags.contains(.shift) {
                 goToPreviousHunk()
@@ -168,7 +228,17 @@ extension MultiBufferEditorView {
             }
             return true
         }
+        // F12: Go to Definition
+        if event.keyCode == 111 || event.keyCode == 120 {
+            goToDefinition()
+            return true
+        }
         if event.modifierFlags.contains(.command) {
+            // Cmd+B: Go to Definition
+            if event.charactersIgnoringModifiers?.lowercased() == "b" {
+                goToDefinition()
+                return true
+            }
             let isUndoKey = event.charactersIgnoringModifiers?.lowercased() == "z"
             let hasDisallowedModifier = event.modifierFlags.contains(.option) || event.modifierFlags.contains(.control)
             if isUndoKey && !hasDisallowedModifier {

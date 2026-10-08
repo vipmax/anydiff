@@ -1,0 +1,386 @@
+[
+  {
+    "id": "rust-analyzer",
+    "name": "Rust Analyzer",
+    "language": "rust",
+    "fileExtensions": [
+      "rs"
+    ],
+    "binary": "rust-analyzer",
+    "download": {
+      "type": "githubRelease",
+      "owner": "rust-lang",
+      "repo": "rust-analyzer",
+      "tag": "2024-12-16",
+      "arm64": {
+        "file": "rust-analyzer-aarch64-apple-darwin.gz",
+        "archiveType": "gz"
+      },
+      "x86_64": {
+        "file": "rust-analyzer-x86_64-apple-darwin.gz",
+        "archiveType": "gz"
+      }
+    }
+  },
+  {
+    "id": "pyright",
+    "name": "Pyright",
+    "language": "python",
+    "fileExtensions": [
+      "py",
+      "pyi"
+    ],
+    "binary": "pyright-langserver",
+    "arguments": [
+      "--stdio"
+    ],
+    "download": {
+      "type": "npm",
+      "package": "pyright",
+      "version": "1.1.396"
+    }
+  },
+  {
+    "id": "typescript-language-server",
+    "name": "TypeScript Language Server",
+    "language": "typescript",
+    "fileExtensions": [
+      "ts",
+      "tsx"
+    ],
+    "binary": "typescript-language-server",
+    "arguments": [
+      "--stdio"
+    ],
+    "download": {
+      "type": "npm",
+      "package": "typescript-language-server",
+      "version": "4.3.3"
+    }
+  },
+  {
+    "id": "javascript-language-server",
+    "name": "JavaScript Language Server",
+    "language": "javascript",
+    "fileExtensions": [
+      "js",
+      "jsx",
+      "mjs",
+      "cjs"
+    ],
+    "binary": "typescript-language-server",
+    "arguments": [
+      "--stdio"
+    ],
+    "download": {
+      "type": "npm",
+      "package": "typescript-language-server",
+      "version": "4.3.3"
+    }
+  },
+  {
+    "id": "vscode-json-language-server",
+    "name": "JSON Language Server",
+    "language": "json",
+    "fileExtensions": [
+      "json"
+    ],
+    "binary": "vscode-json-language-server",
+    "arguments": [
+      "--stdio"
+    ],
+    "download": {
+      "type": "npm",
+      "package": "vscode-langservers-extracted",
+      "version": "4.10.0"
+    }
+  },
+  {
+    "id": "vscode-html-language-server",
+    "name": "HTML Language Server",
+    "language": "html",
+    "fileExtensions": [
+      "html",
+      "htm"
+    ],
+    "binary": "vscode-html-language-server",
+    "arguments": [
+      "--stdio"
+    ],
+    "download": {
+      "type": "npm",
+      "package": "vscode-langservers-extracted",
+      "version": "4.10.0"
+    }
+  },
+  {
+    "id": "vscode-css-language-server",
+    "name": "CSS Language Server",
+    "language": "css",
+    "fileExtensions": [
+      "css",
+      "scss",
+      "sass",
+      "less"
+    ],
+    "binary": "vscode-css-language-server",
+    "arguments": [
+      "--stdio"
+    ],
+    "download": {
+      "type": "npm",
+      "package": "vscode-langservers-extracted",
+      "version": "4.10.0"
+    }
+  },
+  {
+    "id": "clangd",
+    "name": "Clangd (C)",
+    "language": "c",
+    "fileExtensions": [
+      "c",
+      "h"
+    ],
+    "binary": "clangd",
+    "arguments": [
+      "--background-index"
+    ],
+    "download": {
+      "type": "githubRelease",
+      "owner": "clangd",
+      "repo": "clangd",
+      "tag": "20.1.0",
+      "asset": {
+        "file": "clangd-mac-20.1.0.zip",
+        "archiveType": "zip",
+        "relativeBin": "clangd_20.1.0/bin/clangd"
+      }
+    }
+  },
+  {
+    "id": "clangd-cpp",
+    "name": "Clangd (C++)",
+    "language": "cpp",
+    "fileExtensions": [
+      "cpp",
+      "cc",
+      "cxx",
+      "hpp"
+    ],
+    "binary": "clangd",
+    "arguments": [
+      "--background-index"
+    ],
+    "download": {
+      "type": "githubRelease",
+      "owner": "clangd",
+      "repo": "clangd",
+      "tag": "20.1.0",
+      "asset": {
+        "file": "clangd-mac-20.1.0.zip",
+        "archiveType": "zip",
+        "relativeBin": "clangd_20.1.0/bin/clangd"
+      }
+    }
+  },
+  {
+    "id": "sourcekit-lsp",
+    "name": "SourceKit-LSP",
+    "language": "swift",
+    "fileExtensions": [
+      "swift"
+    ],
+    "binary": "sourcekit-lsp",
+    "download": {
+      "type": "systemOnly"
+    }
+  },
+  {
+    "id": "marksman",
+    "name": "Marksman",
+    "language": "markdown",
+    "fileExtensions": [
+      "md",
+      "markdown",
+      "mdown",
+      "mkdn"
+    ],
+    "binary": "marksman",
+    "arguments": [
+      "server"
+    ],
+    "download": {
+      "type": "githubRelease",
+      "owner": "artempyanykh",
+      "repo": "marksman",
+      "tag": "2024-12-18",
+      "arm64": {
+        "file": "marksman-macos-arm64",
+        "archiveType": "binary"
+      },
+      "x86_64": {
+        "file": "marksman-macos-x64",
+        "archiveType": "binary"
+      }
+    }
+  },
+  {
+    "id": "gopls",
+    "name": "gopls",
+    "language": "go",
+    "fileExtensions": [
+      "go"
+    ],
+    "binary": "gopls",
+    "download": {
+      "type": "go",
+      "package": "golang.org/x/tools/gopls@latest"
+    }
+  },
+  {
+    "id": "yaml-language-server",
+    "name": "YAML Language Server",
+    "language": "yaml",
+    "fileExtensions": [
+      "yaml",
+      "yml"
+    ],
+    "binary": "yaml-language-server",
+    "arguments": [
+      "--stdio"
+    ],
+    "download": {
+      "type": "npm",
+      "package": "yaml-language-server",
+      "version": "1.16.0"
+    }
+  },
+  {
+    "id": "bash-language-server",
+    "name": "Bash Language Server",
+    "language": "bash",
+    "fileExtensions": [
+      "sh",
+      "bash",
+      "zsh"
+    ],
+    "binary": "bash-language-server",
+    "arguments": [
+      "start"
+    ],
+    "download": {
+      "type": "npm",
+      "package": "bash-language-server",
+      "version": "5.4.3"
+    }
+  },
+  {
+    "id": "lua-language-server",
+    "name": "Lua Language Server",
+    "language": "lua",
+    "fileExtensions": [
+      "lua"
+    ],
+    "binary": "lua-language-server",
+    "download": {
+      "type": "githubRelease",
+      "owner": "LuaLS",
+      "repo": "lua-language-server",
+      "tag": "3.13.6",
+      "arm64": {
+        "file": "lua-language-server-3.13.6-darwin-arm64.tar.gz",
+        "archiveType": "tar.gz",
+        "relativeBin": "bin/lua-language-server"
+      },
+      "x86_64": {
+        "file": "lua-language-server-3.13.6-darwin-x64.tar.gz",
+        "archiveType": "tar.gz",
+        "relativeBin": "bin/lua-language-server"
+      }
+    }
+  },
+  {
+    "id": "zls",
+    "name": "Zig Language Server (zls)",
+    "language": "zig",
+    "fileExtensions": [
+      "zig"
+    ],
+    "binary": "zls",
+    "download": {
+      "type": "githubRelease",
+      "owner": "zigtools",
+      "repo": "zls",
+      "tag": "0.14.0",
+      "arm64": {
+        "file": "zls-aarch64-macos.tar.xz",
+        "archiveType": "tar.xz",
+        "relativeBin": "bin/zls"
+      },
+      "x86_64": {
+        "file": "zls-x86_64-macos.tar.xz",
+        "archiveType": "tar.xz",
+        "relativeBin": "bin/zls"
+      }
+    }
+  },
+  {
+    "id": "taplo",
+    "name": "Taplo (TOML)",
+    "language": "toml",
+    "fileExtensions": [
+      "toml"
+    ],
+    "binary": "taplo",
+    "arguments": [
+      "lsp",
+      "stdio"
+    ],
+    "download": {
+      "type": "githubRelease",
+      "owner": "tamasfe",
+      "repo": "taplo",
+      "tag": "0.10.0",
+      "arm64": {
+        "file": "taplo-darwin-aarch64.gz",
+        "archiveType": "gz"
+      },
+      "x86_64": {
+        "file": "taplo-darwin-x86_64.gz",
+        "archiveType": "gz"
+      }
+    }
+  },
+  {
+    "id": "roslyn-language-server",
+    "name": "Roslyn Language Server (C#)",
+    "language": "csharp",
+    "fileExtensions": [
+      "cs",
+      "csx"
+    ],
+    "binary": "roslyn-language-server",
+    "arguments": [
+      "--stdio",
+      "--autoLoadProjects"
+    ],
+    "download": {
+      "type": "systemOnly",
+      "instructions": "Install via .NET SDK: dotnet tool install --global roslyn-language-server --prerelease"
+    }
+  },
+  {
+    "id": "csharp-ls",
+    "name": "csharp-ls",
+    "language": "csharp",
+    "fileExtensions": [
+      "cs",
+      "csx"
+    ],
+    "binary": "csharp-ls",
+    "download": {
+      "type": "systemOnly",
+      "instructions": "Install via .NET SDK: dotnet tool install --global csharp-ls"
+    }
+  }
+]

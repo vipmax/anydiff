@@ -2,6 +2,7 @@ import Foundation
 import AppKit
 import CoreText
 import Combine
+import SwiftUI
 import AnyDiffCore
 
 public protocol MultiBufferEditorDelegate: AnyObject {
@@ -12,6 +13,7 @@ public protocol MultiBufferEditorDelegate: AnyObject {
     func editorDidRequestCloseFile(filePath: String)
     func editorDidRequestOpenExternalIDE(filePath: String, lineNumber: Int?)
     func editorDidRequestPreviewMarkdown(filePath: String)
+    func editorDidRequestOpenDefinition(filePath: String, line: Int, column: Int)
 }
 
 public extension MultiBufferEditorDelegate {
@@ -20,12 +22,14 @@ public extension MultiBufferEditorDelegate {
     func editorDidRequestCloseFile(filePath: String) {}
     func editorDidRequestOpenExternalIDE(filePath: String, lineNumber: Int?) {}
     func editorDidRequestPreviewMarkdown(filePath: String) {}
+    func editorDidRequestOpenDefinition(filePath: String, line: Int, column: Int) {}
 }
 
 /// A high-performance, virtualized MultiBuffer Code Reviewer & Editor View built with CoreText
 public final class MultiBufferEditorView: NSView, NSTextInputClient, NSUserInterfaceValidations {
     public weak var delegate: MultiBufferEditorDelegate?
     public var onContentEdited: (() -> Void)? = nil
+    public var workspaceRootPath: String? = nil
     var displayMapCancellables = Set<AnyCancellable>()
 
     public var displayMap: DisplayMap? {
@@ -149,11 +153,23 @@ public final class MultiBufferEditorView: NSView, NSTextInputClient, NSUserInter
     public var scrollOffsetY: CGFloat = 0 {
         didSet {
             delegate?.editorDidScroll()
+            updateCompletionMenuFrame()
+            if isHoverVisible {
+                hideHover()
+            }
+            hoverTimer?.invalidate()
+            hoverTimer = nil
             needsDisplay = true
         }
     }
     public var scrollOffsetX: CGFloat = 0 {
         didSet {
+            updateCompletionMenuFrame()
+            if isHoverVisible {
+                hideHover()
+            }
+            hoverTimer?.invalidate()
+            hoverTimer = nil
             needsDisplay = true
         }
     }
@@ -171,6 +187,28 @@ public final class MultiBufferEditorView: NSView, NSTextInputClient, NSUserInter
             displayMap?.multiBuffer.selectionRange = sel
             notifyCursorChange()
             ensureCursorVisible()
+            if isHoverVisible {
+                hideHover()
+            }
+            hoverTimer?.invalidate()
+            hoverTimer = nil
+            if isCompletionMenuVisible {
+                let stillOnSameLine: Bool
+                if let triggerBufId = completionTriggerBufferId,
+                   let triggerBufRow = completionTriggerBufferRow,
+                   let loc = displayMap?.bufferLocation(for: cursorPoint) {
+                    stillOnSameLine = (loc.buffer.id == triggerBufId && loc.point.row == triggerBufRow)
+                } else if let trigger = completionTriggerPoint {
+                    stillOnSameLine = (cursorPoint.row == trigger.row)
+                } else {
+                    stillOnSameLine = false
+                }
+                if !stillOnSameLine {
+                    hideCompletionMenu()
+                } else {
+                    updateCompletionMenuFrame()
+                }
+            }
             needsDisplay = true
         }
     }
@@ -268,6 +306,32 @@ public final class MultiBufferEditorView: NSView, NSTextInputClient, NSUserInter
     var scrollbarDragStartMousePosition: CGFloat = 0
     var scrollbarDragStartOffset: CGFloat = 0
 
+    // Code Completion (LSP)
+    public var completionPopover: NSPopover?
+    public let completionStateModel = CompletionStateModel()
+    public var activeCompletions: [LSPCompletionItem] = []
+    public var filteredCompletions: [LSPCompletionItem] = []
+    public var completionTriggerPoint: MultiBufferPoint?
+    public var completionTriggerBufferId: BufferId?
+    public var completionTriggerBufferRow: Int?
+    public var completionTriggerBufferCol: Int?
+    public var completionPrefix: String = ""
+    public var completionTask: Task<Void, Never>?
+    public var isCompletionMenuVisible: Bool {
+        completionPopover?.isShown == true && !filteredCompletions.isEmpty
+    }
+
+    // LSP Hover
+    public var hoverPopover: NSPopover?
+    public var activeHover: LSPHover?
+    public var hoverTask: Task<Void, Never>?
+    public var hoverTimer: Timer?
+    public var lastHoverPoint: MultiBufferPoint?
+    public var lastHoverMouseLocation: CGPoint?
+    public var hoveredTokenScreenRect: CGRect?
+    public var isHoverVisible: Bool {
+        hoverPopover?.isShown == true && activeHover != nil
+    }
 
     var cachedCharWidth: CGFloat = 8.0
     var scrollLockAxis: ScrollAxis? = nil
@@ -323,6 +387,7 @@ public final class MultiBufferEditorView: NSView, NSTextInputClient, NSUserInter
         scrollbarFadeTimer?.invalidate()
         fadeAnimationTimer?.invalidate()
         activeMatchPulseTimer?.invalidate()
+        hoverTimer?.invalidate()
     }
 
 
@@ -780,5 +845,42 @@ public final class MultiBufferEditorView: NSView, NSTextInputClient, NSUserInter
     func notifyContentChange() {
         delegate?.editorDidChangeContent()
         onContentEdited?()
+
+        if let dm = displayMap, let loc = dm.fastSourceLocation(forCodeRow: cursorPoint.row) {
+            let path = loc.filePath
+            let root = workspaceRootPath ?? FileManager.default.currentDirectoryPath
+            let absPath = (path as NSString).isAbsolutePath ? path : (root as NSString).appendingPathComponent(path)
+            if let text = dm.multiBuffer.fullFileContent(for: path, baseDirectory: workspaceRootPath) {
+                Task {
+                    await LSPWorkspaceService.shared.notifyDocumentChanged(filePath: absPath, text: text, rootPath: root)
+                }
+            }
+        }
+    }
+
+    public override func menu(for event: NSEvent) -> NSMenu? {
+        let pointInView = convert(event.locationInWindow, from: nil)
+        if let targetPoint = codePoint(at: pointInView) {
+            cursorPoint = targetPoint
+            selectionAnchor = nil
+            needsDisplay = true
+        }
+
+        let menu = NSMenu()
+        let defItem = NSMenuItem(title: "Go to Definition", action: #selector(contextMenuGoToDefinition(_:)), keyEquivalent: "b")
+        defItem.keyEquivalentModifierMask = .command
+        defItem.target = self
+        menu.addItem(defItem)
+        menu.addItem(NSMenuItem.separator())
+        menu.addItem(NSMenuItem(title: "Cut", action: #selector(cut(_:)), keyEquivalent: "x"))
+        menu.addItem(NSMenuItem(title: "Copy", action: #selector(copy(_:)), keyEquivalent: "c"))
+        menu.addItem(NSMenuItem(title: "Paste", action: #selector(paste(_:)), keyEquivalent: "v"))
+        menu.addItem(NSMenuItem.separator())
+        menu.addItem(NSMenuItem(title: "Select All", action: #selector(selectAll(_:)), keyEquivalent: "a"))
+        return menu
+    }
+
+    @objc func contextMenuGoToDefinition(_ sender: Any?) {
+        goToDefinition()
     }
 }

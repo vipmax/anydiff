@@ -587,6 +587,9 @@ public struct MainWindowView: View {
             },
             onOpenInBrowser: {
                 openInBrowser()
+            },
+            onOpenDefinition: { path, line, col in
+                openFileInEditor(path: path, line: line, endLine: nil)
             }
         )
     }

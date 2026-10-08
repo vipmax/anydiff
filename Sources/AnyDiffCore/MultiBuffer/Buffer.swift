@@ -228,6 +228,7 @@ public final class Buffer: Identifiable, @unchecked Sendable {
         switch ext {
         case "swift": return "swift"
         case "rs": return "rust"
+        case "cs", "csx": return "csharp"
         case "ts", "tsx": return "typescript"
         case "js", "jsx": return "javascript"
         case "py": return "python"

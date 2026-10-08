@@ -11,6 +11,13 @@ extension MultiBufferEditorView {
         isDraggingSelection = false
         let screenPoint = convert(event.locationInWindow, from: nil)
 
+        if isCompletionMenuVisible {
+            hideCompletionMenu()
+        }
+        if isHoverVisible {
+            hideHover()
+        }
+
         // Scrollbars are painted by this view, so handle their hit-testing
         // before the normal document/selection hit-testing.
         if beginScrollbarDrag(at: screenPoint) {
@@ -207,6 +214,14 @@ extension MultiBufferEditorView {
                     let col = ctLine.characterIndex(at: xOffset, in: text)
                     let targetPoint = MultiBufferPoint(row: codeInfo.multiBufferRow, column: col)
 
+                    if event.modifierFlags.contains(.command) {
+                        cursorPoint = targetPoint
+                        selectionAnchor = nil
+                        needsDisplay = true
+                        goToDefinition(at: targetPoint)
+                        return
+                    }
+
                     if event.clickCount == 2 {
                         let (wordStart, wordEnd) = wordRange(in: text, at: col)
                         activeSelectionGranularity = .word(initialStart: wordStart, initialEnd: wordEnd, initialRow: codeInfo.multiBufferRow)
@@ -361,6 +376,9 @@ extension MultiBufferEditorView {
     }
 
     public override func mouseDragged(with event: NSEvent) {
+        if isHoverVisible {
+            hideHover()
+        }
         if isDraggingDivider {
             let screenPoint = convert(event.locationInWindow, from: nil)
             let gWidth: CGFloat = gutterWidth
@@ -634,10 +652,19 @@ extension MultiBufferEditorView {
         super.mouseMoved(with: event)
         let screenPoint = convert(event.locationInWindow, from: nil)
         updateCloseHoverState(at: screenPoint)
+        handleMouseMovedForHover(at: screenPoint)
     }
 
     public override func mouseExited(with event: NSEvent) {
         super.mouseExited(with: event)
+        if isHoverVisible {
+            let mouseScreen = NSEvent.mouseLocation
+            if isMouseInsideHoverPopoverOrBridge(mouseScreen: mouseScreen) {
+                // Mouse moved into or towards the hover popover window! Keep it active.
+                return
+            }
+        }
+        hideHover()
         toolTip = nil
         var didChange = false
         if hoveredCloseFilePath != nil {
@@ -660,5 +687,48 @@ extension MultiBufferEditorView {
             let dividerHitRect = CGRect(x: geom.dividerRect.midX - 5, y: 0, width: 10, height: bounds.height)
             addCursorRect(dividerHitRect, cursor: .resizeLeftRight)
         }
+    }
+
+    public func codePoint(at screenPoint: CGPoint) -> MultiBufferPoint? {
+        guard let displayMap = displayMap else { return nil }
+        let docY = screenPoint.y + scrollOffsetY
+        let docX = screenPoint.x + scrollOffsetX
+        let lineIdx = lineIndex(atY: docY)
+        guard lineIdx >= 0 && lineIdx < displayMap.displayLineCount,
+              let line = displayMap.displayLine(at: lineIdx) else { return nil }
+
+        switch line {
+        case .code(let codeInfo):
+            let text = codeInfo.text
+            let ctLine = getOrCreateCTLine(for: lineIdx, text: text, language: codeInfo.language)
+            let xOffset = max(0, docX - (gutterWidth + Self.codeLeftPadding))
+            let col = ctLine.characterIndex(at: xOffset, in: text)
+            return MultiBufferPoint(row: codeInfo.multiBufferRow, column: col)
+
+        case .splitCode(let splitInfo):
+            let geom = splitGeometry(atY: docY - scrollOffsetY, height: lineHeight)
+            let isLeft = (screenPoint.x < geom.dividerRect.minX)
+            guard let targetRow = isLeft ? (splitInfo.left.multiBufferRow ?? splitInfo.right.multiBufferRow)
+                                         : (splitInfo.right.multiBufferRow ?? splitInfo.left.multiBufferRow) else { return nil }
+            let text = isLeft ? splitInfo.left.text : splitInfo.right.text
+            let ctLine = getOrCreateCTLine(for: (lineIdx * 2) + (isLeft ? 0 : 1), text: text, language: splitInfo.language)
+            let codeMinX = isLeft ? geom.leftCodeRect.minX : geom.rightCodeRect.minX
+            let xOffset = max(0, screenPoint.x + scrollOffsetX - codeMinX - Self.codeLeftPadding)
+            let col = ctLine.characterIndex(at: xOffset, in: text)
+            return MultiBufferPoint(row: targetRow, column: col)
+
+        default:
+            return nil
+        }
+    }
+
+    public override func rightMouseDown(with event: NSEvent) {
+        let screenPoint = convert(event.locationInWindow, from: nil)
+        if let targetPoint = codePoint(at: screenPoint) {
+            cursorPoint = targetPoint
+            selectionAnchor = nil
+            needsDisplay = true
+        }
+        super.rightMouseDown(with: event)
     }
 }

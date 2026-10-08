@@ -185,35 +185,53 @@ public final class SyntaxHighlighter: @unchecked Sendable {
                 continue
             }
 
-            // Strings ("..." or '...' or `...`)
-            if ch == "\"" || ch == "'" || ch == "`" {
-                let quote = ch
+            // Strings ("..." or '...' or `...` or $"..." or @"...")
+            if ch == "\"" || ch == "'" || ch == "`" ||
+               ((ch == "$" || ch == "@") && nextIndex < line.endIndex && (line[nextIndex] == "\"" || line[nextIndex] == "$" || line[nextIndex] == "@")) {
                 let startOffset = currentUtf16Offset
-                currentUtf16Offset += ch.utf16.count
-                i = line.index(after: i)
+                var quoteChar: Character? = nil
 
-                while i < line.endIndex {
-                    let sc = line[i]
-                    if sc == "\\" {
+                if ch == "\"" || ch == "'" || ch == "`" {
+                    quoteChar = ch
+                    currentUtf16Offset += ch.utf16.count
+                    i = line.index(after: i)
+                } else {
+                    // Consume prefix characters '$', '@'
+                    while i < line.endIndex && (line[i] == "$" || line[i] == "@") {
+                        currentUtf16Offset += line[i].utf16.count
+                        i = line.index(after: i)
+                    }
+                    if i < line.endIndex && (line[i] == "\"" || line[i] == "'") {
+                        quoteChar = line[i]
+                        currentUtf16Offset += line[i].utf16.count
+                        i = line.index(after: i)
+                    }
+                }
+
+                if let quote = quoteChar {
+                    while i < line.endIndex {
+                        let sc = line[i]
+                        if sc == "\\" {
+                            currentUtf16Offset += sc.utf16.count
+                            let next = line.index(after: i)
+                            if next < line.endIndex {
+                                currentUtf16Offset += line[next].utf16.count
+                                i = line.index(after: next)
+                                continue
+                            } else {
+                                i = next
+                                break
+                            }
+                        }
                         currentUtf16Offset += sc.utf16.count
-                        let next = line.index(after: i)
-                        if next < line.endIndex {
-                            currentUtf16Offset += line[next].utf16.count
-                            i = line.index(after: next)
-                            continue
-                        } else {
-                            i = next
+                        i = line.index(after: i)
+                        if sc == quote {
                             break
                         }
                     }
-                    currentUtf16Offset += sc.utf16.count
-                    i = line.index(after: i)
-                    if sc == quote {
-                        break
-                    }
+                    spans.append(HighlightSpan(range: startOffset..<currentUtf16Offset, tokenType: .string))
+                    continue
                 }
-                spans.append(HighlightSpan(range: startOffset..<currentUtf16Offset, tokenType: .string))
-                continue
             }
 
             // Numbers
@@ -341,6 +359,25 @@ public final class SyntaxHighlighter: @unchecked Sendable {
                  "from", "default", "return", "if", "else", "switch", "case", "for", "while", "do",
                  "break", "continue", "try", "catch", "finally", "throw", "async", "await", "new",
                  "this", "null", "undefined", "true", "false", "typeof", "instanceof", "as", "is":
+                return true
+            default:
+                return false
+            }
+        case "csharp", "cs":
+            switch word {
+            case "abstract", "add", "alias", "as", "async", "await", "base", "bool", "break",
+                 "byte", "case", "catch", "char", "checked", "class", "const", "continue",
+                 "decimal", "default", "delegate", "do", "double", "else", "enum", "event",
+                 "explicit", "extern", "false", "finally", "fixed", "float", "for", "foreach",
+                 "from", "get", "global", "goto", "group", "if", "implicit", "in", "init",
+                 "int", "interface", "internal", "into", "is", "join", "let", "lock", "long",
+                 "namespace", "new", "notnull", "null", "object", "operator", "orderby", "out",
+                 "override", "params", "partial", "private", "protected", "public", "readonly",
+                 "record", "ref", "remove", "return", "sbyte", "sealed", "select", "set",
+                 "short", "sizeof", "stackalloc", "static", "string", "struct", "switch", "this",
+                 "throw", "true", "try", "typeof", "uint", "ulong", "unchecked", "unmanaged",
+                 "unsafe", "ushort", "using", "value", "var", "virtual", "void", "volatile",
+                 "when", "where", "while", "with", "yield":
                 return true
             default:
                 return false

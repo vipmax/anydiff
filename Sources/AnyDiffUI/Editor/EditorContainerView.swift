@@ -19,6 +19,7 @@ public struct EditorContainerView: View {
     public let onOpenExternalIDE: (String, Int?) -> Void
     public let onPreviewMarkdown: (String) -> Void
     public let onOpenInBrowser: () -> Void
+    public var onOpenDefinition: ((String, Int, Int) -> Void)?
 
     public init(
         repo: RepoCoordinator,
@@ -36,7 +37,8 @@ public struct EditorContainerView: View {
         onAddComment: @escaping (String, Int) -> Void,
         onOpenExternalIDE: @escaping (String, Int?) -> Void,
         onPreviewMarkdown: @escaping (String) -> Void,
-        onOpenInBrowser: @escaping () -> Void
+        onOpenInBrowser: @escaping () -> Void,
+        onOpenDefinition: ((String, Int, Int) -> Void)? = nil
     ) {
         self.repo = repo
         self.review = review
@@ -54,6 +56,7 @@ public struct EditorContainerView: View {
         self.onOpenExternalIDE = onOpenExternalIDE
         self.onPreviewMarkdown = onPreviewMarkdown
         self.onOpenInBrowser = onOpenInBrowser
+        self.onOpenDefinition = onOpenDefinition
     }
 
     // MARK: - Coordinated Properties
@@ -296,6 +299,7 @@ public struct EditorContainerView: View {
             totalAdds: totalAdds,
             totalDels: totalDels,
             disableHunkNavigation: fileDiffs.isEmpty,
+            workingDirectory: repo.effectiveWorkingDirectory,
             onPreviousHunk: { NotificationCenter.default.post(name: .goToPreviousHunk, object: nil) },
             onNextHunk: { NotificationCenter.default.post(name: .goToNextHunk, object: nil) },
             onToggleCollapse: toggleCollapseAll,
@@ -322,6 +326,7 @@ public struct EditorContainerView: View {
             searchMatches: search.isActive ? search.matches : [],
             activeMatchIndex: search.isActive ? search.activeMatchIndex : nil,
             searchMatchScrollRequest: search.isActive ? search.scrollRequest : nil,
+            workingDirectory: repo.effectiveWorkingDirectory,
             onCursorChange: { location, _ in
                 if let path = location?.filePath, repo.selectedFilePath != path {
                     repo.selectedFilePath = path
@@ -350,6 +355,13 @@ public struct EditorContainerView: View {
             },
             onPreviewMarkdownRequest: { path in
                 onPreviewMarkdown(path)
+            },
+            onOpenDefinitionRequest: { path, line, col in
+                if let onOpenDefinition = onOpenDefinition {
+                    onOpenDefinition(path, line, col)
+                } else {
+                    onOpenFileInEditor(path)
+                }
             }
         )
         .clipped()
