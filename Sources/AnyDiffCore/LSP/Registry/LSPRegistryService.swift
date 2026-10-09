@@ -94,23 +94,7 @@ public actor LSPRegistryService {
 
     // MARK: - JSON Loading
 
-    public static func loadCachedPackagesFromDisk() -> [LSPServerDefinition] {
-        loadDefaultServers()
-    }
-
-    public static func loadDefaultServers() -> [LSPServerDefinition] {
-        let fm = FileManager.default
-
-        // 1. Check user custom servers.json override in Application Support
-        let userURL = defaultUserConfigURL
-        if fm.fileExists(atPath: userURL.path),
-           let data = try? Data(contentsOf: userURL),
-           let servers = try? JSONDecoder().decode([LSPServerDefinition].self, from: data),
-           !servers.isEmpty {
-            return servers
-        }
-
-        // 2. Check bundled resource file if available
+    private static let bundledServers: [LSPServerDefinition] = {
         let candidatePaths = [
             Bundle.main.path(forResource: "lsp-servers", ofType: "json"),
             Bundle.module.path(forResource: "lsp-servers", ofType: "json")
@@ -123,7 +107,22 @@ public actor LSPRegistryService {
                 return servers
             }
         }
-
         return []
+    }()
+
+    public static func loadCachedPackagesFromDisk() -> [LSPServerDefinition] {
+        loadDefaultServers()
+    }
+
+    public static func loadDefaultServers() -> [LSPServerDefinition] {
+        let userURL = defaultUserConfigURL
+        if FileManager.default.fileExists(atPath: userURL.path),
+           let data = try? Data(contentsOf: userURL),
+           let servers = try? JSONDecoder().decode([LSPServerDefinition].self, from: data),
+           !servers.isEmpty {
+            return servers
+        }
+
+        return bundledServers
     }
 }

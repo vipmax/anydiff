@@ -11,7 +11,7 @@
       "type": "githubRelease",
       "owner": "rust-lang",
       "repo": "rust-analyzer",
-      "tag": "2024-12-16",
+      "tag": "2026-10-05",
       "arm64": {
         "file": "rust-analyzer-aarch64-apple-darwin.gz",
         "archiveType": "gz"
@@ -37,7 +37,7 @@
     "download": {
       "type": "npm",
       "package": "pyright",
-      "version": "1.1.396"
+      "version": "1.1.414"
     }
   },
   {
@@ -55,7 +55,7 @@
     "download": {
       "type": "npm",
       "package": "typescript-language-server",
-      "version": "4.3.3"
+      "version": "6.0.1"
     }
   },
   {
@@ -75,7 +75,7 @@
     "download": {
       "type": "npm",
       "package": "typescript-language-server",
-      "version": "4.3.3"
+      "version": "6.0.1"
     }
   },
   {
@@ -149,11 +149,11 @@
       "type": "githubRelease",
       "owner": "clangd",
       "repo": "clangd",
-      "tag": "20.1.0",
+      "tag": "23.1.0",
       "asset": {
-        "file": "clangd-mac-20.1.0.zip",
+        "file": "clangd-mac-23.1.0.zip",
         "archiveType": "zip",
-        "relativeBin": "clangd_20.1.0/bin/clangd"
+        "relativeBin": "clangd_23.1.0/bin/clangd"
       }
     }
   },
@@ -175,11 +175,11 @@
       "type": "githubRelease",
       "owner": "clangd",
       "repo": "clangd",
-      "tag": "20.1.0",
+      "tag": "23.1.0",
       "asset": {
-        "file": "clangd-mac-20.1.0.zip",
+        "file": "clangd-mac-23.1.0.zip",
         "archiveType": "zip",
-        "relativeBin": "clangd_20.1.0/bin/clangd"
+        "relativeBin": "clangd_23.1.0/bin/clangd"
       }
     }
   },
@@ -213,13 +213,13 @@
       "type": "githubRelease",
       "owner": "artempyanykh",
       "repo": "marksman",
-      "tag": "2024-12-18",
+      "tag": "2026-02-08",
       "arm64": {
-        "file": "marksman-macos-arm64",
+        "file": "marksman-macos",
         "archiveType": "binary"
       },
       "x86_64": {
-        "file": "marksman-macos-x64",
+        "file": "marksman-macos",
         "archiveType": "binary"
       }
     }
@@ -252,7 +252,7 @@
     "download": {
       "type": "npm",
       "package": "yaml-language-server",
-      "version": "1.16.0"
+      "version": "1.24.0"
     }
   },
   {
@@ -271,7 +271,7 @@
     "download": {
       "type": "npm",
       "package": "bash-language-server",
-      "version": "5.4.3"
+      "version": "5.8.1"
     }
   },
   {
@@ -286,14 +286,14 @@
       "type": "githubRelease",
       "owner": "LuaLS",
       "repo": "lua-language-server",
-      "tag": "3.13.6",
+      "tag": "3.19.1",
       "arm64": {
-        "file": "lua-language-server-3.13.6-darwin-arm64.tar.gz",
+        "file": "lua-language-server-3.19.1-darwin-arm64.tar.gz",
         "archiveType": "tar.gz",
         "relativeBin": "bin/lua-language-server"
       },
       "x86_64": {
-        "file": "lua-language-server-3.13.6-darwin-x64.tar.gz",
+        "file": "lua-language-server-3.19.1-darwin-x64.tar.gz",
         "archiveType": "tar.gz",
         "relativeBin": "bin/lua-language-server"
       }
@@ -311,7 +311,7 @@
       "type": "githubRelease",
       "owner": "zigtools",
       "repo": "zls",
-      "tag": "0.14.0",
+      "tag": "0.16.0",
       "arm64": {
         "file": "zls-aarch64-macos.tar.xz",
         "archiveType": "tar.xz",
@@ -381,6 +381,284 @@
     "download": {
       "type": "systemOnly",
       "instructions": "Install via .NET SDK: dotnet tool install --global csharp-ls"
+    }
+  },
+  {
+    "id": "jdtls",
+    "name": "Eclipse JDT Language Server",
+    "language": "java",
+    "fileExtensions": [
+      "java"
+    ],
+    "binary": "jdtls",
+    "download": {
+      "type": "systemOnly",
+      "instructions": "Install via Homebrew: brew install jdtls"
+    }
+  },
+  {
+    "id": "kotlin-language-server",
+    "name": "Kotlin Language Server",
+    "language": "kotlin",
+    "fileExtensions": [
+      "kt",
+      "kts"
+    ],
+    "binary": "kotlin-language-server",
+    "download": {
+      "type": "githubRelease",
+      "owner": "fwcd",
+      "repo": "kotlin-language-server",
+      "tag": "1.3.13",
+      "asset": {
+        "file": "server.zip",
+        "archiveType": "zip",
+        "relativeBin": "server/bin/kotlin-language-server"
+      }
+    }
+  },
+  {
+    "id": "intelephense",
+    "name": "Intelephense (PHP)",
+    "language": "php",
+    "fileExtensions": [
+      "php",
+      "phtml"
+    ],
+    "binary": "intelephense",
+    "arguments": [
+      "--stdio"
+    ],
+    "download": {
+      "type": "npm",
+      "package": "intelephense",
+      "version": "1.18.5"
+    }
+  },
+  {
+    "id": "ruby-lsp",
+    "name": "Ruby LSP",
+    "language": "ruby",
+    "fileExtensions": [
+      "rb",
+      "rake",
+      "gemspec",
+      "ru"
+    ],
+    "binary": "ruby-lsp",
+    "download": {
+      "type": "systemOnly",
+      "instructions": "Install via RubyGems: gem install ruby-lsp"
+    }
+  },
+  {
+    "id": "dart-language-server",
+    "name": "Dart Analysis Server",
+    "language": "dart",
+    "fileExtensions": [
+      "dart"
+    ],
+    "binary": "dart",
+    "arguments": [
+      "language-server",
+      "--protocol=lsp"
+    ],
+    "download": {
+      "type": "systemOnly",
+      "instructions": "Install via Homebrew: brew install dart-sdk"
+    }
+  },
+  {
+    "id": "elixir-ls",
+    "name": "ElixirLS",
+    "language": "elixir",
+    "fileExtensions": [
+      "ex",
+      "exs",
+      "heex"
+    ],
+    "binary": "language_server.sh",
+    "download": {
+      "type": "githubRelease",
+      "owner": "elixir-lsp",
+      "repo": "elixir-ls",
+      "tag": "v0.31.1",
+      "asset": {
+        "file": "elixir-ls-v0.31.1.zip",
+        "archiveType": "zip",
+        "relativeBin": "language_server.sh"
+      }
+    }
+  },
+  {
+    "id": "metals",
+    "name": "Metals (Scala)",
+    "language": "scala",
+    "fileExtensions": [
+      "scala",
+      "sc",
+      "sbt"
+    ],
+    "binary": "metals",
+    "download": {
+      "type": "systemOnly",
+      "instructions": "Install via Coursier: cs install metals"
+    }
+  },
+  {
+    "id": "vue-language-server",
+    "name": "Vue Language Server (Volar)",
+    "language": "vue",
+    "fileExtensions": [
+      "vue"
+    ],
+    "binary": "vue-language-server",
+    "arguments": [
+      "--stdio"
+    ],
+    "download": {
+      "type": "npm",
+      "package": "@vue/language-server",
+      "version": "3.3.12"
+    }
+  },
+  {
+    "id": "svelte-language-server",
+    "name": "Svelte Language Server",
+    "language": "svelte",
+    "fileExtensions": [
+      "svelte"
+    ],
+    "binary": "svelteserver",
+    "arguments": [
+      "--stdio"
+    ],
+    "download": {
+      "type": "npm",
+      "package": "svelte-language-server",
+      "version": "0.18.4"
+    }
+  },
+  {
+    "id": "astro-ls",
+    "name": "Astro Language Server",
+    "language": "astro",
+    "fileExtensions": [
+      "astro"
+    ],
+    "binary": "astro-ls",
+    "arguments": [
+      "--stdio"
+    ],
+    "download": {
+      "type": "npm",
+      "package": "@astrojs/language-server",
+      "version": "2.17.2"
+    }
+  },
+  {
+    "id": "graphql-lsp",
+    "name": "GraphQL Language Server",
+    "language": "graphql",
+    "fileExtensions": [
+      "graphql",
+      "gql"
+    ],
+    "binary": "graphql-lsp",
+    "arguments": [
+      "server",
+      "-m",
+      "stream"
+    ],
+    "download": {
+      "type": "npm",
+      "package": "graphql-language-service-cli",
+      "version": "3.5.0"
+    }
+  },
+  {
+    "id": "prisma-language-server",
+    "name": "Prisma Language Server",
+    "language": "prisma",
+    "fileExtensions": [
+      "prisma"
+    ],
+    "binary": "prisma-language-server",
+    "arguments": [
+      "--stdio"
+    ],
+    "download": {
+      "type": "npm",
+      "package": "@prisma/language-server",
+      "version": "31.12.15"
+    }
+  },
+  {
+    "id": "dockerfile-language-server-nodejs",
+    "name": "Dockerfile Language Server",
+    "language": "dockerfile",
+    "fileExtensions": [
+      "dockerfile"
+    ],
+    "binary": "docker-langserver",
+    "arguments": [
+      "--stdio"
+    ],
+    "download": {
+      "type": "npm",
+      "package": "dockerfile-language-server-nodejs",
+      "version": "0.15.0"
+    }
+  },
+  {
+    "id": "terraform-ls",
+    "name": "Terraform Language Server",
+    "language": "terraform",
+    "fileExtensions": [
+      "tf",
+      "tfvars",
+      "hcl"
+    ],
+    "binary": "terraform-ls",
+    "arguments": [
+      "serve"
+    ],
+    "download": {
+      "type": "githubRelease",
+      "owner": "hashicorp",
+      "repo": "terraform-ls",
+      "tag": "v0.39.0",
+      "arm64": {
+        "file": "terraform-ls_0.39.0_darwin_arm64.zip",
+        "archiveType": "zip",
+        "relativeBin": "terraform-ls",
+        "url": "https://releases.hashicorp.com/terraform-ls/0.39.0/terraform-ls_0.39.0_darwin_arm64.zip"
+      },
+      "x86_64": {
+        "file": "terraform-ls_0.39.0_darwin_amd64.zip",
+        "archiveType": "zip",
+        "relativeBin": "terraform-ls",
+        "url": "https://releases.hashicorp.com/terraform-ls/0.39.0/terraform-ls_0.39.0_darwin_amd64.zip"
+      }
+    }
+  },
+  {
+    "id": "sql-language-server",
+    "name": "SQL Language Server",
+    "language": "sql",
+    "fileExtensions": [
+      "sql"
+    ],
+    "binary": "sql-language-server",
+    "arguments": [
+      "up",
+      "--method",
+      "stdio"
+    ],
+    "download": {
+      "type": "npm",
+      "package": "sql-language-server",
+      "version": "1.7.1"
     }
   }
 ]

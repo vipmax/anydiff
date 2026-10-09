@@ -82,11 +82,13 @@ public struct LSPDownloadAsset: Codable, Sendable, Equatable {
     public let file: String
     public let archiveType: String // "gz", "tar.gz", "tar.xz", "zip", "binary"
     public let relativeBin: String?
+    public let url: String?
 
-    public init(file: String, archiveType: String, relativeBin: String? = nil) {
+    public init(file: String, archiveType: String, relativeBin: String? = nil, url: String? = nil) {
         self.file = file
         self.archiveType = archiveType
         self.relativeBin = relativeBin
+        self.url = url
     }
 }
 

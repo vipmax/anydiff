@@ -153,11 +153,15 @@ public enum LSPRegistryBinaryDownloader {
             throw LSPDownloadError.unsupportedPlatform("No compatible asset found for macOS (\(LSPArchitecture.current.displayName)).")
         }
 
-        guard let owner = download.owner, let repo = download.repo, let tag = download.tag else {
-            throw LSPDownloadError.networkError("Incomplete GitHub release metadata for \(package.id).")
+        let urlString: String
+        if let directURL = asset.url, !directURL.isEmpty {
+            urlString = directURL
+        } else {
+            guard let owner = download.owner, let repo = download.repo, let tag = download.tag else {
+                throw LSPDownloadError.networkError("Incomplete GitHub release metadata for \(package.id).")
+            }
+            urlString = "https://github.com/\(owner)/\(repo)/releases/download/\(tag)/\(asset.file)"
         }
-
-        let urlString = "https://github.com/\(owner)/\(repo)/releases/download/\(tag)/\(asset.file)"
         guard let downloadURL = URL(string: urlString) else {
             throw LSPDownloadError.networkError("Invalid download URL: \(urlString)")
         }
@@ -232,7 +236,17 @@ public enum LSPRegistryBinaryDownloader {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: npmPath)
         process.environment = LSPEnvironment.makeProcessEnvironment()
-        process.arguments = ["install", "--prefix", targetDir.path, "\(pkgName)@\(version)"]
+        var npmArgs = ["install", "--prefix", targetDir.path, "\(pkgName)@\(version)"]
+        let tsPeerPackages: Set<String> = [
+            "typescript-language-server",
+            "@vue/language-server",
+            "svelte-language-server",
+            "@astrojs/language-server"
+        ]
+        if tsPeerPackages.contains(pkgName) {
+            npmArgs.append("typescript@5.9.3")
+        }
+        process.arguments = npmArgs
         let errPipe = Pipe()
         process.standardError = errPipe
 

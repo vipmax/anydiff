@@ -43,7 +43,22 @@ final class LSPRegistryTests: XCTestCase {
             "zls",
             "taplo",
             "roslyn-language-server",
-            "csharp-ls"
+            "csharp-ls",
+            "jdtls",
+            "kotlin-language-server",
+            "intelephense",
+            "ruby-lsp",
+            "dart-language-server",
+            "elixir-ls",
+            "metals",
+            "vue-language-server",
+            "svelte-language-server",
+            "astro-ls",
+            "graphql-lsp",
+            "prisma-language-server",
+            "dockerfile-language-server-nodejs",
+            "terraform-ls",
+            "sql-language-server"
         ]
 
         let actualIds = Set(servers.map(\.id))
@@ -85,7 +100,7 @@ final class LSPRegistryTests: XCTestCase {
         let marksman = servers.first { $0.id == "marksman" }
         XCTAssertNotNil(marksman)
         let marksmanArm = marksman?.download?.matchingAsset(for: .arm64)
-        XCTAssertEqual(marksmanArm?.file, "marksman-macos-arm64")
+        XCTAssertEqual(marksmanArm?.file, "marksman-macos")
         XCTAssertEqual(marksmanArm?.archiveType, "binary")
 
         // Clangd
@@ -335,7 +350,38 @@ final class LSPRegistryTests: XCTestCase {
         XCTAssertEqual(ws.detectLanguage(for: "main.go"), "go")
         XCTAssertEqual(ws.detectLanguage(for: "Program.cs"), "csharp")
         XCTAssertEqual(ws.detectLanguage(for: "script.csx"), "csharp")
+        XCTAssertEqual(ws.detectLanguage(for: "Main.java"), "java")
+        XCTAssertEqual(ws.detectLanguage(for: "App.kt"), "kotlin")
+        XCTAssertEqual(ws.detectLanguage(for: "build.gradle.kts"), "kotlin")
+        XCTAssertEqual(ws.detectLanguage(for: "index.php"), "php")
+        XCTAssertEqual(ws.detectLanguage(for: "app.rb"), "ruby")
+        XCTAssertEqual(ws.detectLanguage(for: "main.dart"), "dart")
+        XCTAssertEqual(ws.detectLanguage(for: "router.ex"), "elixir")
+        XCTAssertEqual(ws.detectLanguage(for: "Main.scala"), "scala")
+        XCTAssertEqual(ws.detectLanguage(for: "App.vue"), "vue")
+        XCTAssertEqual(ws.detectLanguage(for: "Counter.svelte"), "svelte")
+        XCTAssertEqual(ws.detectLanguage(for: "Layout.astro"), "astro")
+        XCTAssertEqual(ws.detectLanguage(for: "schema.graphql"), "graphql")
+        XCTAssertEqual(ws.detectLanguage(for: "schema.prisma"), "prisma")
+        XCTAssertEqual(ws.detectLanguage(for: "Dockerfile"), "dockerfile")
+        XCTAssertEqual(ws.detectLanguage(for: "Dockerfile.prod"), "dockerfile")
+        XCTAssertEqual(ws.detectLanguage(for: "main.tf"), "terraform")
+        XCTAssertEqual(ws.detectLanguage(for: "query.sql"), "sql")
         XCTAssertEqual(Buffer.detectLanguage(for: "Program.cs"), "csharp")
+        XCTAssertEqual(Buffer.detectLanguage(for: "Main.java"), "java")
+        XCTAssertEqual(Buffer.detectLanguage(for: "App.kt"), "kotlin")
+        XCTAssertEqual(Buffer.detectLanguage(for: "index.php"), "php")
+        XCTAssertEqual(Buffer.detectLanguage(for: "app.rb"), "ruby")
+        XCTAssertEqual(Buffer.detectLanguage(for: "main.dart"), "dart")
+        XCTAssertEqual(Buffer.detectLanguage(for: "Dockerfile"), "dockerfile")
+        XCTAssertEqual(Buffer.detectLanguage(for: "main.tf"), "terraform")
+        XCTAssertEqual(Buffer.detectLanguage(for: "query.sql"), "sql")
+
+        // React / JSX / TSX protocol languageId
+        XCTAssertEqual(ws.documentLanguageId(for: "App.tsx"), "typescriptreact")
+        XCTAssertEqual(ws.documentLanguageId(for: "Component.jsx"), "javascriptreact")
+        XCTAssertEqual(ws.documentLanguageId(for: "index.ts"), "typescript")
+        XCTAssertEqual(ws.documentLanguageId(for: "server.js"), "javascript")
     }
 
     func testServerDefinitionLaunchHelpers() {
@@ -448,5 +494,126 @@ final class LSPRegistryTests: XCTestCase {
         XCTAssertTrue(statuses.isEmpty, "Server should automatically shut down after idle timeout")
         let clientState = await client?.state
         XCTAssertEqual(clientState, .stopped)
+    }
+
+    func testTypeScriptReactServerStartsWithBundledTsServer() async throws {
+        try requireIntegrationTestsEnabled()
+
+        let prevCustomDir = LSPRegistryBinaryDownloader.customBaseBinDirectory
+        let userBinDir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".anydiff/lsp/bin", isDirectory: true)
+        LSPRegistryBinaryDownloader.customBaseBinDirectory = userBinDir
+        defer { LSPRegistryBinaryDownloader.customBaseBinDirectory = prevCustomDir }
+
+        let ws = LSPWorkspaceService()
+        guard let resolved = await ws.resolveServer(for: "typescript") else {
+            throw XCTSkip("typescript-language-server not installed in ~/.anydiff/lsp/bin")
+        }
+
+        let tempWorkspace = FileManager.default.temporaryDirectory
+            .appendingPathComponent("anydiff-tsx-test-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempWorkspace, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempWorkspace) }
+
+        let tsxFile = tempWorkspace.appendingPathComponent("App.tsx")
+        let tsxContent = """
+        export interface Props {
+            title: string;
+        }
+        export function App(props: Props) {
+            return <div>{props.title}</div>;
+        }
+        """
+        try tsxContent.write(to: tsxFile, atomically: true, encoding: .utf8)
+
+        let client = try await ws.getOrStartClient(for: "typescript", rootPath: tempWorkspace.path)
+        XCTAssertNotNil(client, "typescript-language-server should start even when workspace has no local node_modules/typescript")
+        let state = await client?.state
+        XCTAssertEqual(state, .ready)
+
+        let docLang = ws.documentLanguageId(for: tsxFile.path)
+        XCTAssertEqual(docLang, "typescriptreact")
+        try await client?.didOpen(filePath: tsxFile.path, text: tsxContent, languageId: docLang)
+
+        let hover = try await client?.getHover(filePath: tsxFile.path, line: 3, character: 17)
+        XCTAssertNotNil(hover, "Hover on React TSX component function should return type info")
+        let hoverText = hover?.contents.joined(separator: "\n") ?? ""
+        XCTAssertTrue(hoverText.contains("App"), "Hover contents should mention App, got: \(hoverText)")
+
+        await ws.stopServer(for: "typescript")
+        _ = resolved
+    }
+
+    func testAllCatalogDownloadURLsAreValidAndReachable() async throws {
+        let servers = LSPRegistryService.loadDefaultServers()
+        var urlsToCheck: [(id: String, label: String, url: URL)] = []
+
+        for server in servers {
+            guard let dl = server.download else { continue }
+            switch dl.type {
+            case .githubRelease:
+                let assets: [(String, LSPDownloadAsset?)] = [
+                    ("asset", dl.asset),
+                    ("arm64", dl.arm64),
+                    ("x86_64", dl.x86_64)
+                ]
+                for (archLabel, maybeAsset) in assets {
+                    guard let asset = maybeAsset else { continue }
+                    let urlStr: String
+                    if let direct = asset.url, !direct.isEmpty {
+                        urlStr = direct
+                    } else if let owner = dl.owner, let repo = dl.repo, let tag = dl.tag {
+                        urlStr = "https://github.com/\(owner)/\(repo)/releases/download/\(tag)/\(asset.file)"
+                    } else {
+                        XCTFail("Missing URL metadata for \(server.id) (\(archLabel))")
+                        continue
+                    }
+                    guard let url = URL(string: urlStr) else {
+                        XCTFail("Invalid URL for \(server.id) (\(archLabel)): \(urlStr)")
+                        continue
+                    }
+                    urlsToCheck.append((server.id, archLabel, url))
+                }
+            case .npm:
+                guard let pkg = dl.package, let ver = dl.version else {
+                    XCTFail("Missing npm package or version for \(server.id)")
+                    continue
+                }
+                let urlStr = "https://registry.npmjs.org/\(pkg)/\(ver)"
+                guard let url = URL(string: urlStr) else {
+                    XCTFail("Invalid npm URL for \(server.id): \(urlStr)")
+                    continue
+                }
+                urlsToCheck.append((server.id, "npm", url))
+            case .go, .systemOnly:
+                break
+            }
+        }
+
+        XCTAssertFalse(urlsToCheck.isEmpty)
+
+        // Live network reachability check is gated by ANYDIFF_RUN_INTEGRATION_TESTS=1
+        try requireIntegrationTestsEnabled()
+
+        try await withThrowingTaskGroup(of: (String, String, Int, String).self) { group in
+            for item in urlsToCheck {
+                group.addTask {
+                    var req = URLRequest(url: item.url)
+                    req.httpMethod = "HEAD"
+                    req.timeoutInterval = 15
+                    req.setValue("AnyDiff-LSP-Test/1.0", forHTTPHeaderField: "User-Agent")
+                    let (_, resp) = try await URLSession.shared.data(for: req)
+                    let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                    return (item.id, item.label, status, item.url.absoluteString)
+                }
+            }
+
+            for try await (id, label, status, urlStr) in group {
+                XCTAssertTrue(
+                    (200..<400).contains(status),
+                    "Download URL for \(id) (\(label)) returned HTTP \(status): \(urlStr)"
+                )
+            }
+        }
     }
 }

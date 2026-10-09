@@ -18,10 +18,17 @@ public enum LSPEnvironment {
         let standardPaths = [
             "/opt/homebrew/bin",
             "/opt/homebrew/sbin",
+            "/opt/homebrew/opt/ruby/bin",
             "/usr/local/bin",
             "\(home)/.cargo/bin",
+            "\(home)/go/bin",
             "\(home)/.dotnet/tools",
             "\(home)/.bun/bin",
+            "\(home)/.pub-cache/bin",
+            "\(home)/flutter/bin",
+            "\(home)/.rbenv/shims",
+            "\(home)/.asdf/shims",
+            "\(home)/Library/Application Support/Coursier/bin",
             "\(home)/.zerobrew/bin",
             "\(home)/.local/bin"
         ]

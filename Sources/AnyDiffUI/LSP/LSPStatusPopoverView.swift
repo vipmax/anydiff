@@ -13,6 +13,8 @@ public struct LSPStatusPopoverView: View {
     @State private var installingPackageIds: Set<String> = []
     @State private var installProgress: [String: Double] = [:]
     @State private var searchText: String = ""
+    @State private var isSearchVisible: Bool = false
+    @FocusState private var isSearchFieldFocused: Bool
     @State private var isLoading: Bool = false
     @State private var errorMessage: String? = nil
     @State private var isAutoStopEnabled: Bool = true
@@ -66,7 +68,9 @@ public struct LSPStatusPopoverView: View {
                     .cornerRadius(5)
                 }
 
-                searchBar
+                if isSearchVisible {
+                    searchBar
+                }
             }
             .padding(.horizontal, 12)
 
@@ -85,10 +89,9 @@ public struct LSPStatusPopoverView: View {
                 .padding(.trailing, 14)
                 .padding(.bottom, 4)
             }
-            .padding(.trailing, 2)
         }
         .padding(.vertical, 12)
-        .frame(width: 356)
+        .frame(width: 416)
         .frame(minHeight: 460, maxHeight: 520)
         .onAppear {
             now = Date()
@@ -123,6 +126,18 @@ public struct LSPStatusPopoverView: View {
         return "\(activeServers.count) \(word) running"
     }
 
+    private func toggleSearchBar() {
+        isSearchVisible.toggle()
+        if isSearchVisible {
+            DispatchQueue.main.async {
+                isSearchFieldFocused = true
+            }
+        } else {
+            searchText = ""
+            isSearchFieldFocused = false
+        }
+    }
+
     private var headerView: some View {
         HStack(spacing: 8) {
             Image(systemName: "bolt.fill")
@@ -148,36 +163,55 @@ public struct LSPStatusPopoverView: View {
                     .frame(width: 14, height: 14)
             }
 
-            Button(action: toggleAutoStop) {
-                HStack(spacing: 3.5) {
-                    Image(systemName: "timer")
-                        .font(.system(size: 9.5, weight: .semibold))
-                    Text(autoStopShortLabel)
-                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+            HStack(spacing: 5) {
+                Button(action: toggleAutoStop) {
+                    HStack(spacing: 3.5) {
+                        Image(systemName: "timer")
+                            .font(.system(size: 9.5, weight: .semibold))
+                        Text(autoStopShortLabel)
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    }
+                    .foregroundColor(isAutoStopEnabled ? Color(theme.accentColor) : tertiaryTextColor)
+                    .padding(.horizontal, 7)
+                    .frame(height: 20)
+                    .background(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(isAutoStopEnabled ? Color(theme.accentColor).opacity(0.12) : Color(theme.foreground).opacity(0.04))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .stroke(isAutoStopEnabled ? Color(theme.accentColor).opacity(0.35) : Color(theme.excerptHeaderBorder).opacity(0.35), lineWidth: 0.5)
+                    )
                 }
-                .foregroundColor(isAutoStopEnabled ? Color(theme.accentColor) : tertiaryTextColor)
-                .padding(.horizontal, 7)
-                .padding(.vertical, 3.5)
-                .background(
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(isAutoStopEnabled ? Color(theme.accentColor).opacity(0.12) : Color(theme.foreground).opacity(0.04))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .stroke(isAutoStopEnabled ? Color(theme.accentColor).opacity(0.35) : Color(theme.excerptHeaderBorder).opacity(0.35), lineWidth: 0.5)
-                )
+                .buttonStyle(.plain)
+                .contextMenu {
+                    Button("Auto-Stop After 1m") { setIdleTimeoutPreset(60) }
+                    Button("Auto-Stop After 5m") { setIdleTimeoutPreset(300) }
+                    Button("Auto-Stop After 15m") { setIdleTimeoutPreset(900) }
+                    Divider()
+                    Button("Disable Auto-Stop") { setIdleTimeoutPreset(0) }
+                }
+                .help(isAutoStopEnabled
+                    ? "Auto-stop after \(autoStopShortLabel) of inactivity. Click to disable, right-click for presets."
+                    : "Auto-stop disabled. Click to enable, right-click for presets.")
+
+                Button(action: toggleSearchBar) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundColor(isSearchVisible ? Color(theme.accentColor) : secondaryTextColor)
+                        .frame(width: 22, height: 20)
+                        .background(
+                            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                .fill(isSearchVisible ? Color(theme.accentColor).opacity(0.12) : Color(theme.foreground).opacity(0.04))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                .stroke(isSearchVisible ? Color(theme.accentColor).opacity(0.35) : Color(theme.excerptHeaderBorder).opacity(0.35), lineWidth: 0.5)
+                        )
+                }
+                .buttonStyle(.plain)
+                .help(isSearchVisible ? "Hide search" : "Search languages")
             }
-            .buttonStyle(.plain)
-            .contextMenu {
-                Button("Auto-Stop After 1m") { setIdleTimeoutPreset(60) }
-                Button("Auto-Stop After 5m") { setIdleTimeoutPreset(300) }
-                Button("Auto-Stop After 15m") { setIdleTimeoutPreset(900) }
-                Divider()
-                Button("Disable Auto-Stop") { setIdleTimeoutPreset(0) }
-            }
-            .help(isAutoStopEnabled
-                ? "Auto-stop after \(autoStopShortLabel) of inactivity. Click to disable, right-click for presets."
-                : "Auto-stop disabled. Click to enable, right-click for presets.")
         }
     }
 
@@ -191,6 +225,7 @@ public struct LSPStatusPopoverView: View {
                 .textFieldStyle(.plain)
                 .font(.system(size: 11))
                 .foregroundColor(Color(theme.foreground))
+                .focused($isSearchFieldFocused)
 
             if !searchText.isEmpty {
                 Button(action: { searchText = "" }) {
@@ -224,12 +259,27 @@ public struct LSPStatusPopoverView: View {
         case "csharp", "cs": return "C#"
         case "rust": return "Rust"
         case "python": return "Python"
-        case "typescript": return "TypeScript"
+        case "typescript": return "TypeScript / React"
         case "javascript": return "JavaScript"
         case "swift": return "Swift"
         case "go": return "Go"
         case "c": return "C"
         case "cpp": return "C++"
+        case "java": return "Java"
+        case "kotlin": return "Kotlin"
+        case "php": return "PHP"
+        case "ruby": return "Ruby"
+        case "dart": return "Dart"
+        case "elixir": return "Elixir"
+        case "scala": return "Scala"
+        case "vue": return "Vue"
+        case "svelte": return "Svelte"
+        case "astro": return "Astro"
+        case "graphql": return "GraphQL"
+        case "prisma": return "Prisma"
+        case "dockerfile": return "Dockerfile"
+        case "terraform": return "Terraform"
+        case "sql": return "SQL"
         case "html": return "HTML"
         case "css": return "CSS"
         case "json": return "JSON"
@@ -244,18 +294,21 @@ public struct LSPStatusPopoverView: View {
     }
 
     private func activeStatusItem(for package: LSPRegistryPackage) -> LSPServerStatusItem? {
-        if let exact = activeServers.first(where: { item in
-            item.serverName.lowercased() == package.binary.lowercased() ||
-            item.serverName.lowercased() == package.id.lowercased() ||
-            item.serverName.lowercased() == package.name.lowercased()
-        }) {
-            return exact
+        let pkgLang = package.language.lowercased()
+        guard let item = activeServers.first(where: { $0.languageId.lowercased() == pkgLang }) else {
+            return nil
         }
-        let sameLanguageCount = packages.filter { $0.language.lowercased() == package.language.lowercased() }.count
-        guard sameLanguageCount <= 1 else { return nil }
-        return activeServers.first { item in
-            package.language.lowercased() == item.languageId.lowercased()
+        let sameLanguageCount = packages.filter { $0.language.lowercased() == pkgLang }.count
+        guard sameLanguageCount > 1 else {
+            return item
         }
+        let serverName = item.serverName.lowercased()
+        if serverName == package.binary.lowercased() ||
+           serverName == package.id.lowercased() ||
+           serverName == package.name.lowercased() {
+            return item
+        }
+        return nil
     }
 
     private func matchesSearch(_ pkg: LSPRegistryPackage) -> Bool {
@@ -266,6 +319,7 @@ public struct LSPStatusPopoverView: View {
             || pkg.name.lowercased().contains(query)
             || pkg.binary.lowercased().contains(query)
             || pkg.language.lowercased().contains(query)
+            || pkg.fileExtensions.contains(where: { $0.lowercased().contains(query) })
             || (pkg.summary?.lowercased().contains(query) ?? false)
     }
 
@@ -459,14 +513,29 @@ public struct LSPStatusPopoverView: View {
 
             if isInstalling {
                 HStack(spacing: 4) {
-                    ProgressView()
-                        .progressViewStyle(.circular)
-                        .scaleEffect(0.5)
-                        .frame(width: 12, height: 12)
+                    ZStack {
+                        Circle()
+                            .stroke(Color(theme.accentColor).opacity(0.25), lineWidth: 1.5)
+                        Circle()
+                            .trim(from: 0, to: max(0.1, CGFloat(progress)))
+                            .stroke(
+                                Color(theme.accentColor),
+                                style: StrokeStyle(lineWidth: 1.5, lineCap: .round)
+                            )
+                            .rotationEffect(.degrees(-90))
+                    }
+                    .frame(width: 9, height: 9)
+
                     Text("\(Int(progress * 100))%")
-                        .font(.system(size: 9.5, design: .monospaced))
-                        .foregroundColor(secondaryTextColor)
+                        .font(.system(size: 10, weight: .semibold).monospacedDigit())
+                        .foregroundColor(Color(theme.accentColor))
                 }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2.5)
+                .background(
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .fill(Color(theme.accentColor).opacity(0.12))
+                )
             } else if isAvailable {
                 Button(action: { start(package: pkg) }) {
                     HStack(spacing: 3) {
@@ -511,7 +580,7 @@ public struct LSPStatusPopoverView: View {
                 }
             }
         }
-        .padding(.horizontal, 6)
+        .padding(.horizontal, 2)
         .padding(.vertical, 4)
         .contextMenu {
             if isAvailable {

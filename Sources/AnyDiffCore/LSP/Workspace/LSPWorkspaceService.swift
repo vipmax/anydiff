@@ -159,6 +159,11 @@ public actor LSPWorkspaceService {
     // MARK: - Language Detection
 
     public nonisolated func detectLanguage(for filePath: String) -> String {
+        let baseName = ((filePath as NSString).lastPathComponent).lowercased()
+        if baseName == "dockerfile" || baseName.hasPrefix("dockerfile.") || baseName == "containerfile" {
+            return "dockerfile"
+        }
+
         let ext = (filePath as NSString).pathExtension.lowercased()
         guard !ext.isEmpty else { return "" }
 
@@ -171,6 +176,19 @@ public actor LSPWorkspaceService {
         }
 
         return ext
+    }
+
+    /// Returns the LSP protocol `textDocument.languageId` for `didOpen` (e.g. `typescriptreact` for `.tsx` and `javascriptreact` for `.jsx`).
+    public nonisolated func documentLanguageId(for filePath: String) -> String {
+        let ext = (filePath as NSString).pathExtension.lowercased()
+        switch ext {
+        case "tsx":
+            return "typescriptreact"
+        case "jsx":
+            return "javascriptreact"
+        default:
+            return detectLanguage(for: filePath).lowercased()
+        }
     }
 
     // MARK: - Server Resolution
@@ -380,11 +398,12 @@ public actor LSPWorkspaceService {
     public func notifyDocumentOpened(filePath: String, text: String, rootPath: String) async {
         let absPath = canonicalPath(filePath, rootPath: rootPath)
         let lang = detectLanguage(for: absPath).lowercased()
+        let docLang = documentLanguageId(for: absPath)
         openDocumentLanguages[absPath] = lang
 
         do {
             if let client = try await getOrStartClient(for: lang, rootPath: rootPath) {
-                try await client.didOpen(filePath: absPath, text: text, languageId: lang)
+                try await client.didOpen(filePath: absPath, text: text, languageId: docLang)
                 recordActivity(for: lang)
             }
         } catch {
@@ -427,6 +446,7 @@ public actor LSPWorkspaceService {
     ) async throws -> [LSPLocation] {
         let absPath = canonicalPath(filePath, rootPath: rootPath)
         let lang = detectLanguage(for: absPath).lowercased()
+        let docLang = documentLanguageId(for: absPath)
         guard let client = try await getOrStartClient(for: lang, rootPath: rootPath) else {
             return []
         }
@@ -434,7 +454,7 @@ public actor LSPWorkspaceService {
         // Ensure file is opened and synchronized in LSP session
         if openDocumentLanguages[absPath] == nil {
             if let text = contentSupplier?() {
-                try? await client.didOpen(filePath: absPath, text: text, languageId: lang)
+                try? await client.didOpen(filePath: absPath, text: text, languageId: docLang)
                 openDocumentLanguages[absPath] = lang
             }
         } else if let text = contentSupplier?() {
@@ -461,6 +481,7 @@ public actor LSPWorkspaceService {
     ) async throws -> [LSPCompletionItem] {
         let absPath = canonicalPath(filePath, rootPath: rootPath)
         let lang = detectLanguage(for: absPath).lowercased()
+        let docLang = documentLanguageId(for: absPath)
         guard let client = try await getOrStartClient(for: lang, rootPath: rootPath) else {
             return []
         }
@@ -468,7 +489,7 @@ public actor LSPWorkspaceService {
         // Ensure file is opened and synchronized in LSP session
         if openDocumentLanguages[absPath] == nil {
             if let text = contentSupplier?() {
-                try? await client.didOpen(filePath: absPath, text: text, languageId: lang)
+                try? await client.didOpen(filePath: absPath, text: text, languageId: docLang)
                 openDocumentLanguages[absPath] = lang
             }
         } else if let text = contentSupplier?() {
@@ -499,6 +520,7 @@ public actor LSPWorkspaceService {
     ) async throws -> LSPHover? {
         let absPath = canonicalPath(filePath, rootPath: rootPath)
         let lang = detectLanguage(for: absPath).lowercased()
+        let docLang = documentLanguageId(for: absPath)
         guard let client = try await getOrStartClient(for: lang, rootPath: rootPath) else {
             return nil
         }
@@ -506,7 +528,7 @@ public actor LSPWorkspaceService {
         // Ensure file is opened and synchronized in LSP session
         if openDocumentLanguages[absPath] == nil {
             if let text = contentSupplier?() {
-                try? await client.didOpen(filePath: absPath, text: text, languageId: lang)
+                try? await client.didOpen(filePath: absPath, text: text, languageId: docLang)
                 openDocumentLanguages[absPath] = lang
             }
         } else if let text = contentSupplier?() {
