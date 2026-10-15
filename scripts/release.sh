@@ -156,6 +156,13 @@ cask "anydiff" do
   app "AnyDiff.app"
   binary "#{appdir}/AnyDiff.app/Contents/MacOS/AnyDiff", target: "anydiff"
 
+  # The app is ad-hoc signed (not notarized), so Gatekeeper would block the
+  # quarantine flag Homebrew adds to downloads. Clear it after every install.
+  postflight do
+    system_command "/usr/bin/xattr",
+                   args: ["-dr", "com.apple.quarantine", "#{appdir}/AnyDiff.app"]
+  end
+
   zap trash: [
     "~/Library/Saved Application State/app.anydiff.savedState",
   ]
