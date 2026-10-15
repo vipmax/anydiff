@@ -6,17 +6,29 @@ public struct MainWindowToolbarLeadingView: View {
     public let theme: Theme
     @Binding public var showOpenSourcePopover: Bool
     public let onOpenInBrowser: () -> Void
+    public let currentVersion: SemanticVersion
+    public let updateInfo: UpdateInfo?
+    public let isUpdating: Bool
+    public let onInstallUpdate: () -> Void
 
     public init(
         repo: RepoCoordinator,
         theme: Theme,
         showOpenSourcePopover: Binding<Bool>,
-        onOpenInBrowser: @escaping () -> Void
+        onOpenInBrowser: @escaping () -> Void,
+        currentVersion: SemanticVersion = SemanticVersion(major: 0, minor: 0, patch: 0),
+        updateInfo: UpdateInfo? = nil,
+        isUpdating: Bool = false,
+        onInstallUpdate: @escaping () -> Void = {}
     ) {
         self.repo = repo
         self.theme = theme
         self._showOpenSourcePopover = showOpenSourcePopover
         self.onOpenInBrowser = onOpenInBrowser
+        self.currentVersion = currentVersion
+        self.updateInfo = updateInfo
+        self.isUpdating = isUpdating
+        self.onInstallUpdate = onInstallUpdate
     }
 
     public var body: some View {
@@ -40,10 +52,31 @@ public struct MainWindowToolbarLeadingView: View {
                     )
                 }
             }
+
+            if let update = updateInfo {
+                updateButton(for: update)
+            }
         }
         .padding(.leading, 8)
         .padding(.trailing, 8)
         .padding(.vertical, 3)
+    }
+
+    @ViewBuilder
+    private func updateButton(for update: UpdateInfo) -> some View {
+        Button(action: onInstallUpdate) {
+            HStack(spacing: 5) {
+                Text(isUpdating ? "Updating…" : "Update available")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.primary)
+                Text("\(currentVersion.description) → \(update.version.description)")
+                    .font(.system(size: 12, weight: .regular).monospacedDigit())
+                    .foregroundColor(.secondary)
+            }
+        }
+        .buttonStyle(ToolbarHoverButtonStyle())
+        .disabled(isUpdating)
+        .help("Install AnyDiff \(update.version.description) and restart")
     }
 
     @ViewBuilder

@@ -58,6 +58,7 @@ public struct MainWindowView: View {
     }()
     @State private var commentTarget: (filePath: String, lineNumber: Int)? = nil
     @State private var showOpenSourcePopover: Bool = false
+    @ObservedObject private var updates = UpdateCoordinator.shared
     @State private var isWindowDropTargeted: Bool = false
 
     public var effectiveWorkingDirectory: String {
@@ -600,6 +601,12 @@ public struct MainWindowView: View {
             showOpenSourcePopover: $showOpenSourcePopover,
             onOpenInBrowser: {
                 openInBrowser()
+            },
+            currentVersion: updates.currentVersion,
+            updateInfo: updates.pendingUpdate,
+            isUpdating: updates.isInstalling,
+            onInstallUpdate: {
+                updates.confirmAndInstall()
             }
         )
     }

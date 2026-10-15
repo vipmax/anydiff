@@ -3,6 +3,7 @@ import AnyDiffCore
 import AnyDiffUI
 
 extension AppDelegate {
+    @MainActor
     func setupMainMenu() {
         let mainMenu = NSMenu()
 
@@ -10,6 +11,12 @@ extension AppDelegate {
         let appMenuItem = NSMenuItem()
         let appMenu = NSMenu()
         appMenu.addItem(NSMenuItem(title: "About AnyDiff", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: ""))
+        let updatesItem = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdatesAction(_:)), keyEquivalent: "")
+        self.checkForUpdatesItem = updatesItem
+        appMenu.addItem(updatesItem)
+        let automaticUpdatesItem = NSMenuItem(title: "Automatically Check for Updates", action: #selector(toggleAutomaticUpdateChecksAction(_:)), keyEquivalent: "")
+        automaticUpdatesItem.state = UpdateCoordinator.shared.automaticChecksEnabled ? .on : .off
+        appMenu.addItem(automaticUpdatesItem)
         appMenu.addItem(NSMenuItem.separator())
 
         let servicesMenuItem = NSMenuItem(title: "Services", action: nil, keyEquivalent: "")

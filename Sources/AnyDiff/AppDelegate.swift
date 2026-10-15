@@ -1,10 +1,13 @@
 import SwiftUI
 import AppKit
+import Combine
 import AnyDiffCore
 import AnyDiffUI
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var window: NSWindow?
+    var checkForUpdatesItem: NSMenuItem?
+    var updateStateObservation: AnyCancellable?
     private let iconLoader = AppIconLoader()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -57,6 +60,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         self.window = mainWindow
 
         setupMainMenu()
+        observeUpdateState()
+        UpdateCoordinator.shared.startScheduledChecks()
 
         NSRunningApplication.current.activate(options: [.activateAllWindows])
         NSApp.activate(ignoringOtherApps: true)
