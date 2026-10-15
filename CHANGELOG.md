@@ -5,6 +5,14 @@ All notable changes to **AnyDiff** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] - 2026-10-15
+
+### 🔄 Self-Updating
+- **Update checks**: AnyDiff checks GitHub Releases at launch and then hourly. When a newer version exists, a toolbar button and the app menu offer it.
+- **Automatic checks toggle**: turn checks off with "Automatically Check for Updates" in the app menu.
+- **Homebrew installs**: updating runs `brew upgrade --cask vipmax/tap/anydiff` and restarts AnyDiff.
+- **Direct installs**: the release zip is downloaded and its SHA-256 is verified against GitHub's digest. AnyDiff then replaces itself and restarts. If it cannot replace itself, it opens the release page.
+
 ## [1.6.0] - 2026-09-20
 
 ### 🌲 Git Commit Graph & History Inspector
