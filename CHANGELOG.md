@@ -5,6 +5,11 @@ All notable changes to **AnyDiff** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.2] - 2026-10-15
+
+### 🛠 Fixes
+- **Homebrew install no longer warns about deprecated syntax**: the cask uses `postflight_steps` instead of the deprecated `postflight`. The quarantine flag is still cleared after install and upgrade.
+
 ## [1.7.1] - 2026-10-15
 
 ### 🛠 Fixes
