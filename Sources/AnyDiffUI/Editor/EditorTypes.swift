@@ -115,4 +115,5 @@ extension Notification.Name {
     public static let focusFileInEditor = Notification.Name("AnyDiff_focusFileInEditor")
     public static let goToNextHunk = Notification.Name("AnyDiff_goToNextHunk")
     public static let goToPreviousHunk = Notification.Name("AnyDiff_goToPreviousHunk")
+    public static let saveActiveDocument = Notification.Name("AnyDiff_saveActiveDocument")
 }

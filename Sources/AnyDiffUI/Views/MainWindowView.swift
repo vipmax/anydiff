@@ -825,9 +825,13 @@ public struct MainWindowView: View {
             if repo.selectedFilePath == filePath {
                 repo.selectedFilePath = review.fileDiffs.first?.displayPath
             }
-            return
+        } else {
+            repo.closeFile(filePath: filePath)
         }
-        repo.closeFile(filePath: filePath)
+        let root = effectiveWorkingDirectory
+        Task {
+            await LSPWorkspaceService.shared.notifyDocumentClosed(filePath: filePath, rootPath: root)
+        }
     }
 
     public func openInExternalIDE(filePath: String, line: Int? = nil) {

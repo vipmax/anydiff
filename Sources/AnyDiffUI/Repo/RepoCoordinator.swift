@@ -276,6 +276,9 @@ public final class RepoCoordinator: ObservableObject {
             if case .commit = comparisonTarget {
                 comparisonTarget = .workingTree
             }
+            Task {
+                await LSPWorkspaceService.shared.stopAll()
+            }
         }
         multiBuffer.baseDirectory = currentDir
         let folderName = (currentDir as NSString).lastPathComponent
@@ -358,6 +361,9 @@ public final class RepoCoordinator: ObservableObject {
         multiBuffer.baseDirectory = nil
         search?.reset()
         loadDiff(files: [])
+        Task {
+            await LSPWorkspaceService.shared.stopAll()
+        }
 
         DispatchQueue.main.async {
             NSApp.windows.first?.title = "AnyDiff"
@@ -787,6 +793,12 @@ public final class RepoCoordinator: ObservableObject {
         displayMap.rebuild()
         selectedFilePath = resolvedRelativePath
 
+        let content = clean.buffer.text()
+        let root = effectiveWorkingDirectory
+        Task {
+            await LSPWorkspaceService.shared.notifyDocumentOpened(filePath: fullDiskPath, text: content, rootPath: root)
+        }
+
         NotificationCenter.default.post(
             name: .focusFileInEditor,
             object: FileNavigationRequest(filePath: resolvedRelativePath, lineNumber: line, endLineNumber: endLine)
@@ -801,6 +813,10 @@ public final class RepoCoordinator: ObservableObject {
         displayMap.markContentLoaded()
         if selectedFilePath == filePath {
             selectedFilePath = fileDiffs.first?.displayPath
+        }
+        let root = effectiveWorkingDirectory
+        Task {
+            await LSPWorkspaceService.shared.notifyDocumentClosed(filePath: filePath, rootPath: root)
         }
     }
 }

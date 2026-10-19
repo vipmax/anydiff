@@ -522,6 +522,7 @@ extension MultiBufferEditorView {
 
     @objc func handleFocusFileNotification(_ notification: Notification) {
         if let request = notification.object as? FileNavigationRequest {
+            ensureFileOpenedInLSP(filePath: request.filePath)
             if !navigateTo(filePath: request.filePath, lineNumber: request.lineNumber, endLineNumber: request.endLineNumber, shouldFocus: true) {
                 // If not found yet (e.g. displayMap hasn't synced from coordinator yet), retry next runloop tick
                 DispatchQueue.main.async { [weak self] in
@@ -529,6 +530,7 @@ extension MultiBufferEditorView {
                 }
             }
         } else if let path = notification.object as? String {
+            ensureFileOpenedInLSP(filePath: path)
             scrollToFilePath(path)
             focus()
         }

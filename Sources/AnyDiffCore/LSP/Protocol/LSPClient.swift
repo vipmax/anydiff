@@ -32,6 +32,31 @@ public actor LSPClient {
     public private(set) var rootPath: String?
     public let serverName: String
 
+    public var isProcessRunning: Bool {
+        guard let p = process else { return false }
+        return p.isRunning
+    }
+
+    public func waitForReady(timeoutSeconds: Double = 8.0) async throws {
+        if state == .ready && isProcessRunning { return }
+        if state == .stopped || (process != nil && !isProcessRunning) {
+            throw NSError(domain: "LSPClient", code: -3, userInfo: [NSLocalizedDescriptionKey: "LSP client is stopped"])
+        }
+        let startTime = Date()
+        while state == .initializing {
+            if Date().timeIntervalSince(startTime) > timeoutSeconds {
+                throw NSError(domain: "LSPClient", code: -4, userInfo: [NSLocalizedDescriptionKey: "LSP initialization timed out"])
+            }
+            try await Task.sleep(nanoseconds: 50_000_000)
+            if state == .stopped || (process != nil && !isProcessRunning) {
+                throw NSError(domain: "LSPClient", code: -3, userInfo: [NSLocalizedDescriptionKey: "LSP client stopped during initialization"])
+            }
+        }
+        if state != .ready || !isProcessRunning {
+            throw NSError(domain: "LSPClient", code: -5, userInfo: [NSLocalizedDescriptionKey: "LSP client not ready: \(state)"])
+        }
+    }
+
     public init(executablePath: String, arguments: [String] = [], workingDirectory: String, serverName: String? = nil) {
         self.executablePath = executablePath
         self.arguments = arguments
@@ -79,6 +104,12 @@ public actor LSPClient {
         self.stdinPipe = inPipe
         self.stdoutPipe = outPipe
         self.stderrPipe = errPipe
+
+        proc.terminationHandler = { [weak self] _ in
+            Task { [weak self] in
+                await self?.handleProcessTermination()
+            }
+        }
 
         try proc.run()
 
@@ -130,7 +161,7 @@ public actor LSPClient {
             ]
         ]
 
-        let initResult = try await sendRequest(method: "initialize", params: initParams)
+        let initResult = try await sendRequest(method: "initialize", params: initParams, timeoutSeconds: 15.0)
         if let resultDict = initResult as? [String: Any],
            let caps = resultDict["capabilities"] as? [String: Any] {
             if let syncInt = caps["textDocumentSync"] as? Int {
@@ -152,6 +183,7 @@ public actor LSPClient {
         markProjectInitialized()
         let proc = self.process
         let inPipe = self.stdinPipe
+        proc?.terminationHandler = nil
         self.process = nil
         self.stdinPipe = nil
         self.stdoutPipe = nil
@@ -184,6 +216,17 @@ public actor LSPClient {
                 try? inPipe.fileHandleForWriting.close()
             }
             p.terminate()
+        }
+    }
+
+    private func handleProcessTermination() {
+        guard state != .stopped else { return }
+        state = .stopped
+        markProjectInitialized()
+        let pending = self.pendingRequests
+        self.pendingRequests.removeAll()
+        for (_, cont) in pending {
+            cont.resume(throwing: NSError(domain: "LSPClient", code: -2, userInfo: [NSLocalizedDescriptionKey: "LSP process terminated"]))
         }
     }
 
@@ -221,8 +264,23 @@ public actor LSPClient {
 
     // MARK: - Document Synchronization
 
+    public func isDocumentOpen(filePath: String) -> Bool {
+        let uri = URL(fileURLWithPath: filePath).absoluteString
+        return documentTexts[uri] != nil
+    }
+
+    public func ensureDocumentOpen(filePath: String, text: String, languageId: String) async throws {
+        try await waitForReady()
+        let uri = URL(fileURLWithPath: filePath).absoluteString
+        if documentTexts[uri] == nil {
+            try await didOpen(filePath: filePath, text: text, languageId: languageId)
+        } else if documentTexts[uri] != text {
+            try didChange(filePath: filePath, text: text)
+        }
+    }
+
     public func didOpen(filePath: String, text: String, languageId: String) async throws {
-        guard state == .ready else { return }
+        try await waitForReady()
         await waitForProjectInitializationIfNeeded()
         let uri = URL(fileURLWithPath: filePath).absoluteString
         documentVersions[uri] = 1
@@ -240,7 +298,7 @@ public actor LSPClient {
     }
 
     public func didChange(filePath: String, text: String) throws {
-        guard state == .ready else { return }
+        guard state == .ready && isProcessRunning else { return }
         let uri = URL(fileURLWithPath: filePath).absoluteString
         if let existing = documentTexts[uri], existing == text {
             return
@@ -290,7 +348,7 @@ public actor LSPClient {
     }
 
     public func didSave(filePath: String) throws {
-        guard state == .ready else { return }
+        guard state == .ready && isProcessRunning else { return }
         let uri = URL(fileURLWithPath: filePath).absoluteString
         let params: [String: Any] = [
             "textDocument": ["uri": uri]
@@ -299,11 +357,11 @@ public actor LSPClient {
     }
 
     public func didClose(filePath: String) throws {
-        guard state == .ready else { return }
         let uri = URL(fileURLWithPath: filePath).absoluteString
         documentVersions.removeValue(forKey: uri)
         documentTexts.removeValue(forKey: uri)
         warmedUpDocuments.remove(uri)
+        guard state == .ready && isProcessRunning else { return }
         let params: [String: Any] = [
             "textDocument": ["uri": uri]
         ]
@@ -313,9 +371,8 @@ public actor LSPClient {
     // MARK: - Go To Definition
 
     public func gotoDefinition(filePath: String, line: Int, character: Int) async throws -> [LSPLocation] {
-        guard state == .ready else {
-            return []
-        }
+        try await waitForReady()
+        guard state == .ready && isProcessRunning else { return [] }
         await waitForProjectInitializationIfNeeded()
 
         let uri = URL(fileURLWithPath: filePath).absoluteString
@@ -340,7 +397,8 @@ public actor LSPClient {
         character: Int,
         triggerCharacter: String? = nil
     ) async throws -> [LSPCompletionItem] {
-        guard state == .ready else { return [] }
+        try await waitForReady()
+        guard state == .ready && isProcessRunning else { return [] }
         await waitForProjectInitializationIfNeeded()
 
         let uri = URL(fileURLWithPath: filePath).absoluteString
@@ -385,7 +443,8 @@ public actor LSPClient {
         line: Int,
         character: Int
     ) async throws -> LSPHover? {
-        guard state == .ready else { return nil }
+        try await waitForReady()
+        guard state == .ready && isProcessRunning else { return nil }
         await waitForProjectInitializationIfNeeded()
 
         let uri = URL(fileURLWithPath: filePath).absoluteString
@@ -404,7 +463,31 @@ public actor LSPClient {
 
     // MARK: - Low-level Messaging
 
-    private func sendRequest(method: String, params: Any?) async throws -> Any? {
+    private func cancelPendingRequest(id: Int) {
+        if let cont = pendingRequests.removeValue(forKey: id) {
+            cont.resume(throwing: CancellationError())
+            if isProcessRunning {
+                let cancelParams: [String: Any] = ["id": id]
+                try? sendNotification(method: "$/cancelRequest", params: cancelParams)
+            }
+        }
+    }
+
+    private func handleRequestTimeout(id: Int) {
+        if let cont = pendingRequests.removeValue(forKey: id) {
+            cont.resume(throwing: NSError(domain: "LSPClient", code: -4, userInfo: [NSLocalizedDescriptionKey: "LSP request timed out"]))
+            if isProcessRunning {
+                let cancelParams: [String: Any] = ["id": id]
+                try? sendNotification(method: "$/cancelRequest", params: cancelParams)
+            }
+        }
+    }
+
+    private func sendRequest(method: String, params: Any?, timeoutSeconds: Double = 6.0) async throws -> Any? {
+        guard isProcessRunning, let inPipe = stdinPipe else {
+            throw NSError(domain: "LSPClient", code: -1, userInfo: [NSLocalizedDescriptionKey: "Stdin not open or process not running"])
+        }
+
         let reqId = nextRequestId
         nextRequestId += 1
 
@@ -418,17 +501,38 @@ public actor LSPClient {
         }
 
         let data = try LSPFraming.encode(jsonDict: dict)
-        guard let inPipe = stdinPipe else {
-            throw NSError(domain: "LSPClient", code: -1, userInfo: [NSLocalizedDescriptionKey: "Stdin not open"])
-        }
 
-        return try await withCheckedThrowingContinuation { continuation in
-            pendingRequests[reqId] = continuation
-            try? inPipe.fileHandleForWriting.write(contentsOf: data)
+        return try await withTaskCancellationHandler {
+            let timeoutTask = Task { [weak self] in
+                let nanos = UInt64(timeoutSeconds * 1_000_000_000)
+                try? await Task.sleep(nanoseconds: nanos)
+                guard !Task.isCancelled else { return }
+                await self?.handleRequestTimeout(id: reqId)
+            }
+
+            defer {
+                timeoutTask.cancel()
+            }
+
+            return try await withCheckedThrowingContinuation { continuation in
+                pendingRequests[reqId] = continuation
+                do {
+                    try inPipe.fileHandleForWriting.write(contentsOf: data)
+                } catch {
+                    if let cont = pendingRequests.removeValue(forKey: reqId) {
+                        cont.resume(throwing: error)
+                    }
+                }
+            }
+        } onCancel: {
+            Task { [weak self] in
+                await self?.cancelPendingRequest(id: reqId)
+            }
         }
     }
 
     private func sendNotification(method: String, params: Any?) throws {
+        guard isProcessRunning, let inPipe = stdinPipe else { return }
         var dict: [String: Any] = [
             "jsonrpc": "2.0",
             "method": method
@@ -438,7 +542,7 @@ public actor LSPClient {
         }
 
         let data = try LSPFraming.encode(jsonDict: dict)
-        stdinPipe?.fileHandleForWriting.write(data)
+        try inPipe.fileHandleForWriting.write(contentsOf: data)
     }
 
     private func startReadingOutput(pipe: Pipe) {
@@ -448,6 +552,7 @@ public actor LSPClient {
             while true {
                 let chunk = handle.availableData
                 if chunk.isEmpty {
+                    await self?.handleProcessTermination()
                     break
                 }
                 guard let self = self else { break }

@@ -55,8 +55,27 @@ public struct VisualEffectBackground: NSViewRepresentable {
 }
 
 public struct CompletionMenuView: View {
+    public static let defaultWidth: CGFloat = 480
+    public static let rowHeight: CGFloat = 28
+    public static let maxVisibleRows: Int = 10
+
+    public static func calculateHeight(itemCount: Int) -> CGFloat {
+        let count = max(1, min(maxVisibleRows, itemCount))
+        return CGFloat(count) * rowHeight + 10
+    }
+
     @ObservedObject public var model: CompletionStateModel
     public let theme: Theme
+
+    @State private var firstVisibleIndex: Int = 0
+
+    private var maxVisibleCount: Int {
+        Self.maxVisibleRows
+    }
+
+    private var lastVisibleIndex: Int {
+        firstVisibleIndex + maxVisibleCount - 1
+    }
 
     public init(model: CompletionStateModel, theme: Theme) {
         self.model = model
@@ -65,8 +84,8 @@ public struct CompletionMenuView: View {
 
     public var body: some View {
         ScrollViewReader { proxy in
-            ScrollView(.vertical, showsIndicators: true) {
-                LazyVStack(spacing: 1) {
+            ScrollView(.vertical, showsIndicators: model.items.count > Self.maxVisibleRows) {
+                LazyVStack(spacing: 2) {
                     ForEach(Array(model.items.enumerated()), id: \.offset) { index, item in
                         CompletionItemRow(
                             item: item,
@@ -85,18 +104,58 @@ public struct CompletionMenuView: View {
                 .padding(.vertical, 5)
                 .padding(.horizontal, 5)
             }
+            .onAppear {
+                firstVisibleIndex = 0
+                proxy.scrollTo(0, anchor: .top)
+            }
+            .onChange(of: model.queryPrefix) { _ in
+                firstVisibleIndex = 0
+                proxy.scrollTo(0, anchor: .top)
+            }
+            .onChange(of: model.items.count) { _ in
+                firstVisibleIndex = 0
+                proxy.scrollTo(0, anchor: .top)
+            }
             .onChange(of: model.selectedIndex) { newIndex in
-                withAnimation(.easeInOut(duration: 0.08)) {
-                    proxy.scrollTo(newIndex, anchor: .center)
+                guard !model.items.isEmpty else { return }
+                let count = model.items.count
+                if count <= maxVisibleCount {
+                    return
+                }
+
+                if newIndex == 0 {
+                    firstVisibleIndex = 0
+                    withAnimation(.easeOut(duration: 0.05)) {
+                        proxy.scrollTo(0, anchor: .top)
+                    }
+                } else if newIndex == count - 1 && firstVisibleIndex == 0 {
+                    firstVisibleIndex = max(0, count - maxVisibleCount)
+                    withAnimation(.easeOut(duration: 0.05)) {
+                        proxy.scrollTo(count - 1, anchor: .bottom)
+                    }
+                } else {
+                    let desiredBottom = min(count - 1, newIndex + 1)
+                    let desiredTop = max(0, newIndex - 1)
+
+                    if desiredBottom > lastVisibleIndex {
+                        firstVisibleIndex = desiredBottom - maxVisibleCount + 1
+                        withAnimation(.easeOut(duration: 0.05)) {
+                            proxy.scrollTo(desiredBottom, anchor: .bottom)
+                        }
+                    } else if desiredTop < firstVisibleIndex {
+                        firstVisibleIndex = desiredTop
+                        withAnimation(.easeOut(duration: 0.05)) {
+                            proxy.scrollTo(desiredTop, anchor: .top)
+                        }
+                    }
                 }
             }
         }
-        .frame(width: 320, height: calculatedHeight)
+        .frame(width: Self.defaultWidth, height: calculatedHeight)
     }
 
     private var calculatedHeight: CGFloat {
-        let count = max(1, min(8, model.items.count))
-        return CGFloat(count) * 26 + 10
+        Self.calculateHeight(itemCount: model.items.count)
     }
 }
 
@@ -113,31 +172,32 @@ private struct CompletionItemRow: View {
 
             // Main Label with matched prefix highlight
             highlightedLabel
-                .font(.system(size: 12, weight: .regular, design: .monospaced))
+                .font(.system(size: 12.5, weight: .regular, design: .monospaced))
                 .foregroundColor(isSelected ? .white : Color(theme.foreground))
                 .lineLimit(1)
 
-            Spacer(minLength: 6)
+            Spacer(minLength: 8)
 
-            // Detail / Type signature (e.g. String, (Int) -> Void)
+            // Detail / Type signature (e.g. String, (Int) -> Void, Bool)
             if let detail = item.detail, !detail.isEmpty {
-                Text(detail)
-                    .font(.system(size: 11, weight: .regular))
-                    .foregroundColor(isSelected ? Color.white.opacity(0.85) : Color(theme.gutterForeground))
+                let cleanDetail = detail.replacingOccurrences(of: "\n", with: " ")
+                Text(cleanDetail)
+                    .font(.system(size: 11.5, weight: .regular, design: .monospaced))
+                    .foregroundColor(isSelected ? Color.white.opacity(0.9) : Color(theme.gutterForeground))
                     .lineLimit(1)
                     .truncationMode(.tail)
             }
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 3.5)
+        .padding(.vertical, 4)
         .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
                 .fill(isSelected ? selectionColor : Color.clear)
         )
     }
 
     private var selectionColor: Color {
-        Color.accentColor.opacity(0.4)
+        Color.accentColor
     }
 
     private var badgeView: some View {
@@ -145,11 +205,12 @@ private struct CompletionItemRow: View {
         let color = badgeColor(for: item.kind)
         return Text(badge)
             .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-            .foregroundColor(color)
-            .frame(width: 17, height: 17)
+            .minimumScaleFactor(0.7)
+            .foregroundColor(isSelected ? .white : color)
+            .frame(width: 20, height: 18)
             .background(
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(color.opacity(0.20))
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(isSelected ? Color.white.opacity(0.25) : color.opacity(0.20))
             )
     }
 
@@ -161,17 +222,9 @@ private struct CompletionItemRow: View {
             let match = String(label[range])
             let after = String(label[range.upperBound...])
 
-            HStack(spacing: 0) {
-                if !before.isEmpty {
-                    Text(before)
-                }
-                Text(match)
-                    .bold()
-                    .underline(true, color: Color.accentColor)
-                if !after.isEmpty {
-                    Text(after)
-                }
-            }
+            Text(before)
+                + Text(match).bold().underline(true, color: isSelected ? .white : Color.accentColor)
+                + Text(after)
         } else {
             Text(label)
         }
@@ -192,9 +245,10 @@ private struct CompletionItemRow: View {
         case .constant:
             return Color(red: 0.22, green: 0.80, blue: 0.80) // Cyan
         case .snippet:
-            return Color(red: 0.60, green: 0.64, blue: 0.72) // Gray
+            return Color(red: 0.60, green: 0.64, blue: 0.72) // Slate / Gray
         default:
             return Color(red: 0.50, green: 0.55, blue: 0.65)
         }
     }
 }
+

@@ -37,6 +37,10 @@ extension AppDelegate {
         openURLItem.keyEquivalentModifierMask = [.command, .shift]
         fileMenu.addItem(openURLItem)
         fileMenu.addItem(NSMenuItem.separator())
+        let saveItem = NSMenuItem(title: "Save", action: #selector(saveDocumentAction(_:)), keyEquivalent: "s")
+        saveItem.keyEquivalentModifierMask = [.command]
+        fileMenu.addItem(saveItem)
+        fileMenu.addItem(NSMenuItem.separator())
         fileMenu.addItem(NSMenuItem(title: "Reload Diff", action: #selector(reloadDiffAction(_:)), keyEquivalent: "r"))
         let watchItem = NSMenuItem(title: "Toggle Watch Mode", action: #selector(toggleWatchModeAction(_:)), keyEquivalent: "w")
         watchItem.keyEquivalentModifierMask = [.command, .option]
@@ -328,5 +332,9 @@ extension AppDelegate {
 
     @objc func goToPreviousHunkAction(_ sender: Any?) {
         NotificationCenter.default.post(name: .goToPreviousHunk, object: nil)
+    }
+
+    @objc func saveDocumentAction(_ sender: Any?) {
+        NotificationCenter.default.post(name: .saveActiveDocument, object: nil)
     }
 }

@@ -43,6 +43,8 @@ public final class MultiBufferEditorView: NSView, NSTextInputClient, NSUserInter
                 }
                 .store(in: &displayMapCancellables)
             invalidateLayout()
+            setupBufferSaveHook()
+            ensureFocusedFileOpenedInLSP()
         }
     }
 
@@ -353,9 +355,19 @@ public final class MultiBufferEditorView: NSView, NSTextInputClient, NSUserInter
         let result = super.resignFirstResponder()
         if result {
             isCursorVisible = false
+            hideCompletionMenu()
+            hideHover()
             needsDisplay = true
         }
         return result
+    }
+
+    public override func viewWillMove(toWindow newWindow: NSWindow?) {
+        super.viewWillMove(toWindow: newWindow)
+        if newWindow == nil {
+            hideCompletionMenu()
+            hideHover()
+        }
     }
 
     public init(displayMap: DisplayMap? = nil, theme: Theme = .zedDark) {
@@ -379,6 +391,7 @@ public final class MultiBufferEditorView: NSView, NSTextInputClient, NSUserInter
         NotificationCenter.default.addObserver(self, selector: #selector(handleFocusFileNotification(_:)), name: .focusFileInEditor, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleGoToNextHunkNotification(_:)), name: .goToNextHunk, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleGoToPreviousHunkNotification(_:)), name: .goToPreviousHunk, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(saveActiveDocumentNotification(_:)), name: .saveActiveDocument, object: nil)
     }
 
     deinit {
@@ -836,10 +849,17 @@ public final class MultiBufferEditorView: NSView, NSTextInputClient, NSUserInter
         startCursorBlink()
     }
 
+    private var lastFocusedLSPFilePath: String? = nil
+
     func notifyCursorChange() {
         guard let dm = displayMap else { return }
         let loc = dm.excerptLocation(for: cursorPoint)
         delegate?.editorDidChangeCursor(location: loc, point: cursorPoint)
+
+        if let currentPath = loc?.filePath, currentPath != lastFocusedLSPFilePath {
+            lastFocusedLSPFilePath = currentPath
+            ensureFileOpenedInLSP(filePath: currentPath)
+        }
     }
 
     func notifyContentChange() {
@@ -855,6 +875,52 @@ public final class MultiBufferEditorView: NSView, NSTextInputClient, NSUserInter
                     await LSPWorkspaceService.shared.notifyDocumentChanged(filePath: absPath, text: text, rootPath: root)
                 }
             }
+        }
+    }
+
+    // MARK: - LSP Synchronization & Saving Hooks
+
+    @objc func saveActiveDocumentNotification(_ notification: Notification) {
+        saveActiveDocument()
+    }
+
+    @objc public func saveActiveDocument(_ sender: Any? = nil) {
+        guard editingEnabled, let dm = displayMap else { return }
+        let savedFiles = dm.multiBuffer.flushImmediateSave()
+        let root = workspaceRootPath ?? FileManager.default.currentDirectoryPath
+        Task {
+            for file in savedFiles {
+                await LSPWorkspaceService.shared.notifyDocumentSaved(filePath: file, rootPath: root)
+            }
+        }
+    }
+
+    private func setupBufferSaveHook() {
+        guard let mb = displayMap?.multiBuffer else { return }
+        let root = workspaceRootPath ?? FileManager.default.currentDirectoryPath
+        mb.onBuffersSaved = { savedFiles in
+            Task {
+                for file in savedFiles {
+                    await LSPWorkspaceService.shared.notifyDocumentSaved(filePath: file, rootPath: root)
+                }
+            }
+        }
+    }
+
+    public func ensureFileOpenedInLSP(filePath: String) {
+        guard let dm = displayMap else { return }
+        let root = workspaceRootPath ?? FileManager.default.currentDirectoryPath
+        let absPath = (filePath as NSString).isAbsolutePath ? filePath : (root as NSString).appendingPathComponent(filePath)
+        if let text = dm.multiBuffer.fullFileContent(for: filePath, baseDirectory: workspaceRootPath) {
+            Task {
+                await LSPWorkspaceService.shared.notifyDocumentOpened(filePath: absPath, text: text, rootPath: root)
+            }
+        }
+    }
+
+    public func ensureFocusedFileOpenedInLSP() {
+        if let filePath = currentFocusedFilePath() {
+            ensureFileOpenedInLSP(filePath: filePath)
         }
     }
 

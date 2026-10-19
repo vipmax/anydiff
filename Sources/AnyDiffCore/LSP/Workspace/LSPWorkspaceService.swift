@@ -39,8 +39,10 @@ public actor LSPWorkspaceService {
     public static let idleTimeoutUserDefaultsKey = "anyDiffLSPIdleTimeoutSeconds"
 
     private var activeClients: [String: LSPClient] = [:] // key: languageId
+    private var startingClients: [String: Task<LSPClient?, Error>] = [:] // key: languageId
     private var openDocumentLanguages: [String: String] = [:] // key: filePath -> languageId
     private var idleTimerTasks: [String: Task<Void, Never>] = [:] // key: languageId
+    private var pendingDocumentChangeTasks: [String: Task<Void, Never>] = [:] // key: filePath -> debounced change task
     private var lastActivityDates: [String: Date] = [:] // key: languageId
     public private(set) var idleTimeout: TimeInterval = {
         let saved = UserDefaults.standard.double(forKey: "anyDiffLSPIdleTimeoutSeconds")
@@ -228,28 +230,51 @@ public actor LSPWorkspaceService {
         let lang = languageId.lowercased()
         if let existing = activeClients[lang] {
             let state = await existing.state
-            if state == .ready || state == .initializing {
+            let existingRoot = await existing.rootPath
+            let isRunning = await existing.isProcessRunning
+            if (state == .ready || state == .initializing) && isRunning && (existingRoot == nil || existingRoot == rootPath) {
                 recordActivity(for: lang)
                 return existing
             }
+            await existing.stop()
+            activeClients.removeValue(forKey: lang)
+            openDocumentLanguages = openDocumentLanguages.filter { $0.value != lang }
         }
 
-        guard let resolved = await resolveServer(for: lang) else {
-            return nil
+        if let inFlight = startingClients[lang] {
+            return try await inFlight.value
         }
 
-        let client = LSPClient(
-            executablePath: resolved.command,
-            arguments: resolved.args,
-            workingDirectory: rootPath,
-            serverName: resolved.serverName
-        )
+        let task = Task<LSPClient?, Error> {
+            guard let resolved = await self.resolveServer(for: lang) else {
+                return nil
+            }
 
-        try await client.start(rootPath: rootPath)
-        activeClients[lang] = client
-        recordActivity(for: lang)
-        NotificationCenter.default.post(name: Self.serversDidChangeNotification, object: nil)
-        return client
+            let client = LSPClient(
+                executablePath: resolved.command,
+                arguments: resolved.args,
+                workingDirectory: rootPath,
+                serverName: resolved.serverName
+            )
+
+            try await client.start(rootPath: rootPath)
+            return client
+        }
+
+        startingClients[lang] = task
+        do {
+            let client = try await task.value
+            startingClients.removeValue(forKey: lang)
+            if let client = client {
+                activeClients[lang] = client
+                recordActivity(for: lang)
+                NotificationCenter.default.post(name: Self.serversDidChangeNotification, object: nil)
+            }
+            return client
+        } catch {
+            startingClients.removeValue(forKey: lang)
+            throw error
+        }
     }
 
     // MARK: - Server Status & Control
@@ -258,6 +283,8 @@ public actor LSPWorkspaceService {
         var items: [LSPServerStatusItem] = []
         for (lang, client) in activeClients {
             let state = await client.state
+            let isRunning = await client.isProcessRunning
+            let displayState: LSPClient.State = isRunning ? state : .stopped
             let exec = client.executablePath
             let name = client.serverName
             let docCount = openDocumentLanguages.values.filter { $0 == lang }.count
@@ -268,7 +295,7 @@ public actor LSPWorkspaceService {
                 languageId: lang,
                 serverName: name,
                 executablePath: exec,
-                state: state,
+                state: displayState,
                 openDocumentsCount: docCount,
                 lastActivityDate: lastAct,
                 autoStopDeadline: deadline
@@ -280,6 +307,11 @@ public actor LSPWorkspaceService {
     public func stopServer(for languageId: String) async {
         let lang = languageId.lowercased()
         cancelIdleTimer(for: lang)
+        startingClients.removeValue(forKey: lang)?.cancel()
+        let filesForLang = openDocumentLanguages.filter { $0.value == lang }.map(\.key)
+        for file in filesForLang {
+            pendingDocumentChangeTasks.removeValue(forKey: file)?.cancel()
+        }
         if let client = activeClients.removeValue(forKey: lang) {
             await client.stop()
         }
@@ -358,6 +390,7 @@ public actor LSPWorkspaceService {
             throw LSPDownloadError.executableNotFound("Executable not found for package \(package.name)")
         }
         cancelIdleTimer(for: lang)
+        startingClients.removeValue(forKey: lang)?.cancel()
         if let existing = activeClients[lang] {
             await existing.stop()
         }
@@ -395,15 +428,21 @@ public actor LSPWorkspaceService {
 
     // MARK: - Document Synchronization
 
+    public func isDocumentOpen(filePath: String, rootPath: String? = nil) -> Bool {
+        let absPath = canonicalPath(filePath, rootPath: rootPath)
+        return openDocumentLanguages[absPath] != nil || openDocumentLanguages[filePath] != nil
+    }
+
     public func notifyDocumentOpened(filePath: String, text: String, rootPath: String) async {
         let absPath = canonicalPath(filePath, rootPath: rootPath)
         let lang = detectLanguage(for: absPath).lowercased()
         let docLang = documentLanguageId(for: absPath)
+
         openDocumentLanguages[absPath] = lang
 
         do {
             if let client = try await getOrStartClient(for: lang, rootPath: rootPath) {
-                try await client.didOpen(filePath: absPath, text: text, languageId: docLang)
+                try await client.ensureDocumentOpen(filePath: absPath, text: text, languageId: docLang)
                 recordActivity(for: lang)
             }
         } catch {
@@ -411,16 +450,68 @@ public actor LSPWorkspaceService {
         }
     }
 
-    public func notifyDocumentChanged(filePath: String, text: String, rootPath: String? = nil) async {
+    public func notifyDocumentChanged(
+        filePath: String,
+        text: String,
+        rootPath: String? = nil,
+        debounceMs: Int = 150
+    ) async {
         let absPath = canonicalPath(filePath, rootPath: rootPath)
-        guard let lang = openDocumentLanguages[absPath] ?? openDocumentLanguages[filePath],
-              let client = activeClients[lang] else { return }
+        let resolvedRoot = rootPath ?? (absPath as NSString).deletingLastPathComponent
+        let lang = openDocumentLanguages[absPath] ?? openDocumentLanguages[filePath] ?? detectLanguage(for: absPath).lowercased()
+        let docLang = documentLanguageId(for: absPath)
+
+        // 1. If not yet opened in LSP, auto-open immediately with current buffer content
+        if openDocumentLanguages[absPath] == nil && openDocumentLanguages[filePath] == nil {
+            openDocumentLanguages[absPath] = lang
+            do {
+                if let client = try await getOrStartClient(for: lang, rootPath: resolvedRoot) {
+                    try await client.ensureDocumentOpen(filePath: absPath, text: text, languageId: docLang)
+                    recordActivity(for: lang)
+                }
+            } catch {
+                // Silently ignore startup failures on background edit
+            }
+            return
+        }
+
+        guard let client = activeClients[lang] else { return }
+
+        // If client doesn't have this document open yet (e.g. server restarted or died), open immediately
+        let isOpen = await client.isDocumentOpen(filePath: absPath)
+        if !isOpen {
+            openDocumentLanguages[absPath] = lang
+            try? await client.ensureDocumentOpen(filePath: absPath, text: text, languageId: docLang)
+            recordActivity(for: lang)
+            return
+        }
+
+        // 2. Debounce subsequent didChange calls for typing efficiency
+        pendingDocumentChangeTasks[absPath]?.cancel()
+        if debounceMs <= 0 {
+            recordActivity(for: lang)
+            try? await client.didChange(filePath: absPath, text: text)
+            return
+        }
+
+        pendingDocumentChangeTasks[absPath] = Task { [weak self, absPath, text, lang] in
+            let nanos = UInt64(debounceMs) * 1_000_000
+            try? await Task.sleep(nanoseconds: nanos)
+            guard !Task.isCancelled else { return }
+            await self?.flushDocumentChanged(filePath: absPath, text: text, lang: lang)
+        }
+    }
+
+    private func flushDocumentChanged(filePath: String, text: String, lang: String) async {
+        pendingDocumentChangeTasks.removeValue(forKey: filePath)
+        guard let client = activeClients[lang] else { return }
         recordActivity(for: lang)
-        try? await client.didChange(filePath: absPath, text: text)
+        try? await client.didChange(filePath: filePath, text: text)
     }
 
     public func notifyDocumentSaved(filePath: String, rootPath: String? = nil) async {
         let absPath = canonicalPath(filePath, rootPath: rootPath)
+        pendingDocumentChangeTasks.removeValue(forKey: absPath)?.cancel()
         guard let lang = openDocumentLanguages[absPath] ?? openDocumentLanguages[filePath],
               let client = activeClients[lang] else { return }
         recordActivity(for: lang)
@@ -429,6 +520,7 @@ public actor LSPWorkspaceService {
 
     public func notifyDocumentClosed(filePath: String, rootPath: String? = nil) async {
         let absPath = canonicalPath(filePath, rootPath: rootPath)
+        pendingDocumentChangeTasks.removeValue(forKey: absPath)?.cancel()
         guard let lang = openDocumentLanguages.removeValue(forKey: absPath) ?? openDocumentLanguages.removeValue(forKey: filePath),
               let client = activeClients[lang] else { return }
         recordActivity(for: lang)
@@ -451,14 +543,15 @@ public actor LSPWorkspaceService {
             return []
         }
 
+        // Flush any pending debounced change task immediately so server has up-to-date content
+        if let pendingTask = pendingDocumentChangeTasks.removeValue(forKey: absPath) {
+            pendingTask.cancel()
+        }
+
         // Ensure file is opened and synchronized in LSP session
-        if openDocumentLanguages[absPath] == nil {
-            if let text = contentSupplier?() {
-                try? await client.didOpen(filePath: absPath, text: text, languageId: docLang)
-                openDocumentLanguages[absPath] = lang
-            }
-        } else if let text = contentSupplier?() {
-            try? await client.didChange(filePath: absPath, text: text)
+        if let text = contentSupplier?() {
+            try? await client.ensureDocumentOpen(filePath: absPath, text: text, languageId: docLang)
+            openDocumentLanguages[absPath] = lang
         }
 
         // LSP positions are 0-based
@@ -486,14 +579,15 @@ public actor LSPWorkspaceService {
             return []
         }
 
+        // Flush any pending debounced change task immediately so server has up-to-date content
+        if let pendingTask = pendingDocumentChangeTasks.removeValue(forKey: absPath) {
+            pendingTask.cancel()
+        }
+
         // Ensure file is opened and synchronized in LSP session
-        if openDocumentLanguages[absPath] == nil {
-            if let text = contentSupplier?() {
-                try? await client.didOpen(filePath: absPath, text: text, languageId: docLang)
-                openDocumentLanguages[absPath] = lang
-            }
-        } else if let text = contentSupplier?() {
-            try? await client.didChange(filePath: absPath, text: text)
+        if let text = contentSupplier?() {
+            try? await client.ensureDocumentOpen(filePath: absPath, text: text, languageId: docLang)
+            openDocumentLanguages[absPath] = lang
         }
 
         // LSP positions are 0-based
@@ -525,14 +619,15 @@ public actor LSPWorkspaceService {
             return nil
         }
 
+        // Flush any pending debounced change task immediately so server has up-to-date content
+        if let pendingTask = pendingDocumentChangeTasks.removeValue(forKey: absPath) {
+            pendingTask.cancel()
+        }
+
         // Ensure file is opened and synchronized in LSP session
-        if openDocumentLanguages[absPath] == nil {
-            if let text = contentSupplier?() {
-                try? await client.didOpen(filePath: absPath, text: text, languageId: docLang)
-                openDocumentLanguages[absPath] = lang
-            }
-        } else if let text = contentSupplier?() {
-            try? await client.didChange(filePath: absPath, text: text)
+        if let text = contentSupplier?() {
+            try? await client.ensureDocumentOpen(filePath: absPath, text: text, languageId: docLang)
+            openDocumentLanguages[absPath] = lang
         }
 
         // LSP positions are 0-based
@@ -548,10 +643,18 @@ public actor LSPWorkspaceService {
     }
 
     public func stopAll() async {
+        for (_, task) in pendingDocumentChangeTasks {
+            task.cancel()
+        }
+        pendingDocumentChangeTasks.removeAll()
         for (_, task) in idleTimerTasks {
             task.cancel()
         }
         idleTimerTasks.removeAll()
+        for (_, task) in startingClients {
+            task.cancel()
+        }
+        startingClients.removeAll()
         lastActivityDates.removeAll()
         for (_, client) in activeClients {
             await client.stop()

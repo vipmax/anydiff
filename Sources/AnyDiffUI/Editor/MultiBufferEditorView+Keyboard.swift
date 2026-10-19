@@ -251,7 +251,7 @@ extension MultiBufferEditorView {
             }
             if event.charactersIgnoringModifiers == "s" {
                 if editingEnabled {
-                    _ = displayMap?.multiBuffer.flushImmediateSave()
+                    saveActiveDocument()
                 }
                 return true
             }

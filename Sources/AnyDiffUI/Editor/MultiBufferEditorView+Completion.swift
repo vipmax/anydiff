@@ -222,14 +222,21 @@ extension MultiBufferEditorView {
 
         popover.appearance = effectiveAppearance
 
-        let visibleCount = min(8, filteredCompletions.count)
-        let menuHeight = CGFloat(visibleCount) * 26 + 10
-        popover.contentSize = NSSize(width: 320, height: menuHeight)
+        let menuHeight = CompletionMenuView.calculateHeight(itemCount: filteredCompletions.count)
+        popover.contentSize = NSSize(width: CompletionMenuView.defaultWidth, height: menuHeight)
 
         if !popover.isShown {
             popover.show(relativeTo: cursorRect, of: self, preferredEdge: .maxY)
         } else {
             popover.positioningRect = cursorRect
+        }
+
+        alignCompletionPopover(popover, cursorRect: cursorRect)
+
+        DispatchQueue.main.async { [weak self, weak popover] in
+            guard let self = self, let popover = popover, popover.isShown else { return }
+            guard let rect = self.cursorScreenRect() else { return }
+            self.alignCompletionPopover(popover, cursorRect: rect)
         }
     }
 
@@ -250,13 +257,102 @@ extension MultiBufferEditorView {
             return
         }
 
-        let visibleCount = min(8, filteredCompletions.count)
-        let menuHeight = CGFloat(visibleCount) * 26 + 10
-        popover.contentSize = NSSize(width: 320, height: menuHeight)
+        let menuHeight = CompletionMenuView.calculateHeight(itemCount: filteredCompletions.count)
+        popover.contentSize = NSSize(width: CompletionMenuView.defaultWidth, height: menuHeight)
 
         if popover.isShown {
             popover.positioningRect = cursorRect
+            alignCompletionPopover(popover, cursorRect: cursorRect)
         }
+    }
+
+    public func completionWordStartColumn() -> Int {
+        if let triggerBufId = completionTriggerBufferId,
+           let triggerBufRow = completionTriggerBufferRow,
+           let loc = displayMap?.bufferLocation(for: cursorPoint),
+           loc.buffer.id == triggerBufId && loc.point.row == triggerBufRow,
+           let col = completionTriggerBufferCol {
+            return col
+        }
+        if let trigger = completionTriggerPoint, trigger.row == cursorPoint.row {
+            return trigger.column
+        }
+        let text = activeLineText(at: cursorPoint.row) ?? ""
+        return findWordStartBeforeCursor(in: text, col: cursorPoint.column)
+    }
+
+    public func wordStartScreenRect() -> CGRect? {
+        guard let dm = displayMap else { return nil }
+        syncLayoutIfNeeded()
+        guard let y = yOffset(for: cursorPoint.row) else { return nil }
+        let screenY = y - scrollOffsetY
+
+        let text = activeLineText(at: cursorPoint.row) ?? ""
+        let wordCol = completionWordStartColumn()
+        let clampedCol = min(text.count, max(0, wordCol))
+
+        let codeStartX: CGFloat
+        if dm.effectiveLayoutMode == .sideBySide {
+            let geom = splitGeometry(atY: screenY, height: lineHeight)
+            let baseX = splitActiveColumn == .left ? geom.leftCodeRect.minX : geom.rightCodeRect.minX
+            codeStartX = baseX + Self.codeLeftPadding - scrollOffsetX
+        } else {
+            codeStartX = gutterWidth + Self.codeLeftPadding - scrollOffsetX
+        }
+
+        let attr = NSAttributedString(string: text, attributes: [.font: font])
+        let ctLine = CTLineCreateWithAttributedString(attr)
+        let xOffset = ctLine.xOffset(forCharacterIndex: clampedCol, in: text)
+        let wordX = codeStartX + xOffset
+
+        return CGRect(x: wordX, y: screenY, width: 2, height: lineHeight)
+    }
+
+    public func alignCompletionPopover(_ popover: NSPopover, cursorRect: CGRect) {
+        guard let hostWindow = self.window,
+              let popWindow = popover.contentViewController?.view.window else {
+            return
+        }
+
+        let wordRect = wordStartScreenRect() ?? cursorRect
+
+        let cursorPtInSelf = NSPoint(x: cursorRect.midX, y: cursorRect.minY)
+        let wordStartPtInSelf = NSPoint(x: wordRect.minX, y: wordRect.minY)
+
+        let screenCursorX = hostWindow.convertPoint(toScreen: convert(cursorPtInSelf, to: nil)).x
+        let screenWordStartX = hostWindow.convertPoint(toScreen: convert(wordStartPtInSelf, to: nil)).x
+
+        // Distance from popWindow.frame.origin.x to the beginning of the label in CompletionItemRow:
+        // Window inset = 13 pt
+        // ScrollView horizontal padding = 5 pt
+        // Row horizontal padding = 8 pt
+        // Badge width = 20 pt
+        // Spacing between badge and label = 8 pt
+        // Total = 13 + 5 + 8 + 20 + 8 = 54 pt
+        let labelOffsetInPopWindow: CGFloat = 54.0
+
+        var desiredOriginX = screenWordStartX - labelOffsetInPopWindow
+
+        // Constraints:
+        // 1. Popover arrow must stay on the flat top/bottom edge of popWindow
+        let minArrowMargin: CGFloat = 28.0
+        let maxOriginX = screenCursorX - minArrowMargin
+        let minOriginX = screenCursorX - (popWindow.frame.width - minArrowMargin)
+        desiredOriginX = max(minOriginX, min(maxOriginX, desiredOriginX))
+
+        // 2. Popover window must stay within visible screen bounds
+        let screen = popWindow.screen ?? hostWindow.screen ?? NSScreen.main
+        if let screen = screen {
+            let screenMinX = screen.visibleFrame.minX + 8.0
+            let screenMaxX = screen.visibleFrame.maxX - 8.0 - popWindow.frame.width
+            if screenMinX <= screenMaxX {
+                desiredOriginX = max(screenMinX, min(screenMaxX, desiredOriginX))
+            }
+        }
+
+        var f = popWindow.frame
+        f.origin.x = round(desiredOriginX)
+        popWindow.setFrame(f, display: true)
     }
 
     public func selectNextCompletion() {

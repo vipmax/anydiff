@@ -436,6 +436,8 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
 
     public var baseDirectory: String?
     public var onEdit: (() -> Void)?
+    /// Callback invoked whenever dirty buffers are saved to disk (either manually or via debounced auto-save)
+    public var onBuffersSaved: (@Sendable ([String]) -> Void)?
     public static let autoSaveDebounceMs: Int = 600
     private var saveDebounceWorkItem: DispatchWorkItem?
     private let saveLock = NSLock()
@@ -703,7 +705,11 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
             recordSelfSave(for: filePath, diskState: capturedState)
             savedFiles.insert(filePath)
         }
-        return Array(savedFiles)
+        let result = Array(savedFiles)
+        if !result.isEmpty {
+            onBuffersSaved?(result)
+        }
+        return result
     }
 
     // MARK: - Lazy Buffer Promotion & Context Expansion

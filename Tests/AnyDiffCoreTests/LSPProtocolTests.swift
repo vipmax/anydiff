@@ -227,4 +227,97 @@ final class LSPProtocolTests: XCTestCase {
         XCTAssertNil(LSPHoverResponseParser.parse(from: [String: Any]()))
         XCTAssertNil(LSPHoverResponseParser.parse(from: ["contents": ""]))
     }
+
+    // MARK: - Document Synchronization & Save Lifecycle Tests
+
+    func testMultiBufferOnBuffersSavedCallback() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let fileURL = tempDir.appendingPathComponent("TestFile.swift")
+        try "initial content\n".write(to: fileURL, atomically: true, encoding: .utf8)
+
+        let buffer = Buffer(filePath: "TestFile.swift", text: "initial content", fullDiskPath: fileURL.path)
+        let mb = MultiBuffer()
+        mb.baseDirectory = tempDir.path
+        mb.addBuffer(buffer)
+        let excerpt = Excerpt(bufferId: buffer.id, filePath: "TestFile.swift", bufferRange: 0..<1)
+        mb.setExcerpts([excerpt])
+
+        final class Box: @unchecked Sendable {
+            var files: [String] = []
+        }
+        let box = Box()
+        mb.onBuffersSaved = { files in
+            box.files = files
+        }
+
+        // Edit buffer
+        _ = mb.replace(range: MultiBufferPoint(row: 0, column: 0)..<MultiBufferPoint(row: 0, column: 7), with: "updated")
+        XCTAssertTrue(buffer.isDirty)
+
+        let saved = mb.flushImmediateSave()
+        XCTAssertEqual(saved, ["TestFile.swift"])
+        XCTAssertEqual(box.files, ["TestFile.swift"])
+        XCTAssertFalse(buffer.isDirty)
+
+        let onDisk = try String(contentsOf: fileURL, encoding: .utf8)
+        XCTAssertEqual(onDisk, "updated content\n")
+    }
+
+    func testLSPWorkspaceServiceDocumentLifecycleTracking() async {
+        let service = LSPWorkspaceService()
+        let fakePath = "/tmp/fake_test_project/Main.swift"
+        let root = "/tmp/fake_test_project"
+
+        let isOpenInitial = await service.isDocumentOpen(filePath: fakePath, rootPath: root)
+        XCTAssertFalse(isOpenInitial)
+
+        await service.notifyDocumentOpened(filePath: fakePath, text: "let x = 1", rootPath: root)
+        let isOpenAfterOpen = await service.isDocumentOpen(filePath: fakePath, rootPath: root)
+        XCTAssertTrue(isOpenAfterOpen)
+
+        // Saving should maintain open state
+        await service.notifyDocumentSaved(filePath: fakePath, rootPath: root)
+        let isOpenAfterSave = await service.isDocumentOpen(filePath: fakePath, rootPath: root)
+        XCTAssertTrue(isOpenAfterSave)
+
+        // Closing should remove from open set
+        await service.notifyDocumentClosed(filePath: fakePath, rootPath: root)
+        let isOpenAfterClose = await service.isDocumentOpen(filePath: fakePath, rootPath: root)
+        XCTAssertFalse(isOpenAfterClose)
+    }
+
+    func testLSPWorkspaceServiceAutoOpensDocumentOnChanged() async {
+        let service = LSPWorkspaceService()
+        let fakePath = "/tmp/fake_test_project/App.swift"
+        let root = "/tmp/fake_test_project"
+
+        let isOpenInitial = await service.isDocumentOpen(filePath: fakePath, rootPath: root)
+        XCTAssertFalse(isOpenInitial)
+
+        // notifyDocumentChanged for an unopened file auto-opens it
+        await service.notifyDocumentChanged(filePath: fakePath, text: "let y = 2", rootPath: root, debounceMs: 0)
+        let isOpenAfterChange = await service.isDocumentOpen(filePath: fakePath, rootPath: root)
+        XCTAssertTrue(isOpenAfterChange)
+
+        await service.notifyDocumentClosed(filePath: fakePath, rootPath: root)
+        let isOpenAfterClose = await service.isDocumentOpen(filePath: fakePath, rootPath: root)
+        XCTAssertFalse(isOpenAfterClose)
+    }
+
+    func testLSPWorkspaceServiceStopAllClearsStateAndOpenDocuments() async {
+        let service = LSPWorkspaceService()
+        let fakePath = "/tmp/fake_test_project/App.swift"
+        let root = "/tmp/fake_test_project"
+
+        await service.notifyDocumentOpened(filePath: fakePath, text: "let y = 2", rootPath: root)
+        let isOpen = await service.isDocumentOpen(filePath: fakePath, rootPath: root)
+        XCTAssertTrue(isOpen)
+
+        await service.stopAll()
+        let isOpenAfterStopAll = await service.isDocumentOpen(filePath: fakePath, rootPath: root)
+        XCTAssertFalse(isOpenAfterStopAll)
+    }
 }
