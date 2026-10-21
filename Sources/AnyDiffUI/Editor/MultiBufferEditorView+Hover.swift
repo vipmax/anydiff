@@ -120,7 +120,8 @@ extension MultiBufferEditorView {
 
                 if Task.isCancelled { return }
 
-                guard let hover = hover, !hover.contents.isEmpty else {
+                let contents = hover?.contents ?? []
+                guard !contents.isEmpty else {
                     self.hideHover()
                     return
                 }
@@ -130,14 +131,40 @@ extension MultiBufferEditorView {
                     return
                 }
 
-                self.activeHover = hover
+                let finalHover = LSPHover(contents: contents, range: hover?.range)
+                self.activeHover = finalHover
                 self.lastHoverPoint = point
                 self.hoveredTokenScreenRect = targetRect
-                self.presentHoverPopover(hover: hover, targetRect: targetRect)
+                self.presentHoverPopover(hover: finalHover, targetRect: targetRect)
             } catch {
                 self.hideHover()
             }
         }
+    }
+
+    public func presentDiagnosticHover(diagnostics: [LSPDiagnostic], targetRect: CGRect) {
+        var diagBlocks: [String] = []
+        var seenMessages = Set<String>()
+        for d in diagnostics {
+            let key = "\(d.severity.rawValue):\(d.message)"
+            guard !seenMessages.contains(key) else { continue }
+            seenMessages.insert(key)
+
+            let header = "**\(d.severity.title)**"
+            let src = d.source.map { " `(\($0))`" } ?? ""
+            let code = d.code.map { " `[\($0)]`" } ?? ""
+            diagBlocks.append("\(header)\(src)\(code)\n\n\(d.message)")
+        }
+
+        guard !diagBlocks.isEmpty else {
+            hideHover()
+            return
+        }
+
+        let finalHover = LSPHover(contents: diagBlocks, range: nil)
+        self.activeHover = finalHover
+        self.hoveredTokenScreenRect = targetRect
+        self.presentHoverPopover(hover: finalHover, targetRect: targetRect)
     }
 
     // MARK: - Popover Presentation
@@ -321,6 +348,28 @@ extension MultiBufferEditorView {
         let lineIdx = lineIndex(atY: docY)
         guard lineIdx >= 0 && lineIdx < dm.displayLineCount else { return }
 
+        let lineMinY = yOffset(forDisplayLineIndex: lineIdx)
+        let lineH = lineHeight(forDisplayLineIndex: lineIdx)
+        let screenLineMinY = lineMinY - scrollOffsetY
+
+        // 1. If mouse hovers directly over the inline diagnostic pill, show error hover above the pill!
+        if let pillData = diagnosticPillRectForDisplayLine(at: lineIdx, screenLineMinY: screenLineMinY, height: lineH),
+           pillData.rect.insetBy(dx: -4, dy: -2).contains(screenPoint) {
+            hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: false) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self = self else { return }
+                    if self.isHoverVisible && self.hoveredTokenScreenRect == pillData.rect {
+                        return
+                    }
+                    self.presentDiagnosticHover(diagnostics: pillData.diags, targetRect: pillData.rect)
+                }
+            }
+            return
+        }
+
+        // 2. Normal code token hover requires Command key
+        guard NSEvent.modifierFlags.contains(.command) else { return }
+
         guard let targetInfo = hoverTarget(atDisplayLineIndex: lineIdx, screenX: screenPoint.x) else {
             return
         }
@@ -329,7 +378,6 @@ extension MultiBufferEditorView {
         hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
-                // При триггере проверяем: если зажата command, то hover
                 guard NSEvent.modifierFlags.contains(.command) else { return }
                 if self.isHoverVisible && self.lastHoverPoint == targetInfo.point {
                     return

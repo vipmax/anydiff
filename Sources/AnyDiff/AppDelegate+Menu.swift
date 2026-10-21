@@ -180,6 +180,16 @@ extension AppDelegate {
         prevHunkItem.keyEquivalentModifierMask = [.command, .shift]
         navigateMenu.addItem(prevHunkItem)
 
+        navigateMenu.addItem(NSMenuItem.separator())
+
+        let nextDiagItem = NSMenuItem(title: "Go to Next Diagnostic", action: #selector(goToNextDiagnosticAction(_:)), keyEquivalent: String(UnicodeScalar(NSF8FunctionKey)!))
+        nextDiagItem.keyEquivalentModifierMask = []
+        navigateMenu.addItem(nextDiagItem)
+
+        let prevDiagItem = NSMenuItem(title: "Go to Previous Diagnostic", action: #selector(goToPreviousDiagnosticAction(_:)), keyEquivalent: String(UnicodeScalar(NSF8FunctionKey)!))
+        prevDiagItem.keyEquivalentModifierMask = [.shift]
+        navigateMenu.addItem(prevDiagItem)
+
         navigateMenuItem.submenu = navigateMenu
         mainMenu.addItem(navigateMenuItem)
 
@@ -332,6 +342,14 @@ extension AppDelegate {
 
     @objc func goToPreviousHunkAction(_ sender: Any?) {
         NotificationCenter.default.post(name: .goToPreviousHunk, object: nil)
+    }
+
+    @objc func goToNextDiagnosticAction(_ sender: Any?) {
+        NotificationCenter.default.post(name: .goToNextDiagnostic, object: nil)
+    }
+
+    @objc func goToPreviousDiagnosticAction(_ sender: Any?) {
+        NotificationCenter.default.post(name: .goToPreviousDiagnostic, object: nil)
     }
 
     @objc func saveDocumentAction(_ sender: Any?) {

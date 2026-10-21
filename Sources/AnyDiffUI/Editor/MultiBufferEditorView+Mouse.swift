@@ -206,6 +206,20 @@ extension MultiBufferEditorView {
                     needsDisplay = true
                     return
                 } else {
+                    // Check if user clicked on the inline diagnostic pill
+                    if let pillData = diagnosticPillRectForDisplayLine(at: lineIdx, screenLineMinY: lineMinY - scrollOffsetY, height: height),
+                       pillData.rect.insetBy(dx: -4, dy: -2).contains(screenPoint) {
+                        let allMessages = pillData.diags.map(\.message).joined(separator: "\n")
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(allMessages, forType: .string)
+
+                        cursorPoint = pillData.point
+                        selectionAnchor = nil
+                        needsDisplay = true
+                        presentDiagnosticHover(diagnostics: pillData.diags, targetRect: pillData.rect)
+                        return
+                    }
+
                     // Position cursor in code
                     isDraggingSelection = true
                     let text = codeInfo.text

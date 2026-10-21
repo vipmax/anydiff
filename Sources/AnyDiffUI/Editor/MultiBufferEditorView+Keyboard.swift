@@ -185,6 +185,15 @@ extension MultiBufferEditorView {
             }
             return
         }
+        // F8 (VS Code standard): Go to Next/Prev Diagnostic
+        if event.keyCode == 100 && !event.modifierFlags.contains(.command) {
+            if event.modifierFlags.contains(.shift) {
+                goToPreviousDiagnostic()
+            } else {
+                goToNextDiagnostic()
+            }
+            return
+        }
         // Cmd+Option+Down / Up or Ctrl+Down / Up
         if event.keyCode == 125 && (event.modifierFlags.contains([.command, .option]) || (event.modifierFlags.contains(.control) && !event.modifierFlags.contains(.command))) {
             goToNextHunk()
@@ -217,6 +226,15 @@ extension MultiBufferEditorView {
                 goToPreviousHunk()
             } else {
                 goToNextHunk()
+            }
+            return true
+        }
+        // F8: Go to Next/Prev Diagnostic
+        if event.keyCode == 100 && !event.modifierFlags.contains(.command) {
+            if event.modifierFlags.contains(.shift) {
+                goToPreviousDiagnostic()
+            } else {
+                goToNextDiagnostic()
             }
             return true
         }

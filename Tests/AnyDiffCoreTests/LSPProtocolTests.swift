@@ -320,4 +320,149 @@ final class LSPProtocolTests: XCTestCase {
         let isOpenAfterStopAll = await service.isDocumentOpen(filePath: fakePath, rootPath: root)
         XCTAssertFalse(isOpenAfterStopAll)
     }
+
+    // MARK: - Diagnostic Tests
+
+    func testLSPDiagnosticResponseParserPublishDiagnostics() {
+        let params: [String: Any] = [
+            "uri": "file:///tmp/project/Sources/App.swift",
+            "version": 3,
+            "diagnostics": [
+                [
+                    "range": [
+                        "start": ["line": 10, "character": 4],
+                        "end": ["line": 10, "character": 18]
+                    ],
+                    "severity": 1,
+                    "code": "cannot_find_in_scope",
+                    "source": "sourcekit-lsp",
+                    "message": "Cannot find 'someVar' in scope"
+                ],
+                [
+                    "range": [
+                        "start": ["line": 25, "character": 0],
+                        "end": ["line": 25, "character": 10]
+                    ],
+                    "severity": 2,
+                    "code": 404,
+                    "source": "swiftc",
+                    "message": "Initialization of immutable value 'x' was never used"
+                ]
+            ]
+        ]
+
+        let parsed = LSPDiagnosticResponseParser.parsePublishDiagnostics(from: params)
+        XCTAssertNotNil(parsed)
+        XCTAssertEqual(parsed?.uri, "file:///tmp/project/Sources/App.swift")
+        XCTAssertEqual(parsed?.version, 3)
+        XCTAssertEqual(parsed?.diagnostics.count, 2)
+
+        let diag1 = parsed!.diagnostics[0]
+        XCTAssertEqual(diag1.severity, .error)
+        XCTAssertEqual(diag1.code, "cannot_find_in_scope")
+        XCTAssertEqual(diag1.source, "sourcekit-lsp")
+        XCTAssertEqual(diag1.message, "Cannot find 'someVar' in scope")
+        XCTAssertEqual(diag1.range.start.line, 10)
+        XCTAssertEqual(diag1.range.start.character, 4)
+        XCTAssertEqual(diag1.range.end.line, 10)
+        XCTAssertEqual(diag1.range.end.character, 18)
+
+        let diag2 = parsed!.diagnostics[1]
+        XCTAssertEqual(diag2.severity, .warning)
+        XCTAssertEqual(diag2.code, "404")
+        XCTAssertEqual(diag2.source, "swiftc")
+        XCTAssertEqual(diag2.message, "Initialization of immutable value 'x' was never used")
+    }
+
+    func testLSPDiagnosticSeverityOrderingAndSymbols() {
+        XCTAssertTrue(LSPDiagnosticSeverity.error < LSPDiagnosticSeverity.warning)
+        XCTAssertTrue(LSPDiagnosticSeverity.warning < LSPDiagnosticSeverity.information)
+        XCTAssertTrue(LSPDiagnosticSeverity.information < LSPDiagnosticSeverity.hint)
+
+        XCTAssertEqual(LSPDiagnosticSeverity.error.symbol, "●")
+        XCTAssertEqual(LSPDiagnosticSeverity.warning.symbol, "▲")
+        XCTAssertEqual(LSPDiagnosticSeverity.information.symbol, "ℹ")
+        XCTAssertEqual(LSPDiagnosticSeverity.hint.symbol, "○")
+    }
+
+    func testLSPWorkspaceServiceDiagnosticsHandling() async {
+        let service = LSPWorkspaceService()
+        let fakePath = "/tmp/fake_project/File.swift"
+
+        let initialDiags = await service.getDiagnostics(for: fakePath)
+        XCTAssertTrue(initialDiags.isEmpty)
+
+        let testDiag = LSPDiagnostic(
+            range: LSPRange(start: LSPPosition(line: 5, character: 2), end: LSPPosition(line: 5, character: 8)),
+            severity: .error,
+            code: "E001",
+            source: "rustc",
+            message: "Mismatched types"
+        )
+
+        let exp = expectation(forNotification: .lspDiagnosticsDidChange, object: nil) { notification in
+            guard let userInfo = notification.userInfo,
+                  let path = userInfo["filePath"] as? String,
+                  let diags = userInfo["diagnostics"] as? [LSPDiagnostic] else { return false }
+            return path == fakePath && diags.count == 1 && diags.first?.message == "Mismatched types"
+        }
+
+        await service.handleReceivedDiagnostics(filePath: fakePath, diagnostics: [testDiag])
+
+        await fulfillment(of: [exp], timeout: 2.0)
+
+        let diags = await service.getDiagnostics(for: fakePath)
+        XCTAssertEqual(diags.count, 1)
+        XCTAssertEqual(diags.first?.message, "Mismatched types")
+
+        // Clearing diagnostics
+        await service.handleReceivedDiagnostics(filePath: fakePath, diagnostics: [])
+        let cleared = await service.getDiagnostics(for: fakePath)
+        XCTAssertTrue(cleared.isEmpty)
+    }
+
+    func testLSPClientFilePathFromUri() {
+        let path1 = LSPClient.filePathFromUri("file:///Users/dev/project/file.swift")
+        XCTAssertEqual(path1, "/Users/dev/project/file.swift")
+
+        let path2 = LSPClient.filePathFromUri("/already/a/path.swift")
+        XCTAssertEqual(path2, "/already/a/path.swift")
+    }
+
+    func testPyrightDiagnosticsLive() async throws {
+        let pyrightPath = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".anydiff/lsp/bin/pyright/node_modules/.bin/pyright-langserver").path
+        guard FileManager.default.isExecutableFile(atPath: pyrightPath) else {
+            print("Pyright not found at \(pyrightPath), skipping live test")
+            return
+        }
+
+        LSPRegistryBinaryDownloader.customBaseBinDirectory = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".anydiff/lsp/bin", isDirectory: true)
+        defer { LSPRegistryBinaryDownloader.customBaseBinDirectory = nil }
+
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent().path
+        let testPyPath = "\(repoRoot)/test.py"
+        let invalidPython = "def greet(name: str) -> st\n"
+
+        let service = LSPWorkspaceService()
+        let exp = expectation(forNotification: .lspDiagnosticsDidChange, object: nil) { notification in
+            guard let userInfo = notification.userInfo,
+                  let path = userInfo["filePath"] as? String,
+                  let diags = userInfo["diagnostics"] as? [LSPDiagnostic] else { return false }
+            return path == testPyPath && !diags.isEmpty
+        }
+
+        await service.notifyDocumentOpened(filePath: testPyPath, text: invalidPython, rootPath: repoRoot)
+
+        await fulfillment(of: [exp], timeout: 5.0)
+
+        let diags = await service.getDiagnostics(for: testPyPath)
+        print("Final diags count: \(diags.count)")
+        XCTAssertFalse(diags.isEmpty)
+        await service.stopAll()
+    }
 }

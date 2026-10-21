@@ -566,6 +566,122 @@ extension MultiBufferEditorView {
         goToPreviousHunk()
     }
 
+    // MARK: - Diagnostic Navigation (F8 / Shift+F8)
+
+    public struct DiagnosticLocation: Equatable {
+        public let filePath: String
+        public let line: Int // 1-based
+        public let column: Int // 1-based
+        public let severity: LSPDiagnosticSeverity
+        public let message: String
+    }
+
+    public func allDiagnosticLocations() -> [DiagnosticLocation] {
+        guard let dm = displayMap else { return [] }
+        var locations: [DiagnosticLocation] = []
+
+        // Gather diagnostics for all excerpts currently in displayMap in document order
+        for excerpt in dm.multiBuffer.excerpts {
+            let path = excerpt.filePath
+            var fileDiags: [LSPDiagnostic] = []
+            let root = workspaceRootPath ?? FileManager.default.currentDirectoryPath
+            let absPath = (path as NSString).isAbsolutePath ? path : (root as NSString).appendingPathComponent(path)
+            let baseName = (path as NSString).lastPathComponent
+
+            if let d = allDiagnosticsByFile[path] {
+                fileDiags = d
+            } else if let d = allDiagnosticsByFile[absPath] {
+                fileDiags = d
+            } else if let d = allDiagnosticsByFile[baseName] {
+                fileDiags = d
+            } else {
+                for (registeredPath, diags) in allDiagnosticsByFile {
+                    if (registeredPath as NSString).lastPathComponent == baseName {
+                        fileDiags = diags
+                        break
+                    }
+                }
+            }
+
+            let sorted = fileDiags.sorted {
+                if $0.range.start.line != $1.range.start.line {
+                    return $0.range.start.line < $1.range.start.line
+                }
+                return $0.range.start.character < $1.range.start.character
+            }
+
+            for diag in sorted {
+                locations.append(DiagnosticLocation(
+                    filePath: path,
+                    line: diag.range.start.line + 1,
+                    column: diag.range.start.character + 1,
+                    severity: diag.severity,
+                    message: diag.message
+                ))
+            }
+        }
+
+        return locations
+    }
+
+    @objc public func goToNextDiagnostic(_ sender: Any? = nil) {
+        let locations = allDiagnosticLocations()
+        guard !locations.isEmpty, let dm = displayMap else { return }
+
+        let currentLoc = dm.fastSourceLocation(forCodeRow: cursorPoint.row)
+        let currentFile = currentLoc?.filePath
+        let currentLine = currentLoc?.lineNumber ?? 0
+
+        var target: DiagnosticLocation? = nil
+        for loc in locations {
+            if loc.filePath == currentFile {
+                if loc.line > currentLine {
+                    target = loc
+                    break
+                }
+            } else if target == nil, let curF = currentFile {
+                let curIdx = dm.multiBuffer.excerpts.firstIndex(where: { $0.filePath == curF }) ?? 0
+                let locIdx = dm.multiBuffer.excerpts.firstIndex(where: { $0.filePath == loc.filePath }) ?? 0
+                if locIdx > curIdx {
+                    target = loc
+                    break
+                }
+            }
+        }
+
+        let destination = target ?? locations.first!
+        _ = navigateTo(filePath: destination.filePath, lineNumber: destination.line, shouldFocus: true)
+    }
+
+    @objc public func goToPreviousDiagnostic(_ sender: Any? = nil) {
+        let locations = allDiagnosticLocations()
+        guard !locations.isEmpty, let dm = displayMap else { return }
+
+        let currentLoc = dm.fastSourceLocation(forCodeRow: cursorPoint.row)
+        let currentFile = currentLoc?.filePath
+        let currentLine = currentLoc?.lineNumber ?? 0
+
+        var target: DiagnosticLocation? = nil
+        for loc in locations.reversed() {
+            if loc.filePath == currentFile {
+                if loc.line < currentLine {
+                    target = loc
+                    break
+                }
+            } else if target == nil, let curF = currentFile {
+                let curIdx = dm.multiBuffer.excerpts.firstIndex(where: { $0.filePath == curF }) ?? 0
+                let locIdx = dm.multiBuffer.excerpts.firstIndex(where: { $0.filePath == loc.filePath }) ?? 0
+                if locIdx < curIdx {
+                    target = loc
+                    break
+                }
+            }
+        }
+
+        let destination = target ?? locations.last!
+        _ = navigateTo(filePath: destination.filePath, lineNumber: destination.line, shouldFocus: true)
+    }
+
     func currentHunkIndex() -> Int {
         guard let dm = displayMap, !dm.multiBuffer.excerpts.isEmpty else { return 0 }
 

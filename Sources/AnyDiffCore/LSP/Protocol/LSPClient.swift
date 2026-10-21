@@ -28,6 +28,13 @@ public actor LSPClient {
     private var projectInitContinuations: [UUID: CheckedContinuation<Void, Never>] = [:]
     private let frameReader = LSPFraming.FrameReader()
 
+    public typealias DiagnosticsHandler = @Sendable (String, [LSPDiagnostic]) -> Void
+    private var diagnosticsHandler: DiagnosticsHandler?
+
+    public func setDiagnosticsHandler(_ handler: DiagnosticsHandler?) {
+        self.diagnosticsHandler = handler
+    }
+
     public private(set) var state: State = .unstarted
     public private(set) var rootPath: String?
     public let serverName: String
@@ -156,6 +163,13 @@ public actor LSPClient {
                             "insertReplaceSupport": true
                         ],
                         "contextSupport": true
+                    ],
+                    "publishDiagnostics": [
+                        "relatedInformation": true,
+                        "tagSupport": [
+                            "valueSet": [1, 2]
+                        ],
+                        "versionSupport": true
                     ]
                 ]
             ]
@@ -461,6 +475,27 @@ public actor LSPClient {
         return LSPHoverResponseParser.parse(from: response)
     }
 
+    // MARK: - Diagnostics (Pull)
+
+    public func pullDiagnostics(filePath: String) async throws -> [LSPDiagnostic] {
+        try await waitForReady()
+        guard state == .ready && isProcessRunning else { return [] }
+        await waitForProjectInitializationIfNeeded()
+
+        let uri = URL(fileURLWithPath: filePath).absoluteString
+        let params: [String: Any] = [
+            "textDocument": ["uri": uri]
+        ]
+
+        let response = try await sendRequest(method: "textDocument/diagnostic", params: params, timeoutSeconds: 6.0)
+        if let dict = response as? [String: Any], let items = dict["items"] as? [[String: Any]] {
+            let diags = LSPDiagnosticResponseParser.parseDiagnostics(from: items)
+            diagnosticsHandler?(filePath, diags)
+            return diags
+        }
+        return []
+    }
+
     // MARK: - Low-level Messaging
 
     private func cancelPendingRequest(id: Int) {
@@ -585,10 +620,31 @@ public actor LSPClient {
         return false
     }
 
+    public func openDocumentPaths() -> [String] {
+        return documentTexts.keys.map { Self.filePathFromUri($0) }
+    }
+
     private func handleIncomingMessage(_ message: [String: Any]) {
+        if let method = message["method"] as? String {
+            if method == "workspace/diagnostic/refresh" {
+                Task { [weak self] in
+                    guard let self = self else { return }
+                    let openDocs = await self.openDocumentPaths()
+                    for docPath in openDocs {
+                        _ = try? await self.pullDiagnostics(filePath: docPath)
+                    }
+                }
+            }
+        }
         if let method = message["method"] as? String, message["id"] == nil {
             if method == "workspace/projectInitializationComplete" {
                 markProjectInitialized()
+            } else if method == "textDocument/publishDiagnostics" {
+                if let params = message["params"] as? [String: Any],
+                   let parsed = LSPDiagnosticResponseParser.parsePublishDiagnostics(from: params) {
+                    let path = Self.filePathFromUri(parsed.uri)
+                    diagnosticsHandler?(path, parsed.diagnostics)
+                }
             }
             return
         }
@@ -635,5 +691,15 @@ public actor LSPClient {
                 }
             }
         }
+    }
+
+    public static func filePathFromUri(_ uri: String) -> String {
+        if let url = URL(string: uri), url.isFileURL {
+            return url.path
+        }
+        if uri.hasPrefix("file://") {
+            return String(uri.dropFirst(7))
+        }
+        return uri
     }
 }

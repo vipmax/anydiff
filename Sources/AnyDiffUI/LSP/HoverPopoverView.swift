@@ -19,9 +19,35 @@ public struct HoverPopoverView: View {
         }
         .frame(minWidth: 160, maxWidth: 560)
         .frame(maxHeight: 320)
+        .overlay(alignment: .topTrailing) {
+            copyButton
+                .padding(.top, 6)
+                .padding(.trailing, 6)
+        }
         .onHover { isHovered in
             onHoverChanged?(isHovered)
         }
+    }
+
+    @State private var isCopied = false
+    @State private var isButtonHovered = false
+
+    private var copyButton: some View {
+        Button(action: copyToClipboard) {
+            Image(systemName: isCopied ? "checkmark" : "doc.on.doc")
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundColor(isCopied ? .green : Color(theme.foreground).opacity(isButtonHovered ? 0.9 : 0.55))
+                .frame(width: 22, height: 22)
+                .background(
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(isCopied ? Color.green.opacity(0.15) : (isButtonHovered ? Color(theme.foreground).opacity(0.12) : Color(theme.foreground).opacity(0.06)))
+                )
+        }
+        .buttonStyle(.plain)
+        .onHover { h in
+            isButtonHovered = h
+        }
+        .help(isCopied ? "Copied" : "Copy")
     }
 
     public var contentView: some View {
@@ -30,8 +56,22 @@ public struct HoverPopoverView: View {
                 markdownBlockView(block)
             }
         }
-        .padding(.horizontal, 12)
+        .padding(.leading, 12)
+        .padding(.trailing, 32)
         .padding(.vertical, 8)
+    }
+
+    private func copyToClipboard() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(hover.markdownString, forType: .string)
+        withAnimation {
+            isCopied = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            withAnimation {
+                isCopied = false
+            }
+        }
     }
 
     private var blocks: [MarkdownBlock] {

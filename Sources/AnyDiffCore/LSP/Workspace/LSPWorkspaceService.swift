@@ -44,6 +44,7 @@ public actor LSPWorkspaceService {
     private var idleTimerTasks: [String: Task<Void, Never>] = [:] // key: languageId
     private var pendingDocumentChangeTasks: [String: Task<Void, Never>] = [:] // key: filePath -> debounced change task
     private var lastActivityDates: [String: Date] = [:] // key: languageId
+    private var diagnosticsByFile: [String: [LSPDiagnostic]] = [:] // key: canonical filePath -> diagnostics
     public private(set) var idleTimeout: TimeInterval = {
         let saved = UserDefaults.standard.double(forKey: "anyDiffLSPIdleTimeoutSeconds")
         return saved > 0 ? saved : 300
@@ -245,8 +246,8 @@ public actor LSPWorkspaceService {
             return try await inFlight.value
         }
 
-        let task = Task<LSPClient?, Error> {
-            guard let resolved = await self.resolveServer(for: lang) else {
+        let task = Task<LSPClient?, Error> { [weak self] in
+            guard let self = self, let resolved = await self.resolveServer(for: lang) else {
                 return nil
             }
 
@@ -256,6 +257,12 @@ public actor LSPWorkspaceService {
                 workingDirectory: rootPath,
                 serverName: resolved.serverName
             )
+
+            await client.setDiagnosticsHandler { [weak self] filePath, diagnostics in
+                Task { [weak self] in
+                    await self?.handleReceivedDiagnostics(filePath: filePath, diagnostics: diagnostics)
+                }
+            }
 
             try await client.start(rootPath: rootPath)
             return client
@@ -268,7 +275,9 @@ public actor LSPWorkspaceService {
             if let client = client {
                 activeClients[lang] = client
                 recordActivity(for: lang)
-                NotificationCenter.default.post(name: Self.serversDidChangeNotification, object: nil)
+                DispatchQueue.main.async {
+                    NotificationCenter.default.post(name: Self.serversDidChangeNotification, object: nil)
+                }
             }
             return client
         } catch {
@@ -400,10 +409,17 @@ public actor LSPWorkspaceService {
             workingDirectory: rootPath,
             serverName: resolved.serverName
         )
+        await client.setDiagnosticsHandler { [weak self] filePath, diagnostics in
+            Task { [weak self] in
+                await self?.handleReceivedDiagnostics(filePath: filePath, diagnostics: diagnostics)
+            }
+        }
         try await client.start(rootPath: rootPath)
         activeClients[lang] = client
         recordActivity(for: lang)
-        NotificationCenter.default.post(name: Self.serversDidChangeNotification, object: nil)
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: Self.serversDidChangeNotification, object: nil)
+        }
         return client
     }
 
@@ -642,6 +658,60 @@ public actor LSPWorkspaceService {
         )
     }
 
+    // MARK: - Diagnostics
+
+    public func handleReceivedDiagnostics(filePath: String, diagnostics: [LSPDiagnostic]) {
+        let absPath = canonicalPath(filePath)
+        if diagnostics.isEmpty {
+            diagnosticsByFile.removeValue(forKey: absPath)
+        } else {
+            diagnosticsByFile[absPath] = diagnostics
+        }
+
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(
+                name: .lspDiagnosticsDidChange,
+                object: nil,
+                userInfo: [
+                    "filePath": absPath,
+                    "diagnostics": diagnostics
+                ]
+            )
+        }
+    }
+
+    public func getDiagnostics(for filePath: String, rootPath: String? = nil) -> [LSPDiagnostic] {
+        let absPath = canonicalPath(filePath, rootPath: rootPath)
+        return diagnosticsByFile[absPath] ?? []
+    }
+
+    public func getAllDiagnostics() -> [String: [LSPDiagnostic]] {
+        return diagnosticsByFile
+    }
+
+    public func pullDiagnostics(filePath: String, rootPath: String? = nil) async -> [LSPDiagnostic] {
+        let absPath = canonicalPath(filePath, rootPath: rootPath)
+        let lang = openDocumentLanguages[absPath] ?? openDocumentLanguages[filePath] ?? detectLanguage(for: absPath).lowercased()
+        guard let client = activeClients[lang] else { return getDiagnostics(for: absPath) }
+        do {
+            let diags = try await client.pullDiagnostics(filePath: absPath)
+            handleReceivedDiagnostics(filePath: absPath, diagnostics: diags)
+            return diags
+        } catch {
+            return getDiagnostics(for: absPath)
+        }
+    }
+
+    public func setClientForTesting(_ client: LSPClient, for languageId: String) async {
+        let lang = languageId.lowercased()
+        await client.setDiagnosticsHandler { [weak self] filePath, diagnostics in
+            Task { [weak self] in
+                await self?.handleReceivedDiagnostics(filePath: filePath, diagnostics: diagnostics)
+            }
+        }
+        activeClients[lang] = client
+    }
+
     public func stopAll() async {
         for (_, task) in pendingDocumentChangeTasks {
             task.cancel()
@@ -661,7 +731,10 @@ public actor LSPWorkspaceService {
         }
         activeClients.removeAll()
         openDocumentLanguages.removeAll()
-        NotificationCenter.default.post(name: Self.serversDidChangeNotification, object: nil)
+        diagnosticsByFile.removeAll()
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: Self.serversDidChangeNotification, object: nil)
+        }
     }
 
     // MARK: - Path Helpers

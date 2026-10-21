@@ -494,3 +494,131 @@ public enum LSPFraming {
         }
     }
 }
+
+// MARK: - Diagnostic Types (LSP textDocument/publishDiagnostics & textDocument/diagnostic)
+
+public enum LSPDiagnosticSeverity: Int, Codable, Sendable, Comparable {
+    case error = 1
+    case warning = 2
+    case information = 3
+    case hint = 4
+
+    public static func < (lhs: LSPDiagnosticSeverity, rhs: LSPDiagnosticSeverity) -> Bool {
+        lhs.rawValue < rhs.rawValue
+    }
+
+    public var title: String {
+        switch self {
+        case .error: return "Error"
+        case .warning: return "Warning"
+        case .information: return "Info"
+        case .hint: return "Hint"
+        }
+    }
+
+    public var symbol: String {
+        switch self {
+        case .error: return "●"
+        case .warning: return "▲"
+        case .information: return "ℹ"
+        case .hint: return "○"
+        }
+    }
+}
+
+public struct LSPDiagnostic: Identifiable, Codable, Equatable, Sendable {
+    public let id: String
+    public let range: LSPRange
+    public let severity: LSPDiagnosticSeverity
+    public let code: String?
+    public let source: String?
+    public let message: String
+
+    public init(
+        id: String = UUID().uuidString,
+        range: LSPRange,
+        severity: LSPDiagnosticSeverity = .error,
+        code: String? = nil,
+        source: String? = nil,
+        message: String
+    ) {
+        self.id = id
+        self.range = range
+        self.severity = severity
+        self.code = code
+        self.source = source
+        self.message = message
+    }
+}
+
+public struct LSPPublishDiagnosticsParams: Sendable {
+    public let uri: String
+    public let version: Int?
+    public let diagnostics: [LSPDiagnostic]
+
+    public init(uri: String, version: Int? = nil, diagnostics: [LSPDiagnostic]) {
+        self.uri = uri
+        self.version = version
+        self.diagnostics = diagnostics
+    }
+}
+
+public enum LSPDiagnosticResponseParser {
+    public static func parsePublishDiagnostics(from params: [String: Any]) -> LSPPublishDiagnosticsParams? {
+        guard let uri = params["uri"] as? String else { return nil }
+        let version = params["version"] as? Int
+        let rawDiags = (params["diagnostics"] as? [[String: Any]]) ?? []
+        let diagnostics = parseDiagnostics(from: rawDiags)
+        return LSPPublishDiagnosticsParams(uri: uri, version: version, diagnostics: diagnostics)
+    }
+
+    public static func parseDiagnostics(from array: [[String: Any]]) -> [LSPDiagnostic] {
+        var diagnostics: [LSPDiagnostic] = []
+        diagnostics.reserveCapacity(array.count)
+
+        for d in array {
+            guard let rangeDict = d["range"] as? [String: Any],
+                  let startDict = rangeDict["start"] as? [String: Any],
+                  let startLine = startDict["line"] as? Int,
+                  let startChar = startDict["character"] as? Int,
+                  let endDict = rangeDict["end"] as? [String: Any],
+                  let endLine = endDict["line"] as? Int,
+                  let endChar = endDict["character"] as? Int,
+                  let message = d["message"] as? String else {
+                continue
+            }
+
+            let sevRaw = d["severity"] as? Int ?? 1
+            let severity = LSPDiagnosticSeverity(rawValue: sevRaw) ?? .error
+
+            let code: String? = {
+                if let cStr = d["code"] as? String {
+                    return cStr
+                } else if let cInt = d["code"] as? Int {
+                    return String(cInt)
+                }
+                return nil
+            }()
+
+            let source = d["source"] as? String
+
+            let diag = LSPDiagnostic(
+                range: LSPRange(
+                    start: LSPPosition(line: startLine, character: startChar),
+                    end: LSPPosition(line: endLine, character: endChar)
+                ),
+                severity: severity,
+                code: code,
+                source: source,
+                message: message
+            )
+            diagnostics.append(diag)
+        }
+
+        return diagnostics
+    }
+}
+
+extension Notification.Name {
+    public static let lspDiagnosticsDidChange = Notification.Name("AnyDiff_lspDiagnosticsDidChange")
+}
