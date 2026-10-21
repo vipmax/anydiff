@@ -314,6 +314,75 @@ final class ACPRegistryTests: XCTestCase {
         coordinator.uninstallRegistryAgent(id: agentId)
     }
 
+    func testCoordinatorPreservesCustomEnvironmentAndUpdatesChildProfilesOnUpdate() {
+        let coordinator = AgentSessionCoordinator()
+        let agentId = "antigravity-acp"
+
+        let entryV1 = ACPRegistryAgentEntry(
+            id: agentId,
+            name: "Google Antigravity",
+            version: "1.0.0",
+            description: "AI Agent",
+            distribution: ACPRegistryDistribution(
+                binary: [
+                    "darwin-aarch64": ACPRegistryBinaryTarget(
+                        archive: "https://example.com/v1.tar.gz",
+                        cmd: "agy_acp",
+                        args: ["--initial-arg"],
+                        sha256: nil,
+                        env: ["DEFAULT_ENV": "val1"]
+                    )
+                ]
+            )
+        )
+
+        // Install v1.0.0
+        let basePreset = coordinator.installRegistryAgent(entryV1, binaryPath: "/path/v1.0.0/agy_acp")
+        // User customizes environment on base preset
+        if let idx = coordinator.customPresets.firstIndex(where: { $0.id == agentId }) {
+            coordinator.customPresets[idx].environment = ["DEFAULT_ENV": "val1", "CUSTOM_KEY": "secret_token"]
+        }
+
+        // User duplicates into a child profile "Work"
+        let workProfile = coordinator.duplicatePreset(basePreset, profileName: "Work")
+        XCTAssertEqual(workProfile.command, "/path/v1.0.0/agy_acp")
+        XCTAssertEqual(workProfile.version, "1.0.0")
+
+        // Now an update to v1.2.0 arrives
+        let entryV2 = ACPRegistryAgentEntry(
+            id: agentId,
+            name: "Google Antigravity",
+            version: "1.2.0",
+            description: "AI Agent",
+            distribution: ACPRegistryDistribution(
+                binary: [
+                    "darwin-aarch64": ACPRegistryBinaryTarget(
+                        archive: "https://example.com/v2.tar.gz",
+                        cmd: "agy_acp",
+                        args: ["--initial-arg"],
+                        sha256: nil,
+                        env: ["DEFAULT_ENV": "val1"]
+                    )
+                ]
+            )
+        )
+
+        let updatedBase = coordinator.installRegistryAgent(entryV2, binaryPath: "/path/v1.2.0/agy_acp")
+        XCTAssertEqual(updatedBase.command, "/path/v1.2.0/agy_acp")
+        XCTAssertEqual(updatedBase.version, "1.2.0")
+        // Base preset custom environment was preserved:
+        XCTAssertEqual(updatedBase.environment?["CUSTOM_KEY"], "secret_token")
+
+        // Child profile was automatically updated to the new binary while keeping its profile and env!
+        let updatedWork = coordinator.allPresets.first(where: { $0.id == workProfile.id })
+        XCTAssertNotNil(updatedWork)
+        XCTAssertEqual(updatedWork?.command, "/path/v1.2.0/agy_acp")
+        XCTAssertEqual(updatedWork?.version, "1.2.0")
+        XCTAssertEqual(updatedWork?.profile, "Work")
+
+        coordinator.uninstallRegistryAgent(id: agentId)
+    }
+
     func testCheckForAgentUpdatesEndToEnd() async throws {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [MockURLProtocol.self]

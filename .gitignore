@@ -7,3 +7,4 @@ Packages/
 xcuserdata/
 DerivedData/
 dist/
+.anycode/

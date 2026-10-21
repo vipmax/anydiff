@@ -36,6 +36,14 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
         buffers[id]
     }
 
+    public func buffer(forFilePath filePath: String) -> Buffer? {
+        if let buf = buffers.values.first(where: { $0.filePath == filePath }) {
+            return buf
+        }
+        let normalized = (filePath as NSString).standardizingPath
+        return buffers.values.first { ($0.filePath as NSString).standardizingPath == normalized }
+    }
+
     public func addExcerpt(_ excerpt: Excerpt) {
         excerpts.append(excerpt)
         version &+= 1
@@ -428,6 +436,8 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
 
     public var baseDirectory: String?
     public var onEdit: (() -> Void)?
+    /// Callback invoked whenever dirty buffers are saved to disk (either manually or via debounced auto-save)
+    public var onBuffersSaved: (@Sendable ([String]) -> Void)?
     public static let autoSaveDebounceMs: Int = 600
     private var saveDebounceWorkItem: DispatchWorkItem?
     private let saveLock = NSLock()
@@ -695,7 +705,11 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
             recordSelfSave(for: filePath, diskState: capturedState)
             savedFiles.insert(filePath)
         }
-        return Array(savedFiles)
+        let result = Array(savedFiles)
+        if !result.isEmpty {
+            onBuffersSaved?(result)
+        }
+        return result
     }
 
     // MARK: - Lazy Buffer Promotion & Context Expansion
@@ -706,7 +720,9 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
         guard let targetBuf = buffers[bufferId] else { return nil }
         guard targetBuf.isLazySlice else { return targetBuf }
 
-        let diskPath = targetBuf.fullDiskPath ?? baseDirectory.map { ($0 as NSString).appendingPathComponent(targetBuf.filePath) }
+        let diskPath = targetBuf.fullDiskPath
+            ?? baseDirectory.map { ($0 as NSString).appendingPathComponent(targetBuf.filePath) }
+            ?? ((targetBuf.filePath as NSString).isAbsolutePath ? targetBuf.filePath : nil)
         guard let fullPath = diskPath, let diskText = try? String(contentsOfFile: fullPath, encoding: .utf8) else {
             targetBuf.isLazySlice = false
             return targetBuf
@@ -1155,6 +1171,88 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
             excerpts[i].isCollapsed = false
         }
         version &+= 1
+    }
+
+    /// Returns the complete file content (disk or promoted in-memory buffer) for a file in the MultiBuffer
+    public func fullFileContent(for filePath: String, baseDirectory: String? = nil) -> String? {
+        if let buf = buffers.values.first(where: { $0.filePath == filePath && $0.isFullFile && !$0.isLazySlice }) {
+            return buf.text()
+        }
+        let base = baseDirectory ?? self.baseDirectory
+        let fullPath = buffers.values.first(where: { $0.filePath == filePath })?.fullDiskPath
+            ?? base.map { ($0 as NSString).appendingPathComponent(filePath) }
+            ?? ((filePath as NSString).isAbsolutePath ? filePath : nil)
+        if let path = fullPath, let text = try? String(contentsOfFile: path, encoding: .utf8) {
+            return text
+        }
+        if let buf = buffers.values.first(where: { $0.filePath == filePath }) {
+            return buf.text()
+        }
+        return nil
+    }
+
+    /// Expands folds/gaps for `filePath` so that the given 1-based `lineNumber` becomes visible in an excerpt.
+    @discardableResult
+    public func expandFoldToInclude(filePath: String, lineNumber: Int, padding: Int = 5) -> Bool {
+        // 1. Uncollapse file if collapsed
+        expand(filePath: filePath)
+
+        let fileExcerpts = excerpts.enumerated().filter { $0.element.filePath == filePath }
+        guard !fileExcerpts.isEmpty else { return false }
+
+        // 2. Promote lazy slices so bufferRange is calibrated against full file lines (0-based)
+        for (_, ex) in fileExcerpts {
+            if let buf = buffers[ex.bufferId], buf.isLazySlice {
+                _ = promoteBufferToFullFile(for: ex.bufferId)
+            }
+        }
+
+        // Re-read fileExcerpts after potential promotion and merging
+        let updatedExcerpts = excerpts.enumerated().filter { $0.element.filePath == filePath }
+        guard !updatedExcerpts.isEmpty else { return false }
+
+        let target0 = max(0, lineNumber - 1)
+
+        // 3. Check if already inside an excerpt
+        if updatedExcerpts.contains(where: { $0.element.bufferRange.contains(target0) }) {
+            return true
+        }
+
+        // 4. Target before the first excerpt: expand first excerpt up
+        let first = updatedExcerpts.first!
+        if target0 < first.element.bufferRange.lowerBound {
+            let upAmount = (first.element.bufferRange.lowerBound - target0) + padding
+            expandExcerpt(at: first.offset, up: upAmount, down: 0)
+            return true
+        }
+
+        // 5. Target after the last excerpt: expand last excerpt down
+        let last = updatedExcerpts.last!
+        if target0 >= last.element.bufferRange.upperBound {
+            let downAmount = (target0 - last.element.bufferRange.upperBound + 1) + padding
+            expandExcerpt(at: last.offset, up: 0, down: downAmount)
+            return true
+        }
+
+        // 6. Target between two excerpts (in a fold gap)
+        for i in 0..<(updatedExcerpts.count - 1) {
+            let curr = updatedExcerpts[i]
+            let next = updatedExcerpts[i + 1]
+            if target0 >= curr.element.bufferRange.upperBound && target0 < next.element.bufferRange.lowerBound {
+                let distCurr = target0 - curr.element.bufferRange.upperBound
+                let distNext = next.element.bufferRange.lowerBound - target0
+                if distCurr <= distNext {
+                    let downAmount = distCurr + 1 + padding
+                    expandExcerpt(at: curr.offset, up: 0, down: downAmount)
+                } else {
+                    let upAmount = distNext + padding
+                    expandExcerpt(at: next.offset, up: upAmount, down: 0)
+                }
+                return true
+            }
+        }
+
+        return false
     }
 
     // MARK: - Selection Text Extraction

@@ -48,7 +48,12 @@ public final class AgentSessionItem: Identifiable, ObservableObject, @unchecked 
         self.manager = manager
         self.isMock = isMock
         self.preset = preset
-        self.title = title ?? (isMock ? "Mock Session" : "New Session")
+        let rawTitle = title ?? (isMock ? "Mock Session" : "New Session")
+        let cleanTitle = rawTitle
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        self.title = cleanTitle.isEmpty ? (isMock ? "Mock Session" : "New Session") : cleanTitle
         self.lastSeenMessageCount = manager.messages.count
 
         manager.$isNotificationsEnabled

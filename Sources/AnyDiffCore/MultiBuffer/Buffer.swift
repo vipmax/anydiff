@@ -224,21 +224,44 @@ public final class Buffer: Identifiable, @unchecked Sendable {
     }
 
     public static func detectLanguage(for path: String) -> String {
+        let baseName = ((path as NSString).lastPathComponent).lowercased()
+        if baseName == "dockerfile" || baseName.hasPrefix("dockerfile.") || baseName == "containerfile" {
+            return "dockerfile"
+        }
         let ext = (path as NSString).pathExtension.lowercased()
         switch ext {
         case "swift": return "swift"
         case "rs": return "rust"
+        case "cs", "csx": return "csharp"
         case "ts", "tsx": return "typescript"
-        case "js", "jsx": return "javascript"
-        case "py": return "python"
+        case "js", "jsx", "mjs", "cjs": return "javascript"
+        case "py", "pyi": return "python"
         case "c", "h": return "c"
         case "cpp", "hpp", "cc", "cxx": return "cpp"
         case "go": return "go"
+        case "java": return "java"
+        case "kt", "kts": return "kotlin"
+        case "php", "phtml": return "php"
+        case "rb", "rake", "gemspec", "ru": return "ruby"
+        case "dart": return "dart"
+        case "ex", "exs", "heex": return "elixir"
+        case "scala", "sc", "sbt": return "scala"
+        case "vue": return "vue"
+        case "svelte": return "svelte"
+        case "astro": return "astro"
+        case "graphql", "gql": return "graphql"
+        case "prisma": return "prisma"
+        case "dockerfile": return "dockerfile"
+        case "tf", "tfvars", "hcl": return "terraform"
+        case "sql": return "sql"
+        case "lua": return "lua"
+        case "zig": return "zig"
+        case "toml": return "toml"
         case "json": return "json"
         case "yaml", "yml": return "yaml"
-        case "md", "markdown": return "markdown"
+        case "md", "markdown", "mdown", "mkdn": return "markdown"
         case "html", "htm": return "html"
-        case "css": return "css"
+        case "css", "scss", "sass", "less": return "css"
         case "diff", "patch": return "diff"
         case "sh", "zsh", "bash": return "shell"
         default: return "plaintext"

@@ -208,24 +208,42 @@ final class AgentTableRowView: NSTableRowView {
 
 final class PillBadgeView: NSView {
     private let label = NSTextField(labelWithString: "")
+    private let heightValue: CGFloat
 
-    init(font: NSFont = .systemFont(ofSize: 9.5, weight: .semibold)) {
+    init(font: NSFont = .systemFont(ofSize: 9.5, weight: .semibold), height: CGFloat = 16) {
+        self.heightValue = height
         super.init(frame: .zero)
         wantsLayer = true
-        layer?.cornerRadius = 4.5
+        layer?.cornerRadius = 4.0
         layer?.masksToBounds = true
 
         label.font = font
         label.alignment = .center
+        label.maximumNumberOfLines = 1
+        label.usesSingleLineMode = true
+        if let cell = label.cell as? NSTextFieldCell {
+            cell.wraps = false
+            cell.isScrollable = false
+        }
         label.translatesAutoresizingMaskIntoConstraints = false
         addSubview(label)
 
+        setContentHuggingPriority(.required, for: .horizontal)
+        setContentCompressionResistancePriority(.required, for: .horizontal)
+        setContentHuggingPriority(.required, for: .vertical)
+        setContentCompressionResistancePriority(.required, for: .vertical)
+
         NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 5),
-            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -5),
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4.5),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4.5),
             label.centerYAnchor.constraint(equalTo: centerYAnchor),
-            heightAnchor.constraint(equalToConstant: 17)
+            heightAnchor.constraint(equalToConstant: height)
         ])
+    }
+
+    override var intrinsicContentSize: NSSize {
+        let labelSize = label.intrinsicContentSize
+        return NSSize(width: ceil(labelSize.width) + 9, height: heightValue)
     }
 
     required init?(coder: NSCoder) {
@@ -236,6 +254,7 @@ final class PillBadgeView: NSView {
         label.stringValue = text
         label.textColor = textColor
         layer?.backgroundColor = bgColor.cgColor
+        invalidateIntrinsicContentSize()
     }
 }
 
@@ -578,17 +597,43 @@ final class AgentRegistryTableCellView: NSTableCellView {
 
         // 3. Title label (full width, prominent)
         titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        titleLabel.maximumNumberOfLines = 1
+        titleLabel.usesSingleLineMode = true
         titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.allowsDefaultTighteningForTruncation = true
+        if let cell = titleLabel.cell as? NSTextFieldCell {
+            cell.wraps = false
+            cell.isScrollable = false
+            cell.lineBreakMode = .byTruncatingTail
+            cell.truncatesLastVisibleLine = true
+        }
         titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         // 4. Description label (full width, clear secondary text)
         descLabel.font = .systemFont(ofSize: 11, weight: .regular)
+        descLabel.maximumNumberOfLines = 1
+        descLabel.usesSingleLineMode = true
         descLabel.lineBreakMode = .byTruncatingTail
+        descLabel.allowsDefaultTighteningForTruncation = true
+        if let cell = descLabel.cell as? NSTextFieldCell {
+            cell.wraps = false
+            cell.isScrollable = false
+            cell.lineBreakMode = .byTruncatingTail
+            cell.truncatesLastVisibleLine = true
+        }
         descLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         // 5. Badges & author row at the very bottom
         authorLabel.font = .systemFont(ofSize: 10, weight: .regular)
+        authorLabel.maximumNumberOfLines = 1
+        authorLabel.usesSingleLineMode = true
         authorLabel.lineBreakMode = .byTruncatingTail
+        if let cell = authorLabel.cell as? NSTextFieldCell {
+            cell.wraps = false
+            cell.isScrollable = false
+            cell.lineBreakMode = .byTruncatingTail
+            cell.truncatesLastVisibleLine = true
+        }
         authorLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         bottomRow.orientation = .horizontal

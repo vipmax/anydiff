@@ -229,9 +229,15 @@ public enum ACPRegistryBinaryDownloader {
         }
 
         func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
-            guard totalBytesExpectedToWrite > 0 else { return }
-            let progress = Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
-            if progress - lastReported >= 0.005 || progress >= 0.99 {
+            let progress: Double
+            if totalBytesExpectedToWrite > 0 {
+                progress = min(1.0, Double(totalBytesWritten) / Double(totalBytesExpectedToWrite))
+            } else {
+                // If Content-Length header is missing from CDN, advance progress smoothly up to 90%
+                let mb = Double(totalBytesWritten) / 1_048_576.0
+                progress = min(0.90, 1.0 - exp(-mb / 15.0))
+            }
+            if abs(progress - lastReported) >= 0.005 || progress >= 0.99 {
                 lastReported = progress
                 progressHandler?(progress)
             }

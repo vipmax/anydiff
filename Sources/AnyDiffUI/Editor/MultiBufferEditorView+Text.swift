@@ -140,6 +140,23 @@ extension MultiBufferEditorView {
         resetCursorBlink()
         needsDisplay = true
         notifyContentChange()
+
+        if isHoverVisible {
+            hideHover()
+        }
+
+        // Code Completion handling
+        if isCompletionMenuVisible {
+            if let lastChar = text.last, isWordChar(lastChar) {
+                updateCompletionsFilter()
+            } else if text == "." {
+                showCompletions(triggerCharacter: ".")
+            } else {
+                hideCompletionMenu()
+            }
+        } else if text == "." {
+            showCompletions(triggerCharacter: ".")
+        }
     }
 
     public override func deleteBackward(_ sender: Any?) {
@@ -299,6 +316,29 @@ extension MultiBufferEditorView {
             resetCursorBlink()
             needsDisplay = true
             notifyContentChange()
+        }
+
+        if isHoverVisible {
+            hideHover()
+        }
+
+        if isCompletionMenuVisible {
+            let stillValid: Bool
+            let triggerCol = completionTriggerBufferCol ?? completionTriggerPoint?.column ?? 0
+            if let triggerBufId = completionTriggerBufferId,
+               let triggerBufRow = completionTriggerBufferRow,
+               let loc = displayMap.bufferLocation(for: cursorPoint) {
+                stillValid = (loc.buffer.id == triggerBufId && loc.point.row == triggerBufRow && cursorPoint.column >= triggerCol)
+            } else if let trigger = completionTriggerPoint {
+                stillValid = (cursorPoint.row == trigger.row && cursorPoint.column >= trigger.column)
+            } else {
+                stillValid = false
+            }
+            if stillValid {
+                updateCompletionsFilter()
+            } else {
+                hideCompletionMenu()
+            }
         }
     }
 

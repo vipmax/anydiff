@@ -1177,4 +1177,85 @@ final class MultiBufferEditorUITests: XCTestCase {
             XCTAssertEqual(editor.yOffset(forDisplayLineIndex: i), CGFloat(i) * editor.excerptHeaderHeight, "Collapsed header \(i) must not overlap previous header")
         }
     }
+
+    // MARK: - Inline Diagnostics UI Tests
+
+    func testEditorUIDiagnosticSquiggleAndInlineMessageRendered() throws {
+        let fixture = makeEditor(text: "let x = 10\nlet y = undefined_var + 1\nlet z = 30")
+        let editor = fixture.editor
+        editor.setFrameSize(NSSize(width: 800, height: 400))
+        editor.syncLayoutIfNeeded()
+
+        let imageWithoutDiag = try render(editor)
+
+        let filePath = fixture.displayMap.multiBuffer.excerpts[0].filePath
+
+        // Inject diagnostic for line 2
+        let diag = LSPDiagnostic(
+            range: LSPRange(start: LSPPosition(line: 1, character: 8), end: LSPPosition(line: 1, character: 21)),
+            severity: .error,
+            code: "E0425",
+            source: "compiler",
+            message: "Cannot find 'undefined_var' in scope"
+        )
+
+        editor.allDiagnosticsByFile[filePath] = [diag]
+        editor.rebuildDiagnosticIndex()
+        editor.needsDisplay = true
+
+        let diags = editor.diagnosticsForLine(filePath: filePath, lineNumber: 2)
+        XCTAssertEqual(diags?.count, 1)
+        XCTAssertEqual(diags?.first?.severity, .error)
+
+        let imageWithDiag = try render(editor)
+
+        let diffPixels = differingPixelCount(between: imageWithoutDiag, and: imageWithDiag, in: wholeImageRect(imageWithDiag))
+        XCTAssertGreaterThan(diffPixels, 0, "Inline diagnostic squiggles and end-of-line pill must draw pixels")
+    }
+
+    func testEditorUIDiagnosticNavigationF8AndShiftF8() {
+        let fixture = makeEditor(text: "let a = 1\nlet b = err1\nlet c = 3\nlet d = err2\nlet e = 5")
+        let editor = fixture.editor
+        editor.setFrameSize(NSSize(width: 800, height: 400))
+        editor.syncLayoutIfNeeded()
+
+        let filePath = fixture.displayMap.multiBuffer.excerpts[0].filePath
+
+        let diag1 = LSPDiagnostic(
+            range: LSPRange(start: LSPPosition(line: 1, character: 8), end: LSPPosition(line: 1, character: 12)),
+            severity: .error,
+            message: "Error 1"
+        )
+        let diag2 = LSPDiagnostic(
+            range: LSPRange(start: LSPPosition(line: 3, character: 8), end: LSPPosition(line: 3, character: 12)),
+            severity: .warning,
+            message: "Warning 2"
+        )
+
+        editor.allDiagnosticsByFile[filePath] = [diag1, diag2]
+        editor.rebuildDiagnosticIndex()
+
+        let locations = editor.allDiagnosticLocations()
+        XCTAssertEqual(locations.count, 2)
+        XCTAssertEqual(locations[0].line, 2)
+        XCTAssertEqual(locations[1].line, 4)
+
+        // Initial cursor at row 0
+        editor.cursorPoint = MultiBufferPoint(row: 0, column: 0)
+
+        // F8: Go to Next Diagnostic -> should jump to line 2
+        editor.goToNextDiagnostic()
+        var curLoc = fixture.displayMap.fastSourceLocation(forCodeRow: editor.cursorPoint.row)
+        XCTAssertEqual(curLoc?.lineNumber, 2)
+
+        // F8 again: should jump to line 4
+        editor.goToNextDiagnostic()
+        curLoc = fixture.displayMap.fastSourceLocation(forCodeRow: editor.cursorPoint.row)
+        XCTAssertEqual(curLoc?.lineNumber, 4)
+
+        // Shift+F8: Go to Previous Diagnostic -> should jump back to line 2
+        editor.goToPreviousDiagnostic()
+        curLoc = fixture.displayMap.fastSourceLocation(forCodeRow: editor.cursorPoint.row)
+        XCTAssertEqual(curLoc?.lineNumber, 2)
+    }
 }

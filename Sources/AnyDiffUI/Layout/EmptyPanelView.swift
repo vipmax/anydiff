@@ -242,6 +242,8 @@ public struct EmptyPanelView: View {
             return Color.blue
         case .agent:
             return Color.purple
+        case .terminal:
+            return Color.green
         }
     }
 }

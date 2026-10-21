@@ -347,6 +347,12 @@ extension MultiBufferEditorView {
     }
 
     public override func scrollWheel(with event: NSEvent) {
+        if isHoverVisible {
+            hideHover()
+        }
+        hoverTimer?.invalidate()
+        hoverTimer = nil
+
         let mult: CGFloat = event.hasPreciseScrollingDeltas ? 1.0 : 24.0
         var dy = event.scrollingDeltaY * mult
         var dx = event.scrollingDeltaX * mult
@@ -397,6 +403,13 @@ extension MultiBufferEditorView {
                 hoveredCloseFilePath = nil
                 needsDisplay = true
             }
+        }
+
+        if isHoverVisible {
+            hideHover()
+        }
+        if isCompletionMenuVisible {
+            updateCompletionMenuFrame()
         }
 
         if event.phase == .ended || event.phase == .cancelled {
@@ -460,18 +473,29 @@ extension MultiBufferEditorView {
         }
 
         if let line = lineNumber {
-            if let row = dm.codeRow(forFilePath: targetFile, lineNumber: line) {
+            var row = dm.codeRow(forFilePath: targetFile, lineNumber: line)
+            if row == nil {
+                // The target line is in the file, but currently hidden inside a fold gap or outside visible hunks.
+                // Expand the fold in MultiBuffer to include this line!
+                if dm.multiBuffer.expandFoldToInclude(filePath: targetFile, lineNumber: line) {
+                    dm.rebuild()
+                    invalidateLayout()
+                    row = dm.codeRow(forFilePath: targetFile, lineNumber: line)
+                }
+            }
+
+            if let targetRow = row {
                 if let endLine = endLineNumber, endLine > line,
                    let endRow = dm.codeRow(forFilePath: targetFile, lineNumber: endLine) {
                     let endCol = dm.lineLength(at: endRow)
-                    selectionAnchor = MultiBufferPoint(row: row, column: 0)
+                    selectionAnchor = MultiBufferPoint(row: targetRow, column: 0)
                     cursorPoint = MultiBufferPoint(row: endRow, column: endCol)
                 } else {
                     selectionAnchor = nil
-                    cursorPoint = MultiBufferPoint(row: row, column: 0)
+                    cursorPoint = MultiBufferPoint(row: targetRow, column: 0)
                 }
 
-                if let displayLineIdx = dm.displayLineIndex(forMultiBufferRow: row) {
+                if let displayLineIdx = dm.displayLineIndex(forMultiBufferRow: targetRow) {
                     let targetY = CGFloat(displayLineIdx) * lineHeight
                     let viewportHeight = bounds.height
                     let centeredY = max(0, targetY - (viewportHeight / 2) + (lineHeight / 2))
@@ -484,6 +508,8 @@ extension MultiBufferEditorView {
                 }
                 needsDisplay = true
                 return true
+            } else {
+                return false
             }
         }
 
@@ -496,8 +522,15 @@ extension MultiBufferEditorView {
 
     @objc func handleFocusFileNotification(_ notification: Notification) {
         if let request = notification.object as? FileNavigationRequest {
-            _ = navigateTo(filePath: request.filePath, lineNumber: request.lineNumber, endLineNumber: request.endLineNumber, shouldFocus: true)
+            ensureFileOpenedInLSP(filePath: request.filePath)
+            if !navigateTo(filePath: request.filePath, lineNumber: request.lineNumber, endLineNumber: request.endLineNumber, shouldFocus: true) {
+                // If not found yet (e.g. displayMap hasn't synced from coordinator yet), retry next runloop tick
+                DispatchQueue.main.async { [weak self] in
+                    _ = self?.navigateTo(filePath: request.filePath, lineNumber: request.lineNumber, endLineNumber: request.endLineNumber, shouldFocus: true)
+                }
+            }
         } else if let path = notification.object as? String {
+            ensureFileOpenedInLSP(filePath: path)
             scrollToFilePath(path)
             focus()
         }
@@ -531,6 +564,122 @@ extension MultiBufferEditorView {
 
     @objc func handleGoToPreviousHunkNotification(_ notification: Notification) {
         goToPreviousHunk()
+    }
+
+    // MARK: - Diagnostic Navigation (F8 / Shift+F8)
+
+    public struct DiagnosticLocation: Equatable {
+        public let filePath: String
+        public let line: Int // 1-based
+        public let column: Int // 1-based
+        public let severity: LSPDiagnosticSeverity
+        public let message: String
+    }
+
+    public func allDiagnosticLocations() -> [DiagnosticLocation] {
+        guard let dm = displayMap else { return [] }
+        var locations: [DiagnosticLocation] = []
+
+        // Gather diagnostics for all excerpts currently in displayMap in document order
+        for excerpt in dm.multiBuffer.excerpts {
+            let path = excerpt.filePath
+            var fileDiags: [LSPDiagnostic] = []
+            let root = workspaceRootPath ?? FileManager.default.currentDirectoryPath
+            let absPath = (path as NSString).isAbsolutePath ? path : (root as NSString).appendingPathComponent(path)
+            let baseName = (path as NSString).lastPathComponent
+
+            if let d = allDiagnosticsByFile[path] {
+                fileDiags = d
+            } else if let d = allDiagnosticsByFile[absPath] {
+                fileDiags = d
+            } else if let d = allDiagnosticsByFile[baseName] {
+                fileDiags = d
+            } else {
+                for (registeredPath, diags) in allDiagnosticsByFile {
+                    if (registeredPath as NSString).lastPathComponent == baseName {
+                        fileDiags = diags
+                        break
+                    }
+                }
+            }
+
+            let sorted = fileDiags.sorted {
+                if $0.range.start.line != $1.range.start.line {
+                    return $0.range.start.line < $1.range.start.line
+                }
+                return $0.range.start.character < $1.range.start.character
+            }
+
+            for diag in sorted {
+                locations.append(DiagnosticLocation(
+                    filePath: path,
+                    line: diag.range.start.line + 1,
+                    column: diag.range.start.character + 1,
+                    severity: diag.severity,
+                    message: diag.message
+                ))
+            }
+        }
+
+        return locations
+    }
+
+    @objc public func goToNextDiagnostic(_ sender: Any? = nil) {
+        let locations = allDiagnosticLocations()
+        guard !locations.isEmpty, let dm = displayMap else { return }
+
+        let currentLoc = dm.fastSourceLocation(forCodeRow: cursorPoint.row)
+        let currentFile = currentLoc?.filePath
+        let currentLine = currentLoc?.lineNumber ?? 0
+
+        var target: DiagnosticLocation? = nil
+        for loc in locations {
+            if loc.filePath == currentFile {
+                if loc.line > currentLine {
+                    target = loc
+                    break
+                }
+            } else if target == nil, let curF = currentFile {
+                let curIdx = dm.multiBuffer.excerpts.firstIndex(where: { $0.filePath == curF }) ?? 0
+                let locIdx = dm.multiBuffer.excerpts.firstIndex(where: { $0.filePath == loc.filePath }) ?? 0
+                if locIdx > curIdx {
+                    target = loc
+                    break
+                }
+            }
+        }
+
+        let destination = target ?? locations.first!
+        _ = navigateTo(filePath: destination.filePath, lineNumber: destination.line, shouldFocus: true)
+    }
+
+    @objc public func goToPreviousDiagnostic(_ sender: Any? = nil) {
+        let locations = allDiagnosticLocations()
+        guard !locations.isEmpty, let dm = displayMap else { return }
+
+        let currentLoc = dm.fastSourceLocation(forCodeRow: cursorPoint.row)
+        let currentFile = currentLoc?.filePath
+        let currentLine = currentLoc?.lineNumber ?? 0
+
+        var target: DiagnosticLocation? = nil
+        for loc in locations.reversed() {
+            if loc.filePath == currentFile {
+                if loc.line < currentLine {
+                    target = loc
+                    break
+                }
+            } else if target == nil, let curF = currentFile {
+                let curIdx = dm.multiBuffer.excerpts.firstIndex(where: { $0.filePath == curF }) ?? 0
+                let locIdx = dm.multiBuffer.excerpts.firstIndex(where: { $0.filePath == loc.filePath }) ?? 0
+                if locIdx < curIdx {
+                    target = loc
+                    break
+                }
+            }
+        }
+
+        let destination = target ?? locations.last!
+        _ = navigateTo(filePath: destination.filePath, lineNumber: destination.line, shouldFocus: true)
     }
 
     func currentHunkIndex() -> Int {
@@ -718,6 +867,74 @@ extension MultiBufferEditorView {
             }
             selectionAnchor = newAnchor
             cursorPoint = newCursorPoint
+        }
+    }
+
+    // MARK: - Go To Definition (LSP)
+
+    public func goToDefinition(at targetPoint: MultiBufferPoint? = nil) {
+        guard let dm = displayMap else { return }
+        let pt = targetPoint ?? cursorPoint
+        guard let loc = dm.fastSourceLocation(forCodeRow: pt.row) else { return }
+
+        let filePath = loc.filePath
+        let line = loc.lineNumber
+        let col = pt.column + 1
+        let root = workspaceRootPath ?? FileManager.default.currentDirectoryPath
+
+        let absFilePath = (filePath as NSString).isAbsolutePath ? filePath : (root as NSString).appendingPathComponent(filePath)
+
+        let contentSupplier: () -> String = { [weak dm, weak self] in
+            if let dm = dm, let content = dm.multiBuffer.fullFileContent(for: filePath, baseDirectory: self?.workspaceRootPath) {
+                return content
+            }
+            if let disk = try? String(contentsOfFile: absFilePath, encoding: .utf8) {
+                return disk
+            }
+            if let buf = dm?.multiBuffer.buffer(forFilePath: filePath) {
+                return buf.text()
+            }
+            return ""
+        }
+
+        Task { @MainActor [weak self] in
+            do {
+                let locations = try await LSPWorkspaceService.shared.gotoDefinition(
+                    filePath: absFilePath,
+                    line: line,
+                    column: col,
+                    rootPath: root,
+                    contentSupplier: contentSupplier
+                )
+
+                guard let first = locations.first else {
+                    NSSound.beep()
+                    return
+                }
+
+                let targetFile = first.targetFilePath
+                let targetLine = first.targetLine
+                let targetCol = first.targetColumn
+
+                // Check if target file is already in active MultiBuffer
+                if let matched = self?.displayMap?.matchFilePath(targetFile) {
+                    if self?.navigateTo(filePath: matched, lineNumber: targetLine, endLineNumber: nil, shouldFocus: true) == true {
+                        if let self = self, let dm = self.displayMap, let r = dm.codeRow(forFilePath: matched, lineNumber: targetLine) {
+                            let maxC = dm.lineLength(at: r)
+                            self.cursorPoint = MultiBufferPoint(row: r, column: max(0, min(maxC, targetCol - 1)))
+                            self.needsDisplay = true
+                        }
+                        SoundFeedback.play(.completion)
+                        return
+                    }
+                }
+
+                // Delegate opening external file
+                self?.delegate?.editorDidRequestOpenDefinition(filePath: targetFile, line: targetLine, column: targetCol)
+                SoundFeedback.play(.completion)
+            } catch {
+                NSSound.beep()
+            }
         }
     }
 }

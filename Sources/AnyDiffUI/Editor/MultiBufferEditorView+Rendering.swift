@@ -321,6 +321,32 @@ extension MultiBufferEditorView {
             context.setFillColor(theme.diffModifiedGutter.cgColor)
             context.fill(cursorRect)
         }
+
+        // 4. Draw LSP Diagnostics (Squiggles & Inline Message)
+        if let lineNum = lineNum, let path = filePath,
+           let diags = diagnosticsForLine(filePath: path, lineNumber: lineNum), !diags.isEmpty {
+            drawDiagnosticSquiggles(
+                diagnostics: diags,
+                forLineNumber: lineNum,
+                lineText: info.text,
+                ctLine: ctLine,
+                codeStartX: codeStartX,
+                rect: rect,
+                context: context
+            )
+
+            if showInlineDiagnostics {
+                drawInlineDiagnosticMessage(
+                    diagnostics: diags,
+                    codeStartX: codeStartX,
+                    text: info.text,
+                    ctLine: ctLine,
+                    in: rect,
+                    maxAvailableWidth: fullLineWidth,
+                    context: context
+                )
+            }
+        }
     }
 
     // MARK: - Side-by-Side (Split Diff) Rendering
@@ -495,6 +521,37 @@ extension MultiBufferEditorView {
             context.translateBy(x: rightStartX, y: rect.minY + fontAscent + 2)
             context.scaleBy(x: 1.0, y: -1.0)
             CTLineDraw(ctLine, context)
+
+            let lineNum = info.right.lineNumber
+            let filePath = (displayMap != nil && info.excerptIndex < (displayMap?.multiBuffer.excerpts.count ?? 0))
+                ? displayMap?.multiBuffer.excerpts[info.excerptIndex].filePath
+                : nil
+
+            if let lineNum = lineNum, let path = filePath,
+               let diags = diagnosticsForLine(filePath: path, lineNumber: lineNum), !diags.isEmpty {
+                drawDiagnosticSquiggles(
+                    diagnostics: diags,
+                    forLineNumber: lineNum,
+                    lineText: info.right.text,
+                    ctLine: ctLine,
+                    codeStartX: rightStartX,
+                    rect: rect,
+                    context: context
+                )
+
+                if showInlineDiagnostics {
+                    drawInlineDiagnosticMessage(
+                        diagnostics: diags,
+                        codeStartX: rightStartX,
+                        text: info.right.text,
+                        ctLine: ctLine,
+                        in: rect,
+                        maxAvailableWidth: geom.rightCodeRect.maxX,
+                        context: context
+                    )
+                }
+            }
+
             context.restoreGState()
         }
     }
@@ -794,5 +851,268 @@ extension MultiBufferEditorView {
         context.scaleBy(x: 1.0, y: -1.0)
         CTLineDraw(contentLine, context)
         context.restoreGState()
+    }
+
+    // MARK: - LSP Inline Diagnostics Rendering
+
+    func drawDiagnosticSquiggles(
+        diagnostics: [LSPDiagnostic],
+        forLineNumber lineNum: Int,
+        lineText: String,
+        ctLine: CTLine,
+        codeStartX: CGFloat,
+        rect: CGRect,
+        context: CGContext
+    ) {
+        let lspLine0Based = lineNum - 1
+        let baselineY = rect.minY + fontAscent + 4
+
+        for diag in diagnostics {
+            let startCol: Int = (lspLine0Based == diag.range.start.line) ? diag.range.start.character : 0
+            let endCol: Int = (lspLine0Based == diag.range.end.line) ? diag.range.end.character : lineText.count
+
+            let startX: CGFloat
+            let endX: CGFloat
+
+            if lineText.isEmpty {
+                startX = codeStartX
+                endX = codeStartX + (cachedCharWidth * 2)
+            } else {
+                let clampedStart = min(lineText.count, max(0, startCol))
+                var clampedEnd = min(lineText.count, max(clampedStart, endCol))
+                if clampedEnd == clampedStart {
+                    clampedEnd = min(lineText.count, clampedStart + 1)
+                }
+                startX = codeStartX + ctLine.xOffset(forCharacterIndex: clampedStart, in: lineText)
+                endX = codeStartX + ctLine.xOffset(forCharacterIndex: clampedEnd, in: lineText)
+            }
+
+            let finalEndX = max(startX + cachedCharWidth, endX)
+
+            let color: NSColor
+            switch diag.severity {
+            case .error:
+                color = NSColor(calibratedRed: 0.98, green: 0.32, blue: 0.32, alpha: 0.95)
+            case .warning:
+                color = NSColor(calibratedRed: 0.98, green: 0.70, blue: 0.20, alpha: 0.95)
+            case .information:
+                color = NSColor(calibratedRed: 0.35, green: 0.75, blue: 1.0, alpha: 0.90)
+            case .hint:
+                color = NSColor(calibratedWhite: 0.65, alpha: 0.80)
+            }
+
+            drawSquiggly(
+                context: context,
+                startX: startX,
+                endX: finalEndX,
+                baselineY: baselineY,
+                color: color
+            )
+        }
+    }
+
+    func drawSquiggly(
+        context: CGContext,
+        startX: CGFloat,
+        endX: CGFloat,
+        baselineY: CGFloat,
+        color: NSColor
+    ) {
+        let width = endX - startX
+        guard width > 0 else { return }
+
+        context.saveGState()
+        context.setStrokeColor(color.cgColor)
+        context.setLineWidth(1.2)
+        context.setLineCap(.round)
+        context.setLineJoin(.round)
+
+        let wavePath = CGMutablePath()
+        let step: CGFloat = 3.0
+        let amplitude: CGFloat = 1.3
+        var currX = startX
+        var up = false
+
+        wavePath.move(to: CGPoint(x: currX, y: baselineY))
+        while currX < endX {
+            currX += step
+            let targetX = min(currX, endX)
+            let targetY = up ? (baselineY - amplitude) : (baselineY + amplitude)
+            wavePath.addLine(to: CGPoint(x: targetX, y: targetY))
+            up.toggle()
+        }
+
+        context.addPath(wavePath)
+        context.strokePath()
+        context.restoreGState()
+    }
+
+    public func diagnosticPillRect(
+        diagnostics: [LSPDiagnostic],
+        codeStartX: CGFloat,
+        text: String,
+        ctLine: CTLine,
+        lineMinY: CGFloat,
+        lineHeight: CGFloat,
+        maxAvailableWidth: CGFloat
+    ) -> (rect: CGRect, msgLine: CTLine, displayText: String, primary: LSPDiagnostic)? {
+        guard let primary = diagnostics.first else { return nil }
+
+        let textEndX: CGFloat = {
+            if text.isEmpty {
+                return codeStartX
+            }
+            return codeStartX + ctLine.xOffset(forCharacterIndex: text.count, in: text)
+        }()
+
+        let startX = max(textEndX + 24, codeStartX + 60)
+        guard startX < maxAvailableWidth else { return nil }
+
+        let firstLine = primary.message.components(separatedBy: .newlines).first?.trimmingCharacters(in: .whitespaces) ?? primary.message
+        let extraCount = diagnostics.count - 1
+        let suffix = extraCount > 0 ? " (+\(extraCount) more)" : ""
+        let displayText = "\(firstLine)\(suffix)"
+
+        let msgFont = NSFont.systemFont(ofSize: font.pointSize, weight: .regular)
+        let attrStr = NSAttributedString(string: displayText, attributes: [
+            .font: msgFont
+        ])
+        let msgLine = CTLineCreateWithAttributedString(attrStr)
+        var ascent: CGFloat = 0, descent: CGFloat = 0, leading: CGFloat = 0
+        let textW = CGFloat(CTLineGetTypographicBounds(msgLine, &ascent, &descent, &leading))
+
+        let pillPaddingH: CGFloat = 7
+        let pillRect = CGRect(
+            x: startX,
+            y: lineMinY + 2,
+            width: textW + (pillPaddingH * 2),
+            height: lineHeight - 4
+        )
+        return (pillRect, msgLine, displayText, primary)
+    }
+
+    func drawInlineDiagnosticMessage(
+        diagnostics: [LSPDiagnostic],
+        codeStartX: CGFloat,
+        text: String,
+        ctLine: CTLine,
+        in rect: CGRect,
+        maxAvailableWidth: CGFloat,
+        context: CGContext
+    ) {
+        guard let pillInfo = diagnosticPillRect(
+            diagnostics: diagnostics,
+            codeStartX: codeStartX,
+            text: text,
+            ctLine: ctLine,
+            lineMinY: rect.minY,
+            lineHeight: rect.height,
+            maxAvailableWidth: maxAvailableWidth
+        ) else { return }
+
+        let primary = pillInfo.primary
+        let pillRect = pillInfo.rect
+
+        let color: NSColor
+        let bgTint: NSColor
+        let borderTint: NSColor
+
+        switch primary.severity {
+        case .error:
+            color = NSColor(calibratedRed: 1.0, green: 0.42, blue: 0.42, alpha: 0.95)
+            bgTint = NSColor(calibratedRed: 0.95, green: 0.25, blue: 0.25, alpha: 0.14)
+            borderTint = NSColor(calibratedRed: 0.95, green: 0.25, blue: 0.25, alpha: 0.32)
+        case .warning:
+            color = NSColor(calibratedRed: 0.98, green: 0.75, blue: 0.30, alpha: 0.95)
+            bgTint = NSColor(calibratedRed: 0.95, green: 0.65, blue: 0.15, alpha: 0.14)
+            borderTint = NSColor(calibratedRed: 0.95, green: 0.65, blue: 0.15, alpha: 0.30)
+        case .information:
+            color = NSColor(calibratedRed: 0.45, green: 0.75, blue: 1.0, alpha: 0.92)
+            bgTint = NSColor(calibratedRed: 0.30, green: 0.60, blue: 0.95, alpha: 0.12)
+            borderTint = NSColor(calibratedRed: 0.30, green: 0.60, blue: 0.95, alpha: 0.28)
+        case .hint:
+            color = NSColor(calibratedRed: 0.70, green: 0.75, blue: 0.85, alpha: 0.85)
+            bgTint = NSColor(calibratedWhite: 0.5, alpha: 0.10)
+            borderTint = NSColor(calibratedWhite: 0.5, alpha: 0.22)
+        }
+
+        let msgFont = NSFont.systemFont(ofSize: font.pointSize, weight: .regular)
+        let attrStr = NSAttributedString(string: pillInfo.displayText, attributes: [
+            .font: msgFont,
+            .foregroundColor: color
+        ])
+        let coloredMsgLine = CTLineCreateWithAttributedString(attrStr)
+
+        let pillPath = CGPath(roundedRect: pillRect, cornerWidth: 4, cornerHeight: 4, transform: nil)
+        context.setFillColor(bgTint.cgColor)
+        context.addPath(pillPath)
+        context.fillPath()
+
+        context.setStrokeColor(borderTint.cgColor)
+        context.setLineWidth(0.7)
+        context.addPath(pillPath)
+        context.strokePath()
+
+        let pillPaddingH: CGFloat = 7
+        context.saveGState()
+        context.textMatrix = .identity
+        context.translateBy(x: pillRect.minX + pillPaddingH, y: rect.minY + fontAscent + 2)
+        context.scaleBy(x: 1.0, y: -1.0)
+        CTLineDraw(coloredMsgLine, context)
+        context.restoreGState()
+    }
+
+    public func diagnosticPillRectForDisplayLine(
+        at lineIdx: Int,
+        screenLineMinY: CGFloat,
+        height: CGFloat
+    ) -> (rect: CGRect, diags: [LSPDiagnostic], point: MultiBufferPoint)? {
+        guard let dm = displayMap, lineIdx >= 0 && lineIdx < dm.displayLineCount,
+              let displayLine = dm.displayLine(at: lineIdx) else { return nil }
+
+        switch displayLine {
+        case .code(let codeInfo):
+            let lineNum = codeInfo.newLineNumber ?? codeInfo.oldLineNumber
+            guard let lineNum = lineNum, codeInfo.excerptIndex < dm.multiBuffer.excerpts.count else { return nil }
+            let exc = dm.multiBuffer.excerpts[codeInfo.excerptIndex]
+            guard let diags = diagnosticsForLine(filePath: exc.filePath, lineNumber: lineNum), !diags.isEmpty else { return nil }
+            let ctLine = getOrCreateCTLine(for: lineIdx, text: codeInfo.text, language: codeInfo.language)
+            let codeStartX = gutterWidth + Self.codeLeftPadding - scrollOffsetX
+            guard let pillInfo = diagnosticPillRect(
+                diagnostics: diags,
+                codeStartX: codeStartX,
+                text: codeInfo.text,
+                ctLine: ctLine,
+                lineMinY: screenLineMinY,
+                lineHeight: height,
+                maxAvailableWidth: bounds.width
+            ) else { return nil }
+            let point = MultiBufferPoint(row: codeInfo.multiBufferRow, column: max(0, codeInfo.text.count))
+            return (pillInfo.rect, diags, point)
+
+        case .splitCode(let splitInfo):
+            let lineNum = splitInfo.right.lineNumber ?? splitInfo.left.lineNumber
+            guard let lineNum = lineNum, splitInfo.excerptIndex < dm.multiBuffer.excerpts.count else { return nil }
+            let exc = dm.multiBuffer.excerpts[splitInfo.excerptIndex]
+            guard let diags = diagnosticsForLine(filePath: exc.filePath, lineNumber: lineNum), !diags.isEmpty else { return nil }
+            let geom = splitGeometry(atY: screenLineMinY, height: height)
+            let rightStartX = geom.rightCodeRect.minX + Self.codeLeftPadding - scrollOffsetX
+            let ctLine = getOrCreateCTLine(for: (lineIdx * 2) + 1, text: splitInfo.right.text, language: splitInfo.language)
+            guard let pillInfo = diagnosticPillRect(
+                diagnostics: diags,
+                codeStartX: rightStartX,
+                text: splitInfo.right.text,
+                ctLine: ctLine,
+                lineMinY: screenLineMinY,
+                lineHeight: height,
+                maxAvailableWidth: geom.rightCodeRect.maxX
+            ) else { return nil }
+            let mbRow = splitInfo.right.multiBufferRow ?? splitInfo.left.multiBufferRow ?? 0
+            let point = MultiBufferPoint(row: mbRow, column: max(0, splitInfo.right.text.count))
+            return (pillInfo.rect, diags, point)
+
+        default:
+            return nil
+        }
     }
 }

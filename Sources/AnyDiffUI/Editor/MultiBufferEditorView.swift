@@ -2,6 +2,7 @@ import Foundation
 import AppKit
 import CoreText
 import Combine
+import SwiftUI
 import AnyDiffCore
 
 public protocol MultiBufferEditorDelegate: AnyObject {
@@ -12,6 +13,7 @@ public protocol MultiBufferEditorDelegate: AnyObject {
     func editorDidRequestCloseFile(filePath: String)
     func editorDidRequestOpenExternalIDE(filePath: String, lineNumber: Int?)
     func editorDidRequestPreviewMarkdown(filePath: String)
+    func editorDidRequestOpenDefinition(filePath: String, line: Int, column: Int)
 }
 
 public extension MultiBufferEditorDelegate {
@@ -20,12 +22,14 @@ public extension MultiBufferEditorDelegate {
     func editorDidRequestCloseFile(filePath: String) {}
     func editorDidRequestOpenExternalIDE(filePath: String, lineNumber: Int?) {}
     func editorDidRequestPreviewMarkdown(filePath: String) {}
+    func editorDidRequestOpenDefinition(filePath: String, line: Int, column: Int) {}
 }
 
 /// A high-performance, virtualized MultiBuffer Code Reviewer & Editor View built with CoreText
 public final class MultiBufferEditorView: NSView, NSTextInputClient, NSUserInterfaceValidations {
     public weak var delegate: MultiBufferEditorDelegate?
     public var onContentEdited: (() -> Void)? = nil
+    public var workspaceRootPath: String? = nil
     var displayMapCancellables = Set<AnyCancellable>()
 
     public var displayMap: DisplayMap? {
@@ -36,9 +40,14 @@ public final class MultiBufferEditorView: NSView, NSTextInputClient, NSUserInter
                 .sink { [weak self] _ in
                     guard let self = self else { return }
                     self.invalidateLayout()
+                    self.ensureAllFilesOpenedInLSP()
+                    self.refreshDiagnosticsFromLSPWorkspace()
                 }
                 .store(in: &displayMapCancellables)
             invalidateLayout()
+            setupBufferSaveHook()
+            ensureAllFilesOpenedInLSP()
+            refreshDiagnosticsFromLSPWorkspace()
         }
     }
 
@@ -149,11 +158,23 @@ public final class MultiBufferEditorView: NSView, NSTextInputClient, NSUserInter
     public var scrollOffsetY: CGFloat = 0 {
         didSet {
             delegate?.editorDidScroll()
+            updateCompletionMenuFrame()
+            if isHoverVisible {
+                hideHover()
+            }
+            hoverTimer?.invalidate()
+            hoverTimer = nil
             needsDisplay = true
         }
     }
     public var scrollOffsetX: CGFloat = 0 {
         didSet {
+            updateCompletionMenuFrame()
+            if isHoverVisible {
+                hideHover()
+            }
+            hoverTimer?.invalidate()
+            hoverTimer = nil
             needsDisplay = true
         }
     }
@@ -171,6 +192,28 @@ public final class MultiBufferEditorView: NSView, NSTextInputClient, NSUserInter
             displayMap?.multiBuffer.selectionRange = sel
             notifyCursorChange()
             ensureCursorVisible()
+            if isHoverVisible {
+                hideHover()
+            }
+            hoverTimer?.invalidate()
+            hoverTimer = nil
+            if isCompletionMenuVisible {
+                let stillOnSameLine: Bool
+                if let triggerBufId = completionTriggerBufferId,
+                   let triggerBufRow = completionTriggerBufferRow,
+                   let loc = displayMap?.bufferLocation(for: cursorPoint) {
+                    stillOnSameLine = (loc.buffer.id == triggerBufId && loc.point.row == triggerBufRow)
+                } else if let trigger = completionTriggerPoint {
+                    stillOnSameLine = (cursorPoint.row == trigger.row)
+                } else {
+                    stillOnSameLine = false
+                }
+                if !stillOnSameLine {
+                    hideCompletionMenu()
+                } else {
+                    updateCompletionMenuFrame()
+                }
+            }
             needsDisplay = true
         }
     }
@@ -240,6 +283,93 @@ public final class MultiBufferEditorView: NSView, NSTextInputClient, NSUserInter
         self.searchMatchesByFileLine = index
     }
 
+    // MARK: - LSP Diagnostics Index & State
+
+    public var showInlineDiagnostics: Bool = true {
+        didSet {
+            if oldValue != showInlineDiagnostics {
+                needsDisplay = true
+            }
+        }
+    }
+
+    public struct DiagnosticFileLineKey: Hashable, Sendable {
+        public let filePath: String
+        public let lineNumber: Int // 1-based line number
+
+        public init(filePath: String, lineNumber: Int) {
+            self.filePath = filePath
+            self.lineNumber = lineNumber
+        }
+    }
+
+    public internal(set) var diagnosticsByFileLine: [DiagnosticFileLineKey: [LSPDiagnostic]] = [:]
+    public internal(set) var allDiagnosticsByFile: [String: [LSPDiagnostic]] = [:]
+
+    public func rebuildDiagnosticIndex() {
+        var index: [DiagnosticFileLineKey: [LSPDiagnostic]] = [:]
+        let root = workspaceRootPath ?? FileManager.default.currentDirectoryPath
+
+        for (filePath, diagnostics) in allDiagnosticsByFile {
+            let absPath = (filePath as NSString).isAbsolutePath ? filePath : (root as NSString).appendingPathComponent(filePath)
+            let relPath: String? = {
+                if absPath.hasPrefix(root + "/") {
+                    return String(absPath.dropFirst(root.count + 1))
+                }
+                return nil
+            }()
+            let baseName = (absPath as NSString).lastPathComponent
+
+            for diag in diagnostics {
+                let startLine = diag.range.start.line + 1
+                let endLine: Int = {
+                    if diag.range.end.character == 0 && diag.range.end.line > diag.range.start.line {
+                        return diag.range.end.line
+                    }
+                    return max(startLine, diag.range.end.line + 1)
+                }()
+
+                for line in startLine...endLine {
+                    var keysToSet: Set<DiagnosticFileLineKey> = [
+                        DiagnosticFileLineKey(filePath: absPath, lineNumber: line),
+                        DiagnosticFileLineKey(filePath: filePath, lineNumber: line),
+                        DiagnosticFileLineKey(filePath: baseName, lineNumber: line)
+                    ]
+                    if let rel = relPath {
+                        keysToSet.insert(DiagnosticFileLineKey(filePath: rel, lineNumber: line))
+                    }
+
+                    for key in keysToSet {
+                        if !index[key, default: []].contains(where: { $0.id == diag.id || ($0.message == diag.message && $0.range == diag.range) }) {
+                            index[key, default: []].append(diag)
+                        }
+                    }
+                }
+            }
+        }
+
+        for (key, diags) in index {
+            index[key] = diags.sorted { $0.severity < $1.severity }
+        }
+
+        self.diagnosticsByFileLine = index
+    }
+
+    public func diagnosticsForLine(filePath: String?, lineNumber: Int?) -> [LSPDiagnostic]? {
+        guard let path = filePath, let line = lineNumber else { return nil }
+        return diagnosticsByFileLine[DiagnosticFileLineKey(filePath: path, lineNumber: line)]
+    }
+
+    public func refreshDiagnosticsFromLSPWorkspace() {
+        Task { @MainActor [weak self] in
+            guard let self = self else { return }
+            let all = await LSPWorkspaceService.shared.getAllDiagnostics()
+            self.allDiagnosticsByFile = all
+            self.rebuildDiagnosticIndex()
+            self.needsDisplay = true
+        }
+    }
+
     var activeSelectionGranularity: SelectionGranularity = .character
     var isDraggingSelection: Bool = false
 
@@ -268,6 +398,32 @@ public final class MultiBufferEditorView: NSView, NSTextInputClient, NSUserInter
     var scrollbarDragStartMousePosition: CGFloat = 0
     var scrollbarDragStartOffset: CGFloat = 0
 
+    // Code Completion (LSP)
+    public var completionPopover: NSPopover?
+    public let completionStateModel = CompletionStateModel()
+    public var activeCompletions: [LSPCompletionItem] = []
+    public var filteredCompletions: [LSPCompletionItem] = []
+    public var completionTriggerPoint: MultiBufferPoint?
+    public var completionTriggerBufferId: BufferId?
+    public var completionTriggerBufferRow: Int?
+    public var completionTriggerBufferCol: Int?
+    public var completionPrefix: String = ""
+    public var completionTask: Task<Void, Never>?
+    public var isCompletionMenuVisible: Bool {
+        completionPopover?.isShown == true && !filteredCompletions.isEmpty
+    }
+
+    // LSP Hover
+    public var hoverPopover: NSPopover?
+    public var activeHover: LSPHover?
+    public var hoverTask: Task<Void, Never>?
+    public var hoverTimer: Timer?
+    public var lastHoverPoint: MultiBufferPoint?
+    public var lastHoverMouseLocation: CGPoint?
+    public var hoveredTokenScreenRect: CGRect?
+    public var isHoverVisible: Bool {
+        hoverPopover?.isShown == true && activeHover != nil
+    }
 
     var cachedCharWidth: CGFloat = 8.0
     var scrollLockAxis: ScrollAxis? = nil
@@ -289,9 +445,19 @@ public final class MultiBufferEditorView: NSView, NSTextInputClient, NSUserInter
         let result = super.resignFirstResponder()
         if result {
             isCursorVisible = false
+            hideCompletionMenu()
+            hideHover()
             needsDisplay = true
         }
         return result
+    }
+
+    public override func viewWillMove(toWindow newWindow: NSWindow?) {
+        super.viewWillMove(toWindow: newWindow)
+        if newWindow == nil {
+            hideCompletionMenu()
+            hideHover()
+        }
     }
 
     public init(displayMap: DisplayMap? = nil, theme: Theme = .zedDark) {
@@ -315,6 +481,10 @@ public final class MultiBufferEditorView: NSView, NSTextInputClient, NSUserInter
         NotificationCenter.default.addObserver(self, selector: #selector(handleFocusFileNotification(_:)), name: .focusFileInEditor, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleGoToNextHunkNotification(_:)), name: .goToNextHunk, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleGoToPreviousHunkNotification(_:)), name: .goToPreviousHunk, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(handleGoToNextDiagnosticNotification(_:)), name: .goToNextDiagnostic, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(handleGoToPreviousDiagnosticNotification(_:)), name: .goToPreviousDiagnostic, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(handleDiagnosticsChangedNotification(_:)), name: .lspDiagnosticsDidChange, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(saveActiveDocumentNotification(_:)), name: .saveActiveDocument, object: nil)
     }
 
     deinit {
@@ -323,6 +493,7 @@ public final class MultiBufferEditorView: NSView, NSTextInputClient, NSUserInter
         scrollbarFadeTimer?.invalidate()
         fadeAnimationTimer?.invalidate()
         activeMatchPulseTimer?.invalidate()
+        hoverTimer?.invalidate()
     }
 
 
@@ -771,14 +942,185 @@ public final class MultiBufferEditorView: NSView, NSTextInputClient, NSUserInter
         startCursorBlink()
     }
 
+    private var lastFocusedLSPFilePath: String? = nil
+
     func notifyCursorChange() {
         guard let dm = displayMap else { return }
         let loc = dm.excerptLocation(for: cursorPoint)
         delegate?.editorDidChangeCursor(location: loc, point: cursorPoint)
+
+        if let currentPath = loc?.filePath, currentPath != lastFocusedLSPFilePath {
+            lastFocusedLSPFilePath = currentPath
+            ensureFileOpenedInLSP(filePath: currentPath)
+        }
     }
 
     func notifyContentChange() {
         delegate?.editorDidChangeContent()
         onContentEdited?()
+
+        if let dm = displayMap {
+            let loc = dm.fastSourceLocation(forCodeRow: cursorPoint.row)
+            let path = loc?.filePath ?? currentFocusedFilePath() ?? dm.multiBuffer.excerpts.first?.filePath
+            if let path = path {
+                let root = workspaceRootPath ?? FileManager.default.currentDirectoryPath
+                let absPath = (path as NSString).isAbsolutePath ? path : (root as NSString).appendingPathComponent(path)
+                if let text = dm.multiBuffer.fullFileContent(for: path, baseDirectory: workspaceRootPath) {
+                    Task {
+                        await LSPWorkspaceService.shared.notifyDocumentChanged(filePath: absPath, text: text, rootPath: root)
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - LSP Synchronization & Saving Hooks
+
+    @objc func saveActiveDocumentNotification(_ notification: Notification) {
+        saveActiveDocument()
+    }
+
+    // MARK: - LSP Diagnostics Notifications
+
+    @objc func handleDiagnosticsChangedNotification(_ notification: Notification) {
+        guard let info = notification.userInfo,
+              let filePath = info["filePath"] as? String,
+              let diagnostics = info["diagnostics"] as? [LSPDiagnostic] else { return }
+        if diagnostics.isEmpty {
+            allDiagnosticsByFile.removeValue(forKey: filePath)
+        } else {
+            allDiagnosticsByFile[filePath] = diagnostics
+        }
+        rebuildDiagnosticIndex()
+        needsDisplay = true
+    }
+
+    @objc func handleGoToNextDiagnosticNotification(_ notification: Notification) {
+        goToNextDiagnostic()
+    }
+
+    @objc func handleGoToPreviousDiagnosticNotification(_ notification: Notification) {
+        goToPreviousDiagnostic()
+    }
+
+    @objc public func saveActiveDocument(_ sender: Any? = nil) {
+        guard editingEnabled, let dm = displayMap else { return }
+        let savedFiles = dm.multiBuffer.flushImmediateSave()
+        let root = workspaceRootPath ?? FileManager.default.currentDirectoryPath
+        Task {
+            for file in savedFiles {
+                await LSPWorkspaceService.shared.notifyDocumentSaved(filePath: file, rootPath: root)
+            }
+        }
+    }
+
+    private func setupBufferSaveHook() {
+        guard let mb = displayMap?.multiBuffer else { return }
+        let root = workspaceRootPath ?? FileManager.default.currentDirectoryPath
+        mb.onBuffersSaved = { savedFiles in
+            Task {
+                for file in savedFiles {
+                    await LSPWorkspaceService.shared.notifyDocumentSaved(filePath: file, rootPath: root)
+                }
+            }
+        }
+    }
+
+    public func ensureFileOpenedInLSP(filePath: String) {
+        guard let dm = displayMap else { return }
+        let root = workspaceRootPath ?? FileManager.default.currentDirectoryPath
+        let absPath = (filePath as NSString).isAbsolutePath ? filePath : (root as NSString).appendingPathComponent(filePath)
+        if let text = dm.multiBuffer.fullFileContent(for: filePath, baseDirectory: workspaceRootPath) {
+            Task {
+                await LSPWorkspaceService.shared.notifyDocumentOpened(filePath: absPath, text: text, rootPath: root)
+            }
+        }
+    }
+
+    public func ensureFocusedFileOpenedInLSP() {
+        if let filePath = currentFocusedFilePath() {
+            ensureFileOpenedInLSP(filePath: filePath)
+        }
+    }
+
+    public func ensureAllFilesOpenedInLSP() {
+        guard let dm = displayMap else { return }
+        var seen = Set<String>()
+        for excerpt in dm.multiBuffer.excerpts {
+            let path = excerpt.filePath
+            guard !seen.contains(path) else { continue }
+            seen.insert(path)
+            ensureFileOpenedInLSP(filePath: path)
+        }
+    }
+
+    public override func menu(for event: NSEvent) -> NSMenu? {
+        let pointInView = convert(event.locationInWindow, from: nil)
+        if let targetPoint = codePoint(at: pointInView) {
+            cursorPoint = targetPoint
+            selectionAnchor = nil
+            needsDisplay = true
+        }
+
+        let menu = NSMenu()
+        let defItem = NSMenuItem(title: "Go to Definition", action: #selector(contextMenuGoToDefinition(_:)), keyEquivalent: "b")
+        defItem.keyEquivalentModifierMask = .command
+        defItem.target = self
+        menu.addItem(defItem)
+        menu.addItem(NSMenuItem.separator())
+        menu.addItem(NSMenuItem(title: "Cut", action: #selector(cut(_:)), keyEquivalent: "x"))
+        menu.addItem(NSMenuItem(title: "Copy", action: #selector(copy(_:)), keyEquivalent: "c"))
+        menu.addItem(NSMenuItem(title: "Paste", action: #selector(paste(_:)), keyEquivalent: "v"))
+        menu.addItem(NSMenuItem.separator())
+        menu.addItem(NSMenuItem(title: "Select All", action: #selector(selectAll(_:)), keyEquivalent: "a"))
+
+        // Contextual Copy Diagnostic / Error
+        if let dm = displayMap, let loc = dm.fastSourceLocation(forCodeRow: cursorPoint.row) {
+            let diags = diagnosticsForLine(filePath: loc.filePath, lineNumber: loc.lineNumber) ?? []
+            if !diags.isEmpty {
+                menu.addItem(NSMenuItem.separator())
+                if diags.count == 1, let d = diags.first {
+                    let previewMsg = d.message.replacingOccurrences(of: "\n", with: " ")
+                    let truncated = previewMsg.count > 45 ? String(previewMsg.prefix(42)) + "..." : previewMsg
+                    let title = "Copy Error: \"\(truncated)\""
+                    let item = NSMenuItem(title: title, action: #selector(copyDiagnosticToClipboard(_:)), keyEquivalent: "")
+                    item.representedObject = d.message
+                    item.target = self
+                    menu.addItem(item)
+                } else {
+                    let subMenu = NSMenu()
+                    for d in diags {
+                        let previewMsg = d.message.replacingOccurrences(of: "\n", with: " ")
+                        let truncated = previewMsg.count > 45 ? String(previewMsg.prefix(42)) + "..." : previewMsg
+                        let item = NSMenuItem(title: truncated, action: #selector(copyDiagnosticToClipboard(_:)), keyEquivalent: "")
+                        item.representedObject = d.message
+                        item.target = self
+                        subMenu.addItem(item)
+                    }
+                    subMenu.addItem(NSMenuItem.separator())
+                    let allMessages = diags.map(\.message).joined(separator: "\n")
+                    let allItem = NSMenuItem(title: "Copy All Errors (\(diags.count))", action: #selector(copyDiagnosticToClipboard(_:)), keyEquivalent: "")
+                    allItem.representedObject = allMessages
+                    allItem.target = self
+                    subMenu.addItem(allItem)
+
+                    let parentItem = NSMenuItem(title: "Copy Error", action: nil, keyEquivalent: "")
+                    parentItem.submenu = subMenu
+                    menu.addItem(parentItem)
+                }
+            }
+        }
+
+        return menu
+    }
+
+    @objc func copyDiagnosticToClipboard(_ sender: NSMenuItem) {
+        guard let text = sender.representedObject as? String else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    @objc func contextMenuGoToDefinition(_ sender: Any?) {
+        goToDefinition()
     }
 }

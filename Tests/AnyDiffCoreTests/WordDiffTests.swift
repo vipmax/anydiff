@@ -478,6 +478,9 @@ final class WordDiffTests: XCTestCase {
 
     func testPromoteBufferAndDiffPerformance() {
         let repoRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        var patchData: Data
+        var targetRange: Range<Int> = 0..<10
+
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         p.arguments = ["diff", "HEAD", "--", "Sources/AnyDiffUI/Editor/MultiBufferEditorView.swift"]
@@ -489,39 +492,63 @@ final class WordDiffTests: XCTestCase {
         p.waitUntilExit()
 
         let parsed = GitDiffParser.shared.parseZeroCopy(data: data)
-        guard let file = parsed.first else { return }
+        let file: FileDiff?
+        if let liveFile = parsed.first, let firstHunk = liveFile.hunks.first {
+            file = liveFile
+            patchData = data
+            let start = max(0, firstHunk.newRange.lowerBound - 1)
+            let end = max(start + 1, firstHunk.newRange.upperBound)
+            targetRange = start..<end
+        } else {
+            // Synthetic patch for MultiBuffer.swift to ensure test always runs deterministically
+            let samplePatch = """
+            diff --git a/Sources/AnyDiffCore/MultiBuffer/MultiBuffer.swift b/Sources/AnyDiffCore/MultiBuffer/MultiBuffer.swift
+            --- a/Sources/AnyDiffCore/MultiBuffer/MultiBuffer.swift
+            +++ b/Sources/AnyDiffCore/MultiBuffer/MultiBuffer.swift
+            @@ -10,3 +10,4 @@
+             public final class MultiBuffer: ObservableObject, @unchecked Sendable {
+            +    // synthetic line for test
+            """
+            patchData = Data(samplePatch.utf8)
+            file = GitDiffParser.shared.parseZeroCopy(data: patchData).first
+            targetRange = 8..<15
+        }
+
+        guard let testFile = file else { return }
 
         let mb = MultiBuffer()
         mb.baseDirectory = repoRoot.path
-        for hunk in file.hunks {
+        for hunk in testFile.hunks {
             let buf = Buffer(
-                filePath: file.displayPath,
-                storage: .makeDiffFlat(data: data, spans: hunk.lineSpans, side: .new),
+                filePath: testFile.displayPath,
+                storage: .makeDiffFlat(data: patchData, spans: hunk.lineSpans, side: .new),
                 startLineNumber: hunk.newRange.lowerBound,
                 isLazySlice: true
             )
             mb.addBuffer(buf)
             let ex = Excerpt(
                 bufferId: buf.id,
-                filePath: file.displayPath,
+                filePath: testFile.displayPath,
                 bufferRange: 0..<buf.lineCount,
                 hunk: hunk
             )
             mb.addExcerpt(ex)
         }
 
+        guard !mb.excerpts.isEmpty else { return }
         let firstBufId = mb.excerpts[0].bufferId
         guard let pBuf = mb.promoteBufferToFullFile(for: firstBufId) else { return }
+
+        let clampedRange = max(0, targetRange.lowerBound)..<min(pBuf.lines.count, targetRange.upperBound)
 
         let t0 = CFAbsoluteTimeGetCurrent()
         let slice = LineDiffEngine.shared.diffLinesForSlice(
             oldLines: pBuf.baselineLines,
             newLines: pBuf.lines,
-            targetRange: 2680..<2705
+            targetRange: clampedRange
         )
         let t1 = CFAbsoluteTimeGetCurrent()
         XCTAssertLessThan(t1 - t0, 0.25, "Promoted buffer diff should execute in under 250ms")
         XCTAssertFalse(slice.lines.isEmpty)
     }
 }
-

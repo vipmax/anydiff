@@ -181,5 +181,9 @@ public final class ReviewCoordinator: ObservableObject {
         multiBuffer.removeFile(filePath: filePath)
         displayMap.rebuild()
         displayMap.markContentLoaded()
+        let root = multiBuffer.baseDirectory
+        Task {
+            await LSPWorkspaceService.shared.notifyDocumentClosed(filePath: filePath, rootPath: root)
+        }
     }
 }

@@ -44,6 +44,10 @@ extension AppDelegate {
         openURLItem.keyEquivalentModifierMask = [.command, .shift]
         fileMenu.addItem(openURLItem)
         fileMenu.addItem(NSMenuItem.separator())
+        let saveItem = NSMenuItem(title: "Save", action: #selector(saveDocumentAction(_:)), keyEquivalent: "s")
+        saveItem.keyEquivalentModifierMask = [.command]
+        fileMenu.addItem(saveItem)
+        fileMenu.addItem(NSMenuItem.separator())
         fileMenu.addItem(NSMenuItem(title: "Reload Diff", action: #selector(reloadDiffAction(_:)), keyEquivalent: "r"))
         let watchItem = NSMenuItem(title: "Toggle Watch Mode", action: #selector(toggleWatchModeAction(_:)), keyEquivalent: "w")
         watchItem.keyEquivalentModifierMask = [.command, .option]
@@ -97,6 +101,9 @@ extension AppDelegate {
         let toggleRightPanelItem = NSMenuItem(title: "Toggle Right Panel", action: #selector(toggleRightPanelAction(_:)), keyEquivalent: "a")
         toggleRightPanelItem.keyEquivalentModifierMask = [.command, .option]
         viewMenu.addItem(toggleRightPanelItem)
+        let toggleTerminalItem = NSMenuItem(title: "Toggle Terminal", action: #selector(toggleTerminalAction(_:)), keyEquivalent: "t")
+        toggleTerminalItem.keyEquivalentModifierMask = [.command, .control]
+        viewMenu.addItem(toggleTerminalItem)
         viewMenu.addItem(NSMenuItem(title: "Reset Panels to Default", action: #selector(resetPanelsLayoutAction(_:)), keyEquivalent: ""))
         viewMenu.addItem(NSMenuItem.separator())
         viewMenu.addItem(NSMenuItem(title: "Zoom In", action: #selector(zoomInAction(_:)), keyEquivalent: "+"))
@@ -179,6 +186,16 @@ extension AppDelegate {
         let prevHunkItem = NSMenuItem(title: "Go to Previous Hunk", action: #selector(goToPreviousHunkAction(_:)), keyEquivalent: String(UnicodeScalar(NSF8FunctionKey)!))
         prevHunkItem.keyEquivalentModifierMask = [.command, .shift]
         navigateMenu.addItem(prevHunkItem)
+
+        navigateMenu.addItem(NSMenuItem.separator())
+
+        let nextDiagItem = NSMenuItem(title: "Go to Next Diagnostic", action: #selector(goToNextDiagnosticAction(_:)), keyEquivalent: String(UnicodeScalar(NSF8FunctionKey)!))
+        nextDiagItem.keyEquivalentModifierMask = []
+        navigateMenu.addItem(nextDiagItem)
+
+        let prevDiagItem = NSMenuItem(title: "Go to Previous Diagnostic", action: #selector(goToPreviousDiagnosticAction(_:)), keyEquivalent: String(UnicodeScalar(NSF8FunctionKey)!))
+        prevDiagItem.keyEquivalentModifierMask = [.shift]
+        navigateMenu.addItem(prevDiagItem)
 
         navigateMenuItem.submenu = navigateMenu
         mainMenu.addItem(navigateMenuItem)
@@ -291,6 +308,10 @@ extension AppDelegate {
         NotificationCenter.default.post(name: Notification.Name("anyDiffToggleRightPanel"), object: nil)
     }
 
+    @objc func toggleTerminalAction(_ sender: Any?) {
+        NotificationCenter.default.post(name: Notification.Name("anyDiffToggleTerminal"), object: nil)
+    }
+
     @objc func resetPanelsLayoutAction(_ sender: Any?) {
         NotificationCenter.default.post(name: Notification.Name("anyDiffResetPanelsLayout"), object: nil)
     }
@@ -328,5 +349,17 @@ extension AppDelegate {
 
     @objc func goToPreviousHunkAction(_ sender: Any?) {
         NotificationCenter.default.post(name: .goToPreviousHunk, object: nil)
+    }
+
+    @objc func goToNextDiagnosticAction(_ sender: Any?) {
+        NotificationCenter.default.post(name: .goToNextDiagnostic, object: nil)
+    }
+
+    @objc func goToPreviousDiagnosticAction(_ sender: Any?) {
+        NotificationCenter.default.post(name: .goToPreviousDiagnostic, object: nil)
+    }
+
+    @objc func saveDocumentAction(_ sender: Any?) {
+        NotificationCenter.default.post(name: .saveActiveDocument, object: nil)
     }
 }

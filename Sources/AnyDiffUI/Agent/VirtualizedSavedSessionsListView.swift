@@ -278,9 +278,8 @@ final class SavedSessionTableCellView: NSTableCellView {
     private let progressIndicator = NSProgressIndicator()
 
     private let textStack = NSStackView()
-    private let titleRow = NSStackView()
     private let titleLabel = NSTextField(labelWithString: "")
-    private let idBadge = PillBadgeView(font: .monospacedSystemFont(ofSize: 9.5, weight: .regular))
+    private let idBadge = PillBadgeView(font: .monospacedSystemFont(ofSize: 9.0, weight: .medium), height: 16)
 
     private let metaRow = NSStackView()
     private let dateStack = NSStackView()
@@ -314,6 +313,8 @@ final class SavedSessionTableCellView: NSTableCellView {
         progressIndicator.stopAnimation(nil)
         progressIndicator.isHidden = true
         iconImageView.isHidden = false
+        titleLabel.toolTip = nil
+        idBadge.toolTip = nil
     }
 
     func checkHover() {
@@ -353,18 +354,25 @@ final class SavedSessionTableCellView: NSTableCellView {
         progressIndicator.translatesAutoresizingMaskIntoConstraints = false
         iconCircle.addSubview(progressIndicator)
 
-        // 3. Title row
+        // 3. Title label (full width, truncated with ellipsis if long)
         titleLabel.font = .systemFont(ofSize: 12.5, weight: .semibold)
+        titleLabel.maximumNumberOfLines = 1
+        titleLabel.usesSingleLineMode = true
         titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.allowsDefaultTighteningForTruncation = true
+        if let cell = titleLabel.cell as? NSTextFieldCell {
+            cell.wraps = false
+            cell.isScrollable = false
+            cell.lineBreakMode = .byTruncatingTail
+            cell.truncatesLastVisibleLine = true
+        }
         titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        titleLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
-        titleRow.orientation = .horizontal
-        titleRow.alignment = .centerY
-        titleRow.spacing = 6
-        titleRow.addArrangedSubview(titleLabel)
-        titleRow.addArrangedSubview(idBadge)
+        // 4. Meta row (date + hash badge + folder)
+        idBadge.setContentCompressionResistancePriority(.required, for: .horizontal)
+        idBadge.setContentHuggingPriority(.required, for: .horizontal)
 
-        // 4. Meta row (date + folder)
         dateStack.orientation = .horizontal
         dateStack.alignment = .centerY
         dateStack.spacing = 3
@@ -381,6 +389,17 @@ final class SavedSessionTableCellView: NSTableCellView {
             dateIcon.heightAnchor.constraint(equalToConstant: 10)
         ])
         dateLabel.font = .systemFont(ofSize: 10, weight: .regular)
+        dateLabel.maximumNumberOfLines = 1
+        dateLabel.usesSingleLineMode = true
+        dateLabel.lineBreakMode = .byTruncatingTail
+        if let cell = dateLabel.cell as? NSTextFieldCell {
+            cell.wraps = false
+            cell.isScrollable = false
+            cell.lineBreakMode = .byTruncatingTail
+            cell.truncatesLastVisibleLine = true
+        }
+        dateStack.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
+        dateStack.setContentHuggingPriority(.defaultHigh, for: .horizontal)
 
         dateStack.addArrangedSubview(dateIcon)
         dateStack.addArrangedSubview(dateLabel)
@@ -401,23 +420,36 @@ final class SavedSessionTableCellView: NSTableCellView {
             folderIcon.heightAnchor.constraint(equalToConstant: 10)
         ])
         folderLabel.font = .systemFont(ofSize: 10, weight: .regular)
+        folderLabel.maximumNumberOfLines = 1
+        folderLabel.usesSingleLineMode = true
         folderLabel.lineBreakMode = .byTruncatingMiddle
+        if let cell = folderLabel.cell as? NSTextFieldCell {
+            cell.wraps = false
+            cell.isScrollable = false
+            cell.lineBreakMode = .byTruncatingMiddle
+            cell.truncatesLastVisibleLine = true
+        }
+        folderLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        folderLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
         folderStack.addArrangedSubview(folderIcon)
         folderStack.addArrangedSubview(folderLabel)
 
         metaRow.orientation = .horizontal
         metaRow.alignment = .centerY
-        metaRow.spacing = 10
+        metaRow.spacing = 8
+        metaRow.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        metaRow.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         metaRow.addArrangedSubview(dateStack)
+        metaRow.addArrangedSubview(idBadge)
         metaRow.addArrangedSubview(folderStack)
 
         // 5. Text stack (vertical)
         textStack.orientation = .vertical
         textStack.alignment = .leading
-        textStack.spacing = 3
+        textStack.spacing = 3.5
         textStack.translatesAutoresizingMaskIntoConstraints = false
-        textStack.addArrangedSubview(titleRow)
+        textStack.addArrangedSubview(titleLabel)
         textStack.addArrangedSubview(metaRow)
         cardButton.addSubview(textStack)
 
@@ -491,7 +523,13 @@ final class SavedSessionTableCellView: NSTableCellView {
         cardButton.updateAppearance()
 
         // Title and ID Badge
-        titleLabel.stringValue = session.displayTitle
+        let cleanTitle = session.displayTitle
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        let finalTitle = cleanTitle.isEmpty ? session.displayTitle : cleanTitle
+        titleLabel.stringValue = finalTitle
+        titleLabel.toolTip = finalTitle
         titleLabel.textColor = theme.foreground
 
         let isGenericTitle = isGenericSessionTitle(item: session)
@@ -499,11 +537,13 @@ final class SavedSessionTableCellView: NSTableCellView {
             idBadge.isHidden = false
             idBadge.configure(
                 text: session.shortId,
-                textColor: theme.gutterForeground.withAlphaComponent(0.8),
+                textColor: theme.gutterForeground.withAlphaComponent(0.85),
                 bgColor: theme.foreground.withAlphaComponent(0.06)
             )
+            idBadge.toolTip = "Session ID: \(session.sessionId)"
         } else {
             idBadge.isHidden = true
+            idBadge.toolTip = nil
         }
 
         // Meta info (date)

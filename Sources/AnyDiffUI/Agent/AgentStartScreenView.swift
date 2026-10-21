@@ -70,11 +70,6 @@ public struct AgentStartScreenView: View {
 
     private var mainStartScreenView: some View {
         VStack(spacing: 0) {
-            // Reserve space for window toolbar
-            Rectangle()
-                .fill(Color(theme.background))
-                .frame(height: 10)
-
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(spacing: 20) {
                     // If there are existing sessions, show running sessions list

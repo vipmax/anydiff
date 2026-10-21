@@ -16,7 +16,10 @@ let package = Package(
         .target(
             name: "AnyDiffCore",
             dependencies: [],
-            path: "Sources/AnyDiffCore"
+            path: "Sources/AnyDiffCore",
+            resources: [
+                .process("LSP/Registry/lsp-servers.json")
+            ]
         ),
         .target(
             name: "AnyDiffUI",

@@ -28,6 +28,8 @@ public struct EditorHostView: NSViewRepresentable {
     public var onCloseFileRequest: ((String) -> Void)?
     public var onOpenExternalIDERequest: ((String, Int?) -> Void)?
     public var onPreviewMarkdownRequest: ((String) -> Void)?
+    public var onOpenDefinitionRequest: ((String, Int, Int) -> Void)?
+    public var workingDirectory: String?
 
     public init(
         displayMap: DisplayMap,
@@ -39,12 +41,14 @@ public struct EditorHostView: NSViewRepresentable {
         searchMatches: [ProjectSearchMatch] = [],
         activeMatchIndex: Int? = nil,
         searchMatchScrollRequest: SearchMatchScrollRequest? = nil,
+        workingDirectory: String? = nil,
         onCursorChange: @escaping (ExcerptLocation?, MultiBufferPoint) -> Void,
         onAddCommentRequest: @escaping (String, Int) -> Void,
         onContentEdited: (() -> Void)? = nil,
         onCloseFileRequest: ((String) -> Void)? = nil,
         onOpenExternalIDERequest: ((String, Int?) -> Void)? = nil,
-        onPreviewMarkdownRequest: ((String) -> Void)? = nil
+        onPreviewMarkdownRequest: ((String) -> Void)? = nil,
+        onOpenDefinitionRequest: ((String, Int, Int) -> Void)? = nil
     ) {
         self.displayMap = displayMap
         self.theme = theme
@@ -55,12 +59,14 @@ public struct EditorHostView: NSViewRepresentable {
         self.searchMatches = searchMatches
         self.activeMatchIndex = activeMatchIndex
         self.searchMatchScrollRequest = searchMatchScrollRequest
+        self.workingDirectory = workingDirectory
         self.onCursorChange = onCursorChange
         self.onAddCommentRequest = onAddCommentRequest
         self.onContentEdited = onContentEdited
         self.onCloseFileRequest = onCloseFileRequest
         self.onOpenExternalIDERequest = onOpenExternalIDERequest
         self.onPreviewMarkdownRequest = onPreviewMarkdownRequest
+        self.onOpenDefinitionRequest = onOpenDefinitionRequest
     }
 
     public func makeCoordinator() -> Coordinator {
@@ -71,6 +77,7 @@ public struct EditorHostView: NSViewRepresentable {
         let editorView = MultiBufferEditorView(displayMap: displayMap, theme: theme)
         editorView.font = .monospacedSystemFont(ofSize: fontSize, weight: .regular)
         editorView.isEditable = isEditable
+        editorView.workspaceRootPath = workingDirectory
         editorView.delegate = context.coordinator
         context.coordinator.editorView = editorView
         let displayMapID = ObjectIdentifier(displayMap)
@@ -100,6 +107,7 @@ public struct EditorHostView: NSViewRepresentable {
 
     public func updateView(_ editorView: MultiBufferEditorView, coordinator: Coordinator) {
         coordinator.parent = self
+        editorView.workspaceRootPath = workingDirectory
 
         let displayMapID = ObjectIdentifier(displayMap)
         if let resetToken = viewStateResetToken,
@@ -261,6 +269,10 @@ public struct EditorHostView: NSViewRepresentable {
 
         public func editorDidRequestPreviewMarkdown(filePath: String) {
             parent.onPreviewMarkdownRequest?(filePath)
+        }
+
+        public func editorDidRequestOpenDefinition(filePath: String, line: Int, column: Int) {
+            parent.onOpenDefinitionRequest?(filePath, line, column)
         }
 
         var currentViewState: EditorViewState? {
