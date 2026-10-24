@@ -168,8 +168,6 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
         scrollView.onRestore = onRestore
         scrollView.onPreviewImages = onPreviewImages
         scrollView.onOpenURL = onOpenURL
-        scrollView.setInputView(inputView, inputHeight: inputContentHeight)
-
         scrollView.agentId = agentId
         // If SwiftUI called updateNSView purely because of an unrelated UI state change
         // (like isChatNearBottom button appearing or parent view re-evaluating during scroll),
@@ -183,8 +181,13 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
             toolcallColorMode: toolcallColorMode,
             trigger: scrollToBottomTrigger
         ) else {
+            if scrollView.needsInputHeightUpdate(inputContentHeight) {
+                scrollView.setInputView(inputView, inputHeight: inputContentHeight)
+            }
             return
         }
+
+        scrollView.setInputView(inputView, inputHeight: inputContentHeight)
 
         scrollView.update(
             messages: messages,
@@ -253,6 +256,10 @@ public final class AgentChatScrollView: NSScrollView {
             return
         }
         documentViewCustom.setInputView(view, inputHeight: inputHeight)
+    }
+
+    public func needsInputHeightUpdate(_ inputHeight: CGFloat) -> Bool {
+        documentViewCustom.needsInputHeightUpdate(inputHeight)
     }
 
     public override var isOpaque: Bool { true }
@@ -486,6 +493,7 @@ public final class AgentChatScrollView: NSScrollView {
 
     public override func reflectScrolledClipView(_ cView: NSClipView) {
         super.reflectScrolledClipView(cView)
+        documentViewCustom.updateVisibleCells(in: cView)
         guard !isResizing else { return }
         notifyNearBottomChanged()
     }
@@ -522,6 +530,12 @@ public final class AgentChatDocumentView: NSView {
     public override var isFlipped: Bool { true }
     public override var mouseDownCanMoveWindow: Bool { false }
 
+    // Prevent AppKit's NSISEngine (Auto Layout) from propagating into the manually
+    // laid-out chat document subtree. Without this, every addSubview / removeFromSuperview
+    // and NSHostingView update recursively traverses all subviews with _setLayoutEngine:.
+    @objc(_setLayoutEngine:)
+    public func _setLayoutEngine(_ engine: AnyObject?) {}
+
     public struct CellEntry {
         public let id: UUID
         public let cell: AgentMessageCell
@@ -538,6 +552,9 @@ public final class AgentChatDocumentView: NSView {
     private var toolcallColorMode: ToolcallColorMode = .full
     private var bottomInset: CGFloat = 0
     fileprivate private(set) var lastLayoutWidth: CGFloat = 0
+    private var lastCulledOriginY: CGFloat = -.greatestFiniteMagnitude
+    private var lastCulledViewportHeight: CGFloat = -1
+    private var lastVisibleRange: Range<Int> = 0..<0
     public var onReview: ((AgentEditedFilesSummary) -> Void)?
     public var onRevert: ((AgentEditedFilesSummary) -> Void)?
     public var onRestore: ((AgentEditedFilesSummary) -> Void)?
@@ -545,6 +562,10 @@ public final class AgentChatDocumentView: NSView {
     public var onOpenURL: ((URL) -> Void)? = nil
     private var inputHostingView: NSHostingView<AnyView>?
     private var lastInputHeight: CGFloat = -1
+
+    public func needsInputHeightUpdate(_ inputHeight: CGFloat) -> Bool {
+        inputHostingView == nil || abs(inputHeight - lastInputHeight) >= 1.0
+    }
 
     public func setInputView(_ view: AnyView?, inputHeight: CGFloat = 0) {
         guard Thread.isMainThread else {
@@ -572,9 +593,13 @@ public final class AgentChatDocumentView: NSView {
                 layoutContent(for: max(100, lastLayoutWidth))
             }
         } else {
-            let hosting = NSHostingView(rootView: view)
+            let hosting = AgentChatInputHostingView(rootView: view)
+            if #available(macOS 13.0, *) {
+                hosting.sizingOptions = []
+            }
             hosting.wantsLayer = true
             hosting.layer?.masksToBounds = false
+            hosting.layerContentsRedrawPolicy = .onSetNeedsDisplay
             inputHostingView = hosting
             layoutContent(for: max(100, lastLayoutWidth))
         }
@@ -734,11 +759,12 @@ public final class AgentChatDocumentView: NSView {
         messagesByID = Dictionary(uniqueKeysWithValues: newMessages.map { ($0.id, $0) })
 
         layoutContent(for: max(100, scrollView.contentView.bounds.width))
-        for item in orderedCells {
-            item.cell.animatePendingAppearances(animated: animated)
-        }
         if scrollView.followsBottom || oldIds.isEmpty {
             scrollView.scrollToBottom(animated: animated && newMessages.last?.isStreaming != true)
+        }
+        updateVisibleCells(in: scrollView.contentView, force: true)
+        for item in orderedCells {
+            item.cell.animatePendingAppearances(animated: animated && item.cell.superview != nil && !item.cell.isHidden)
         }
     }
 
@@ -753,10 +779,7 @@ public final class AgentChatDocumentView: NSView {
             let height = cell.layout(for: contentWidth)
             let cellFrame = NSRect(x: 0, y: currentY, width: contentWidth, height: height)
             orderedCells[i].frame = cellFrame
-            if cell.superview == nil {
-                cell.frame = cellFrame
-                addSubview(cell)
-            } else if cell.frame != cellFrame {
+            if cell.superview != nil && cell.frame != cellFrame {
                 cell.frame = cellFrame
             }
             if cell.isHidden {
@@ -786,12 +809,114 @@ public final class AgentChatDocumentView: NSView {
         let contentHeight = currentY + 6 + bottomInset
         let documentHeight = max(minHeight, contentHeight)
         setFrameSize(NSSize(width: contentWidth, height: documentHeight))
+        updateVisibleCells(in: enclosingScrollView?.contentView, force: true)
     }
 
-    public func updateVisibleCells(in clipView: NSClipView?) {
-        // No-op: AppKit's layer-backed clip view handles GPU-level clipping smoothly.
-        // Mutating isHidden during scroll invalidates tracking areas and triggers
-        // synchronous main-thread transaction stalls.
+    public func updateVisibleCells(in clipView: NSClipView?, force: Bool = false) {
+        guard !orderedCells.isEmpty else {
+            lastVisibleRange = 0..<0
+            return
+        }
+        let targetClip = clipView ?? enclosingScrollView?.contentView
+        guard let targetClip else {
+            for entry in orderedCells {
+                let cell = entry.cell
+                if cell.frame != entry.frame {
+                    cell.frame = entry.frame
+                }
+                if cell.superview == nil {
+                    addSubview(cell)
+                }
+                if cell.isHidden {
+                    cell.isHidden = false
+                }
+                cell.animatePendingAppearances(animated: false)
+            }
+            lastVisibleRange = 0..<orderedCells.count
+            return
+        }
+
+        let clipBounds = targetClip.bounds
+        // Hysteresis: during continuous scroll, skip binary search & DOM checks unless
+        // scroll origin moved by >= 96pt or viewport height changed.
+        if !force,
+           abs(clipBounds.origin.y - lastCulledOriginY) < 96,
+           abs(clipBounds.height - lastCulledViewportHeight) < 1 {
+            return
+        }
+        lastCulledOriginY = clipBounds.origin.y
+        lastCulledViewportHeight = clipBounds.height
+
+        let buffer: CGFloat = 800
+        let minVisibleY = clipBounds.minY - buffer
+        let maxVisibleY = clipBounds.maxY + buffer
+
+        // Binary search for first cell with maxY >= minVisibleY
+        var low = 0
+        var high = orderedCells.count
+        while low < high {
+            let mid = (low + high) / 2
+            if orderedCells[mid].frame.maxY < minVisibleY {
+                low = mid + 1
+            } else {
+                high = mid
+            }
+        }
+        let firstVisibleIdx = low
+
+        // Binary search for first cell with minY > maxVisibleY
+        low = firstVisibleIdx
+        high = orderedCells.count
+        while low < high {
+            let mid = (low + high) / 2
+            if orderedCells[mid].frame.minY <= maxVisibleY {
+                low = mid + 1
+            } else {
+                high = mid
+            }
+        }
+        let endVisibleIdx = low
+        let newRange = firstVisibleIdx..<endVisibleIdx
+
+        if !force && newRange == lastVisibleRange {
+            return
+        }
+        lastVisibleRange = newRange
+
+        if firstVisibleIdx > 0 {
+            for i in 0..<firstVisibleIdx {
+                let cell = orderedCells[i].cell
+                if cell.superview != nil {
+                    cell.removeFromSuperview()
+                }
+            }
+        }
+
+        if firstVisibleIdx < endVisibleIdx {
+            for i in firstVisibleIdx..<endVisibleIdx {
+                let entry = orderedCells[i]
+                let cell = entry.cell
+                if cell.frame != entry.frame {
+                    cell.frame = entry.frame
+                }
+                if cell.superview == nil {
+                    addSubview(cell)
+                }
+                if cell.isHidden {
+                    cell.isHidden = false
+                }
+                cell.animatePendingAppearances(animated: false)
+            }
+        }
+
+        if endVisibleIdx < orderedCells.count {
+            for i in endVisibleIdx..<orderedCells.count {
+                let cell = orderedCells[i].cell
+                if cell.superview != nil {
+                    cell.removeFromSuperview()
+                }
+            }
+        }
     }
 }
 
@@ -808,5 +933,18 @@ public final class FlippedClipView: NSClipView {
         super.init(coder: coder)
         wantsLayer = true
         layerContentsRedrawPolicy = .onSetNeedsDisplay
+    }
+}
+
+private final class AgentChatInputHostingView: NSHostingView<AnyView> {
+    override var safeAreaInsets: NSEdgeInsets {
+        NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
+    }
+
+    override func didChangeValue(forKey key: String) {
+        if key == "safeAreaInsets" {
+            return
+        }
+        super.didChangeValue(forKey: key)
     }
 }

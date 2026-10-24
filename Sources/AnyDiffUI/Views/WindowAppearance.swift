@@ -103,10 +103,14 @@ public func updateSplitViewDividers(in window: NSWindow, color: NSColor = NSColo
     let scale = window.backingScaleFactor > 0 ? window.backingScaleFactor : 2.0
     let thickness: CGFloat = 1.0 / scale
     func isSplitDivider(_ v: NSView) -> Bool {
+        guard v.superview is NSSplitView else { return false }
         let name = String(describing: type(of: v))
-        return name.contains("SplitDivider") || (v.superview is NSSplitView && name.contains("Divider"))
+        return name.contains("Divider")
     }
     func rec(v: NSView) {
+        if v is NSScrollView || v is MultiBufferEditorView {
+            return
+        }
         if isSplitDivider(v) {
             v.wantsLayer = true
             v.layer?.backgroundColor = NSColor.clear.cgColor
@@ -127,6 +131,7 @@ public func updateSplitViewDividers(in window: NSWindow, color: NSColor = NSColo
                     sub.isHidden = true
                 }
             }
+            return
         }
         for s in v.subviews { rec(v: s) }
     }

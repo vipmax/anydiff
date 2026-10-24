@@ -51,6 +51,53 @@ public final class AgentStaticTextField: NSTextField {
         drawsBackground = false
         refusesFirstResponder = true
         focusRingType = .none
+        wantsLayer = true
+        layerContentsRedrawPolicy = .onSetNeedsDisplay
+    }
+
+    public override func updateTrackingAreas() {
+        // Static read-only labels never need NSControl/NSCell mouse tracking.
+        // Suppressing super avoids expensive -[NSView _interactiveBounds] walks
+        // across every tool card label during scroll.
+    }
+
+    public override func resetCursorRects() {
+        discardCursorRects()
+    }
+
+    public override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+}
+
+/// Non-interactive image view that never participates in cursor-rect or tracking-area passes.
+public final class AgentStaticImageView: NSImageView {
+    public override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        isEditable = false
+        refusesFirstResponder = true
+        focusRingType = .none
+        wantsLayer = true
+        layerContentsRedrawPolicy = .onSetNeedsDisplay
+    }
+
+    public required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        isEditable = false
+        refusesFirstResponder = true
+        focusRingType = .none
+        wantsLayer = true
+        layerContentsRedrawPolicy = .onSetNeedsDisplay
+    }
+
+    public override func updateTrackingAreas() {}
+
+    public override func resetCursorRects() {
+        discardCursorRects()
+    }
+
+    public override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
     }
 }
 
@@ -152,7 +199,7 @@ public final class AgentSelectableTextView: NSTextView, NSTextStorageDelegate {
         self.isHorizontallyResizable = false
         self.wantsLayer = true
         self.layer?.masksToBounds = true
-        self.layerContentsRedrawPolicy = .duringViewResize
+        self.layerContentsRedrawPolicy = .onSetNeedsDisplay
         self.layer?.drawsAsynchronously = false
     }
 
@@ -190,12 +237,9 @@ public final class AgentSelectableTextView: NSTextView, NSTextStorageDelegate {
     }
 
     public override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        for ta in trackingAreas {
-            if ta.options.contains(.cursorUpdate) || ta.options.contains(.mouseEnteredAndExited) {
-                removeTrackingArea(ta)
-            }
-        }
+        // Do not call super.updateTrackingAreas() — NSTextView's default implementation
+        // adds and removes cursorUpdate / mouseEnteredAndExited tracking areas on every
+        // scroll tick across all text views in the document.
     }
 
     public override func mouseEntered(with event: NSEvent) {
@@ -418,6 +462,10 @@ public final class AgentHoverButton: NSButton {
         )
         addTrackingArea(area)
         self.trackingArea = area
+    }
+
+    public override func resetCursorRects() {
+        discardCursorRects()
     }
 
     public override func hitTest(_ point: NSPoint) -> NSView? {

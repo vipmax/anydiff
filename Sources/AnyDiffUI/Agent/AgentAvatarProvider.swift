@@ -621,21 +621,51 @@ public enum AgentAvatarProvider {
 public final class AgentAvatarImageView: NSImageView {
     public var onRightClick: ((NSView) -> Void)?
     public var onClick: ((NSView) -> Void)?
-    public var isUserRole: Bool = false {
-        didSet {
-            window?.invalidateCursorRects(for: self)
-        }
-    }
+    public var isUserRole: Bool = false
+    private var trackingArea: NSTrackingArea?
 
     public override var intrinsicContentSize: NSSize {
         NSSize(width: frame.width > 0 ? frame.width : 24, height: frame.height > 0 ? frame.height : 24)
     }
 
+    public override func updateTrackingAreas() {
+        // Avoid super.updateTrackingAreas() and legacy cursor rects inside AgentChatScrollView.
+        guard isUserRole && !isHidden && alphaValue > 0.01 && window != nil && bounds.width > 0 && bounds.height > 0 else {
+            if let trackingArea {
+                removeTrackingArea(trackingArea)
+                self.trackingArea = nil
+            }
+            return
+        }
+        if let trackingArea, trackingArea.rect == bounds {
+            return
+        }
+        if let trackingArea {
+            removeTrackingArea(trackingArea)
+        }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeInActiveApp],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        self.trackingArea = area
+    }
+
     public override func resetCursorRects() {
+        discardCursorRects()
+    }
+
+    public override func mouseEntered(with event: NSEvent) {
         if isUserRole {
-            addCursorRect(bounds, cursor: .pointingHand)
-        } else {
-            super.resetCursorRects()
+            NSCursor.pointingHand.set()
+        }
+    }
+
+    public override func mouseExited(with event: NSEvent) {
+        if isUserRole {
+            NSCursor.arrow.set()
         }
     }
 

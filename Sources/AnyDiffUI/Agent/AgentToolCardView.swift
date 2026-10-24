@@ -123,7 +123,14 @@ public final class AgentDiffStatsButton: AgentFlippedView {
     }
 
     public override func updateTrackingAreas() {
-        super.updateTrackingAreas()
+        // Do not call super.updateTrackingAreas()
+        guard !isHidden && alphaValue > 0.01 && window != nil && bounds.width > 0 && bounds.height > 0 else {
+            if let trackingArea {
+                removeTrackingArea(trackingArea)
+                self.trackingArea = nil
+            }
+            return
+        }
         if let trackingArea, trackingArea.rect == bounds {
             return
         }
@@ -138,6 +145,10 @@ public final class AgentDiffStatsButton: AgentFlippedView {
         )
         addTrackingArea(area)
         self.trackingArea = area
+    }
+
+    public override func resetCursorRects() {
+        discardCursorRects()
     }
 
     public override func mouseEntered(with event: NSEvent) {
@@ -192,12 +203,12 @@ public final class AgentToolCardView: AgentFlippedView {
     private let openInEditorButton = AgentHoverButton(frame: .zero)
     private let diffStatsButton = AgentDiffStatsButton()
     private let actionPillView = AgentFlippedView()
-    private let actionIconView = NSImageView()
+    private let actionIconView = AgentStaticImageView()
     private let actionTextLabel = AgentStaticTextField(labelWithString: "")
     private let titleLabel = AgentStaticTextField(labelWithString: "")
     private let progressIndicator = NSProgressIndicator()
     private let errorLabel = AgentStaticTextField(labelWithString: "")
-    private let chevronImageView = NSImageView()
+    private let chevronImageView = AgentStaticImageView()
     private let descriptionLabel = AgentStaticTextField(wrappingLabelWithString: "")
     public let detailContainer = AgentFlippedView()
     private var virtualizedDetailView: MultiBufferEditorView?

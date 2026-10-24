@@ -148,6 +148,8 @@ public final class ACPTransport: @unchecked Sendable {
 
     public func terminate() {
         isRunningInternal = false
+        stdoutPipe?.fileHandleForReading.readabilityHandler = nil
+        stderrPipe?.fileHandleForReading.readabilityHandler = nil
         if let inPipe = stdinPipe {
             try? inPipe.fileHandleForWriting.close()
         }
@@ -163,9 +165,15 @@ public final class ACPTransport: @unchecked Sendable {
 
     private func startReadingOutput(pipe: Pipe) {
         pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            guard let self = self else { return }
+            guard let self = self else {
+                handle.readabilityHandler = nil
+                return
+            }
             let data = handle.availableData
-            guard !data.isEmpty else { return }
+            guard !data.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
 
             self.readQueue.async {
                 self.stdoutBuffer.append(data)
@@ -193,9 +201,16 @@ public final class ACPTransport: @unchecked Sendable {
 
     private func startReadingStderr(pipe: Pipe) {
         pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            guard let self = self else { return }
+            guard let self = self else {
+                handle.readabilityHandler = nil
+                return
+            }
             let data = handle.availableData
-            guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
+            guard !data.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
+            guard let text = String(data: data, encoding: .utf8) else { return }
             self.delegate?.transport(self, didLogStderr: text)
         }
     }

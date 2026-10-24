@@ -5,7 +5,7 @@ import AnyDiffCore
 
 public final class AgentCodeBlockHeaderView: AgentFlippedView {
     public let langLabel = AgentStaticTextField(labelWithString: "")
-    public let toggleButton = NSButton()
+    public let toggleButton = AgentHoverButton()
     public let copyBtn = AgentHoverButton()
     private var trackingArea: NSTrackingArea?
     public private(set) var isExpanded = false
@@ -102,8 +102,8 @@ public final class AgentCodeBlockScrollView: NSScrollView {
 public final class AgentUserCodeBlockView: AgentFlippedView {
     public let codeScrollView = AgentCodeBlockScrollView()
     public let tv = AgentSelectableTextView()
-    public let copyBtn = NSButton()
-    public let langLabel = NSTextField()
+    public let copyBtn = AgentHoverButton()
+    public let langLabel = AgentStaticTextField(labelWithString: "")
     private var rawCode: String = ""
     private var contentTextHeight: CGFloat = 0
     private var cachedHeight: CGFloat = 0
@@ -366,7 +366,7 @@ public final class AgentUserQuoteBlockView: AgentFlippedView {
 }
 
 public final class AgentThoughtBlockView: AgentFlippedView {
-    public let headerButton = NSButton()
+    public let headerButton = AgentHoverButton()
     public let textView = AgentSelectableTextView()
     public private(set) var isExpanded = false
     public private(set) var isExpandable: Bool
@@ -387,6 +387,8 @@ public final class AgentThoughtBlockView: AgentFlippedView {
         headerButton.imagePosition = .imageRight
         headerButton.imageHugsTitle = true
         headerButton.imageScaling = .scaleProportionallyDown
+        headerButton.defaultBackgroundColor = .clear
+        headerButton.hoverBackgroundColor = .clear
         headerButton.target = self
         headerButton.action = #selector(toggle)
         headerButton.isEnabled = isExpandable

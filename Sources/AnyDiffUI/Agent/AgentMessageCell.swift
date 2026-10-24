@@ -110,7 +110,7 @@ public final class AgentMessageCell: NSView {
     var userContentViews: [NSView] = []
     var renderedUserContent: String? = nil
     public var onPreviewImages: (([AgentImageAttachment], Int) -> Void)?
-    let thoughtHeaderButton = NSButton()
+    let thoughtHeaderButton = AgentHoverButton()
     let thoughtTextView = AgentSelectableTextView()
     var toolCallViews: [NSView] = []
     var pendingToolCallAppearances: [NSView] = []
@@ -212,6 +212,8 @@ public final class AgentMessageCell: NSView {
         thoughtHeaderButton.isBordered = false
         thoughtHeaderButton.setButtonType(.momentaryPushIn)
         thoughtHeaderButton.alignment = .left
+        thoughtHeaderButton.defaultBackgroundColor = .clear
+        thoughtHeaderButton.hoverBackgroundColor = .clear
         thoughtHeaderButton.target = self
         thoughtHeaderButton.action = #selector(toggleThought)
         thoughtHeaderButton.font = NSFont.systemFont(ofSize: 11.5, weight: .medium)

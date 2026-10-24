@@ -194,6 +194,44 @@ final class AgentSessionManagerTests: XCTestCase {
         // When following bottom, new scroll position must pin to bottom of document
         XCTAssertEqual(scrollView.contentView.bounds.origin.y, initialDocHeight - 400)
     }
+
+    func testLongChatVirtualizesOffscreenCellsInDocumentView() {
+        let messages = (1...60).map { idx in
+            AgentMessage(
+                role: idx.isMultiple(of: 2) ? .assistant : .user,
+                content: "Message line \(idx) with details\nSecond line of message \(idx)\nThird line of message \(idx)"
+            )
+        }
+        let scrollView = AgentChatScrollView(frame: NSRect(x: 0, y: 0, width: 420, height: 400))
+        scrollView.update(messages: messages, theme: .zedDark, animated: false)
+        scrollView.layoutSubtreeIfNeeded()
+
+        guard let docView = scrollView.documentView as? AgentChatDocumentView else {
+            XCTFail("Expected AgentChatDocumentView")
+            return
+        }
+
+        let mountedAtBottom = docView.subviews.compactMap { $0 as? AgentMessageCell }.filter { !$0.isHidden }
+        XCTAssertLessThan(mountedAtBottom.count, messages.count, "Offscreen cells far above viewport should be hidden/virtualized")
+        XCTAssertTrue(mountedAtBottom.contains { $0.message.id == messages.last?.id })
+
+        // Scroll to the very top and verify top cells become visible while bottom cells hide,
+        // and verify that offscreen user messages have alphaValue == 1 on their content bubble!
+        scrollView.contentView.scroll(to: .zero)
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+
+        let mountedAtTop = docView.subviews.compactMap { $0 as? AgentMessageCell }.filter { !$0.isHidden }
+        XCTAssertLessThan(mountedAtTop.count, messages.count)
+        XCTAssertTrue(mountedAtTop.contains { $0.message.id == messages.first?.id })
+        XCTAssertFalse(mountedAtTop.contains { $0.message.id == messages.last?.id })
+
+        let firstUserCell = mountedAtTop.first { $0.message.role == .user }
+        XCTAssertNotNil(firstUserCell)
+        if let firstUserCell {
+            let visibleUserSubtree = firstUserCell.subviews.filter { !$0.isHidden && $0.alphaValue < 0.99 }
+            XCTAssertTrue(visibleUserSubtree.isEmpty, "User message bubble must not stay at alpha 0 when scrolled into view")
+        }
+    }
     #endif
 
     func testStreamingMessageUsesOneIncrementalTextViewUntilCompletion() {
