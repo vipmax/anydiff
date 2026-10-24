@@ -59,20 +59,29 @@ public final class AgentIconLoader: ObservableObject {
 
 public struct AgentIconView: View {
     public let icon: String
+    public var agentId: String? = nil
     public var tintColor: Color = .primary
     public var size: CGFloat = 20
 
     @State private var loadedImage: NSImage? = nil
+    @State private var customAvatar: NSImage? = nil
 
-    public init(icon: String, tintColor: Color = .primary, size: CGFloat = 20) {
+    public init(icon: String, agentId: String? = nil, tintColor: Color = .primary, size: CGFloat = 20) {
         self.icon = icon
+        self.agentId = agentId
         self.tintColor = tintColor
         self.size = size
     }
 
     public var body: some View {
         Group {
-            if let image = loadedImage {
+            if let custom = customAvatar {
+                Image(nsImage: custom)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: size, height: size)
+                    .clipShape(Circle())
+            } else if let image = loadedImage {
                 Image(nsImage: image)
                     .renderingMode(.template)
                     .resizable()
@@ -85,8 +94,32 @@ public struct AgentIconView: View {
             }
         }
         .frame(width: size, height: size)
-        .onAppear { fetchIcon() }
+        .onAppear {
+            refreshAvatar()
+            fetchIcon()
+        }
         .onChange(of: icon) { _ in fetchIcon() }
+        .onChange(of: agentId) { _ in refreshAvatar() }
+        .onReceive(NotificationCenter.default.publisher(for: AgentAvatarProvider.avatarDidChangeNotification)) { _ in
+            refreshAvatar()
+        }
+        .contentShape(Circle())
+        .onTapGesture {
+            if let agentId = agentId, !agentId.isEmpty {
+                AgentAvatarProvider.showEditorFromKeyWindow(initialTab: .agent, agentId: agentId)
+            }
+        }
+        .contextMenu {
+            if let agentId = agentId, !agentId.isEmpty {
+                Button("Customize Avatar...") {
+                    AgentAvatarProvider.showEditorFromKeyWindow(initialTab: .agent, agentId: agentId)
+                }
+            }
+        }
+    }
+
+    private func refreshAvatar() {
+        customAvatar = AgentAvatarProvider.customAgentAvatarImage(for: agentId)
     }
 
     private var fallbackSymbol: String {

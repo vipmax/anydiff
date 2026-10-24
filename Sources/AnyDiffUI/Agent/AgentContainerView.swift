@@ -70,6 +70,7 @@ public struct AgentContainerView: View {
                         fileDiffsSummary: fileDiffsSummary,
                         agentAccentColor: activeSession.preset.color,
                         agentIcon: activeSession.preset.iconName,
+                        agentId: activeSession.preset.id,
                         toolcallColorMode: toolcallColorMode,
                         onReview: onReview,
                         onPreviewImages: { imgs, idx, isDraft in
@@ -123,6 +124,19 @@ public struct AgentContainerView: View {
                     )
                 }
                 .onHover { isSessionsHovered = $0 }
+
+                AgentHeaderControlsView(
+                    agentManager: activeSession.manager,
+                    theme: theme,
+                    accentColor: accentColor,
+                    workingDirectory: workingDirectory,
+                    onSend: {
+                        NotificationCenter.default.post(
+                            name: Notification.Name("anyDiffAgentSubmitPrompt"),
+                            object: nil
+                        )
+                    }
+                )
 
                 Button(action: {
                     activeSession.isNotificationsEnabled.toggle()

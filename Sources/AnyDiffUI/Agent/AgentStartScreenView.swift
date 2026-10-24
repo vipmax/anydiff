@@ -609,7 +609,7 @@ private struct AgentCardButton: View {
                 RoundedRectangle(cornerRadius: 9, style: .continuous)
                     .fill(presetColor.opacity(isHovered ? 0.16 : 0.09))
                     .frame(width: 40, height: 40)
-                AgentIconView(icon: group.basePreset.iconName, tintColor: presetColor, size: 20)
+                AgentIconView(icon: group.basePreset.iconName, agentId: group.selectedPreset.id, tintColor: presetColor, size: 20)
             }
 
             VStack(alignment: .center, spacing: 3) {

@@ -83,6 +83,13 @@ open class AgentSessionManager: ObservableObject, @unchecked Sendable {
     open var isReadyForPrompt: Bool { initializationState == .ready }
     open var canAcceptPrompt: Bool { pendingPermission == nil && authMethods.isEmpty }
     open var isBusyOrStreaming: Bool { status == .busy || messages.last?.isStreaming == true }
+    open var hasVisibleMessages: Bool { messages.contains { $0.hasVisibleContent } }
+
+    public init() {}
+
+    open func togglePanel() {
+        isPanelOpen.toggle()
+    }
 
     open var presetId: String? = nil
     public var userDefaults: UserDefaults = .standard
@@ -114,12 +121,6 @@ open class AgentSessionManager: ObservableObject, @unchecked Sendable {
 
     open func clearSavedConfigOptions() {
         userDefaults.removeObject(forKey: configStorageKey)
-    }
-
-    public init() {}
-
-    open func togglePanel() {
-        isPanelOpen.toggle()
     }
 
     open var availableModels: [(name: String, value: String)] {

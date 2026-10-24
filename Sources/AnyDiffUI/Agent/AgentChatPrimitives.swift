@@ -151,7 +151,8 @@ public final class AgentSelectableTextView: NSTextView, NSTextStorageDelegate {
         self.isVerticallyResizable = false
         self.isHorizontallyResizable = false
         self.wantsLayer = true
-        self.layerContentsRedrawPolicy = .onSetNeedsDisplay
+        self.layer?.masksToBounds = true
+        self.layerContentsRedrawPolicy = .duringViewResize
         self.layer?.drawsAsynchronously = false
     }
 
@@ -165,10 +166,16 @@ public final class AgentSelectableTextView: NSTextView, NSTextStorageDelegate {
         let sizeChanged = bounds.size != newSize
         super.setFrameSize(newSize)
         if sizeChanged {
-            if !isHorizontallyResizable && newSize.width > 0 {
-                textContainer?.containerSize = NSSize(width: newSize.width, height: CGFloat.greatestFiniteMagnitude)
-            }
+            invalidateLinksCache()
+            needsDisplay = true
         }
+    }
+
+    public override func draw(_ dirtyRect: NSRect) {
+        if !drawsBackground {
+            NSGraphicsContext.current?.cgContext.clear(bounds)
+        }
+        super.draw(dirtyRect)
     }
 
     public override func addTrackingArea(_ trackingArea: NSTrackingArea) {

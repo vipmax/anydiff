@@ -133,7 +133,7 @@ public struct AgentSavedSessionsView: View {
 
             // Agent Badge & Name
             HStack(spacing: 7) {
-                AgentIconView(icon: preset.iconName, tintColor: presetColor, size: 16)
+                AgentIconView(icon: preset.iconName, agentId: preset.id, tintColor: presetColor, size: 16)
                     .fixedSize()
 
                 ViewThatFits(in: .horizontal) {

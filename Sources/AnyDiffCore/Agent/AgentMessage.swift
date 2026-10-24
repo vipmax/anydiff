@@ -269,6 +269,15 @@ public struct AgentMessage: Identifiable, Sendable, Equatable {
         self.timestamp = timestamp
     }
 
+    public var hasVisibleContent: Bool {
+        !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !images.isEmpty
+            || (thought?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
+            || !toolCalls.isEmpty
+            || editedFilesSummary != nil
+            || isStreaming
+    }
+
     /// Appends text to the current text part, or starts a new part after a
     /// tool call. This preserves arrival order without using timestamps.
     public mutating func appendText(_ chunk: String) {

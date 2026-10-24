@@ -98,6 +98,10 @@ public final class AgentMessageCell: NSView {
     }
 
     // Subviews
+    public let roleIconView = AgentAvatarImageView()
+    public let typingIndicatorView = AgentTypingIndicatorView()
+    public private(set) var agentIconName: String = "sparkles"
+    public private(set) var agentId: String = "default"
     let userBubbleView = AgentFlippedView()
     let userContentContainerView = AgentFlippedView()
     let userTextView = AgentSelectableTextView()
@@ -150,16 +154,20 @@ public final class AgentMessageCell: NSView {
         theme: Theme,
         accentColor: Color = .accentColor,
         toolcallColorMode: ToolcallColorMode = .full,
-        nativeTextSelectionEnabled: Bool = false
+        nativeTextSelectionEnabled: Bool = false,
+        agentIconName: String = "sparkles",
+        agentId: String = "default"
     ) {
         self.message = message
         self.theme = theme
         self.accentColor = accentColor
         self.toolcallColorMode = toolcallColorMode
         self.nativeTextSelectionEnabled = nativeTextSelectionEnabled
+        self.agentIconName = agentIconName
+        self.agentId = agentId
         super.init(frame: .zero)
         setup()
-        configure(message: message, theme: theme, accentColor: accentColor, toolcallColorMode: toolcallColorMode)
+        configure(message: message, theme: theme, accentColor: accentColor, toolcallColorMode: toolcallColorMode, agentIconName: agentIconName, agentId: agentId)
     }
 
     public required init?(coder: NSCoder) {
@@ -169,9 +177,20 @@ public final class AgentMessageCell: NSView {
     func setup() {
         wantsLayer = true
         layerContentsRedrawPolicy = .onSetNeedsDisplay
+
+        roleIconView.wantsLayer = true
+        roleIconView.layerContentsRedrawPolicy = .onSetNeedsDisplay
+        roleIconView.imageScaling = .scaleProportionallyUpOrDown
+        addSubview(roleIconView)
+
+        typingIndicatorView.wantsLayer = true
+        typingIndicatorView.layerContentsRedrawPolicy = .onSetNeedsDisplay
+        typingIndicatorView.isHidden = true
+        addSubview(typingIndicatorView)
+
         userBubbleView.wantsLayer = true
         userBubbleView.layerContentsRedrawPolicy = .onSetNeedsDisplay
-        userBubbleView.layer?.cornerRadius = 13
+        userBubbleView.layer?.cornerRadius = 0
         userBubbleView.layer?.borderWidth = 0.0
         userBubbleView.layer?.masksToBounds = false
         userBubbleView.layer?.shadowColor = nil
@@ -244,7 +263,9 @@ public final class AgentMessageCell: NSView {
         message: AgentMessage,
         theme: Theme,
         accentColor: Color = .accentColor,
-        toolcallColorMode: ToolcallColorMode = .full
+        toolcallColorMode: ToolcallColorMode = .full,
+        agentIconName: String = "sparkles",
+        agentId: String = "default"
     ) {
         let previousMessage = self.message
         let shouldAnimateStreamingText =
@@ -271,9 +292,29 @@ public final class AgentMessageCell: NSView {
         self.theme = theme
         self.accentColor = accentColor
         self.toolcallColorMode = toolcallColorMode
+        self.agentIconName = agentIconName
+        self.agentId = agentId
         invalidateLayoutCache()
 
         if message.role == .user {
+            let userSize = AgentMessageCell.userAvatarSize
+            roleIconView.isUserRole = true
+            roleIconView.image = AgentAvatarProvider.userAvatarImage
+            roleIconView.layer?.cornerRadius = userSize / 2
+            roleIconView.layer?.masksToBounds = true
+            roleIconView.layer?.backgroundColor = nil
+            roleIconView.contentTintColor = nil
+            roleIconView.isHidden = false
+            roleIconView.toolTip = "Click or right-click to customize avatar settings"
+            roleIconView.onRightClick = { [weak self] view in
+                guard self != nil else { return }
+                AgentAvatarProvider.showEditor(relativeTo: view, initialTab: .user)
+            }
+            roleIconView.onClick = { [weak self] view in
+                guard self != nil else { return }
+                AgentAvatarProvider.showEditor(relativeTo: view, initialTab: .user)
+            }
+
             userTextView.cellId = message.id
             userTextView.tvKey = "user"
             userBubbleView.isHidden = false
@@ -282,11 +323,7 @@ public final class AgentMessageCell: NSView {
             thoughtTextView.alphaValue = 0
             thoughtTextView.removeFromSuperview()
 
-            let focusCol = theme.focusColor.usingColorSpace(.deviceRGB) ?? theme.focusColor
-            let inputBg = theme.inputBackground.usingColorSpace(.deviceRGB) ?? theme.inputBackground
-            let bg = inputBg.blended(withFraction: 0.12, of: focusCol) ?? inputBg
-
-            userBubbleView.layer?.backgroundColor = bg.cgColor
+            userBubbleView.layer?.backgroundColor = NSColor.clear.cgColor
             userBubbleView.layer?.borderWidth = 0.0
             userBubbleView.layer?.borderColor = nil
             userBubbleView.layer?.shadowColor = nil
@@ -320,6 +357,41 @@ public final class AgentMessageCell: NSView {
             clearAssistantViews()
         } else {
             clearUserViews()
+            let agentSize = AgentAvatarProvider.currentAgentAvatarSize(for: agentId)
+            let showCircle = AgentAvatarProvider.shouldShowAgentCircle(for: agentId)
+            roleIconView.isUserRole = true
+            roleIconView.toolTip = "Click or right-click to customize avatar settings"
+            roleIconView.onRightClick = { [weak self] view in
+                guard let self = self else { return }
+                AgentAvatarProvider.showEditor(relativeTo: view, initialTab: .agent, agentId: self.agentId)
+            }
+            roleIconView.onClick = { [weak self] view in
+                guard let self = self else { return }
+                AgentAvatarProvider.showEditor(relativeTo: view, initialTab: .agent, agentId: self.agentId)
+            }
+            if let customAgentImg = AgentAvatarProvider.customAgentAvatarImage(for: agentId) {
+                roleIconView.image = customAgentImg
+                roleIconView.layer?.cornerRadius = agentSize / 2
+                roleIconView.layer?.masksToBounds = true
+                roleIconView.layer?.backgroundColor = nil
+                roleIconView.contentTintColor = nil
+            } else {
+                let iconPaddingSize = showCircle ? ceil(agentSize * 0.62) : agentSize
+                roleIconView.image = AgentAvatarProvider.agentIconImage(for: agentIconName, size: iconPaddingSize)
+                if showCircle {
+                    roleIconView.layer?.cornerRadius = agentSize / 2
+                    roleIconView.layer?.masksToBounds = true
+                    let circleBg = (NSColor(cgColor: theme.gutterForeground.cgColor) ?? .secondaryLabelColor).withAlphaComponent(0.12)
+                    roleIconView.layer?.backgroundColor = circleBg.cgColor
+                } else {
+                    roleIconView.layer?.cornerRadius = 0
+                    roleIconView.layer?.masksToBounds = false
+                    roleIconView.layer?.backgroundColor = nil
+                }
+                roleIconView.contentTintColor = NSColor(cgColor: theme.gutterForeground.cgColor)?.withAlphaComponent(0.85) ?? .secondaryLabelColor
+            }
+            roleIconView.isHidden = !message.hasVisibleContent
+
             thoughtTextView.cellId = message.id
             thoughtTextView.tvKey = "thought"
             userBubbleView.isHidden = true
@@ -455,9 +527,40 @@ public final class AgentMessageCell: NSView {
             if shouldAnimateStreamingText && !message.isStreaming {
                 animateStreamingTextUpdate()
             }
+
+            if isWaitingForResponse {
+                typingIndicatorView.isHidden = false
+                let dotColor = NSColor(cgColor: theme.foreground.cgColor)?.withAlphaComponent(0.65) ?? .secondaryLabelColor
+                typingIndicatorView.configure(color: dotColor)
+                typingIndicatorView.startAnimating()
+                if roleIconView.layer?.animation(forKey: "agentRolePulse") == nil {
+                    let pulse = CABasicAnimation(keyPath: "opacity")
+                    pulse.fromValue = 0.45
+                    pulse.toValue = 1.0
+                    pulse.duration = 0.95
+                    pulse.autoreverses = true
+                    pulse.repeatCount = .infinity
+                    pulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                    roleIconView.layer?.add(pulse, forKey: "agentRolePulse")
+                }
+            } else {
+                typingIndicatorView.stopAnimating()
+                typingIndicatorView.isHidden = true
+                roleIconView.layer?.removeAnimation(forKey: "agentRolePulse")
+                roleIconView.layer?.opacity = 1.0
+            }
         }
 
         updateNativeTextSelection()
+    }
+
+    public var isWaitingForResponse: Bool {
+        guard message.role == .assistant && message.isStreaming else { return false }
+        let hasContent = !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasTools = !message.toolCalls.isEmpty
+        let hasTopThought = (message.thought?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
+        let hasInline = hasInlineThoughtParts
+        return !hasContent && !hasTools && !hasTopThought && !hasInline
     }
 
     func updateNativeTextSelection() {
@@ -714,6 +817,50 @@ public final class AgentMessageCell: NSView {
         previousStreamedLength = 0
         cachedParsedDiffFiles = nil
         cachedParsedDiffDataCount = -1
+        typingIndicatorView.stopAnimating()
+        typingIndicatorView.isHidden = true
+        roleIconView.layer?.removeAnimation(forKey: "agentRolePulse")
+        roleIconView.layer?.opacity = 1.0
+    }
+
+    public func refreshAvatars() {
+        let settings = AgentAvatarProvider.loadSettings()
+        if message.role == .user {
+            let userSize = settings.userAvatarSize
+            roleIconView.image = AgentAvatarProvider.userAvatarImage
+            roleIconView.layer?.cornerRadius = userSize / 2
+            roleIconView.layer?.masksToBounds = true
+            roleIconView.layer?.backgroundColor = nil
+        } else {
+            let agentSize = AgentAvatarProvider.currentAgentAvatarSize(for: agentId)
+            let showCircle = AgentAvatarProvider.shouldShowAgentCircle(for: agentId)
+            if let customAgentImg = AgentAvatarProvider.customAgentAvatarImage(for: agentId) {
+                roleIconView.image = customAgentImg
+                roleIconView.layer?.cornerRadius = agentSize / 2
+                roleIconView.layer?.masksToBounds = true
+                roleIconView.layer?.backgroundColor = nil
+                roleIconView.contentTintColor = nil
+            } else {
+                let iconPaddingSize = showCircle ? ceil(agentSize * 0.62) : agentSize
+                roleIconView.image = AgentAvatarProvider.agentIconImage(for: agentIconName, size: iconPaddingSize)
+                if showCircle {
+                    roleIconView.layer?.cornerRadius = agentSize / 2
+                    roleIconView.layer?.masksToBounds = true
+                    let circleBg = (NSColor(cgColor: theme.gutterForeground.cgColor) ?? .secondaryLabelColor).withAlphaComponent(0.12)
+                    roleIconView.layer?.backgroundColor = circleBg.cgColor
+                } else {
+                    roleIconView.layer?.cornerRadius = 0
+                    roleIconView.layer?.masksToBounds = false
+                    roleIconView.layer?.backgroundColor = nil
+                }
+                roleIconView.contentTintColor = NSColor(cgColor: theme.gutterForeground.cgColor)?.withAlphaComponent(0.85) ?? .secondaryLabelColor
+            }
+        }
+        invalidateLayoutCache()
+    }
+
+    public func refreshUserAvatar() {
+        refreshAvatars()
     }
 
     func clearUserViews() {
@@ -873,9 +1020,10 @@ public final class AgentMessageCell: NSView {
 
     func measureUserContentViewsHeight(width: CGFloat) -> CGFloat {
         var total: CGFloat = 0
+        let wrapWidth = max(50, width - 6)
         for (i, view) in userContentViews.enumerated() {
             if let tv = view as? AgentSelectableTextView {
-                let h = measuredTextHeight(for: tv, attributedString: tv.attributedString(), width: width)
+                let h = measuredTextHeight(for: tv, attributedString: tv.attributedString(), width: wrapWidth)
                 total += h
             } else if let cb = view as? AgentUserCodeBlockView {
                 total += cb.height(for: width)
@@ -976,6 +1124,7 @@ public final class AgentMessageCell: NSView {
         markdownViews.removeAll()
         markdownViewsByTextPart.removeAll()
         streamingRenderedContent = ""
+        invalidateLayoutCache()
 
         var sectionIndex = 0
         for part in message.orderedParts {
@@ -1138,6 +1287,7 @@ public final class AgentMessageCell: NSView {
             mutable.addAttribute(.foregroundColor, value: baseColor.withAlphaComponent(alpha), range: chunk.range)
         }
         textView.textStorage?.setAttributedString(mutable)
+        textView.needsDisplay = true
         streamingRenderedContent = content
     }
 

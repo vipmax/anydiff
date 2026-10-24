@@ -7,6 +7,8 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
     public var messages: [AgentMessage]
     public var theme: Theme
     public var accentColor: Color
+    public var agentIcon: String
+    public var agentId: String
     public var toolcallColorMode: ToolcallColorMode
     public var scrollToBottomTrigger: Int
     public var onNearBottomChanged: (Bool) -> Void
@@ -15,11 +17,15 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
     public var onRestore: ((AgentEditedFilesSummary) -> Void)?
     public var onPreviewImages: (([AgentImageAttachment], Int) -> Void)?
     public var onOpenURL: ((URL) -> Void)?
+    public var inputView: AnyView?
+    public var inputContentHeight: CGFloat = 0
 
     public init(
         messages: [AgentMessage],
         theme: Theme,
         accentColor: Color = .accentColor,
+        agentIcon: String = "sparkles",
+        agentId: String = "default",
         toolcallColorMode: ToolcallColorMode = .full,
         scrollToBottomTrigger: Int,
         onNearBottomChanged: @escaping (Bool) -> Void = { _ in },
@@ -27,11 +33,15 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
         onRevert: ((AgentEditedFilesSummary) -> Void)? = nil,
         onRestore: ((AgentEditedFilesSummary) -> Void)? = nil,
         onPreviewImages: (([AgentImageAttachment], Int) -> Void)? = nil,
-        onOpenURL: ((URL) -> Void)? = nil
+        onOpenURL: ((URL) -> Void)? = nil,
+        inputView: AnyView? = nil,
+        inputContentHeight: CGFloat = 0
     ) {
         self.messages = messages
         self.theme = theme
         self.accentColor = accentColor
+        self.agentIcon = agentIcon
+        self.agentId = agentId
         self.toolcallColorMode = toolcallColorMode
         self.scrollToBottomTrigger = scrollToBottomTrigger
         self.onNearBottomChanged = onNearBottomChanged
@@ -40,6 +50,8 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
         self.onRestore = onRestore
         self.onPreviewImages = onPreviewImages
         self.onOpenURL = onOpenURL
+        self.inputView = inputView
+        self.inputContentHeight = inputContentHeight
     }
 
     public func makeCoordinator() -> Coordinator {
@@ -54,6 +66,8 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
         var lastLastMessageToolCallsCount: Int = -1
         var lastThemeId: String = ""
         var lastAccentColor: Color = .accentColor
+        var lastAgentIcon: String = "sparkles"
+        var lastAgentId: String = "default"
         var lastToolcallColorMode: ToolcallColorMode = .full
         var lastScrollToBottomTrigger: Int = -1
 
@@ -61,15 +75,17 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
             messages: [AgentMessage],
             theme: Theme,
             accentColor: Color,
+            agentIcon: String,
+            agentId: String = "default",
             toolcallColorMode: ToolcallColorMode,
             trigger: Int
         ) -> Bool {
-            if theme.id != lastThemeId || accentColor != lastAccentColor || toolcallColorMode != lastToolcallColorMode || trigger != lastScrollToBottomTrigger {
-                record(messages: messages, theme: theme, accentColor: accentColor, toolcallColorMode: toolcallColorMode, trigger: trigger)
+            if theme.id != lastThemeId || accentColor != lastAccentColor || agentIcon != lastAgentIcon || agentId != lastAgentId || toolcallColorMode != lastToolcallColorMode || trigger != lastScrollToBottomTrigger {
+                record(messages: messages, theme: theme, accentColor: accentColor, agentIcon: agentIcon, agentId: agentId, toolcallColorMode: toolcallColorMode, trigger: trigger)
                 return true
             }
             if messages.count != lastMessageCount {
-                record(messages: messages, theme: theme, accentColor: accentColor, toolcallColorMode: toolcallColorMode, trigger: trigger)
+                record(messages: messages, theme: theme, accentColor: accentColor, agentIcon: agentIcon, agentId: agentId, toolcallColorMode: toolcallColorMode, trigger: trigger)
                 return true
             }
             if let last = messages.last {
@@ -77,7 +93,7 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
                    last.content.count != lastLastMessageContentCount ||
                    last.isStreaming != lastLastMessageStreaming ||
                    last.toolCalls.count != lastLastMessageToolCallsCount {
-                    record(messages: messages, theme: theme, accentColor: accentColor, toolcallColorMode: toolcallColorMode, trigger: trigger)
+                    record(messages: messages, theme: theme, accentColor: accentColor, agentIcon: agentIcon, agentId: agentId, toolcallColorMode: toolcallColorMode, trigger: trigger)
                     return true
                 }
             }
@@ -88,16 +104,20 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
             messages: [AgentMessage],
             theme: Theme,
             accentColor: Color,
+            agentIcon: String,
+            agentId: String = "default",
             toolcallColorMode: ToolcallColorMode,
             trigger: Int
         ) {
             lastMessageCount = messages.count
+            lastAgentId = agentId
             lastLastMessageId = messages.last?.id
             lastLastMessageContentCount = messages.last?.content.count ?? -1
             lastLastMessageStreaming = messages.last?.isStreaming ?? false
             lastLastMessageToolCallsCount = messages.last?.toolCalls.count ?? -1
             lastThemeId = theme.id
             lastAccentColor = accentColor
+            lastAgentIcon = agentIcon
             lastToolcallColorMode = toolcallColorMode
             lastScrollToBottomTrigger = trigger
         }
@@ -111,10 +131,14 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
         scrollView.onRestore = onRestore
         scrollView.onPreviewImages = onPreviewImages
         scrollView.onOpenURL = onOpenURL
+        scrollView.setInputView(inputView, inputHeight: inputContentHeight)
+        scrollView.agentId = agentId
         context.coordinator.record(
             messages: messages,
             theme: theme,
             accentColor: accentColor,
+            agentIcon: agentIcon,
+            agentId: agentId,
             toolcallColorMode: toolcallColorMode,
             trigger: scrollToBottomTrigger
         )
@@ -122,6 +146,8 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
             messages: messages,
             theme: theme,
             accentColor: accentColor,
+            agentIcon: agentIcon,
+            agentId: agentId,
             toolcallColorMode: toolcallColorMode,
             animated: false,
             scrollToBottomTrigger: scrollToBottomTrigger
@@ -130,13 +156,21 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
     }
 
     public func updateNSView(_ scrollView: AgentChatScrollView, context: Context) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async {
+                self.updateNSView(scrollView, context: context)
+            }
+            return
+        }
         scrollView.onNearBottomChanged = onNearBottomChanged
         scrollView.onReview = onReview
         scrollView.onRevert = onRevert
         scrollView.onRestore = onRestore
         scrollView.onPreviewImages = onPreviewImages
         scrollView.onOpenURL = onOpenURL
+        scrollView.setInputView(inputView, inputHeight: inputContentHeight)
 
+        scrollView.agentId = agentId
         // If SwiftUI called updateNSView purely because of an unrelated UI state change
         // (like isChatNearBottom button appearing or parent view re-evaluating during scroll),
         // skip the update so scrolling is 100% free of layout passes and main-thread work.
@@ -144,6 +178,8 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
             messages: messages,
             theme: theme,
             accentColor: accentColor,
+            agentIcon: agentIcon,
+            agentId: agentId,
             toolcallColorMode: toolcallColorMode,
             trigger: scrollToBottomTrigger
         ) else {
@@ -154,6 +190,8 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
             messages: messages,
             theme: theme,
             accentColor: accentColor,
+            agentIcon: agentIcon,
+            agentId: agentId,
             toolcallColorMode: toolcallColorMode,
             animated: true,
             scrollToBottomTrigger: scrollToBottomTrigger
@@ -168,6 +206,9 @@ public final class AgentChatScrollView: NSScrollView {
     private var pendingMessages: [AgentMessage]?
     private var pendingTheme: Theme?
     private var pendingAccentColor: Color = .accentColor
+    public var agentId: String = "default"
+    private var pendingAgentIcon: String = "sparkles"
+    private var pendingAgentId: String = "default"
     private var pendingToolcallColorMode: ToolcallColorMode = .full
     private var pendingAnimated = false
     private var pendingScrollToBottomTrigger = 0
@@ -202,6 +243,16 @@ public final class AgentChatScrollView: NSScrollView {
         didSet {
             documentViewCustom.onOpenURL = onOpenURL
         }
+    }
+
+    public func setInputView(_ view: AnyView?, inputHeight: CGFloat = 0) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in
+                self?.setInputView(view, inputHeight: inputHeight)
+            }
+            return
+        }
+        documentViewCustom.setInputView(view, inputHeight: inputHeight)
     }
 
     public override var isOpaque: Bool { true }
@@ -280,6 +331,8 @@ public final class AgentChatScrollView: NSScrollView {
         messages: [AgentMessage],
         theme: Theme,
         accentColor: Color = .accentColor,
+        agentIcon: String = "sparkles",
+        agentId: String = "default",
         toolcallColorMode: ToolcallColorMode = .full,
         animated: Bool,
         scrollToBottomTrigger: Int = 0,
@@ -288,6 +341,8 @@ public final class AgentChatScrollView: NSScrollView {
         pendingMessages = messages
         pendingTheme = theme
         pendingAccentColor = accentColor
+        pendingAgentIcon = agentIcon
+        pendingAgentId = agentId
         pendingToolcallColorMode = toolcallColorMode
         pendingAnimated = animated
         pendingScrollToBottomTrigger = scrollToBottomTrigger
@@ -329,6 +384,8 @@ public final class AgentChatScrollView: NSScrollView {
             messages,
             theme: theme,
             accentColor: pendingAccentColor,
+            agentIcon: pendingAgentIcon,
+            agentId: pendingAgentId,
             toolcallColorMode: pendingToolcallColorMode,
             in: self,
             animated: pendingAnimated
@@ -369,6 +426,7 @@ public final class AgentChatScrollView: NSScrollView {
             resizeLayoutWorkItem = workItem
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.04, execute: workItem)
         } else if heightChanged {
+            documentViewCustom.layoutContent(for: width)
             if followsBottom {
                 scrollToBottom(animated: false)
             } else {
@@ -475,6 +533,8 @@ public final class AgentChatDocumentView: NSView {
     private var messagesByID: [UUID: AgentMessage] = [:]
     private var theme: Theme = .zedDark
     private var accentColor: Color = .accentColor
+    private var agentIcon: String = "sparkles"
+    private var agentId: String = "default"
     private var toolcallColorMode: ToolcallColorMode = .full
     private var bottomInset: CGFloat = 0
     fileprivate private(set) var lastLayoutWidth: CGFloat = 0
@@ -483,6 +543,50 @@ public final class AgentChatDocumentView: NSView {
     public var onRestore: ((AgentEditedFilesSummary) -> Void)?
     public var onPreviewImages: (([AgentImageAttachment], Int) -> Void)?
     public var onOpenURL: ((URL) -> Void)? = nil
+    private var inputHostingView: NSHostingView<AnyView>?
+    private var lastInputHeight: CGFloat = -1
+
+    public func setInputView(_ view: AnyView?, inputHeight: CGFloat = 0) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in
+                self?.setInputView(view, inputHeight: inputHeight)
+            }
+            return
+        }
+
+        guard let view = view else {
+            if inputHostingView != nil {
+                inputHostingView?.removeFromSuperview()
+                inputHostingView = nil
+                layoutContent(for: max(100, lastLayoutWidth))
+            }
+            return
+        }
+
+        let heightChanged = abs(inputHeight - lastInputHeight) >= 1.0
+        lastInputHeight = inputHeight
+
+        if let existing = inputHostingView {
+            existing.rootView = view
+            if heightChanged {
+                layoutContent(for: max(100, lastLayoutWidth))
+            }
+        } else {
+            let hosting = NSHostingView(rootView: view)
+            hosting.wantsLayer = true
+            hosting.layer?.masksToBounds = false
+            inputHostingView = hosting
+            layoutContent(for: max(100, lastLayoutWidth))
+        }
+    }
+
+    public override func mouseDown(with event: NSEvent) {
+        super.mouseDown(with: event)
+        let point = convert(event.locationInWindow, from: nil)
+        if let input = inputHostingView, point.y >= input.frame.minY {
+            NotificationCenter.default.post(name: Notification.Name("anyDiffFocusAgentInput"), object: nil)
+        }
+    }
 
     public override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -497,6 +601,23 @@ public final class AgentChatDocumentView: NSView {
     private func setup() {
         wantsLayer = true
         layerContentsRedrawPolicy = .onSetNeedsDisplay
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAvatarDidChange),
+            name: AgentAvatarProvider.avatarDidChangeNotification,
+            object: nil
+        )
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    @objc private func handleAvatarDidChange() {
+        for entry in orderedCells {
+            entry.cell.refreshAvatars()
+        }
+        layoutContent(for: max(100, lastLayoutWidth))
     }
 
     fileprivate func setBottomInset(_ inset: CGFloat) {
@@ -508,22 +629,27 @@ public final class AgentChatDocumentView: NSView {
     }
 
     fileprivate func updateMessages(
-        _ newMessages: [AgentMessage],
+        _ incomingMessages: [AgentMessage],
         theme: Theme,
         accentColor: Color = .accentColor,
+        agentIcon: String = "sparkles",
+        agentId: String = "default",
         toolcallColorMode: ToolcallColorMode,
         in scrollView: AgentChatScrollView,
         animated: Bool
     ) {
+        let newMessages = incomingMessages.filter { $0.hasVisibleContent }
         let newIds = newMessages.map(\.id)
         let oldIds = orderedCells.map(\.id)
         let themeChanged = theme.id != self.theme.id
         let accentChanged = accentColor != self.accentColor
+        let iconChanged = agentIcon != self.agentIcon
+        let agentIdChanged = agentId != self.agentId
         let displayModeChanged = toolcallColorMode != self.toolcallColorMode
         let messagesChanged = newIds != oldIds || newMessages.contains { message in
             messagesByID[message.id] != message
         }
-        guard messagesChanged || themeChanged || accentChanged || displayModeChanged else {
+        guard messagesChanged || themeChanged || accentChanged || iconChanged || agentIdChanged || displayModeChanged else {
             let width = max(100, scrollView.contentView.bounds.width)
             if abs(width - lastLayoutWidth) > 0.5 {
                 layoutContent(for: width)
@@ -533,6 +659,8 @@ public final class AgentChatDocumentView: NSView {
 
         self.theme = theme
         self.accentColor = accentColor
+        self.agentIcon = agentIcon
+        self.agentId = agentId
         self.toolcallColorMode = toolcallColorMode
 
         let newIDSet = Set(newIds)
@@ -552,12 +680,14 @@ public final class AgentChatDocumentView: NSView {
                 cell.onPreviewImages = { [weak self] imgs, idx in
                     self?.onPreviewImages?(imgs, idx)
                 }
-                if themeChanged || accentChanged || displayModeChanged || messagesByID[message.id] != message {
+                if themeChanged || accentChanged || iconChanged || agentIdChanged || displayModeChanged || messagesByID[message.id] != message {
                     cell.configure(
                         message: message,
                         theme: theme,
                         accentColor: accentColor,
-                        toolcallColorMode: toolcallColorMode
+                        toolcallColorMode: toolcallColorMode,
+                        agentIconName: agentIcon,
+                        agentId: agentId
                     )
                 }
             } else {
@@ -566,7 +696,9 @@ public final class AgentChatDocumentView: NSView {
                     theme: theme,
                     accentColor: accentColor,
                     toolcallColorMode: toolcallColorMode,
-                    nativeTextSelectionEnabled: true
+                    nativeTextSelectionEnabled: true,
+                    agentIconName: agentIcon,
+                    agentId: agentId
                 )
                 if message.role == .user {
                     cell.prepareUserMessageAppearance()
@@ -630,11 +762,29 @@ public final class AgentChatDocumentView: NSView {
             if cell.isHidden {
                 cell.isHidden = false
             }
-            currentY += height + 10
+            currentY += height + 14
         }
 
+        if let inputView = inputHostingView, !orderedCells.isEmpty {
+            let resolvedInputHeight = max(40, lastInputHeight > 0 ? ceil(lastInputHeight) : 60)
+            let inputFrame = NSRect(x: 0, y: currentY, width: contentWidth, height: resolvedInputHeight)
+            if inputView.frame != inputFrame {
+                inputView.frame = inputFrame
+            }
+            if inputView.superview == nil {
+                addSubview(inputView)
+            }
+            if inputView.isHidden {
+                inputView.isHidden = false
+            }
+            currentY += resolvedInputHeight + 20
+        } else {
+            inputHostingView?.removeFromSuperview()
+        }
+
+        let minHeight = enclosingScrollView?.contentView.bounds.height ?? 0
         let contentHeight = currentY + 6 + bottomInset
-        let documentHeight = contentHeight
+        let documentHeight = max(minHeight, contentHeight)
         setFrameSize(NSSize(width: contentWidth, height: documentHeight))
     }
 

@@ -519,9 +519,20 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
                 return
             }
 
+            if type == "usage_update" {
+                if let used = update.used, let size = update.size, size > 0 {
+                    self.contextUsagePercentage = Int(round(Double(used) / Double(size) * 100.0))
+                }
+                return
+            }
+
+            if type == "session_info_update" || type == "available_commands_update" {
+                return
+            }
+
             let isThought = type == "thought_chunk" || type == "thought" || type == "agent_thought_chunk"
             let isText = type == "message_chunk" || type == "text" || type == "content" || type == "agent_message_chunk"
-            let isTool = type == "tool_call" || type == "tool_use" || type == "tool_start" || type == "tool_call_update" || type == "tool_result" || type == "tool_call_result" || type == "tool_end" || type == "tool_complete" || type == "usage_update"
+            let isTool = type == "tool_call" || type == "tool_use" || type == "tool_start" || type == "tool_call_update" || type == "tool_result" || type == "tool_call_result" || type == "tool_end" || type == "tool_complete"
 
             // Ignore metadata/command updates that are not chat turns
             guard isThought || isText || isTool else {
@@ -539,6 +550,13 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
                let idx = self.messages.firstIndex(where: { $0.id == streamId }) {
                 targetIdx = idx
             } else {
+                // Guard against phantom assistant messages during metadata updates or empty replays
+                if (isThought || isText) && chunk.isEmpty {
+                    return
+                }
+                if isTool && update.toolCallId == nil && update.toolName == nil && update.kind == nil && (update.toolResult == nil || update.toolResult?.isEmpty == true) {
+                    return
+                }
                 // Replaying historical message during session/load
                 if let lastIdx = self.messages.indices.last, self.messages[lastIdx].role == .assistant {
                     targetIdx = lastIdx
@@ -703,11 +721,7 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
                 if self.currentStreamMessageId != nil {
                     self.statusMessage = nil
                 }
-            case "usage_update":
-                if let used = update.used, let size = update.size, size > 0 {
-                    self.contextUsagePercentage = Int(round(Double(used) / Double(size) * 100.0))
-                }
-            case "session_info_update", "available_commands_update":
+            case "usage_update", "session_info_update", "available_commands_update":
                 break
             default:
                 if !chunk.isEmpty {

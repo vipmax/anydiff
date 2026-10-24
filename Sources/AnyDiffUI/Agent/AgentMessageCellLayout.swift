@@ -4,6 +4,15 @@ import QuartzCore
 import AnyDiffCore
 
 extension AgentMessageCell {
+    public static let iconLeft: CGFloat = 18
+    public static var userAvatarSize: CGFloat { AgentAvatarProvider.currentUserAvatarSize }
+    public static var agentAvatarSize: CGFloat { AgentAvatarProvider.currentAgentAvatarSize }
+    public static var maxAvatarWidth: CGFloat { max(userAvatarSize, agentAvatarSize, 24) }
+    public static let iconGap: CGFloat = 12
+    public static var contentLeft: CGFloat { iconLeft + maxAvatarWidth + iconGap }
+    public static var iconWidth: CGFloat { 24 }
+    public static let rightMargin: CGFloat = 18
+
     func invalidateLayoutCache() {
         cachedLayoutWidth = -1
         cachedLayoutHeight = 0
@@ -26,7 +35,7 @@ extension AgentMessageCell {
             // appended chunk.
             textContainer.containerSize = NSSize(width: max(1, width), height: .greatestFiniteMagnitude)
             layoutManager.ensureLayout(for: textContainer)
-            measured = max(18, ceil(layoutManager.usedRect(for: textContainer).height + textView.textContainerInset.height * 2))
+            measured = max(18, ceil(layoutManager.usedRect(for: textContainer).height + textView.textContainerInset.height * 2) + 2)
         } else {
             measured = measureAttributedTextHeight(attributedString, maxWidth: width)
         }
@@ -52,7 +61,8 @@ extension AgentMessageCell {
             return card.measureHeight(width: contentWidth)
         }
         if let tv = view as? AgentSelectableTextView {
-            return measuredTextHeight(for: tv, attributedString: tv.attributedString(), width: contentWidth)
+            let wrapWidth = max(50, contentWidth - 6)
+            return measuredTextHeight(for: tv, attributedString: tv.attributedString(), width: wrapWidth)
         }
         if let codeBlock = view as? AgentCodeBlockView {
             guard codeBlock.isExpanded else { return 26 }
@@ -79,34 +89,37 @@ extension AgentMessageCell {
     @discardableResult
     func applyAssistantViewLayout(_ view: NSView, width: CGFloat, currentY: CGFloat, animated: Bool, spacing: CGFloat? = nil) -> CGFloat {
         guard !view.isHidden, view.alphaValue > 0.01 else { return 0 }
-        let horizontalPadding: CGFloat = 16
-        let contentWidth = max(50, width - (horizontalPadding * 2))
+        let contentLeft = AgentMessageCell.contentLeft
+        let contentWidth = max(50, width - contentLeft - AgentMessageCell.rightMargin)
         let height = assistantViewHeight(view, contentWidth: contentWidth)
 
         if let thought = view as? AgentThoughtBlockView {
-            let frame = NSRect(x: horizontalPadding, y: currentY, width: contentWidth, height: height)
+            let frame = NSRect(x: contentLeft, y: currentY, width: contentWidth, height: height)
             if animated { thought.animator().frame = frame } else { thought.frame = frame }
             thought.applyLayout(width: contentWidth, animated: animated)
         } else if let simple = view as? AgentSimpleToolCallView {
-            let frame = NSRect(x: horizontalPadding, y: currentY, width: contentWidth, height: height)
+            let frame = NSRect(x: contentLeft, y: currentY, width: contentWidth, height: height)
             if animated { simple.animator().frame = frame } else { simple.frame = frame }
             simple.applyLayout(width: contentWidth)
         } else if let card = view as? AgentToolCardView {
-            let frame = NSRect(x: horizontalPadding, y: currentY, width: contentWidth, height: height)
+            let frame = NSRect(x: contentLeft, y: currentY, width: contentWidth, height: height)
             if animated { card.animator().frame = frame } else { card.frame = frame }
             card.applyLayout(width: contentWidth, animated: animated)
         } else if let card = view as? AgentEditedFilesCardView {
-            let frame = NSRect(x: horizontalPadding, y: currentY, width: contentWidth, height: height)
+            let frame = NSRect(x: contentLeft, y: currentY, width: contentWidth, height: height)
             if animated { card.animator().frame = frame } else { card.frame = frame }
             card.applyLayout(width: contentWidth)
         } else if let tv = view as? AgentSelectableTextView {
-            let frame = NSRect(x: horizontalPadding, y: currentY, width: contentWidth, height: height)
+            let wrapWidth = max(50, contentWidth - 6)
+            tv.textContainer?.containerSize = NSSize(width: wrapWidth, height: .greatestFiniteMagnitude)
+            let frame = NSRect(x: contentLeft, y: currentY, width: contentWidth, height: height)
             if animated { tv.animator().frame = frame } else { tv.frame = frame }
+            tv.layer?.masksToBounds = true
             if tv.layer?.mask != nil {
                 tv.layer?.mask = nil
             }
         } else if let divider = view as? AgentDividerView {
-            let frame = NSRect(x: horizontalPadding, y: currentY, width: contentWidth, height: 16)
+            let frame = NSRect(x: contentLeft, y: currentY, width: contentWidth, height: 16)
             if animated { divider.animator().frame = frame } else { divider.frame = frame }
             divider.applyLayout(width: contentWidth)
         } else if let codeBlock = view as? AgentCodeBlockView {
@@ -119,7 +132,7 @@ extension AgentMessageCell {
             ) : 0
             let visibleCodeHeight = isExpanded ? min(maxCodeBlockHeight, codeHeight) : 0
             let totalCodeHeight = isExpanded ? headerHeight + 6 + visibleCodeHeight + 10 : headerHeight
-            let blockFrame = NSRect(x: horizontalPadding, y: currentY, width: contentWidth, height: totalCodeHeight)
+            let blockFrame = NSRect(x: contentLeft, y: currentY, width: contentWidth, height: totalCodeHeight)
             let codeScrollFrame = NSRect(x: 10, y: headerHeight + 6, width: contentWidth - 20, height: visibleCodeHeight)
             let codeDocumentFrame = NSRect(x: 0, y: 0, width: contentWidth - 20, height: codeHeight)
             if isExpanded {
@@ -146,7 +159,7 @@ extension AgentMessageCell {
                 width: contentWidth - 24
             )
             let totalHeight = qHeight + 12
-            let blockFrame = NSRect(x: horizontalPadding, y: currentY, width: contentWidth, height: totalHeight)
+            let blockFrame = NSRect(x: contentLeft, y: currentY, width: contentWidth, height: totalHeight)
             let barFrame = NSRect(x: 4, y: 6, width: 3, height: max(16, totalHeight - 12))
             let quoteFrame = NSRect(x: 14, y: 6, width: contentWidth - 24, height: qHeight)
             if animated {
@@ -165,30 +178,34 @@ extension AgentMessageCell {
     }
 
     public func measureHeight(for width: CGFloat) -> CGFloat {
+        guard message.hasVisibleContent else {
+            cachedLayoutWidth = width
+            cachedLayoutHeight = 0
+            return 0
+        }
         if abs(cachedLayoutWidth - width) < 0.5, cachedLayoutHeight > 0 {
             return cachedLayoutHeight
         }
 
-        let horizontalPadding: CGFloat = 16
-        let contentWidth = max(50, width - (horizontalPadding * 2))
+        let contentLeft = AgentMessageCell.contentLeft
+        let contentWidth = max(50, width - contentLeft - AgentMessageCell.rightMargin)
         let height: CGFloat
 
         if message.role == .user {
-            let bubbleWidth = contentWidth
             let hasImages = !userImageViews.isEmpty
             let imagesHeight: CGFloat = hasImages ? (userImageViews.count == 1 ? 140 : 54) : 0
             let hasContent = !userContentViews.isEmpty
-            let fullTextHeight = hasContent ? measureUserContentViewsHeight(width: bubbleWidth - 28) : 0
+            let fullTextHeight = hasContent ? measureUserContentViewsHeight(width: contentWidth) : 0
             let hasComplexViews = userContentViews.contains { $0 is AgentUserCodeBlockView || $0 is AgentUserQuoteBlockView }
             let isCollapsible = !hasComplexViews && fullTextHeight > userTextCollapseThreshold
             let displayedTextHeight = (isCollapsible && !isUserTextExpanded) ? maxUserTextCollapsedHeight : fullTextHeight
             let buttonHeight: CGFloat = isCollapsible ? 22 : 0
             let buttonSpacing: CGFloat = isCollapsible ? 4 : 0
 
-            let bubbleHeight = 9 + imagesHeight + (hasImages && hasContent ? 8 : 0) + displayedTextHeight + (isCollapsible ? (buttonSpacing + buttonHeight) : 0) + 9
-            height = bubbleHeight + 8
+            let contentH = imagesHeight + (hasImages && hasContent ? 8 : 0) + displayedTextHeight + (isCollapsible ? (buttonSpacing + buttonHeight) : 0)
+            height = max(AgentMessageCell.userAvatarSize, contentH) + 10
         } else {
-            var currentY: CGFloat = 4
+            var currentY: CGFloat = (!thoughtHeaderButton.isHidden || hasCompactTopThought) ? 3 : 5
 
             let firstViewIsTool = isToolCallView(firstVisibleAssistantView() ?? NSView())
             if !thoughtHeaderButton.isHidden {
@@ -221,7 +238,11 @@ extension AgentMessageCell {
                 currentY += assistantViewHeight(view, contentWidth: contentWidth) + spacing
             }
 
-            height = currentY + 4
+            if isWaitingForResponse {
+                currentY += AgentTypingIndicatorView.defaultHeight
+            }
+
+            height = max(AgentAvatarProvider.currentAgentAvatarSize(for: agentId), currentY) + 6
         }
 
         cachedLayoutWidth = width
@@ -230,15 +251,25 @@ extension AgentMessageCell {
     }
 
     public func applyLayout(for width: CGFloat, animated: Bool) {
-        let horizontalPadding: CGFloat = 16
-        let contentWidth = max(50, width - (horizontalPadding * 2))
+        guard message.hasVisibleContent else {
+            frame = NSRect(x: 0, y: frame.origin.y, width: width, height: 0)
+            roleIconView.isHidden = true
+            return
+        }
+        let contentLeft = AgentMessageCell.contentLeft
+        let contentWidth = max(50, width - contentLeft - AgentMessageCell.rightMargin)
 
         if message.role == .user {
-            let bubbleWidth = contentWidth
+            let userSize = AgentMessageCell.userAvatarSize
+            let maxW = AgentMessageCell.maxAvatarWidth
+            let iconX = AgentMessageCell.iconLeft + (maxW - userSize) / 2
+            let roleFrame = NSRect(x: iconX, y: 1, width: userSize, height: userSize)
+            if animated { roleIconView.animator().frame = roleFrame } else { roleIconView.frame = roleFrame }
+
             let hasImages = !userImageViews.isEmpty
             let imagesHeight: CGFloat = hasImages ? (userImageViews.count == 1 ? 140 : 54) : 0
             let hasContent = !userContentViews.isEmpty
-            let fullTextHeight = hasContent ? measureUserContentViewsHeight(width: bubbleWidth - 28) : 0
+            let fullTextHeight = hasContent ? measureUserContentViewsHeight(width: contentWidth) : 0
 
             let hasComplexViews = userContentViews.contains { $0 is AgentUserCodeBlockView || $0 is AgentUserQuoteBlockView }
             let isCollapsible = !hasComplexViews && fullTextHeight > userTextCollapseThreshold
@@ -246,36 +277,31 @@ extension AgentMessageCell {
             let buttonHeight: CGFloat = isCollapsible ? 22 : 0
             let buttonSpacing: CGFloat = isCollapsible ? 4 : 0
 
-            let bubbleHeight = 9 + imagesHeight + (hasImages && hasContent ? 8 : 0) + displayedTextHeight + (isCollapsible ? (buttonSpacing + buttonHeight) : 0) + 9
+            let contentH = imagesHeight + (hasImages && hasContent ? 8 : 0) + displayedTextHeight + (isCollapsible ? (buttonSpacing + buttonHeight) : 0)
 
             let bubbleFrame = NSRect(
-                x: horizontalPadding,
-                y: 4,
-                width: bubbleWidth,
-                height: bubbleHeight
+                x: contentLeft,
+                y: 5,
+                width: contentWidth,
+                height: contentH
             )
             if animated {
                 userBubbleView.animator().frame = bubbleFrame
             } else {
                 userBubbleView.frame = bubbleFrame
             }
-            let bubbleBounds = CGRect(origin: .zero, size: bubbleFrame.size)
-            userBubbleView.layer?.shadowPath = CGPath(
-                roundedRect: bubbleBounds,
-                cornerWidth: 13,
-                cornerHeight: 13,
-                transform: nil
-            )
+            userBubbleView.layer?.shadowColor = nil
+            userBubbleView.layer?.shadowOpacity = 0.0
 
-            var currentInsideY: CGFloat = 9
+            var currentInsideY: CGFloat = 0
             if hasImages {
                 if userImageViews.count == 1, let singleBtn = userImageViews.first {
-                    let imgW = min(bubbleWidth - 28, 180)
-                    let imgFrame = NSRect(x: 14, y: currentInsideY, width: imgW, height: 140)
+                    let imgW = min(contentWidth, 240)
+                    let imgFrame = NSRect(x: 0, y: currentInsideY, width: imgW, height: 140)
                     if animated { singleBtn.animator().frame = imgFrame } else { singleBtn.frame = imgFrame }
                 } else {
                     for (i, btn) in userImageViews.enumerated() {
-                        let btnFrame = NSRect(x: 14 + CGFloat(i) * 60, y: currentInsideY, width: 54, height: 54)
+                        let btnFrame = NSRect(x: CGFloat(i) * 60, y: currentInsideY, width: 54, height: 54)
                         if animated { btn.animator().frame = btnFrame } else { btn.frame = btnFrame }
                     }
                 }
@@ -285,8 +311,7 @@ extension AgentMessageCell {
             userTextView.isHidden = true
 
             if hasContent {
-                let contentW = bubbleWidth - 28
-                let containerFrame = NSRect(x: 14, y: currentInsideY, width: contentW, height: displayedTextHeight)
+                let containerFrame = NSRect(x: 0, y: currentInsideY, width: contentWidth, height: displayedTextHeight)
                 if animated {
                     userContentContainerView.animator().frame = containerFrame
                 } else {
@@ -297,24 +322,28 @@ extension AgentMessageCell {
                 for view in userContentViews {
                     let viewH: CGFloat
                     if let tv = view as? AgentSelectableTextView {
-                        viewH = measuredTextHeight(for: tv, attributedString: tv.attributedString(), width: contentW)
-                        let vFrame = NSRect(x: 0, y: subY, width: contentW, height: viewH)
+                        let wrapWidth = max(50, contentWidth - 6)
+                        tv.textContainer?.containerSize = NSSize(width: wrapWidth, height: .greatestFiniteMagnitude)
+                        viewH = measuredTextHeight(for: tv, attributedString: tv.attributedString(), width: wrapWidth)
+                        let vFrame = NSRect(x: 0, y: subY, width: contentWidth, height: viewH)
                         if animated { tv.animator().frame = vFrame } else { tv.frame = vFrame }
+                        tv.layer?.masksToBounds = true
                     } else if let cb = view as? AgentUserCodeBlockView {
-                        viewH = cb.height(for: contentW)
-                        let vFrame = NSRect(x: 0, y: subY, width: contentW, height: viewH)
+                        viewH = cb.height(for: contentWidth)
+                        let vFrame = NSRect(x: 0, y: subY, width: contentWidth, height: viewH)
                         if animated { cb.animator().frame = vFrame } else { cb.frame = vFrame }
-                        cb.applyLayout(width: contentW)
+                        cb.applyLayout(width: contentWidth)
                     } else if let qv = view as? AgentUserQuoteBlockView {
-                        viewH = qv.height(for: contentW)
-                        let vFrame = NSRect(x: 0, y: subY, width: contentW, height: viewH)
+                        viewH = qv.height(for: contentWidth)
+                        let vFrame = NSRect(x: 0, y: subY, width: contentWidth, height: viewH)
                         if animated { qv.animator().frame = vFrame } else { qv.frame = vFrame }
-                        qv.applyLayout(width: contentW)
+                        qv.applyLayout(width: contentWidth)
                     } else {
                         viewH = 0
                     }
                     subY += viewH + 8
                 }
+                userContentContainerView.layer?.masksToBounds = (isCollapsible && !isUserTextExpanded)
                 userContentContainerView.isHidden = false
 
                 if isCollapsible {
@@ -323,7 +352,7 @@ extension AgentMessageCell {
 
                     let btnWidth: CGFloat = 92
                     let btnFrame = NSRect(
-                        x: 14,
+                        x: 0,
                         y: currentInsideY + displayedTextHeight + buttonSpacing,
                         width: btnWidth,
                         height: buttonHeight
@@ -341,11 +370,31 @@ extension AgentMessageCell {
                 userExpandButton.isHidden = true
             }
         } else {
-            var currentY: CGFloat = 4
+            let agentSize = AgentAvatarProvider.currentAgentAvatarSize(for: agentId)
+            let maxW = AgentMessageCell.maxAvatarWidth
+            let iconX = AgentMessageCell.iconLeft + (maxW - agentSize) / 2
+            let roleFrame = NSRect(x: iconX, y: 2, width: agentSize, height: agentSize)
+            if animated { roleIconView.animator().frame = roleFrame } else { roleIconView.frame = roleFrame }
+
+            if isWaitingForResponse {
+                let indicatorFrame = NSRect(
+                    x: contentLeft,
+                    y: 5,
+                    width: AgentTypingIndicatorView.defaultWidth,
+                    height: AgentTypingIndicatorView.defaultHeight
+                )
+                if animated {
+                    typingIndicatorView.animator().frame = indicatorFrame
+                } else {
+                    typingIndicatorView.frame = indicatorFrame
+                }
+            }
+
+            var currentY: CGFloat = (!thoughtHeaderButton.isHidden || hasCompactTopThought) ? 3 : 5
 
             let firstViewIsTool = isToolCallView(firstVisibleAssistantView() ?? NSView())
             if !thoughtHeaderButton.isHidden {
-                let thFrame = NSRect(x: horizontalPadding, y: currentY, width: contentWidth, height: 20)
+                let thFrame = NSRect(x: contentLeft, y: currentY, width: contentWidth, height: 20)
                 if animated {
                     thoughtHeaderButton.animator().frame = thFrame
                 } else {
@@ -353,34 +402,40 @@ extension AgentMessageCell {
                 }
                 currentY += 22
                 if isThoughtExpanded && !hasInlineThoughtParts {
+                    let thoughtWrapWidth = max(50, contentWidth - 10 - 6)
                     let h = measuredTextHeight(
                         for: thoughtTextView,
                         attributedString: thoughtTextView.attributedString(),
-                        width: contentWidth - 10
+                        width: thoughtWrapWidth
                     )
-                    let tvFrame = NSRect(x: horizontalPadding + 8, y: currentY, width: contentWidth - 10, height: h)
+                    thoughtTextView.textContainer?.containerSize = NSSize(width: thoughtWrapWidth, height: .greatestFiniteMagnitude)
+                    let tvFrame = NSRect(x: contentLeft + 8, y: currentY, width: contentWidth - 10, height: h)
                     if animated {
                         thoughtTextView.animator().frame = tvFrame
                     } else {
                         thoughtTextView.frame = tvFrame
                     }
+                    thoughtTextView.layer?.masksToBounds = true
                     currentY += h + (firstViewIsTool ? 14 : 8)
                 } else if firstViewIsTool {
                     currentY += 8
                 }
             } else if hasCompactTopThought {
+                let thoughtWrapWidth = max(50, contentWidth - 6)
                 let h = measuredTextHeight(
                     for: thoughtTextView,
                     attributedString: thoughtTextView.attributedString(),
-                    width: contentWidth
+                    width: thoughtWrapWidth
                 )
-                let tvFrame = NSRect(x: horizontalPadding, y: currentY, width: contentWidth, height: h)
+                thoughtTextView.textContainer?.containerSize = NSSize(width: thoughtWrapWidth, height: .greatestFiniteMagnitude)
+                let tvFrame = NSRect(x: contentLeft, y: currentY, width: contentWidth, height: h)
                 thoughtTextView.isHidden = false
                 if animated {
                     thoughtTextView.animator().frame = tvFrame
                 } else {
                     thoughtTextView.frame = tvFrame
                 }
+                thoughtTextView.layer?.masksToBounds = true
                 currentY += h + (firstViewIsTool ? 14 : 8)
             }
 

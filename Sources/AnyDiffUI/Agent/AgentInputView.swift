@@ -74,6 +74,8 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
         textView.delegate = context.coordinator
         textView.placeholderString = placeholder
         textView.string = text
+        context.coordinator.lastKnownText = text
+        context.coordinator.lastObservedText = text
         if !text.isEmpty {
             textView.selectedRange = NSRange(location: (text as NSString).length, length: 0)
         }
@@ -100,14 +102,33 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
         context.coordinator.update(from: self, heightBinding: _calculatedHeight)
 
         if let tv = scrollView.documentView as? AgentInputCustomTextView {
-            if tv.string != text {
-                let savedRanges = tv.selectedRanges
+            let isFocused = (tv.window?.firstResponder == tv)
+            let isTyping = isFocused && tv.string == context.coordinator.lastKnownText
+            let externalClear = (text != context.coordinator.lastObservedText && text.isEmpty)
+            let externalReplaced = (text != context.coordinator.lastObservedText && !tv.string.hasPrefix(text) && !text.hasPrefix(tv.string))
+            let shouldUpdateText: Bool
+
+            if tv.string == text {
+                shouldUpdateText = false
+            } else if !isFocused {
+                shouldUpdateText = true
+            } else if externalClear || externalReplaced || !isTyping {
+                shouldUpdateText = true
+            } else {
+                shouldUpdateText = false
+            }
+
+            if shouldUpdateText {
                 tv.string = text
-                tv.selectedRanges = savedRanges
+                context.coordinator.lastKnownText = text
+                context.coordinator.lastObservedText = text
+                tv.selectedRange = NSRange(location: (text as NSString).length, length: 0)
                 tv.needsDisplay = true
                 DispatchQueue.main.async {
                     tv.recalculateHeight()
                 }
+            } else if tv.string == text {
+                context.coordinator.lastObservedText = text
             }
             tv.textColor = NSColor(cgColor: theme.foreground.cgColor) ?? .textColor
             tv.insertionPointColor = NSColor(cgColor: theme.foreground.cgColor) ?? .textColor
@@ -133,9 +154,13 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
         private var maxHeight: CGFloat = 160
         private var lastReportedHeight: CGFloat?
         private var lastFocusRequest: Int?
+        var lastKnownText: String = ""
+        var lastObservedText: String = ""
 
         init(_ parent: AgentAutoGrowingTextView) {
             self.parent = parent
+            self.lastKnownText = parent.text
+            self.lastObservedText = parent.text
         }
 
         func update(from parent: AgentAutoGrowingTextView, heightBinding: Binding<CGFloat>) {
@@ -177,6 +202,7 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
 
         public func textDidChange(_ notification: Notification) {
             guard let tv = textView else { return }
+            lastKnownText = tv.string
             parent.text = tv.string
             tv.recalculateHeight()
             tv.needsDisplay = true
@@ -356,7 +382,6 @@ public struct AgentInputView: View {
     @ObservedObject public var agentManager: AgentSessionManager
     public var theme: Theme
     public var accentColor: Color
-    @Binding public var isCollapsed: Bool
     public var onSend: (String, [AgentImageAttachment]) -> Void
     public var onCancel: () -> Void
     public var onReview: ((AgentEditedFilesSummary) -> Void)?
@@ -364,10 +389,7 @@ public struct AgentInputView: View {
 
     @Binding public var attachedImages: [AgentImageAttachment]
     @State private var previewImageIndex: Int? = nil
-    @State private var isSettingsPopoverPresented: Bool = false
     @Binding private var calculatedHeight: CGFloat
-    @State private var isContextUsageHovered: Bool = false
-    @State private var isSendButtonHovered: Bool = false
     @State private var isInputFocused: Bool = false
     @State private var inputFocusRequest: Int = 0
     @State private var isInputDropTargeted: Bool = false
@@ -382,7 +404,7 @@ public struct AgentInputView: View {
         agentManager: AgentSessionManager,
         theme: Theme,
         accentColor: Color = .accentColor,
-        isCollapsed: Binding<Bool>,
+        isCollapsed: Binding<Bool>? = nil,
         calculatedHeight: Binding<CGFloat>,
         onSend: @escaping (String, [AgentImageAttachment]) -> Void,
         onCancel: @escaping () -> Void,
@@ -397,7 +419,6 @@ public struct AgentInputView: View {
         self.agentManager = agentManager
         self.theme = theme
         self.accentColor = accentColor
-        self._isCollapsed = isCollapsed
         self._calculatedHeight = calculatedHeight
         self.onSend = onSend
         self.onCancel = onCancel
@@ -411,7 +432,7 @@ public struct AgentInputView: View {
         agentManager: AgentSessionManager,
         theme: Theme,
         accentColor: Color = .accentColor,
-        isCollapsed: Binding<Bool>,
+        isCollapsed: Binding<Bool>? = nil,
         calculatedHeight: Binding<CGFloat>,
         onSend: @escaping (String) -> Void,
         onCancel: @escaping () -> Void,
@@ -426,7 +447,6 @@ public struct AgentInputView: View {
         self.agentManager = agentManager
         self.theme = theme
         self.accentColor = accentColor
-        self._isCollapsed = isCollapsed
         self._calculatedHeight = calculatedHeight
         self.onSend = { prompt, _ in onSend(prompt) }
         self.onCancel = onCancel
@@ -444,31 +464,29 @@ public struct AgentInputView: View {
     }
 
     public var body: some View {
-        ZStack {
-            if isCollapsed {
-                collapsedView
-            } else {
-                expandedView
+        expandedView
+            .onDrop(of: [UTType.image, UTType.fileURL, UTType.png, UTType.jpeg, UTType.tiff, UTType.webP, UTType.heic, UTType.url, UTType.data, UTType.item], isTargeted: $isInputDropTargeted) { providers in
+                ImageAttachmentHelpers.extractImages(from: providers) { droppedImages in
+                    guard !droppedImages.isEmpty else { return }
+                    withAnimation(.spring(response: 0.25, dampingFraction: 0.75)) {
+                        attachedImages = ImageAttachmentHelpers.deduplicateAttachments(attachedImages + droppedImages)
+                    }
+                }
+                return true
             }
-        }
-        .onDrop(of: [UTType.image, UTType.fileURL, UTType.png, UTType.jpeg, UTType.tiff, UTType.webP, UTType.heic, UTType.url, UTType.data, UTType.item], isTargeted: $isInputDropTargeted) { providers in
-            ImageAttachmentHelpers.extractImages(from: providers) { droppedImages in
-                guard !droppedImages.isEmpty else { return }
-                withAnimation(.spring(response: 0.25, dampingFraction: 0.75)) {
-                    attachedImages = ImageAttachmentHelpers.deduplicateAttachments(attachedImages + droppedImages)
-                    isCollapsed = false
+            .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffAttachImages"))) { notification in
+                if let newImages = notification.userInfo?["images"] as? [AgentImageAttachment], !newImages.isEmpty {
+                    withAnimation(.spring(response: 0.25, dampingFraction: 0.75)) {
+                        attachedImages = ImageAttachmentHelpers.deduplicateAttachments(attachedImages + newImages)
+                    }
                 }
             }
-            return true
-        }
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffAttachImages"))) { notification in
-            if let newImages = notification.userInfo?["images"] as? [AgentImageAttachment], !newImages.isEmpty {
-                withAnimation(.spring(response: 0.25, dampingFraction: 0.75)) {
-                    attachedImages = ImageAttachmentHelpers.deduplicateAttachments(attachedImages + newImages)
-                    isCollapsed = false
-                }
+            .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffAgentSubmitPrompt"))) { _ in
+                handleSend()
             }
-        }
+            .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffFocusAgentInput"))) { _ in
+                inputFocusRequest &+= 1
+            }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffDeleteDraftImage"))) { notification in
             if let delIdx = notification.userInfo?["index"] as? Int {
                 withAnimation(.easeInOut(duration: 0.15)) {
@@ -575,628 +593,177 @@ public struct AgentInputView: View {
                 ))
             }
 
-            VStack(spacing: 8) {
-                // Attached images miniature strip
-                if !attachedImages.isEmpty {
-                    AgentInputAttachmentThumbnailView(
-                        images: attachedImages,
-                        theme: theme,
-                        onSelect: { index in
-                            if let onPreviewImages = onPreviewImages {
-                                onPreviewImages(attachedImages, index, true)
-                            } else {
-                                previewImageIndex = index
-                            }
-                        },
-                        onDelete: { index in
-                            withAnimation(.easeInOut(duration: 0.15)) {
-                                if index >= 0 && index < attachedImages.count {
-                                    attachedImages.remove(at: index)
-                                }
-                            }
-                        }
-                    )
-                    .padding(.top, 2)
-                    .padding(.horizontal, 4)
-                }
+            HStack(alignment: .top, spacing: 12) {
+                // User avatar on the left, dynamically sized to user avatar size
+                AgentAvatarProvider.userAvatarSwiftUIView()
 
-                // Blocks flow (interleaved quotes and text)
-                if !hasQuotes, blocks.count == 1, case .text(let state) = blocks[0] {
-                    HStack(alignment: .top, spacing: 8) {
-                        AgentAutoGrowingTextView(
-                            text: Binding(
-                                get: { state.text },
-                                set: { newText in updateTextBlock(id: state.id, text: newText) }
-                            ),
-                            placeholder: (!agentManager.authMethods.isEmpty || agentManager.isAuthenticating) ? "Sign in above to start chatting..." : "Ask anything...",
+                VStack(alignment: .leading, spacing: 6) {
+                    // Attached images miniature strip
+                    if !attachedImages.isEmpty {
+                        AgentInputAttachmentThumbnailView(
+                            images: attachedImages,
                             theme: theme,
-                            minHeight: 22,
-                            maxHeight: 160,
-                            focusRequest: state.focusRequest + inputFocusRequest,
-                            calculatedHeight: Binding(
-                                get: { state.height },
-                                set: { newH in updateTextBlockHeight(id: state.id, height: newH) }
-                            ),
-                            onSend: handleSend,
-                            onFocusChanged: { focused in
-                                isInputFocused = focused
-                                if focused { focusedBlockId = state.id }
+                            onSelect: { index in
+                                if let onPreviewImages = onPreviewImages {
+                                    onPreviewImages(attachedImages, index, true)
+                                } else {
+                                    previewImageIndex = index
+                                }
                             },
-                            onImagesPasted: { newImages in
-                                withAnimation(.spring(response: 0.25, dampingFraction: 0.75)) {
-                                    attachedImages = ImageAttachmentHelpers.deduplicateAttachments(attachedImages + newImages)
+                            onDelete: { index in
+                                withAnimation(.easeInOut(duration: 0.15)) {
+                                    if index >= 0 && index < attachedImages.count {
+                                        attachedImages.remove(at: index)
+                                    }
                                 }
                             }
                         )
-                        .frame(maxWidth: .infinity)
-                        .frame(height: state.height)
+                        .padding(.top, 2)
                     }
-                    .padding(.top, attachedImages.isEmpty ? 4 : 0)
-                    .padding(.horizontal, 4)
-                } else {
-                    let currentHeight = blocksContentHeight > 0 ? blocksContentHeight : estimatedBlocksHeight
-                    let clampedHeight = min(max(currentHeight, 24), 280)
 
-                    ScrollView(.vertical, showsIndicators: true) {
-                        VStack(spacing: 8) {
-                            ForEach(Array(blocks.enumerated()), id: \.element.id) { index, block in
-                                switch block {
-                                case .quote(let id, let quote):
-                                    quoteBadgeView(id: id, quote: quote)
+                    // Blocks flow (interleaved quotes and text)
+                    if !hasQuotes, blocks.count == 1, case .text(let state) = blocks[0] {
+                        HStack(alignment: .top, spacing: 8) {
+                            AgentAutoGrowingTextView(
+                                text: Binding(
+                                    get: { state.text },
+                                    set: { newText in updateTextBlock(id: state.id, text: newText) }
+                                ),
+                                placeholder: (!agentManager.authMethods.isEmpty || agentManager.isAuthenticating) ? "Sign in above to start chatting..." : "Ask anything...",
+                                theme: theme,
+                                minHeight: 22,
+                                maxHeight: 160,
+                                focusRequest: state.focusRequest + inputFocusRequest,
+                                calculatedHeight: Binding(
+                                    get: { state.height },
+                                    set: { newH in updateTextBlockHeight(id: state.id, height: newH) }
+                                ),
+                                onSend: handleSend,
+                                onFocusChanged: { focused in
+                                    isInputFocused = focused
+                                    if focused { focusedBlockId = state.id }
+                                },
+                                onImagesPasted: { newImages in
+                                    withAnimation(.spring(response: 0.25, dampingFraction: 0.75)) {
+                                        attachedImages = ImageAttachmentHelpers.deduplicateAttachments(attachedImages + newImages)
+                                    }
+                                }
+                            )
+                            .padding(.top, 1)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: state.height + 1)
+                        }
+                    } else {
+                        let currentHeight = blocksContentHeight > 0 ? blocksContentHeight : estimatedBlocksHeight
+                        let clampedHeight = min(max(currentHeight, 24), 280)
 
-                                case .text(let state):
-                                    let placeholder = (index == 0 && blocks.first?.isText == true && blocks.dropFirst().first?.isQuote == true)
-                                        ? "Add context before quote (optional)..."
-                                        : "Ask anything, add comment or instructions..."
-                                    AgentAutoGrowingTextView(
-                                        text: Binding(
-                                            get: { state.text },
-                                            set: { newText in updateTextBlock(id: state.id, text: newText) }
-                                        ),
-                                        placeholder: placeholder,
-                                        theme: theme,
-                                        minHeight: 22,
-                                        maxHeight: 120,
-                                        focusRequest: state.focusRequest + inputFocusRequest,
-                                        calculatedHeight: Binding(
-                                            get: { state.height },
-                                            set: { newH in updateTextBlockHeight(id: state.id, height: newH) }
-                                        ),
-                                        onSend: handleSend,
-                                        onFocusChanged: { focused in
-                                            isInputFocused = focused
-                                            if focused { focusedBlockId = state.id }
-                                        },
-                                        onImagesPasted: { newImages in
-                                            withAnimation(.spring(response: 0.25, dampingFraction: 0.75)) {
-                                                attachedImages = ImageAttachmentHelpers.deduplicateAttachments(attachedImages + newImages)
+                        ScrollView(.vertical, showsIndicators: true) {
+                            VStack(spacing: 8) {
+                                ForEach(Array(blocks.enumerated()), id: \.element.id) { index, block in
+                                    switch block {
+                                    case .quote(let id, let quote):
+                                        quoteBadgeView(id: id, quote: quote)
+
+                                    case .text(let state):
+                                        let placeholder = (index == 0 && blocks.first?.isText == true && blocks.dropFirst().first?.isQuote == true)
+                                            ? "Add context before quote (optional)..."
+                                            : "Ask anything, add comment or instructions..."
+                                        AgentAutoGrowingTextView(
+                                            text: Binding(
+                                                get: { state.text },
+                                                set: { newText in updateTextBlock(id: state.id, text: newText) }
+                                            ),
+                                            placeholder: placeholder,
+                                            theme: theme,
+                                            minHeight: 22,
+                                            maxHeight: 120,
+                                            focusRequest: state.focusRequest + inputFocusRequest,
+                                            calculatedHeight: Binding(
+                                                get: { state.height },
+                                                set: { newH in updateTextBlockHeight(id: state.id, height: newH) }
+                                            ),
+                                            onSend: handleSend,
+                                            onFocusChanged: { focused in
+                                                isInputFocused = focused
+                                                if focused { focusedBlockId = state.id }
+                                            },
+                                            onImagesPasted: { newImages in
+                                                withAnimation(.spring(response: 0.25, dampingFraction: 0.75)) {
+                                                    attachedImages = ImageAttachmentHelpers.deduplicateAttachments(attachedImages + newImages)
+                                                }
+                                            },
+                                            onDeleteBackwardWhenEmpty: {
+                                                handleDeleteBackward(inBlockId: state.id, index: index)
                                             }
-                                        },
-                                        onDeleteBackwardWhenEmpty: {
-                                            handleDeleteBackward(inBlockId: state.id, index: index)
-                                        }
-                                    )
-                                    .frame(maxWidth: .infinity)
-                                    .frame(height: state.height)
-                                    .padding(.horizontal, 4)
+                                        )
+                                        .padding(.top, index == 0 ? 1 : 0)
+                                        .frame(maxWidth: .infinity)
+                                        .frame(height: state.height + (index == 0 ? 1 : 0))
+                                    }
                                 }
                             }
+                            .padding(.vertical, 2)
+                            .background(
+                                GeometryReader { geo in
+                                    Color.clear.preference(
+                                        key: AgentInputBlocksHeightPreferenceKey.self,
+                                        value: geo.size.height
+                                    )
+                                }
+                            )
                         }
-                        .padding(.vertical, 2)
-                        .background(
-                            GeometryReader { geo in
-                                Color.clear.preference(
-                                    key: AgentInputBlocksHeightPreferenceKey.self,
-                                    value: geo.size.height
-                                )
+                        .frame(height: clampedHeight)
+                        .onPreferenceChange(AgentInputBlocksHeightPreferenceKey.self) { newHeight in
+                            if newHeight > 0, abs(blocksContentHeight - newHeight) >= 1.0 {
+                                blocksContentHeight = newHeight
                             }
-                        )
-                    }
-                    .frame(height: clampedHeight)
-                    .onPreferenceChange(AgentInputBlocksHeightPreferenceKey.self) { newHeight in
-                        if newHeight > 0, abs(blocksContentHeight - newHeight) >= 1.0 {
-                            blocksContentHeight = newHeight
                         }
                     }
-                    .padding(.horizontal, 4)
-                }
-
-                // Bottom toolbar row inside input capsule
-                HStack(spacing: 8) {
-                    Spacer(minLength: 0)
 
                     if let quote = quoteStore.currentQuote,
                        !isAlreadyQuoted(quote) {
-                        Button(action: {
-                            addQuote(quote)
-                        }) {
-                            Image(systemName: "quote.opening")
-                                .font(.system(size: 12, weight: .semibold))
+                        HStack {
+                            Spacer()
+                            Button(action: {
+                                addQuote(quote)
+                            }) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "quote.opening")
+                                        .font(.system(size: 11, weight: .semibold))
+                                    Text("Quote selection (\(quote.label))")
+                                        .font(.system(size: 11, weight: .medium))
+                                }
                                 .foregroundColor(accentColor)
-                                .frame(width: 24, height: 24)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
                                 .background(
                                     RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                        .fill(accentColor.opacity(0.14))
+                                        .fill(accentColor.opacity(0.12))
                                 )
                                 .overlay(
                                     RoundedRectangle(cornerRadius: 6, style: .continuous)
                                         .stroke(accentColor.opacity(0.35), lineWidth: 1)
                                 )
+                            }
+                            .buttonStyle(.plain)
+                            .help("Quote selection (\(quote.label)): \"\(quote.text.prefix(60).replacingOccurrences(of: "\n", with: " "))\"")
+                            .transition(.scale(scale: 0.85).combined(with: .opacity))
                         }
-                        .buttonStyle(.plain)
-                        .help("Quote selection (\(quote.label)): \"\(quote.text.prefix(60).replacingOccurrences(of: "\n", with: " "))\"")
-                        .transition(.scale(scale: 0.7).combined(with: .opacity))
+                        .padding(.top, 2)
                     }
-
-                    agentStatusOrSettingsView
-
-                    // Context Usage Percentage (if available)
-                    if let pct = agentManager.contextUsagePercentage {
-                        contextUsageRing(percentage: pct)
-                    }
-
-                    // Collapse input button
-                    Button(action: {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            isCollapsed = true
-                        }
-                    }) {
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundColor(Color(theme.gutterForeground).opacity(0.8))
-                            .padding(2)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help("Hide / Collapse Input")
-                    .agentInputInteractiveHover(
-                        cornerRadius: 7,
-                        horizontalPadding: 4,
-                        verticalPadding: 3
-                    )
-
-                    sendButton
                 }
-                .padding(.horizontal, 4)
-                .padding(.bottom, 2)
             }
-            .padding(10)
-            .background(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(Color(theme.inputBackground))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .fill(Color(theme.focusColor).opacity(isInputFocused ? 0.015 : 0))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .stroke(
-                                isInputFocused ? Color(theme.focusColor).opacity(0.48) : Color(theme.excerptHeaderBorder).opacity(0.80),
-                                lineWidth: isInputFocused ? 1.25 : 1.2
-                            )
-                    )
-                    .shadow(
-                        color: isInputFocused ? Color(theme.focusColor).opacity(0.08) : .clear,
-                        radius: isInputFocused ? 5 : 0,
-                        y: isInputFocused ? 1 : 0
-                    )
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .padding(.leading, 18)
+            .padding(.trailing, 18)
+            .padding(.top, 6)
+            .padding(.bottom, 10)
+            .background(Color.clear)
+            .contentShape(Rectangle())
             .onTapGesture {
                 inputFocusRequest &+= 1
             }
-            .animation(.easeOut(duration: 0.16), value: isInputFocused)
         }
-        .padding(.horizontal, 10)
-        .padding(.top, 4)
-        .padding(.bottom, 8)
         .animation(.easeInOut(duration: 0.14), value: shouldShowLiveEditedSummary)
-    }
-
-    @ViewBuilder
-    private var agentStatusOrSettingsView: some View {
-        if agentManager.initializationState == .starting || agentManager.status == .connecting {
-            HStack(spacing: 6) {
-                ProgressView()
-                    .controlSize(.mini)
-                    .scaleEffect(0.75)
-                Text(agentManager.agentTitle)
-                    .font(.system(size: 11.5, weight: .medium))
-            }
-            .foregroundColor(Color(theme.foreground).opacity(0.78))
-            .padding(.horizontal, 11)
-            .padding(.vertical, 6)
-            .background(
-                Capsule(style: .continuous)
-                    .fill(Color(theme.foreground).opacity(0.07))
-            )
-            .overlay(
-                Capsule(style: .continuous)
-                    .stroke(Color(theme.excerptHeaderBorder).opacity(0.55), lineWidth: 1)
-            )
-            .help("Starting \(agentManager.agentTitle)…")
-        } else if !agentManager.availableAgentSettings.isEmpty {
-            agentSettingsMenu
-        } else {
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(Color.green)
-                    .frame(width: 5.5, height: 5.5)
-                Text(agentManager.agentTitle)
-                    .font(.system(size: 11.5, weight: .medium))
-            }
-            .foregroundColor(Color(theme.foreground).opacity(0.88))
-            .padding(.horizontal, 11)
-            .padding(.vertical, 6)
-            .background(
-                Capsule(style: .continuous)
-                    .fill(Color(theme.foreground).opacity(0.09))
-            )
-            .overlay(
-                Capsule(style: .continuous)
-                    .stroke(Color(theme.excerptHeaderBorder).opacity(0.7), lineWidth: 1)
-            )
-        }
-    }
-
-    private struct OptionGroup: Identifiable {
-        let id: String
-        let groupName: String
-        let items: [ACPConfigOption.OptionValue]
-    }
-
-    private func groupOptionsByPrefix(_ values: [ACPConfigOption.OptionValue]) -> [OptionGroup] {
-        var dict: [String: [ACPConfigOption.OptionValue]] = [:]
-        var order: [String] = []
-
-        for val in values {
-            let groupName: String
-            if let slashIndex = val.name.firstIndex(of: "/") {
-                groupName = String(val.name[..<slashIndex]).trimmingCharacters(in: .whitespaces)
-            } else if let slashIndex = val.value.firstIndex(of: "/") {
-                groupName = String(val.value[..<slashIndex]).capitalized
-            } else {
-                groupName = "General"
-            }
-
-            if dict[groupName] == nil {
-                order.append(groupName)
-                dict[groupName] = []
-            }
-            dict[groupName]?.append(val)
-        }
-
-        return order.map { OptionGroup(id: $0, groupName: $0, items: dict[$0] ?? []) }
-    }
-
-    private var agentSettingsMenu: some View {
-        Button(action: showAgentSettingsMenu) {
-            HStack(spacing: 5) {
-                Text(agentSettingsSummary)
-                    .font(.system(size: 11.5, weight: .medium))
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 8.5, weight: .bold))
-                    .opacity(0.75)
-            }
-            .foregroundColor(Color(theme.foreground).opacity(0.92))
-            .padding(.horizontal, 11)
-            .padding(.vertical, 6)
-            .background(
-                Capsule(style: .continuous)
-                    .fill(Color(theme.foreground).opacity(0.09))
-            )
-            .overlay(
-                Capsule(style: .continuous)
-                    .stroke(Color(theme.excerptHeaderBorder).opacity(0.7), lineWidth: 1)
-            )
-            .contentShape(Capsule(style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .fixedSize()
-        .help("Agent settings")
-        .agentInputInteractiveHover(cornerRadius: 15, horizontalPadding: 2, verticalPadding: 2)
-    }
-
-    private func showAgentSettingsMenu() {
-        let menu = NSMenu(title: "Agent Settings")
-        var targets: [AgentSettingsMenuActionTarget] = []
-
-        func makeValueItem(option: ACPConfigOption, value: ACPConfigOption.OptionValue) -> NSMenuItem {
-            let target = AgentSettingsMenuActionTarget { [weak agentManager] in
-                agentManager?.selectConfigOption(id: option.id, value: value.value)
-            }
-            targets.append(target)
-            let item = NSMenuItem(
-                title: value.name,
-                action: #selector(AgentSettingsMenuActionTarget.invoke(_:)),
-                keyEquivalent: ""
-            )
-            item.target = target
-            item.state = isOptionSelected(option: option, value: value) ? .on : .off
-            return item
-        }
-
-        for option in agentManager.availableAgentSettings {
-            if let values = option.options, !values.isEmpty {
-                let currentText = settingsValue(for: option)
-                let parentTitle = currentText.isEmpty
-                    ? settingsTitle(for: option)
-                    : "\(settingsTitle(for: option)) — \(currentText)"
-                let parentItem = NSMenuItem(title: parentTitle, action: nil, keyEquivalent: "")
-                let subMenu = NSMenu(title: settingsTitle(for: option))
-
-                if values.count > 20 {
-                    let groups = groupOptionsByPrefix(values)
-                    if groups.count > 1 {
-                        for group in groups {
-                            let groupItem = NSMenuItem(title: group.groupName, action: nil, keyEquivalent: "")
-                            let groupMenu = NSMenu(title: group.groupName)
-                            for value in group.items {
-                                groupMenu.addItem(makeValueItem(option: option, value: value))
-                            }
-                            groupItem.submenu = groupMenu
-                            subMenu.addItem(groupItem)
-                        }
-                    } else {
-                        for value in values {
-                            subMenu.addItem(makeValueItem(option: option, value: value))
-                        }
-                    }
-                } else {
-                    for value in values {
-                        subMenu.addItem(makeValueItem(option: option, value: value))
-                    }
-                }
-
-                parentItem.submenu = subMenu
-                menu.addItem(parentItem)
-            } else if option.isBoolean {
-                let nextValue = option.boolValue ? "false" : "true"
-                let target = AgentSettingsMenuActionTarget { [weak agentManager] in
-                    agentManager?.selectConfigOption(id: option.id, value: nextValue)
-                }
-                targets.append(target)
-                let item = NSMenuItem(
-                    title: settingsTitle(for: option),
-                    action: #selector(AgentSettingsMenuActionTarget.invoke(_:)),
-                    keyEquivalent: ""
-                )
-                item.target = target
-                item.state = option.boolValue ? .on : .off
-                menu.addItem(item)
-            }
-        }
-
-        withExtendedLifetime(targets) {
-            _ = menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
-        }
-    }
-
-    private func optionValueItem(option: ACPConfigOption, value: ACPConfigOption.OptionValue) -> some View {
-        let isSelected = isOptionSelected(option: option, value: value)
-        return Toggle(isOn: Binding<Bool>(
-            get: { isSelected },
-            set: { _ in
-                agentManager.selectConfigOption(id: option.id, value: value.value)
-            }
-        )) {
-            Text(value.name)
-        }
-    }
-
-    private func isOptionSelected(option: ACPConfigOption, value: ACPConfigOption.OptionValue) -> Bool {
-        if let cur = option.currentValue, !cur.isEmpty {
-            if cur == value.value || cur == value.name {
-                return true
-            }
-        }
-        switch option.id {
-        case ACPConfigOptionID.model:
-            return agentManager.selectedModelValue == value.value || agentManager.selectedModel == value.name
-        case ACPConfigOptionID.reasoningEffort:
-            return agentManager.selectedReasoningEffortValue == value.value || agentManager.selectedReasoningEffort == value.name
-        case ACPConfigOptionID.mode:
-            return agentManager.selectedAgentModeValue == value.value || agentManager.selectedAgentMode == value.name
-        default:
-            return false
-        }
-    }
-
-    private var agentSettingsSummary: String {
-        var parts: [String] = []
-        let model = agentManager.selectedModel.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !model.isEmpty {
-            parts.append(model)
-        }
-        let effort = agentManager.selectedReasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !effort.isEmpty {
-            parts.append(effort)
-        }
-        if parts.isEmpty {
-            let mode = agentManager.selectedAgentMode.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !mode.isEmpty {
-                parts.append(mode)
-            }
-        }
-        if parts.isEmpty {
-            for opt in agentManager.availableAgentSettings {
-                if let cur = opt.currentValue, !cur.isEmpty {
-                    let name = opt.options?.first(where: { $0.value == cur })?.name ?? cur
-                    parts.append(name)
-                    break
-                }
-            }
-        }
-        if parts.isEmpty {
-            parts.append(agentManager.agentTitle)
-        }
-        return parts.joined(separator: " · ")
-    }
-
-    @ViewBuilder
-    private func settingsOptionRow(_ option: ACPConfigOption) -> some View {
-            HStack(spacing: 10) {
-            Text(settingsTitle(for: option))
-            Spacer(minLength: 18)
-            Text(settingsValue(for: option))
-                .foregroundColor(.secondary)
-            Image(systemName: "chevron.right")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundColor(.secondary)
-        }
-    }
-
-    private func settingsTitle(for option: ACPConfigOption) -> String {
-        option.name
-    }
-
-    private func settingsValue(for option: ACPConfigOption) -> String {
-        if let current = option.currentValue,
-           let selected = option.options?.first(where: { $0.value == current }) {
-            return selected.name
-        }
-        if option.isBoolean {
-            return option.boolValue ? "On" : "Off"
-        }
-        return option.currentValue ?? "—"
-    }
-
-    private func contextUsageRing(percentage: Int) -> some View {
-        let progress = CGFloat(max(0, min(100, percentage))) / 100
-
-        return ZStack {
-            Circle()
-                .stroke(Color(theme.gutterForeground).opacity(0.22), lineWidth: 1.5)
-
-            Circle()
-                .trim(from: 0, to: progress)
-                .stroke(
-                    Color(theme.gutterForeground).opacity(isContextUsageHovered ? 0.82 : 0.58),
-                    style: StrokeStyle(lineWidth: 1.5, lineCap: .round)
-                )
-                .rotationEffect(.degrees(-90))
-        }
-        .frame(width: 11, height: 11)
-        .overlay(alignment: .top) {
-            if isContextUsageHovered {
-                Text("\(percentage)%")
-                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                    .foregroundColor(Color(theme.foreground))
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    .fixedSize()
-                    .background(.thinMaterial, in: Capsule())
-                    .overlay(
-                        Capsule()
-                            .stroke(Color(theme.excerptHeaderBorder).opacity(0.7), lineWidth: 1)
-                    )
-                    .offset(y: -20)
-                    .transition(.opacity.combined(with: .scale(scale: 0.85)))
-                    .allowsHitTesting(false)
-                    .zIndex(1)
-            }
-        }
-        .scaleEffect(isContextUsageHovered ? 1.08 : 1)
-        .animation(.easeOut(duration: 0.15), value: isContextUsageHovered)
-        .onHover { hovering in
-            isContextUsageHovered = hovering
-        }
-        .overlay(AgentInputPointingHandCursorView())
-        .accessibilityLabel("Context usage \(percentage)%")
-        .help("Context usage: \(percentage)%")
-    }
-
-    private var canSubmitPrompt: Bool {
-        let hasText = blocks.contains { block in
-            if case .text(let state) = block {
-                return !state.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            }
-            return false
-        }
-        let hasQuotes = self.hasQuotes
-        let hasImages = !attachedImages.isEmpty
-        return (hasText || hasQuotes || hasImages) && agentManager.canAcceptPrompt
-    }
-
-    private var sendButton: some View {
-        let canSend = canSubmitPrompt
-
-        return HStack(spacing: 5) {
-            if isBusy {
-                Button(action: onCancel) {
-                    Image(systemName: "stop.circle.fill")
-                        .font(.system(size: 24))
-                        .foregroundColor(Color(theme.gutterForeground).opacity(0.82))
-                        .frame(width: 26, height: 26)
-                }
-                .buttonStyle(.plain)
-                .help("Stop Generation")
-                .agentInputInteractiveHover(cornerRadius: 13)
-            }
-
-            if !isBusy || canSend {
-                Button(action: handleSend) {
-                    ZStack {
-                        Circle()
-                            .fill(canSend ? accentColor : Color.secondary.opacity(0.18))
-                            .frame(width: 26, height: 26)
-
-                        Image(systemName: isBusy ? "text.badge.plus" : "arrow.up")
-                            .font(.system(size: isBusy ? 11 : 12, weight: .bold))
-                            .foregroundColor(canSend ? .white : Color(theme.gutterForeground).opacity(0.6))
-                    }
-                }
-                .buttonStyle(.plain)
-                .disabled(!canSend)
-                .help(isBusy ? "Add to Queue (Enter)" : (agentManager.initializationState == .starting ? "Starting agent…" : "Send Prompt (Enter)"))
-                .agentInputInteractiveHover(cornerRadius: 13)
-                .scaleEffect(isSendButtonHovered ? 1.08 : 1)
-                .animation(.easeOut(duration: 0.12), value: isSendButtonHovered)
-                .onHover { hovering in
-                    isSendButtonHovered = hovering
-                }
-            }
-        }
-        .animation(.easeInOut(duration: 0.18), value: isBusy)
-        .animation(.easeInOut(duration: 0.18), value: canSend)
-    }
-
-    @ViewBuilder
-    private var collapsedView: some View {
-        Button(action: {
-            withAnimation(.easeInOut(duration: 0.2)) {
-                isCollapsed = false
-            }
-        }) {
-            HStack(spacing: 6) {
-                Image(systemName: "chevron.up")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(Color(theme.foreground).opacity(0.9))
-
-                if !agentManager.promptQueue.isEmpty {
-                    Text("\(agentManager.promptQueue.count) queued")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundColor(accentColor)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(accentColor.opacity(0.15))
-                        .clipShape(Capsule())
-                }
-            }
-            .frame(height: 32)
-            .padding(.horizontal, agentManager.promptQueue.isEmpty ? 10 : 12)
-            .background(
-                Capsule()
-                    .fill(.ultraThinMaterial)
-            )
-            .overlay(
-                Capsule()
-                    .stroke(Color(theme.excerptHeaderBorder).opacity(0.85), lineWidth: 1)
-            )
-        }
-        .buttonStyle(.plain)
-        .help("Expand Input")
-        .accessibilityLabel(text.isEmpty ? "Expand input" : "Expand input with draft text")
     }
 
     private func quoteBadgeView(id: String, quote: SelectionQuote) -> some View {
@@ -1422,6 +989,18 @@ public struct AgentInputView: View {
         }
     }
 
+    private var canSubmitPrompt: Bool {
+        let hasText = blocks.contains { block in
+            if case .text(let state) = block {
+                return !state.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+            return false
+        }
+        let hasQuotes = self.hasQuotes
+        let hasImages = !attachedImages.isEmpty
+        return (hasText || hasQuotes || hasImages) && agentManager.canAcceptPrompt
+    }
+
     private func handleSend() {
         guard agentManager.canAcceptPrompt else { return }
         guard canSubmitPrompt else { return }
@@ -1615,18 +1194,6 @@ private struct AgentInputBlocksHeightPreferenceKey: PreferenceKey {
         if next > 0 {
             value = next
         }
-    }
-}
-
-private final class AgentSettingsMenuActionTarget: NSObject {
-    private let action: () -> Void
-
-    init(_ action: @escaping () -> Void) {
-        self.action = action
-    }
-
-    @objc func invoke(_ sender: NSMenuItem) {
-        action()
     }
 }
 

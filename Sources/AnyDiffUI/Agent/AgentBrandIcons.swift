@@ -22,14 +22,13 @@ public enum AgentBrandIcons {
     public static func image(for key: String) -> NSImage? {
         let name = key.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let svg: String?
-        switch name {
-        case "openai", "codex", "chatgpt":
+        if name.contains("openai") || name.contains("codex") || name.contains("chatgpt") || name.contains("gpt") || name == "o1" || name == "o3" || name == "o4" {
             svg = openAI
-        case "claude", "claudecode", "anthropic":
+        } else if name.contains("claude") || name.contains("anthropic") || name.contains("haiku") || name.contains("sonnet") || name.contains("opus") {
             svg = claude
-        case "google", "googlegemini", "gemini", "antigravity", "agy":
+        } else if name.contains("google") || name.contains("gemini") || name.contains("antigravity") || name == "agy" {
             svg = google
-        default:
+        } else {
             svg = nil
         }
         guard let svgString = svg, let data = svgString.data(using: .utf8),

@@ -247,6 +247,37 @@ final class AgentSessionManagerTests: XCTestCase {
         wait(for: [exp], timeout: 1.0)
     }
 
+    func testUsageUpdateDoesNotCreatePhantomAssistantMessage() {
+        let manager = ACPAgentSessionManager()
+        XCTAssertTrue(manager.messages.isEmpty)
+        XCTAssertFalse(manager.hasVisibleMessages)
+
+        // When ACP connects, it sends usage_update or metadata updates.
+        let client = ACPClient()
+        let updateContent = ACPSessionUpdateContent(
+            type: "usage_update",
+            content: nil,
+            delta: nil,
+            toolCallId: nil,
+            toolName: nil,
+            toolInput: nil,
+            toolResult: nil,
+            isError: nil,
+            used: 1500,
+            size: 100000
+        )
+        manager.client(client, didReceiveUpdate: updateContent, sessionId: "sess-init")
+
+        let exp = expectation(description: "Process usage update on Main thread")
+        DispatchQueue.main.async {
+            XCTAssertEqual(manager.contextUsagePercentage, 2)
+            XCTAssertTrue(manager.messages.isEmpty, "usage_update must not create phantom empty assistant messages")
+            XCTAssertFalse(manager.hasVisibleMessages)
+            exp.fulfill()
+        }
+        wait(for: [exp], timeout: 1.0)
+    }
+
     func testManagerReceiveToolExecution() {
         let manager = ACPAgentSessionManager()
         let tempDir = NSTemporaryDirectory()

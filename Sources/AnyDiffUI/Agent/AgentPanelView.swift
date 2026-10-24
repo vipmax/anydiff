@@ -11,11 +11,11 @@ public struct AgentPanelView: View {
     public var fileDiffsSummary: String?
     public var agentAccentColor: Color
     public var agentIcon: String
+    public var agentId: String
     public var toolcallColorMode: ToolcallColorMode
     public var onReview: ((AgentEditedFilesSummary) -> Void)?
     public var onPreviewImages: (([AgentImageAttachment], Int, Bool) -> Void)?
 
-    @State private var isInputCollapsed: Bool = false
     @State private var isChatNearBottom: Bool = true
     @State private var scrollToBottomRequest: Int = 0
     @State private var inputContentHeight: CGFloat = 22
@@ -36,6 +36,7 @@ public struct AgentPanelView: View {
         fileDiffsSummary: String? = nil,
         agentAccentColor: Color = .accentColor,
         agentIcon: String = "sparkles",
+        agentId: String = "default",
         toolcallColorMode: ToolcallColorMode = AgentDisplayPreferences.toolcallColorMode,
         onReview: ((AgentEditedFilesSummary) -> Void)? = nil,
         onPreviewImages: (([AgentImageAttachment], Int, Bool) -> Void)? = nil,
@@ -48,6 +49,7 @@ public struct AgentPanelView: View {
         self.fileDiffsSummary = fileDiffsSummary
         self.agentAccentColor = agentAccentColor
         self.agentIcon = agentIcon
+        self.agentId = agentId
         self.toolcallColorMode = toolcallColorMode
         self.onReview = onReview
         self.onPreviewImages = onPreviewImages
@@ -58,8 +60,7 @@ public struct AgentPanelView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-
-            if (!agentManager.authMethods.isEmpty || agentManager.isAuthenticating) && !agentManager.messages.isEmpty {
+            if (!agentManager.authMethods.isEmpty || agentManager.isAuthenticating) && agentManager.hasVisibleMessages {
                 authRequiredTopBannerView
             }
 
@@ -68,7 +69,7 @@ public struct AgentPanelView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .clipped()
 
-                if !isChatNearBottom && !agentManager.messages.isEmpty {
+                if !isChatNearBottom && agentManager.hasVisibleMessages {
                     Button {
                         scrollToBottomRequest &+= 1
                     } label: {
@@ -89,31 +90,21 @@ public struct AgentPanelView: View {
                     .help("Scroll to bottom")
                     .transition(.opacity.combined(with: .scale(scale: 0.85)))
                     .padding(.trailing, 10)
-                    .padding(.bottom, isInputCollapsed ? 52 : 10)
-                }
-
-                if isInputCollapsed {
-                    agentInputView
-                        .fixedSize()
-                        .padding(.trailing, 10)
-                        .padding(.bottom, 10)
-                        .transition(.opacity.combined(with: .scale(scale: 0.85, anchor: .bottomTrailing)))
-                        .zIndex(1)
+                    .padding(.bottom, 10)
                 }
 
                 if let permission = agentManager.pendingPermission {
                     permissionRequestView(permission)
                         .padding(.horizontal, 10)
-                        .padding(.bottom, isInputCollapsed ? 52 : 10)
+                        .padding(.bottom, 10)
                         .zIndex(2)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            if !isInputCollapsed {
+            if !agentManager.hasVisibleMessages {
                 agentInputView
                     .frame(maxWidth: .infinity, alignment: .bottom)
-                    .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
         }
         .background(Color(theme.background))
@@ -172,9 +163,6 @@ public struct AgentPanelView: View {
         .onChange(of: agentManager.draftAttachments.count) { _ in
             preserveChatBottomIfNeeded()
         }
-        .onChange(of: isInputCollapsed) { _ in
-            preserveChatBottomIfNeeded()
-        }
         .onChange(of: agentManager.status) { newStatus in
             if lastKnownStatus == .busy && newStatus == .idle {
                 HapticFeedback.perform(.generic)
@@ -190,7 +178,6 @@ public struct AgentPanelView: View {
             agentManager: agentManager,
             theme: theme,
             accentColor: agentAccentColor,
-            isCollapsed: $isInputCollapsed,
             calculatedHeight: $inputContentHeight,
             onSend: { prompt, images in
                 handleSendPrompt(prompt, images: images)
@@ -216,7 +203,7 @@ public struct AgentPanelView: View {
     @ViewBuilder
     private var messagesArea: some View {
         ZStack {
-            if agentManager.messages.isEmpty {
+            if !agentManager.hasVisibleMessages {
                 if (agentManager.status == .connecting || agentManager.statusMessage == "Loading session...") && !agentManager.isAuthenticating && agentManager.authMethods.isEmpty {
                     loadingSessionStateView
                         .transition(.opacity)
@@ -229,9 +216,11 @@ public struct AgentPanelView: View {
                 }
             } else {
                 AgentChatScrollRepresentable(
-                    messages: agentManager.messages,
+                    messages: agentManager.messages.filter { $0.hasVisibleContent },
                     theme: theme,
                     accentColor: agentAccentColor,
+                    agentIcon: agentIcon,
+                    agentId: agentId,
                     toolcallColorMode: toolcallColorMode,
                     scrollToBottomTrigger: scrollToBottomRequest,
                     onNearBottomChanged: { nearBottom in
@@ -256,7 +245,9 @@ public struct AgentPanelView: View {
                             previewImageIndex = idx
                         }
                     },
-                    onOpenURL: onOpenURL
+                    onOpenURL: onOpenURL,
+                    inputView: AnyView(agentInputView),
+                    inputContentHeight: inputContentHeight
                 )
                 .transition(.opacity)
             }
@@ -268,7 +259,7 @@ public struct AgentPanelView: View {
             }
             return .systemAction
         })
-        .animation(.easeInOut(duration: 0.14), value: agentManager.messages.isEmpty)
+        .animation(.easeInOut(duration: 0.14), value: agentManager.hasVisibleMessages)
     }
 
     @ViewBuilder
@@ -291,7 +282,7 @@ public struct AgentPanelView: View {
                 Spacer(minLength: 24)
 
                 VStack(spacing: 18) {
-                    AgentIconView(icon: agentIcon, tintColor: agentAccentColor, size: 40)
+                    AgentIconView(icon: agentIcon, agentId: agentId, tintColor: agentAccentColor, size: 40)
 
                     VStack(spacing: 7) {
                         Text(agentManager.agentTitle.isEmpty ? "Ask Agent" : "Ask \(agentManager.agentTitle)")
@@ -538,7 +529,7 @@ public struct AgentPanelView: View {
 
             VStack(spacing: 18) {
                 ZStack(alignment: .bottomTrailing) {
-                    AgentIconView(icon: agentIcon, tintColor: agentAccentColor, size: 44)
+                    AgentIconView(icon: agentIcon, agentId: agentId, tintColor: agentAccentColor, size: 44)
                     Image(systemName: "lock.fill")
                         .font(.system(size: 10, weight: .bold))
                         .foregroundColor(.white)

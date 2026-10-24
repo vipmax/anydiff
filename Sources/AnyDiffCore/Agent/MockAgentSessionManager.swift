@@ -422,6 +422,7 @@ public final class MockAgentSessionManager: AgentSessionManager, @unchecked Send
         runNextQueuedPrompt(workingDirectory: workingDirectory)
     }
 
+    @MainActor
     private func streamResponse(_ response: String, messageId: UUID) async -> Bool {
         let chunks = responseChunks(response, maxCharacters: 14)
         for chunk in chunks {
