@@ -5,6 +5,27 @@ All notable changes to **AnyDiff** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] - 2026-10-26
+
+### 🔌 Language Server Protocol (LSP) Integration
+- **Embedded LSP Client**: Full language server client supporting code completion, hover documentation, jump-to-definition, and document synchronization over JSON-RPC.
+- **Server Registry & Auto-Install**: Pre-configured registry for major languages (Swift, TypeScript/JavaScript, Rust, Go, Python, C/C++, HTML/CSS, JSON, YAML) with automatic server download, version verification, and idle auto-stop.
+- **Diagnostics & Inline Pills**: Real-time error and warning diagnostic badges rendered inline and in the panel header, with quick keyboard navigation (`F8` for next diagnostic, `Shift + F8` for previous).
+- **Interactive Completions Popover**: Non-blocking code completion suggestions with documentation previews and keyboard selection (`Tab`, `Enter`, arrows).
+
+### 💻 Native Embedded Terminal
+- **Integrated Terminal Panel**: Embedded PTY terminal emulator panel supporting full ANSI color sequences, xterm compatibility, and scrollback history.
+- **Block Terminal Mode**: Command block isolation mode with separate output cards, copy output shortcuts, and execution duration tracking.
+- **Multi-Terminal Tabs & Process Controls**: Open multiple terminal tabs concurrently with process signal controls (`Ctrl + C`, interrupt, termination) and quick cwd tracking.
+
+### 🤖 AI Agent & Chat Performance Overhaul
+- **In-Chat Prompt Queue**: Queue prompts while the agent is busy; queued items render directly in the chat stream with full support for reordering (move up/down), inline editing, and deletion.
+- **Virtualized Chat & Sticky Avatars**: Virtualized chat scroll performance with sticky avatars that follow long assistant responses and snap back on single-line messages.
+- **Collapsible Tool Call Groups**: Consecutive tool executions are grouped into tidy, expandable `AgentToolGroupView` containers with fixed-width chevrons to eliminate toggle jitter.
+- **Proportional Avatar Editor**: Avatar customization modal with stationary focal point zoom up to 500% and live drag re-centering.
+- **Enhanced Chat Input**: Multi-line arrow navigation (↑ / ↓) across prompt history and queued items, custom typography with comfortable line spacing, and auto-growing height up to viewport limits.
+- **Session Reconnection Resiliency**: Seamless ACP session recovery reconnects to the existing agent session without losing previous chat history.
+
 ## [1.7.2] - 2026-10-15
 
 ### 🛠 Fixes
