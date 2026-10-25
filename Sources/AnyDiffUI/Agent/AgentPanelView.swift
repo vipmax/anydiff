@@ -18,7 +18,8 @@ public struct AgentPanelView: View {
 
     @State private var isChatNearBottom: Bool = true
     @State private var scrollToBottomRequest: Int = 0
-    @State private var inputContentHeight: CGFloat = 22
+    @State private var inputContentHeight: CGFloat = max(AgentMessageCell.userAvatarSize + 8, 38)
+    @State private var inputTotalHeight: CGFloat = 0
     @State private var hoveredQuickAction: String?
     @State private var lastKnownStatus: AgentConnectionStatus = .disconnected
     @State private var isPanelDropTargeted: Bool = false
@@ -26,6 +27,7 @@ public struct AgentPanelView: View {
     @State private var previewImageIndex: Int? = nil
     @ObservedObject private var templateStore = AgentPromptTemplateStore.shared
     @State private var isCustomizingTemplates: Bool = false
+    @State private var isQuickActionsPresented: Bool = false
     @State private var isCustomizeHovered: Bool = false
 
     public init(
@@ -60,6 +62,13 @@ public struct AgentPanelView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
+            if !agentManager.hasVisibleMessages {
+                agentInputView
+                    .frame(maxWidth: .infinity, alignment: .top)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 8)
+            }
+
             if (!agentManager.authMethods.isEmpty || agentManager.isAuthenticating) && agentManager.hasVisibleMessages {
                 authRequiredTopBannerView
             }
@@ -70,42 +79,18 @@ public struct AgentPanelView: View {
                     .clipped()
 
                 if !isChatNearBottom && agentManager.hasVisibleMessages {
-                    Button {
+                    AgentScrollToBottomButton(
+                        theme: theme,
+                        isBreathing: agentManager.isBusyOrStreaming
+                    ) {
                         scrollToBottomRequest &+= 1
-                    } label: {
-                        Image(systemName: "arrow.down")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundColor(Color(theme.foreground).opacity(0.9))
-                            .frame(width: 32, height: 32)
-                            .background(
-                                Circle()
-                                    .fill(.ultraThinMaterial)
-                            )
-                            .overlay(
-                                Circle()
-                                    .stroke(Color(theme.excerptHeaderBorder).opacity(0.85), lineWidth: 1)
-                            )
                     }
-                    .buttonStyle(.plain)
-                    .help("Scroll to bottom")
                     .transition(.opacity.combined(with: .scale(scale: 0.85)))
                     .padding(.trailing, 10)
                     .padding(.bottom, 10)
                 }
-
-                if let permission = agentManager.pendingPermission {
-                    permissionRequestView(permission)
-                        .padding(.horizontal, 10)
-                        .padding(.bottom, 10)
-                        .zIndex(2)
-                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            if !agentManager.hasVisibleMessages {
-                agentInputView
-                    .frame(maxWidth: .infinity, alignment: .bottom)
-            }
         }
         .background(Color(theme.background))
         .onDrop(of: [UTType.image, UTType.fileURL, UTType.png, UTType.jpeg, UTType.tiff, UTType.webP, UTType.heic, UTType.url, UTType.data, UTType.item], isTargeted: $isPanelDropTargeted) { providers in
@@ -160,6 +145,9 @@ public struct AgentPanelView: View {
         .onChange(of: inputContentHeight) { _ in
             preserveChatBottomIfNeeded()
         }
+        .onChange(of: inputTotalHeight) { _ in
+            preserveChatBottomIfNeeded()
+        }
         .onChange(of: agentManager.draftAttachments.count) { _ in
             preserveChatBottomIfNeeded()
         }
@@ -172,7 +160,7 @@ public struct AgentPanelView: View {
     }
 
     private var agentInputView: some View {
-        AgentInputView(
+        var view = AgentInputView(
             text: $agentManager.draftPrompt,
             attachedImages: $agentManager.draftAttachments,
             agentManager: agentManager,
@@ -193,6 +181,12 @@ public struct AgentPanelView: View {
                 }
             }
         )
+        view.onTotalHeightChange = { height in
+            DispatchQueue.main.async {
+                if abs(inputTotalHeight - height) >= 1 { inputTotalHeight = height }
+            }
+        }
+        return view
     }
 
     private func preserveChatBottomIfNeeded() {
@@ -200,23 +194,32 @@ public struct AgentPanelView: View {
         scrollToBottomRequest &+= 1
     }
 
+    private var displayedMessages: [AgentMessage] {
+        let base = agentManager.messages.filter { $0.hasVisibleContent }
+        if agentManager.promptQueue.isEmpty {
+            return base
+        }
+        let total = agentManager.promptQueue.count
+        let queued = agentManager.promptQueue.enumerated().map { index, item in
+            item.asAgentMessage(index: index, total: total)
+        }
+        return base + queued
+    }
+
     @ViewBuilder
     private var messagesArea: some View {
         ZStack {
             if !agentManager.hasVisibleMessages {
                 if (agentManager.status == .connecting || agentManager.statusMessage == "Loading session...") && !agentManager.isAuthenticating && agentManager.authMethods.isEmpty {
-                    loadingSessionStateView
-                        .transition(.opacity)
+                    welcomeStateView(isLaunching: true)
                 } else if !agentManager.authMethods.isEmpty || agentManager.isAuthenticating {
                     authRequiredEmptyStateView
-                        .transition(.opacity)
                 } else {
-                    emptyStateView
-                        .transition(.opacity)
+                    welcomeStateView(isLaunching: false)
                 }
             } else {
                 AgentChatScrollRepresentable(
-                    messages: agentManager.messages.filter { $0.hasVisibleContent },
+                    messages: displayedMessages,
                     theme: theme,
                     accentColor: agentAccentColor,
                     agentIcon: agentIcon,
@@ -246,10 +249,18 @@ public struct AgentPanelView: View {
                         }
                     },
                     onOpenURL: onOpenURL,
+                    onDeleteQueuedMessage: { id in
+                        agentManager.removeQueuedPrompt(id: id)
+                    },
+                    onUpdateQueuedMessage: { id, newText in
+                        agentManager.updateQueuedPrompt(id: id, text: newText)
+                    },
+                    onMoveQueuedMessage: { id, direction in
+                        agentManager.moveQueuedPrompt(id: id, direction: direction)
+                    },
                     inputView: AnyView(agentInputView),
-                    inputContentHeight: inputContentHeight
+                    inputContentHeight: max(inputContentHeight, inputTotalHeight)
                 )
-                .transition(.opacity)
             }
         }
         .environment(\.openURL, OpenURLAction { url in
@@ -259,191 +270,150 @@ public struct AgentPanelView: View {
             }
             return .systemAction
         })
-        .animation(.easeInOut(duration: 0.14), value: agentManager.hasVisibleMessages)
     }
 
     @ViewBuilder
-    private var loadingSessionStateView: some View {
-        VStack(spacing: 12) {
-            ProgressView()
-                .scaleEffect(0.9)
+    private func welcomeStateView(isLaunching: Bool) -> some View {
+        let title = agentManager.agentTitle.isEmpty ? "Agent" : agentManager.agentTitle
+        let avatarSize = AgentAvatarProvider.currentAgentAvatarSize(for: agentId)
+        let maxW = AgentMessageCell.maxAvatarWidth
+        VStack(spacing: 0) {
+            HStack(alignment: .center, spacing: 12) {
+                AgentIconView(icon: agentIcon, agentId: agentId, tintColor: agentAccentColor, size: avatarSize)
+                    .frame(width: maxW, alignment: .center)
+                    .modifier(AgentWelcomePulse(isActive: isLaunching))
 
-            Text(agentManager.statusMessage ?? "Loading session...")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundColor(Color(theme.gutterForeground))
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    @ViewBuilder
-    private var emptyStateView: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(spacing: 0) {
-                Spacer(minLength: 24)
-
-                VStack(spacing: 18) {
-                    AgentIconView(icon: agentIcon, agentId: agentId, tintColor: agentAccentColor, size: 40)
-
-                    VStack(spacing: 7) {
-                        Text(agentManager.agentTitle.isEmpty ? "Ask Agent" : "Ask \(agentManager.agentTitle)")
-                            .font(.system(size: 20, weight: .bold))
-                            .foregroundColor(Color(theme.foreground))
-
-                        Text("Inspect diffs, write code changes, and run commands with your agent.")
-                            .font(.system(size: 13, weight: .regular))
-                            .foregroundColor(Color(theme.gutterForeground))
-                            .multilineTextAlignment(.center)
-                            .lineSpacing(2)
-                            .frame(maxWidth: 390)
+                HStack(alignment: .center, spacing: 6) {
+                    ZStack(alignment: .leading) {
+                        if isLaunching {
+                            Text("Launching…")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundColor(Color(theme.gutterForeground))
+                                .modifier(AgentWelcomePulse(isActive: true))
+                                .transition(.opacity)
+                        } else {
+                            Text(title)
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundColor(Color(theme.foreground))
+                                .transition(.opacity)
+                        }
                     }
 
-                    if isCustomizingTemplates {
-                        AgentPromptTemplatesInlineView(
-                            store: templateStore,
-                            theme: theme,
-                            accentColor: agentAccentColor,
-                            onDone: {
-                                withAnimation(.easeInOut(duration: 0.2)) {
-                                    isCustomizingTemplates = false
-                                }
-                            }
-                        )
-                        .transition(.asymmetric(
-                            insertion: .opacity.combined(with: .scale(scale: 0.98)),
-                            removal: .opacity.combined(with: .scale(scale: 0.98))
-                        ))
-                    } else {
-                        VStack(spacing: 8) {
-                            HStack {
-                                Text("QUICK ACTIONS")
-                                    .font(.system(size: 10, weight: .bold))
-                                    .foregroundColor(Color(theme.gutterForeground))
-                                    .tracking(0.5)
-
-                                Spacer()
-
-                                Button(action: {
-                                    withAnimation(.easeInOut(duration: 0.2)) {
-                                        isCustomizingTemplates = true
-                                    }
-                                }) {
-                                    HStack(spacing: 4) {
-                                        Image(systemName: "slider.horizontal.3")
-                                            .font(.system(size: 10.5, weight: .medium))
-                                        Text("Customize")
-                                            .font(.system(size: 11, weight: .medium))
-                                    }
-                                    .foregroundColor(isCustomizeHovered ? Color(theme.foreground) : Color(theme.gutterForeground))
-                                    .padding(.horizontal, 7)
-                                    .padding(.vertical, 3)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                            .fill(isCustomizeHovered ? Color(theme.foreground).opacity(0.08) : Color.clear)
-                                    )
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                            .stroke(
-                                                isCustomizeHovered ? Color(theme.excerptHeaderBorder).opacity(0.4) : Color.clear,
-                                                lineWidth: 1
-                                            )
-                                    )
-                                }
-                                .buttonStyle(.plain)
-                                .help("Customize prompt templates")
-                                .onHover { isCustomizeHovered = $0 }
-                            }
-                            .padding(.horizontal, 4)
-                            .padding(.bottom, 2)
-
-                            if templateStore.templates.isEmpty {
-                                VStack(spacing: 6) {
-                                    Text("No templates configured")
-                                        .font(.system(size: 12))
-                                        .foregroundColor(Color(theme.gutterForeground))
-                                    Button("Reset to Defaults") {
-                                        withAnimation(.easeInOut(duration: 0.15)) {
-                                            templateStore.resetToDefaults()
-                                        }
-                                    }
-                                    .font(.system(size: 11, weight: .medium))
-                                    .foregroundColor(agentAccentColor)
-                                    .buttonStyle(.plain)
-                                }
-                                .padding(.vertical, 16)
-                            } else {
-                                ForEach(templateStore.templates) { template in
-                                    quickActionButton(template.title) {
-                                        handleSendPrompt(template.prompt)
-                                    }
-                                }
-                            }
-                        }
-                        .frame(maxWidth: 430)
-                        .padding(.top, 5)
-                        .transition(.opacity)
+                    if !isLaunching {
+                        quickActionsButton
+                            .transition(.opacity)
                     }
                 }
-                .padding(.horizontal, 20)
 
-                Spacer(minLength: 24)
+                Spacer(minLength: 0)
             }
-            .frame(maxWidth: .infinity, minHeight: 460)
+            .padding(.horizontal, 18)
+            .padding(.top, 14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .animation(.easeInOut(duration: 0.25), value: isLaunching)
+
+            Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    @ViewBuilder
-    private func quickActionButton(
-        _ title: String,
-        action: @escaping () -> Void
-    ) -> some View {
-        let isHovered = hoveredQuickAction == title
-
-        Button(action: action) {
-            HStack(spacing: 12) {
-                Text(title)
-                    .font(.system(size: 13, weight: .medium))
-                Spacer()
-                Image(systemName: "arrow.right")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(isHovered ? agentAccentColor : Color(theme.gutterForeground))
-                    .frame(width: 26, height: 26)
-                    .background(
-                        isHovered
-                            ? agentAccentColor.opacity(0.14)
-                            : Color(theme.foreground).opacity(0.06),
-                        in: Circle()
-                    )
-            }
-            .foregroundColor(
-                isHovered
+    private var quickActionsButton: some View {
+        Button {
+            isCustomizingTemplates = false
+            isQuickActionsPresented.toggle()
+        } label: {
+            Image(systemName: "bolt")
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundColor(isQuickActionsPresented || isCustomizeHovered
                     ? Color(theme.foreground)
-                    : Color(theme.foreground).opacity(0.85)
-            )
-            .padding(.horizontal, 12)
-            .frame(height: 48)
-            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(agentAccentColor.opacity(isHovered ? 0.07 : 0))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(Color(theme.excerptHeaderBorder).opacity(0.65), lineWidth: 1)
-            )
+                    : Color(theme.gutterForeground))
+                .frame(width: 24, height: 24)
+                .background(
+                    Circle().fill(Color(theme.foreground).opacity(isQuickActionsPresented || isCustomizeHovered ? 0.08 : 0))
+                )
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .scaleEffect(isHovered ? 1.01 : 1)
-        .shadow(
-            color: isHovered ? agentAccentColor.opacity(0.16) : Color.black.opacity(0.04),
-            radius: isHovered ? 12 : 8,
-            y: isHovered ? 4 : 3
-        )
-        .animation(.easeOut(duration: 0.16), value: isHovered)
-        .onHover { hovering in
-            withAnimation(.easeOut(duration: 0.16)) {
-                hoveredQuickAction = hovering ? title : nil
+        .help("Quick actions")
+        .onHover { isCustomizeHovered = $0 }
+        .popover(isPresented: $isQuickActionsPresented, arrowEdge: .bottom) {
+            quickActionsPopover
+        }
+    }
+
+    @ViewBuilder
+    private var quickActionsPopover: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if isCustomizingTemplates {
+                AgentPromptTemplatesInlineView(
+                    store: templateStore,
+                    theme: theme,
+                    accentColor: agentAccentColor,
+                    onDone: {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            isCustomizingTemplates = false
+                        }
+                    }
+                )
+            } else {
+                HStack {
+                    Text("Quick actions")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(Color(theme.gutterForeground))
+                    Spacer()
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            isCustomizingTemplates = true
+                        }
+                    } label: {
+                        Text("Customize")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(agentAccentColor)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 6)
+                .padding(.bottom, 2)
+
+                if templateStore.templates.isEmpty {
+                    Button("Reset to Defaults") {
+                        templateStore.resetToDefaults()
+                    }
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundColor(agentAccentColor)
+                    .buttonStyle(.plain)
+                    .padding(8)
+                } else {
+                    ForEach(templateStore.templates) { template in
+                        quickActionRow(template.title) {
+                            isQuickActionsPresented = false
+                            handleSendPrompt(template.prompt)
+                        }
+                    }
+                }
             }
+        }
+        .padding(8)
+        .frame(width: 280)
+    }
+
+    private func quickActionRow(_ title: String, action: @escaping () -> Void) -> some View {
+        let isHovered = hoveredQuickAction == title
+        return Button(action: action) {
+            Text(title)
+                .font(.system(size: 12.5, weight: .medium))
+                .foregroundColor(Color(theme.foreground).opacity(isHovered ? 1 : 0.88))
+                .padding(.horizontal, 8)
+                .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(Color(theme.foreground).opacity(isHovered ? 0.08 : 0))
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            hoveredQuickAction = hovering ? title : (hoveredQuickAction == title ? nil : hoveredQuickAction)
         }
     }
 
@@ -452,74 +422,14 @@ public struct AgentPanelView: View {
         if finalPrompt.contains("@diff"), let summary = fileDiffsSummary {
             finalPrompt = finalPrompt.replacingOccurrences(of: "@diff", with: "\n\n[Diff Context]:\n\(summary)\n")
         }
+        // Synchronously reset input heights to 1-line height before triggering scroll / updates
+        let minH = max(AgentMessageCell.userAvatarSize + 8, 38)
+        inputContentHeight = minH
+        inputTotalHeight = minH
         // A new prompt starts a new turn, so resume following the latest
         // output even if the user previously opened a tool card for inspection.
         scrollToBottomRequest &+= 1
         agentManager.sendPrompt(finalPrompt, images: images, workingDirectory: workingDirectory)
-    }
-
-    @ViewBuilder
-    private func permissionRequestView(_ permission: AgentPermissionRequest) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Image(systemName: "hand.raised.fill")
-                    .foregroundColor(.orange)
-                Text("Permission required")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(Color(theme.foreground))
-                Spacer()
-            }
-
-            Text(permission.title)
-                .font(.system(size: 11.5, weight: .medium, design: .monospaced))
-                .foregroundColor(Color(theme.foreground))
-                .lineLimit(3)
-
-            if let command = permission.command, !command.isEmpty, command != permission.title {
-                Text("$ \(command)")
-                    .font(.system(size: 10.5, design: .monospaced))
-                    .foregroundColor(Color(theme.gutterForeground))
-                    .lineLimit(3)
-            }
-
-            HStack(spacing: 6) {
-                ForEach(permission.options) { option in
-                    Button {
-                        agentManager.respondToPermission(optionId: option.optionId)
-                    } label: {
-                        Text(option.name)
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(permissionOptionColor(option))
-                            .padding(.horizontal, 9)
-                            .padding(.vertical, 5)
-                            .background(permissionOptionColor(option).opacity(0.15))
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-        }
-        .padding(10)
-        .frame(maxWidth: 520, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(Color(theme.gutterBackground).opacity(0.98))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10)
-                        .stroke(Color.orange.opacity(0.65), lineWidth: 1)
-                )
-        )
-        .shadow(color: .black.opacity(0.35), radius: 10, y: 3)
-    }
-
-    private func permissionOptionColor(_ option: ACPPermissionOption) -> Color {
-        if option.kind?.lowercased().contains("reject") == true {
-            return .red
-        }
-        if option.kind?.lowercased().contains("allow") == true {
-            return .green
-        }
-        return Color(theme.foreground)
     }
 
     @ViewBuilder
@@ -738,3 +648,67 @@ public struct AgentPanelView: View {
         )
     }
 }
+
+private struct AgentScrollToBottomButton: View {
+    let theme: Theme
+    let isBreathing: Bool
+    let action: () -> Void
+
+    @State private var pulseLow = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "arrow.down")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundColor(Color(theme.foreground).opacity(0.9))
+                .frame(width: 32, height: 32)
+                .background(
+                    Circle()
+                        .fill(.ultraThinMaterial)
+                )
+                .overlay(
+                    Circle()
+                        .stroke(Color(theme.excerptHeaderBorder).opacity(0.85), lineWidth: 1)
+                )
+                .opacity(isBreathing && pulseLow ? 0.45 : 1.0)
+        }
+        .buttonStyle(.plain)
+        .help("Scroll to bottom")
+        .onAppear {
+            updateAnimation(isBreathing)
+        }
+        .onChange(of: isBreathing) { newValue in
+            updateAnimation(newValue)
+        }
+    }
+
+    private func updateAnimation(_ active: Bool) {
+        if active {
+            withAnimation(.easeInOut(duration: 0.95).repeatForever(autoreverses: true)) {
+                pulseLow = true
+            }
+        } else {
+            withAnimation(.easeOut(duration: 0.2)) {
+                pulseLow = false
+            }
+        }
+    }
+}
+
+/// Soft breathing used while the agent process is launching.
+private struct AgentWelcomePulse: ViewModifier {
+    let isActive: Bool
+    @State private var dimmed = false
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(isActive && dimmed ? 0.35 : 1)
+            .animation(
+                isActive ? .easeInOut(duration: 0.9).repeatForever(autoreverses: true) : .easeOut(duration: 0.2),
+                value: dimmed
+            )
+            .onAppear { if isActive { dimmed = true } }
+            .onChange(of: isActive) { active in dimmed = active }
+    }
+}
+

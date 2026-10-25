@@ -25,4 +25,17 @@ public struct AgentQueuedMessage: Identifiable, Equatable, Sendable {
         self.workingDirectory = workingDirectory
         self.createdAt = createdAt
     }
+
+    public func asAgentMessage(index: Int, total: Int) -> AgentMessage {
+        AgentMessage(
+            id: id,
+            role: .user,
+            content: text,
+            images: images,
+            isQueued: true,
+            queuePosition: index + 1,
+            queueTotal: total,
+            timestamp: createdAt
+        )
+    }
 }

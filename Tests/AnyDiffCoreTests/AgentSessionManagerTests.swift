@@ -133,16 +133,109 @@ final class AgentSessionManagerTests: XCTestCase {
     }
 
     func testToolCallsUseExpandableColoredCardsWhenSimpleModeIsDisabled() {
-        let message = MockAgentSessionManager().messages[11]
-        let cell = AgentMessageCell(message: message, theme: .zedDark)
+        var singleToolOnly = AgentMessage(
+            role: .assistant,
+            content: "",
+            toolCalls: [
+                ToolCallItem(
+                    id: "t1",
+                    toolName: "run_command",
+                    command: "git status -s && git diff",
+                    status: .completed
+                )
+            ]
+        )
+        let singleCell = AgentMessageCell(message: singleToolOnly, theme: .zedDark)
+        _ = singleCell.layout(for: 420)
+        XCTAssertEqual(
+            singleCell.subviews.compactMap { $0 as? AgentToolCardView }.count,
+            1,
+            "A single tool call without thought should be rendered directly as an AgentToolCardView without grouping"
+        )
+        XCTAssertFalse(singleCell.subviews.contains { $0 is AgentToolGroupView })
 
+        // When a second tool call arrives via streaming, the first card must be detached from cell.subviews
+        // so it does not overlap with the collapsed AgentToolGroupView header!
+        singleToolOnly.appendToolCall(
+            ToolCallItem(
+                id: "t2",
+                toolName: "run_command",
+                command: "git log -1",
+                status: .running
+            )
+        )
+        singleCell.configure(message: singleToolOnly, theme: .zedDark)
+        _ = singleCell.layout(for: 420)
+        XCTAssertTrue(
+            singleCell.subviews.compactMap { $0 as? AgentToolCardView }.isEmpty,
+            "Once grouped into a collapsed AgentToolGroupView, individual tool cards must not remain in cell.subviews"
+        )
+        XCTAssertEqual(singleCell.subviews.compactMap { $0 as? AgentToolGroupView }.count, 1)
+
+        let multiToolMessage = MockAgentSessionManager().messages[11]
+        let multiCell = AgentMessageCell(message: multiToolMessage, theme: .zedDark)
+        _ = multiCell.layout(for: 420)
+
+        let groupViews = multiCell.subviews.compactMap { $0 as? AgentToolGroupView }
+        XCTAssertEqual(groupViews.count, 1, "Consecutive thoughts and tool calls (>= 2) should be grouped into AgentToolGroupView")
+        guard let groupView = groupViews.first else { return }
+        XCTAssertFalse(groupView.isExpanded, "Tool group should be collapsed by default")
+        XCTAssertEqual(groupView.toolViews.count, multiToolMessage.toolCalls.count + 1)
+        let headerTitle = groupView.headerButton.attributedTitle.string
+        XCTAssertTrue(headerTitle.contains("worked (1 thought,"), "Unexpected header title: \(headerTitle)")
+        XCTAssertTrue(headerTitle.contains("edits"), "Unexpected header title: \(headerTitle)")
+        XCTAssertTrue(headerTitle.contains("shell"), "Unexpected header title: \(headerTitle)")
+        XCTAssertTrue(groupView.subviews.compactMap { $0 as? AgentToolCardView }.isEmpty, "Collapsed group should not mount child tool cards")
+
+        // Expanding the group mounts the AgentThoughtBlockView and AgentToolCardView items
+        groupView.toggle()
+        _ = multiCell.layout(for: 420)
+        XCTAssertTrue(groupView.isExpanded)
+        XCTAssertEqual(
+            groupView.subviews.compactMap { $0 as? AgentToolCardView }.count,
+            multiToolMessage.toolCalls.count
+        )
+        XCTAssertEqual(
+            groupView.subviews.compactMap { $0 as? AgentThoughtBlockView }.count,
+            1
+        )
+    }
+
+    func testAssistantAvatarPulsesThroughoutStreamingWithoutTypingDots() {
+        var streaming = AgentMessage(
+            role: .assistant,
+            content: "",
+            isStreaming: true
+        )
+        let cell = AgentMessageCell(message: streaming, theme: .zedDark)
         _ = cell.layout(for: 420)
 
-        XCTAssertEqual(
-            cell.subviews.compactMap { $0 as? AgentToolCardView }.count,
-            message.toolCalls.count
+        XCTAssertTrue(cell.typingIndicatorView.isHidden, "Moving '...' typing indicator dots must remain hidden")
+        XCTAssertNotNil(
+            cell.roleIconView.layer?.animation(forKey: "agentRolePulse"),
+            "Avatar should pulse while waiting for response"
         )
-        XCTAssertFalse(cell.subviews.contains { $0 is AgentSimpleToolCallView })
+
+        // Even after thought, tool call, and text arrive, the avatar must keep pulsing while isStreaming == true
+        streaming.appendThought("Inspecting codebase")
+        streaming.appendToolCall(ToolCallItem(id: "t1", toolName: "run_command", command: "git status", status: .running))
+        streaming.appendText("Working on it...")
+        cell.configure(message: streaming, theme: .zedDark)
+        _ = cell.layout(for: 420)
+
+        XCTAssertTrue(cell.typingIndicatorView.isHidden)
+        XCTAssertNotNil(
+            cell.roleIconView.layer?.animation(forKey: "agentRolePulse"),
+            "Avatar should keep breathing for the entire streaming turn"
+        )
+
+        // Once streaming finishes, the pulse animation stops
+        streaming.isStreaming = false
+        cell.configure(message: streaming, theme: .zedDark)
+        XCTAssertNil(
+            cell.roleIconView.layer?.animation(forKey: "agentRolePulse"),
+            "Avatar pulse should stop once streaming finishes"
+        )
     }
 
     func testStandardChatScrollViewUsesNativeDocumentView() {
@@ -760,6 +853,83 @@ final class AgentSessionManagerTests: XCTestCase {
         // The queued prompt should remain in queue intact!
         XCTAssertEqual(manager.promptQueue.count, 1)
         XCTAssertEqual(manager.promptQueue.first?.text, "Queued prompt")
+    }
+
+    func testQueuedMessageConversionToAgentMessage() {
+        let queued = AgentQueuedMessage(
+            text: "Hello from queue",
+            images: [],
+            workingDirectory: "/tmp"
+        )
+        let agentMsg = queued.asAgentMessage(index: 0, total: 3)
+        XCTAssertEqual(agentMsg.id, queued.id)
+        XCTAssertEqual(agentMsg.role, .user)
+        XCTAssertEqual(agentMsg.content, "Hello from queue")
+        XCTAssertTrue(agentMsg.isQueued)
+        XCTAssertEqual(agentMsg.queuePosition, 1)
+        XCTAssertEqual(agentMsg.queueTotal, 3)
+        XCTAssertTrue(agentMsg.hasVisibleContent)
+    }
+
+    func testHasVisibleMessagesIncludesPromptQueue() {
+        let manager = MockAgentSessionManager(loadFixtures: false)
+        XCTAssertFalse(manager.hasVisibleMessages)
+
+        manager.enqueuePrompt("Pending item", workingDirectory: "/tmp")
+        XCTAssertTrue(manager.hasVisibleMessages)
+    }
+
+    @MainActor
+    func testAgentMessageCellQueuedLayoutAndHeader() {
+        let queued = AgentQueuedMessage(text: "Queued question", workingDirectory: "/tmp")
+        let msg = queued.asAgentMessage(index: 0, total: 2)
+
+        let cell = AgentMessageCell(
+            message: msg,
+            theme: Theme.vesper,
+            accentColor: .accentColor,
+            toolcallColorMode: .full,
+            nativeTextSelectionEnabled: true,
+            agentIconName: "sparkles",
+            agentId: "default"
+        )
+
+        XCTAssertFalse(cell.queuedHeaderView.isHidden)
+        XCTAssertEqual(cell.userBubbleView.alphaValue, 0.94, accuracy: 0.01)
+
+        var deleteCalled = false
+        cell.onDeleteQueuedMessage = { id in
+            if id == queued.id { deleteCalled = true }
+        }
+        cell.queuedHeaderView.onDelete?()
+        XCTAssertTrue(deleteCalled)
+
+        // Test in-place editing
+        XCTAssertFalse(cell.isEditingQueuedMessage)
+        cell.queuedHeaderView.onEdit?()
+        XCTAssertTrue(cell.isEditingQueuedMessage)
+        XCTAssertFalse(cell.queuedEditorView.isHidden)
+        XCTAssertEqual(cell.queuedEditorView.currentText, "Queued question")
+
+        var updatedText = ""
+        cell.onUpdateQueuedMessage = { id, text in
+            if id == queued.id { updatedText = text }
+        }
+        cell.queuedEditorView.textView.string = "Edited inline question"
+        cell.queuedEditorView.textView.onSave?()
+        XCTAssertEqual(updatedText, "Edited inline question")
+        XCTAssertFalse(cell.isEditingQueuedMessage)
+        XCTAssertTrue(cell.queuedEditorView.isHidden)
+
+        // Test cancel
+        cell.startEditingQueuedMessage()
+        XCTAssertTrue(cell.isEditingQueuedMessage)
+        cell.queuedEditorView.textView.onCancel?()
+        XCTAssertFalse(cell.isEditingQueuedMessage)
+        XCTAssertTrue(cell.queuedEditorView.isHidden)
+
+        let height = cell.layout(for: 600)
+        XCTAssertGreaterThan(height, 30)
     }
     #endif
 }

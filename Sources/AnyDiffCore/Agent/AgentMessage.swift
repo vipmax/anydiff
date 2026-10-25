@@ -243,6 +243,9 @@ public struct AgentMessage: Identifiable, Sendable, Equatable {
     public private(set) var orderedParts: [AgentMessagePart]
     public var editedFilesSummary: AgentEditedFilesSummary?
     public var isStreaming: Bool
+    public var isQueued: Bool
+    public var queuePosition: Int?
+    public var queueTotal: Int?
     public let timestamp: Date
 
     public init(
@@ -255,6 +258,9 @@ public struct AgentMessage: Identifiable, Sendable, Equatable {
         orderedParts: [AgentMessagePart]? = nil,
         editedFilesSummary: AgentEditedFilesSummary? = nil,
         isStreaming: Bool = false,
+        isQueued: Bool = false,
+        queuePosition: Int? = nil,
+        queueTotal: Int? = nil,
         timestamp: Date = Date()
     ) {
         self.id = id
@@ -263,9 +269,12 @@ public struct AgentMessage: Identifiable, Sendable, Equatable {
         self.images = images
         self.thought = thought
         self.toolCalls = toolCalls
-        self.orderedParts = orderedParts ?? Self.defaultParts(content: content, toolCalls: toolCalls)
+        self.orderedParts = orderedParts ?? Self.defaultParts(thought: thought, content: content, toolCalls: toolCalls)
         self.editedFilesSummary = editedFilesSummary
         self.isStreaming = isStreaming
+        self.isQueued = isQueued
+        self.queuePosition = queuePosition
+        self.queueTotal = queueTotal
         self.timestamp = timestamp
     }
 
@@ -276,6 +285,7 @@ public struct AgentMessage: Identifiable, Sendable, Equatable {
             || !toolCalls.isEmpty
             || editedFilesSummary != nil
             || isStreaming
+            || isQueued
     }
 
     /// Appends text to the current text part, or starts a new part after a
@@ -351,8 +361,12 @@ public struct AgentMessage: Identifiable, Sendable, Equatable {
         }
     }
 
-    private static func defaultParts(content: String, toolCalls: [ToolCallItem]) -> [AgentMessagePart] {
-        var parts = toolCalls.map { AgentMessagePart.toolCall($0.id) }
+    private static func defaultParts(thought: String?, content: String, toolCalls: [ToolCallItem]) -> [AgentMessagePart] {
+        var parts: [AgentMessagePart] = []
+        if let thought, !thought.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            parts.append(.thought(thought))
+        }
+        parts.append(contentsOf: toolCalls.map { AgentMessagePart.toolCall($0.id) })
         if !content.isEmpty {
             parts.append(.text(content))
         }

@@ -83,7 +83,7 @@ open class AgentSessionManager: ObservableObject, @unchecked Sendable {
     open var isReadyForPrompt: Bool { initializationState == .ready }
     open var canAcceptPrompt: Bool { pendingPermission == nil && authMethods.isEmpty }
     open var isBusyOrStreaming: Bool { status == .busy || messages.last?.isStreaming == true }
-    open var hasVisibleMessages: Bool { messages.contains { $0.hasVisibleContent } }
+    open var hasVisibleMessages: Bool { messages.contains { $0.hasVisibleContent } || !promptQueue.isEmpty }
 
     public init() {}
 

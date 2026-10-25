@@ -3,6 +3,25 @@ import AppKit
 import QuartzCore
 import AnyDiffCore
 
+/// Chevron rendered into a fixed-size canvas so `chevron.right` and `chevron.down`
+/// occupy the same width and the adjacent title does not shift on toggle.
+func agentFixedWidthChevron(expanded: Bool, pointSize: CGFloat, description: String) -> NSImage? {
+    let name = expanded ? "chevron.down" : "chevron.right"
+    let config = NSImage.SymbolConfiguration(pointSize: pointSize, weight: .semibold)
+    guard let symbol = NSImage(systemSymbolName: name, accessibilityDescription: description)?
+        .withSymbolConfiguration(config) else { return nil }
+    let canvas = NSSize(width: ceil(pointSize * 1.3), height: ceil(pointSize * 1.3))
+    let image = NSImage(size: canvas, flipped: false) { rect in
+        let size = symbol.size
+        let origin = NSPoint(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2)
+        symbol.draw(in: NSRect(origin: origin, size: size))
+        return true
+    }
+    image.isTemplate = true
+    image.accessibilityDescription = description
+    return image
+}
+
 public final class AgentCodeBlockHeaderView: AgentFlippedView {
     public let langLabel = AgentStaticTextField(labelWithString: "")
     public let toggleButton = AgentHoverButton()
@@ -33,12 +52,11 @@ public final class AgentCodeBlockHeaderView: AgentFlippedView {
 
     public func setExpanded(_ expanded: Bool) {
         isExpanded = expanded
-        let symbolName = expanded ? "chevron.down" : "chevron.right"
-        let configuration = NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold)
-        toggleButton.image = NSImage(
-            systemSymbolName: symbolName,
-            accessibilityDescription: expanded ? "Collapse code block" : "Expand code block"
-        )?.withSymbolConfiguration(configuration)
+        toggleButton.image = agentFixedWidthChevron(
+            expanded: expanded,
+            pointSize: 9,
+            description: expanded ? "Collapse code block" : "Expand code block"
+        )
     }
 
     public override func updateTrackingAreas() {
@@ -488,12 +506,11 @@ public final class AgentThoughtBlockView: AgentFlippedView {
             headerButton.image = nil
             return
         }
-        let symbolName = isExpanded ? "chevron.down" : "chevron.right"
-        let configuration = NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold)
-        headerButton.image = NSImage(
-            systemSymbolName: symbolName,
-            accessibilityDescription: isExpanded ? "Collapse thought" : "Expand thought"
-        )?.withSymbolConfiguration(configuration)
+        headerButton.image = agentFixedWidthChevron(
+            expanded: isExpanded,
+            pointSize: 9,
+            description: isExpanded ? "Collapse thought" : "Expand thought"
+        )
     }
 
     private func measuredTextHeight(width: CGFloat) -> CGFloat {
@@ -502,5 +519,232 @@ public final class AgentThoughtBlockView: AgentFlippedView {
         textContainer.containerSize = NSSize(width: width, height: .greatestFiniteMagnitude)
         layoutManager.ensureLayout(for: textContainer)
         return max(18, ceil(layoutManager.usedRect(for: textContainer).height + textView.textContainerInset.height * 2))
+    }
+}
+
+public final class AgentToolGroupView: AgentFlippedView {
+    public let headerButton = AgentHoverButton()
+    public private(set) var toolViews: [NSView] = []
+    public private(set) var isExpanded = false
+    public var groupKey: String
+    public var onToggle: (() -> Void)?
+    private var currentTheme: Theme
+
+    private static let headerHeight: CGFloat = 22
+    private static let headerSpacing: CGFloat = 6
+    private static let itemSpacing: CGFloat = 6
+
+    public init(groupKey: String, toolViews: [NSView], theme: Theme, isExpanded: Bool = false) {
+        self.groupKey = groupKey
+        self.isExpanded = isExpanded
+        self.currentTheme = theme
+        super.init(frame: .zero)
+        wantsLayer = true
+        layerContentsRedrawPolicy = .onSetNeedsDisplay
+        layer?.masksToBounds = false
+
+        headerButton.wantsLayer = true
+        headerButton.layerContentsRedrawPolicy = .onSetNeedsDisplay
+        headerButton.isBordered = false
+        headerButton.setButtonType(.momentaryPushIn)
+        headerButton.alignment = .left
+        headerButton.imagePosition = .imageLeading
+        headerButton.imageHugsTitle = true
+        headerButton.imageScaling = .scaleProportionallyDown
+        headerButton.defaultBackgroundColor = .clear
+        headerButton.hoverBackgroundColor = .clear
+        headerButton.target = self
+        headerButton.action = #selector(toggle)
+        addSubview(headerButton)
+
+        update(toolViews: toolViews, theme: theme, isExpanded: isExpanded)
+    }
+
+    public required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    public func update(toolViews newViews: [NSView], theme: Theme, isExpanded: Bool) {
+        let newSet = Set(newViews.map(ObjectIdentifier.init))
+
+        for oldView in toolViews where !newSet.contains(ObjectIdentifier(oldView)) {
+            if oldView.superview === self {
+                oldView.removeFromSuperview()
+            }
+        }
+
+        self.toolViews = newViews
+        self.isExpanded = isExpanded
+        self.currentTheme = theme
+
+        if isExpanded {
+            for view in newViews {
+                if view.superview !== self {
+                    view.removeFromSuperview()
+                    addSubview(view)
+                }
+                view.isHidden = false
+                view.alphaValue = 1
+            }
+        } else {
+            for view in newViews {
+                if view.superview != nil {
+                    view.removeFromSuperview()
+                }
+            }
+        }
+
+        updateHeaderAppearance(theme: theme)
+    }
+
+    @objc public func toggle() {
+        isExpanded.toggle()
+        if isExpanded {
+            for view in toolViews {
+                if view.superview !== self {
+                    view.removeFromSuperview()
+                    addSubview(view)
+                }
+                view.isHidden = false
+                view.alphaValue = 1
+            }
+        } else {
+            for view in toolViews where view.superview === self {
+                view.removeFromSuperview()
+            }
+        }
+        updateHeaderAppearance(theme: currentTheme)
+        onToggle?()
+    }
+
+    public func updateHeaderAppearance(theme: Theme) {
+        var thoughtCount = 0
+        var readCount = 0
+        var searchCount = 0
+        var editCount = 0
+        var shellCount = 0
+        var otherCount = 0
+
+        for view in toolViews {
+            if view is AgentThoughtBlockView {
+                thoughtCount += 1
+            } else if let card = view as? AgentToolCardView {
+                switch card.item.shortToolName {
+                case "Edit", "Create", "Write":
+                    editCount += 1
+                case "Run":
+                    shellCount += 1
+                case "Read":
+                    readCount += 1
+                case "Search":
+                    searchCount += 1
+                default:
+                    otherCount += 1
+                }
+            } else if let simple = view as? AgentSimpleToolCallView {
+                otherCount += 1
+                _ = simple
+            } else {
+                otherCount += 1
+            }
+        }
+
+        var parts: [String] = []
+        if thoughtCount > 0 {
+            parts.append("\(thoughtCount) \(thoughtCount == 1 ? "thought" : "thoughts")")
+        }
+        if readCount > 0 {
+            parts.append("\(readCount) \(readCount == 1 ? "read" : "reads")")
+        }
+        if searchCount > 0 {
+            parts.append("\(searchCount) \(searchCount == 1 ? "search" : "searches")")
+        }
+        if editCount > 0 {
+            parts.append("\(editCount) \(editCount == 1 ? "edit" : "edits")")
+        }
+        if shellCount > 0 {
+            parts.append("\(shellCount) shell")
+        }
+        if otherCount > 0 {
+            parts.append("\(otherCount) \(otherCount == 1 ? "tool" : "tools")")
+        }
+
+        let summary: String
+        if parts.isEmpty {
+            let count = toolViews.count
+            summary = "\(count) \(count == 1 ? "step" : "steps")"
+        } else {
+            summary = parts.joined(separator: ", ")
+        }
+
+        let title = " worked (\(summary))"
+        let textColor = (NSColor(cgColor: theme.gutterForeground.cgColor) ?? .secondaryLabelColor).withAlphaComponent(0.85)
+
+        headerButton.attributedTitle = NSAttributedString(string: title, attributes: [
+            .font: NSFont.monospacedSystemFont(ofSize: 11.5, weight: .medium),
+            .foregroundColor: textColor
+        ])
+        headerButton.contentTintColor = textColor
+
+        headerButton.image = agentFixedWidthChevron(
+            expanded: isExpanded,
+            pointSize: 9.5,
+            description: isExpanded ? "Collapse steps" : "Expand steps"
+        )
+    }
+
+    public func measureHeight(width: CGFloat) -> CGFloat {
+        guard isExpanded, !toolViews.isEmpty else {
+            return Self.headerHeight
+        }
+        var total = Self.headerHeight + Self.headerSpacing
+        for (idx, view) in toolViews.enumerated() {
+            if let thought = view as? AgentThoughtBlockView {
+                total += thought.measureHeight(width: width)
+            } else if let card = view as? AgentToolCardView {
+                total += card.measureHeight(width: width)
+            } else if let simple = view as? AgentSimpleToolCallView {
+                total += simple.measureHeight(width: width)
+            }
+            if idx < toolViews.count - 1 {
+                total += Self.itemSpacing
+            }
+        }
+        return total
+    }
+
+    public func applyLayout(width: CGFloat, animated: Bool) {
+        let headerFrame = NSRect(x: 0, y: 0, width: max(1, width), height: Self.headerHeight)
+        if animated {
+            headerButton.animator().frame = headerFrame
+        } else {
+            headerButton.frame = headerFrame
+        }
+
+        guard isExpanded else { return }
+
+        var y = Self.headerHeight + Self.headerSpacing
+        for view in toolViews {
+            let h: CGFloat
+            if let thought = view as? AgentThoughtBlockView {
+                h = thought.measureHeight(width: width)
+                let f = NSRect(x: 0, y: y, width: width, height: h)
+                if animated { thought.animator().frame = f } else { thought.frame = f }
+                thought.applyLayout(width: width, animated: animated)
+            } else if let card = view as? AgentToolCardView {
+                h = card.measureHeight(width: width)
+                let f = NSRect(x: 0, y: y, width: width, height: h)
+                if animated { card.animator().frame = f } else { card.frame = f }
+                card.applyLayout(width: width, animated: animated)
+            } else if let simple = view as? AgentSimpleToolCallView {
+                h = simple.measureHeight(width: width)
+                let f = NSRect(x: 0, y: y, width: width, height: h)
+                if animated { simple.animator().frame = f } else { simple.frame = f }
+                simple.applyLayout(width: width)
+            } else {
+                h = 28
+            }
+            y += h + Self.itemSpacing
+        }
     }
 }

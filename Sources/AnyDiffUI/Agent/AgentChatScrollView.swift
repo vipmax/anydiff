@@ -17,6 +17,10 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
     public var onRestore: ((AgentEditedFilesSummary) -> Void)?
     public var onPreviewImages: (([AgentImageAttachment], Int) -> Void)?
     public var onOpenURL: ((URL) -> Void)?
+    public var onDeleteQueuedMessage: ((UUID) -> Void)?
+    public var onEditQueuedMessage: ((UUID) -> Void)?
+    public var onUpdateQueuedMessage: ((UUID, String) -> Void)?
+    public var onMoveQueuedMessage: ((UUID, QueueMoveDirection) -> Void)?
     public var inputView: AnyView?
     public var inputContentHeight: CGFloat = 0
 
@@ -34,6 +38,10 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
         onRestore: ((AgentEditedFilesSummary) -> Void)? = nil,
         onPreviewImages: (([AgentImageAttachment], Int) -> Void)? = nil,
         onOpenURL: ((URL) -> Void)? = nil,
+        onDeleteQueuedMessage: ((UUID) -> Void)? = nil,
+        onEditQueuedMessage: ((UUID) -> Void)? = nil,
+        onUpdateQueuedMessage: ((UUID, String) -> Void)? = nil,
+        onMoveQueuedMessage: ((UUID, QueueMoveDirection) -> Void)? = nil,
         inputView: AnyView? = nil,
         inputContentHeight: CGFloat = 0
     ) {
@@ -50,6 +58,10 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
         self.onRestore = onRestore
         self.onPreviewImages = onPreviewImages
         self.onOpenURL = onOpenURL
+        self.onDeleteQueuedMessage = onDeleteQueuedMessage
+        self.onEditQueuedMessage = onEditQueuedMessage
+        self.onUpdateQueuedMessage = onUpdateQueuedMessage
+        self.onMoveQueuedMessage = onMoveQueuedMessage
         self.inputView = inputView
         self.inputContentHeight = inputContentHeight
     }
@@ -59,6 +71,15 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
     }
 
     public class Coordinator {
+        struct MessageItemKey: Equatable {
+            let id: UUID
+            let contentCount: Int
+            let isStreaming: Bool
+            let toolCallsCount: Int
+            let queuePosition: Int?
+            let queueTotal: Int?
+        }
+        var lastItemKeys: [MessageItemKey] = []
         var lastMessageCount: Int = -1
         var lastLastMessageId: UUID? = nil
         var lastLastMessageContentCount: Int = -1
@@ -84,18 +105,19 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
                 record(messages: messages, theme: theme, accentColor: accentColor, agentIcon: agentIcon, agentId: agentId, toolcallColorMode: toolcallColorMode, trigger: trigger)
                 return true
             }
-            if messages.count != lastMessageCount {
+            let currentItemKeys = messages.map {
+                MessageItemKey(
+                    id: $0.id,
+                    contentCount: $0.content.count,
+                    isStreaming: $0.isStreaming,
+                    toolCallsCount: $0.toolCalls.count,
+                    queuePosition: $0.queuePosition,
+                    queueTotal: $0.queueTotal
+                )
+            }
+            if currentItemKeys != lastItemKeys {
                 record(messages: messages, theme: theme, accentColor: accentColor, agentIcon: agentIcon, agentId: agentId, toolcallColorMode: toolcallColorMode, trigger: trigger)
                 return true
-            }
-            if let last = messages.last {
-                if last.id != lastLastMessageId ||
-                   last.content.count != lastLastMessageContentCount ||
-                   last.isStreaming != lastLastMessageStreaming ||
-                   last.toolCalls.count != lastLastMessageToolCallsCount {
-                    record(messages: messages, theme: theme, accentColor: accentColor, agentIcon: agentIcon, agentId: agentId, toolcallColorMode: toolcallColorMode, trigger: trigger)
-                    return true
-                }
             }
             return false
         }
@@ -109,6 +131,16 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
             toolcallColorMode: ToolcallColorMode,
             trigger: Int
         ) {
+            lastItemKeys = messages.map {
+                MessageItemKey(
+                    id: $0.id,
+                    contentCount: $0.content.count,
+                    isStreaming: $0.isStreaming,
+                    toolCallsCount: $0.toolCalls.count,
+                    queuePosition: $0.queuePosition,
+                    queueTotal: $0.queueTotal
+                )
+            }
             lastMessageCount = messages.count
             lastAgentId = agentId
             lastLastMessageId = messages.last?.id
@@ -131,6 +163,10 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
         scrollView.onRestore = onRestore
         scrollView.onPreviewImages = onPreviewImages
         scrollView.onOpenURL = onOpenURL
+        scrollView.onDeleteQueuedMessage = onDeleteQueuedMessage
+        scrollView.onEditQueuedMessage = onEditQueuedMessage
+        scrollView.onUpdateQueuedMessage = onUpdateQueuedMessage
+        scrollView.onMoveQueuedMessage = onMoveQueuedMessage
         scrollView.setInputView(inputView, inputHeight: inputContentHeight)
         scrollView.agentId = agentId
         context.coordinator.record(
@@ -168,6 +204,10 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
         scrollView.onRestore = onRestore
         scrollView.onPreviewImages = onPreviewImages
         scrollView.onOpenURL = onOpenURL
+        scrollView.onDeleteQueuedMessage = onDeleteQueuedMessage
+        scrollView.onEditQueuedMessage = onEditQueuedMessage
+        scrollView.onUpdateQueuedMessage = onUpdateQueuedMessage
+        scrollView.onMoveQueuedMessage = onMoveQueuedMessage
         scrollView.agentId = agentId
         // If SwiftUI called updateNSView purely because of an unrelated UI state change
         // (like isChatNearBottom button appearing or parent view re-evaluating during scroll),
@@ -245,6 +285,26 @@ public final class AgentChatScrollView: NSScrollView {
     public var onOpenURL: ((URL) -> Void)? {
         didSet {
             documentViewCustom.onOpenURL = onOpenURL
+        }
+    }
+    public var onDeleteQueuedMessage: ((UUID) -> Void)? {
+        didSet {
+            documentViewCustom.onDeleteQueuedMessage = onDeleteQueuedMessage
+        }
+    }
+    public var onEditQueuedMessage: ((UUID) -> Void)? {
+        didSet {
+            documentViewCustom.onEditQueuedMessage = onEditQueuedMessage
+        }
+    }
+    public var onUpdateQueuedMessage: ((UUID, String) -> Void)? {
+        didSet {
+            documentViewCustom.onUpdateQueuedMessage = onUpdateQueuedMessage
+        }
+    }
+    public var onMoveQueuedMessage: ((UUID, QueueMoveDirection) -> Void)? {
+        didSet {
+            documentViewCustom.onMoveQueuedMessage = onMoveQueuedMessage
         }
     }
 
@@ -355,7 +415,10 @@ public final class AgentChatScrollView: NSScrollView {
         pendingScrollToBottomTrigger = scrollToBottomTrigger
         pendingBottomInset = bottomInset
 
-        if messages.last?.isStreaming == true {
+        let visibleCount = messages.filter { $0.hasVisibleContent }.count
+        let isCountChanged = visibleCount != documentViewCustom.currentMessageCount
+
+        if messages.last?.isStreaming == true && !isCountChanged {
             guard streamingUpdateWorkItem == nil else { return }
             let workItem = DispatchWorkItem { [weak self] in
                 guard let self else { return }
@@ -420,18 +483,28 @@ public final class AgentChatScrollView: NSScrollView {
         guard width > 50 else { return }
 
         if widthChanged {
-            pendingResizeWidth = width
-            resizeLayoutWorkItem?.cancel()
-            let workItem = DispatchWorkItem { [weak self] in
-                guard let self, let width = self.pendingResizeWidth else { return }
-                self.pendingResizeWidth = nil
-                self.documentViewCustom.layoutContent(for: width)
-                if self.followsBottom {
-                    self.scrollToBottom(animated: false)
+            if inLiveResize {
+                pendingResizeWidth = width
+                resizeLayoutWorkItem?.cancel()
+                let workItem = DispatchWorkItem { [weak self] in
+                    guard let self, let width = self.pendingResizeWidth else { return }
+                    self.pendingResizeWidth = nil
+                    self.documentViewCustom.layoutContent(for: width)
+                    if self.followsBottom {
+                        self.scrollToBottom(animated: false)
+                    }
+                }
+                resizeLayoutWorkItem = workItem
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.04, execute: workItem)
+            } else {
+                resizeLayoutWorkItem?.cancel()
+                resizeLayoutWorkItem = nil
+                pendingResizeWidth = nil
+                documentViewCustom.layoutContent(for: width)
+                if followsBottom {
+                    scrollToBottom(animated: false)
                 }
             }
-            resizeLayoutWorkItem = workItem
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.04, execute: workItem)
         } else if heightChanged {
             documentViewCustom.layoutContent(for: width)
             if followsBottom {
@@ -494,6 +567,7 @@ public final class AgentChatScrollView: NSScrollView {
     public override func reflectScrolledClipView(_ cView: NSClipView) {
         super.reflectScrolledClipView(cView)
         documentViewCustom.updateVisibleCells(in: cView)
+        documentViewCustom.updateStickyAvatars(clipTop: cView.bounds.minY)
         guard !isResizing else { return }
         notifyNearBottomChanged()
     }
@@ -544,6 +618,7 @@ public final class AgentChatDocumentView: NSView {
 
     private var cells: [UUID: AgentMessageCell] = [:]
     private var orderedCells: [CellEntry] = []
+    fileprivate var currentMessageCount: Int { orderedCells.count }
     private var messagesByID: [UUID: AgentMessage] = [:]
     private var theme: Theme = .zedDark
     private var accentColor: Color = .accentColor
@@ -560,6 +635,10 @@ public final class AgentChatDocumentView: NSView {
     public var onRestore: ((AgentEditedFilesSummary) -> Void)?
     public var onPreviewImages: (([AgentImageAttachment], Int) -> Void)?
     public var onOpenURL: ((URL) -> Void)? = nil
+    public var onDeleteQueuedMessage: ((UUID) -> Void)?
+    public var onEditQueuedMessage: ((UUID) -> Void)?
+    public var onUpdateQueuedMessage: ((UUID, String) -> Void)?
+    public var onMoveQueuedMessage: ((UUID, QueueMoveDirection) -> Void)?
     private var inputHostingView: NSHostingView<AnyView>?
     private var lastInputHeight: CGFloat = -1
 
@@ -705,6 +784,14 @@ public final class AgentChatDocumentView: NSView {
                 cell.onPreviewImages = { [weak self] imgs, idx in
                     self?.onPreviewImages?(imgs, idx)
                 }
+                cell.onDeleteQueuedMessage = onDeleteQueuedMessage
+                cell.onEditQueuedMessage = onEditQueuedMessage
+                cell.onUpdateQueuedMessage = onUpdateQueuedMessage
+                cell.onMoveQueuedMessage = onMoveQueuedMessage
+                cell.onRequestLayout = { [weak self, weak scrollView] in
+                    guard let self, let scrollView else { return }
+                    self.layoutContent(for: max(100, scrollView.contentView.bounds.width))
+                }
                 if themeChanged || accentChanged || iconChanged || agentIdChanged || displayModeChanged || messagesByID[message.id] != message {
                     cell.configure(
                         message: message,
@@ -725,14 +812,19 @@ public final class AgentChatDocumentView: NSView {
                     agentIconName: agentIcon,
                     agentId: agentId
                 )
-                if message.role == .user {
-                    cell.prepareUserMessageAppearance()
-                }
                 cell.onReview = onReview
                 cell.onRevert = onRevert
                 cell.onRestore = onRestore
                 cell.onPreviewImages = { [weak self] imgs, idx in
                     self?.onPreviewImages?(imgs, idx)
+                }
+                cell.onDeleteQueuedMessage = onDeleteQueuedMessage
+                cell.onEditQueuedMessage = onEditQueuedMessage
+                cell.onUpdateQueuedMessage = onUpdateQueuedMessage
+                cell.onMoveQueuedMessage = onMoveQueuedMessage
+                cell.onRequestLayout = { [weak self, weak scrollView] in
+                    guard let self, let scrollView else { return }
+                    self.layoutContent(for: max(100, scrollView.contentView.bounds.width))
                 }
                 cell.onToggleThought = { [weak self] in
                     guard let self else { return }
@@ -758,7 +850,8 @@ public final class AgentChatDocumentView: NSView {
         orderedCells = newOrdered
         messagesByID = Dictionary(uniqueKeysWithValues: newMessages.map { ($0.id, $0) })
 
-        layoutContent(for: max(100, scrollView.contentView.bounds.width))
+        let effectiveWidth = scrollView.contentView.bounds.width > 50 ? scrollView.contentView.bounds.width : 400
+        layoutContent(for: max(100, effectiveWidth))
         if scrollView.followsBottom || oldIds.isEmpty {
             scrollView.scrollToBottom(animated: animated && newMessages.last?.isStreaming != true)
         }
@@ -789,7 +882,8 @@ public final class AgentChatDocumentView: NSView {
         }
 
         if let inputView = inputHostingView, !orderedCells.isEmpty {
-            let resolvedInputHeight = max(40, lastInputHeight > 0 ? ceil(lastInputHeight) : 60)
+            let minInputHeight = max(AgentMessageCell.userAvatarSize + 8, 38)
+            let resolvedInputHeight = max(minInputHeight, lastInputHeight > 0 ? ceil(lastInputHeight) : minInputHeight)
             let inputFrame = NSRect(x: 0, y: currentY, width: contentWidth, height: resolvedInputHeight)
             if inputView.frame != inputFrame {
                 inputView.frame = inputFrame
@@ -810,6 +904,16 @@ public final class AgentChatDocumentView: NSView {
         let documentHeight = max(minHeight, contentHeight)
         setFrameSize(NSSize(width: contentWidth, height: documentHeight))
         updateVisibleCells(in: enclosingScrollView?.contentView, force: true)
+    }
+
+    /// Pins each visible message avatar to the top of the viewport while its message is scrolled.
+    public func updateStickyAvatars(clipTop: CGFloat) {
+        for i in lastVisibleRange where i < orderedCells.count {
+            let cell = orderedCells[i].cell
+            if cell.superview != nil {
+                cell.updateStickyAvatar(viewportTopInDocument: clipTop)
+            }
+        }
     }
 
     public func updateVisibleCells(in clipView: NSClipView?, force: Bool = false) {

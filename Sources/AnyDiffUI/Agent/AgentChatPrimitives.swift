@@ -377,6 +377,28 @@ public final class AgentSelectableTextView: NSTextView, NSTextStorageDelegate {
         SelectionQuoteStore.shared.setQuote(quote)
     }
 
+    public override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = super.menu(for: event) ?? NSMenu()
+        let range = selectedRange()
+        if range.location != NSNotFound, range.length > 0 {
+            checkAndPublishQuote(for: range)
+            if SelectionQuoteStore.shared.currentQuote != nil {
+                let quoteItem = NSMenuItem(title: "Quote Selection", action: #selector(contextMenuQuoteSelection(_:)), keyEquivalent: "")
+                quoteItem.target = self
+                quoteItem.image = NSImage(systemSymbolName: "quote.opening", accessibilityDescription: "Quote Selection")
+                menu.insertItem(quoteItem, at: 0)
+                menu.insertItem(NSMenuItem.separator(), at: 1)
+            }
+        }
+        return menu
+    }
+
+    @objc private func contextMenuQuoteSelection(_ sender: Any?) {
+        let range = selectedRange()
+        checkAndPublishQuote(for: range)
+        NotificationCenter.default.post(name: Notification.Name("anyDiffAgentAddCurrentQuote"), object: nil)
+    }
+
     public override func resetCursorRects() {
         // Do not register legacy cursor rects: registering cursor rects inside a scroll view
         // causes AppKit to invalidate the window's structural regions and recursively traverse

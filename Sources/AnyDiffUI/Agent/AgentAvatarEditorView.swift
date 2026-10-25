@@ -117,12 +117,7 @@ public struct AgentAvatarEditorView: View {
                 isDropTargeted: isUserDropTargeted,
                 emptyLabel: "Drop User Photo Here",
                 onZoomChange: { delta in
-                    let newZoom = min(4.0, max(1.0, userZoom + delta))
-                    if let img = userSourceImage {
-                        userOffset = clampOffset(userOffset, forZoom: newZoom, image: img)
-                        userLastDragOffset = userOffset
-                    }
-                    userZoom = newZoom
+                    updateUserZoom(to: userZoom + delta)
                 },
                 onDragChange: { translation in
                     guard let img = userSourceImage else { return }
@@ -154,14 +149,15 @@ public struct AgentAvatarEditorView: View {
                 .foregroundColor(.secondary)
                 .help("Zoom out")
 
-                Slider(value: $userZoom, in: 1.0...4.0, step: 0.05)
-                    .controlSize(.small)
-                    .onChange(of: userZoom) { newZoom in
-                        if let img = userSourceImage {
-                            userOffset = clampOffset(userOffset, forZoom: newZoom, image: img)
-                            userLastDragOffset = userOffset
-                        }
-                    }
+                Slider(
+                    value: Binding(
+                        get: { userZoom },
+                        set: { updateUserZoom(to: $0) }
+                    ),
+                    in: 1.0...5.0,
+                    step: 0.05
+                )
+                .controlSize(.small)
 
                 Button {
                     adjustUserZoom(by: 0.2)
@@ -177,7 +173,7 @@ public struct AgentAvatarEditorView: View {
                 Text(String(format: "%.0f%%", userZoom * 100))
                     .font(.system(size: 11, weight: .medium, design: .monospaced))
                     .foregroundColor(.secondary)
-                    .frame(width: 38, alignment: .trailing)
+                    .frame(width: 44, alignment: .trailing)
             }
             .padding(.horizontal, 4)
 
@@ -248,12 +244,7 @@ public struct AgentAvatarEditorView: View {
                 isDropTargeted: isAgentDropTargeted,
                 emptyLabel: "Drop \(currentAgentDisplayName) Photo",
                 onZoomChange: { delta in
-                    let newZoom = min(4.0, max(1.0, agentZoom + delta))
-                    if let img = agentSourceImage {
-                        agentOffset = clampOffset(agentOffset, forZoom: newZoom, image: img)
-                        agentLastDragOffset = agentOffset
-                    }
-                    agentZoom = newZoom
+                    updateAgentZoom(to: agentZoom + delta)
                 },
                 onDragChange: { translation in
                     guard let img = agentSourceImage else { return }
@@ -286,15 +277,16 @@ public struct AgentAvatarEditorView: View {
                 .disabled(agentSourceImage == nil)
                 .help("Zoom out")
 
-                Slider(value: $agentZoom, in: 1.0...4.0, step: 0.05)
-                    .controlSize(.small)
-                    .disabled(agentSourceImage == nil)
-                    .onChange(of: agentZoom) { newZoom in
-                        if let img = agentSourceImage {
-                            agentOffset = clampOffset(agentOffset, forZoom: newZoom, image: img)
-                            agentLastDragOffset = agentOffset
-                        }
-                    }
+                Slider(
+                    value: Binding(
+                        get: { agentZoom },
+                        set: { updateAgentZoom(to: $0) }
+                    ),
+                    in: 1.0...5.0,
+                    step: 0.05
+                )
+                .controlSize(.small)
+                .disabled(agentSourceImage == nil)
 
                 Button {
                     adjustAgentZoom(by: 0.2)
@@ -311,7 +303,7 @@ public struct AgentAvatarEditorView: View {
                 Text(String(format: "%.0f%%", agentZoom * 100))
                     .font(.system(size: 11, weight: .medium, design: .monospaced))
                     .foregroundColor(agentSourceImage != nil ? .secondary : .secondary.opacity(0.4))
-                    .frame(width: 38, alignment: .trailing)
+                    .frame(width: 44, alignment: .trailing)
             }
             .padding(.horizontal, 4)
 
@@ -439,24 +431,24 @@ public struct AgentAvatarEditorView: View {
                     Text("User Avatar Size:")
                         .font(.caption)
                         .frame(width: 110, alignment: .leading)
-                    Slider(value: $userAvatarSize, in: 16...36, step: 2)
+                    Slider(value: $userAvatarSize, in: 16...50, step: 2)
                         .controlSize(.small)
                     Text("\(Int(userAvatarSize)) pt")
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundColor(.secondary)
-                        .frame(width: 36, alignment: .trailing)
+                        .frame(width: 40, alignment: .trailing)
                 }
 
                 HStack {
                     Text("Agent Icon Size:")
                         .font(.caption)
                         .frame(width: 110, alignment: .leading)
-                    Slider(value: $agentAvatarSize, in: 16...36, step: 2)
+                    Slider(value: $agentAvatarSize, in: 16...50, step: 2)
                         .controlSize(.small)
                     Text("\(Int(agentAvatarSize)) pt")
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundColor(.secondary)
-                        .frame(width: 36, alignment: .trailing)
+                        .frame(width: 40, alignment: .trailing)
                 }
 
                 if !isAgentCustomActive {
@@ -618,7 +610,7 @@ public struct AgentAvatarEditorView: View {
         // User image
         if let rawImg = AgentAvatarProvider.rawOriginalImage {
             userSourceImage = rawImg
-            userZoom = max(1.0, min(4.0, settings.zoom))
+            userZoom = max(1.0, min(5.0, settings.zoom))
             let clamped = clampOffset(
                 CGSize(width: settings.offsetX, height: settings.offsetY),
                 forZoom: userZoom,
@@ -646,7 +638,7 @@ public struct AgentAvatarEditorView: View {
 
         if let rawAgentImg = AgentAvatarProvider.rawAgentOriginalImage(for: agentId) {
             agentSourceImage = rawAgentImg
-            agentZoom = max(1.0, min(4.0, config.zoom))
+            agentZoom = max(1.0, min(5.0, config.zoom))
             let clamped = clampOffset(
                 CGSize(width: config.offsetX, height: config.offsetY),
                 forZoom: agentZoom,
@@ -668,22 +660,42 @@ public struct AgentAvatarEditorView: View {
         agentImageVersion = UUID()
     }
 
-    private func adjustUserZoom(by delta: CGFloat) {
-        let newZoom = min(4.0, max(1.0, userZoom + delta))
-        if let img = userSourceImage {
-            userOffset = clampOffset(userOffset, forZoom: newZoom, image: img)
+    private func updateUserZoom(to newZoom: CGFloat) {
+        let clampedZoom = min(5.0, max(1.0, newZoom))
+        guard clampedZoom != userZoom else { return }
+        if let img = userSourceImage, userZoom > 0 {
+            let scale = clampedZoom / userZoom
+            let proposed = CGSize(
+                width: userOffset.width * scale,
+                height: userOffset.height * scale
+            )
+            userOffset = clampOffset(proposed, forZoom: clampedZoom, image: img)
             userLastDragOffset = userOffset
         }
-        userZoom = newZoom
+        userZoom = clampedZoom
+    }
+
+    private func updateAgentZoom(to newZoom: CGFloat) {
+        let clampedZoom = min(5.0, max(1.0, newZoom))
+        guard clampedZoom != agentZoom else { return }
+        if let img = agentSourceImage, agentZoom > 0 {
+            let scale = clampedZoom / agentZoom
+            let proposed = CGSize(
+                width: agentOffset.width * scale,
+                height: agentOffset.height * scale
+            )
+            agentOffset = clampOffset(proposed, forZoom: clampedZoom, image: img)
+            agentLastDragOffset = agentOffset
+        }
+        agentZoom = clampedZoom
+    }
+
+    private func adjustUserZoom(by delta: CGFloat) {
+        updateUserZoom(to: userZoom + delta)
     }
 
     private func adjustAgentZoom(by delta: CGFloat) {
-        let newZoom = min(4.0, max(1.0, agentZoom + delta))
-        if let img = agentSourceImage {
-            agentOffset = clampOffset(agentOffset, forZoom: newZoom, image: img)
-            agentLastDragOffset = agentOffset
-        }
-        agentZoom = newZoom
+        updateAgentZoom(to: agentZoom + delta)
     }
 
     private func loadNewImage(_ image: NSImage, isAgent: Bool) {
@@ -846,6 +858,8 @@ public struct AgentAvatarEditorView: View {
         settings.offsetX = userOffset.width
         settings.offsetY = userOffset.height
         settings.userAvatarSize = userAvatarSize
+        settings.agentAvatarSize = agentAvatarSize
+        settings.showAgentCircle = showAgentCircle
 
         let agentItemConfig = AgentAvatarItemConfig(
             useCustom: isAgentCustomActive,

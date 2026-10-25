@@ -10,11 +10,14 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
     public var minHeight: CGFloat = 22
     public var maxHeight: CGFloat = 160
     public var focusRequest: Int = 0
+    public var cursorToEnd: Bool = true
     @Binding public var calculatedHeight: CGFloat
     public var onSend: () -> Void
     public var onFocusChanged: ((Bool) -> Void)?
     public var onImagesPasted: (([AgentImageAttachment]) -> Void)?
     public var onDeleteBackwardWhenEmpty: (() -> Void)?
+    public var onNavigatePrevious: ((_ toEnd: Bool) -> Bool)?
+    public var onNavigateNext: ((_ toStart: Bool) -> Bool)?
 
     public init(
         text: Binding<String>,
@@ -23,11 +26,14 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
         minHeight: CGFloat = 22,
         maxHeight: CGFloat = 160,
         focusRequest: Int = 0,
+        cursorToEnd: Bool = true,
         calculatedHeight: Binding<CGFloat>,
         onSend: @escaping () -> Void,
         onFocusChanged: ((Bool) -> Void)? = nil,
         onImagesPasted: (([AgentImageAttachment]) -> Void)? = nil,
-        onDeleteBackwardWhenEmpty: (() -> Void)? = nil
+        onDeleteBackwardWhenEmpty: (() -> Void)? = nil,
+        onNavigatePrevious: ((_ toEnd: Bool) -> Bool)? = nil,
+        onNavigateNext: ((_ toStart: Bool) -> Bool)? = nil
     ) {
         self._text = text
         self.placeholder = placeholder
@@ -35,11 +41,14 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
         self.minHeight = minHeight
         self.maxHeight = maxHeight
         self.focusRequest = focusRequest
+        self.cursorToEnd = cursorToEnd
         self._calculatedHeight = calculatedHeight
         self.onSend = onSend
         self.onFocusChanged = onFocusChanged
         self.onImagesPasted = onImagesPasted
         self.onDeleteBackwardWhenEmpty = onDeleteBackwardWhenEmpty
+        self.onNavigatePrevious = onNavigatePrevious
+        self.onNavigateNext = onNavigateNext
     }
 
     public func makeNSView(context: Context) -> NSScrollView {
@@ -48,7 +57,7 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
         let scrollView = NSScrollView()
         scrollView.drawsBackground = false
         scrollView.borderType = .noBorder
-        scrollView.hasVerticalScroller = true
+        scrollView.hasVerticalScroller = false
         scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = true
         scrollView.wantsLayer = true
@@ -61,8 +70,19 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
         textView.isSelectable = true
         textView.allowsUndo = true
         textView.font = NSFont.systemFont(ofSize: 13, weight: .regular)
-        textView.textColor = NSColor(cgColor: theme.foreground.cgColor) ?? .textColor
-        textView.insertionPointColor = NSColor(cgColor: theme.foreground.cgColor) ?? .textColor
+        let paraStyle = NSMutableParagraphStyle()
+        paraStyle.lineSpacing = 3
+        paraStyle.paragraphSpacing = 0
+        textView.customParagraphStyle = paraStyle
+        textView.defaultParagraphStyle = paraStyle
+        let textColor = NSColor(cgColor: theme.foreground.cgColor) ?? .textColor
+        textView.textColor = textColor
+        textView.insertionPointColor = textColor
+        textView.typingAttributes = [
+            .font: NSFont.systemFont(ofSize: 13, weight: .regular),
+            .foregroundColor: textColor,
+            .paragraphStyle: paraStyle
+        ]
         textView.backgroundColor = .clear
         textView.drawsBackground = false
         textView.textContainerInset = .zero
@@ -83,6 +103,8 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
         textView.onFocusChanged = onFocusChanged
         textView.onImagesPasted = onImagesPasted
         textView.onDeleteBackwardWhenEmpty = onDeleteBackwardWhenEmpty
+        textView.onNavigatePrevious = onNavigatePrevious
+        textView.onNavigateNext = onNavigateNext
         textView.onHeightChanged = { [weak coordinator = context.coordinator] newHeight in
             coordinator?.reportHeight(newHeight)
         }
@@ -130,12 +152,32 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
             } else if tv.string == text {
                 context.coordinator.lastObservedText = text
             }
-            tv.textColor = NSColor(cgColor: theme.foreground.cgColor) ?? .textColor
-            tv.insertionPointColor = NSColor(cgColor: theme.foreground.cgColor) ?? .textColor
+            let textColor = NSColor(cgColor: theme.foreground.cgColor) ?? .textColor
+            tv.textColor = textColor
+            tv.insertionPointColor = textColor
+            let pStyle = tv.customParagraphStyle ?? {
+                let p = NSMutableParagraphStyle()
+                p.lineSpacing = 3
+                p.paragraphSpacing = 0
+                return p
+            }()
+            tv.customParagraphStyle = pStyle
+            tv.typingAttributes = [
+                .font: tv.font ?? NSFont.systemFont(ofSize: 13, weight: .regular),
+                .foregroundColor: textColor,
+                .paragraphStyle: pStyle
+            ]
             tv.onSend = onSend
             tv.onFocusChanged = onFocusChanged
             tv.onImagesPasted = onImagesPasted
             tv.onDeleteBackwardWhenEmpty = onDeleteBackwardWhenEmpty
+            tv.onNavigatePrevious = onNavigatePrevious
+            tv.onNavigateNext = onNavigateNext
+        }
+
+        scrollView.hasVerticalScroller = (calculatedHeight >= maxHeight)
+        if calculatedHeight < maxHeight {
+            scrollView.contentView.scroll(to: .zero)
         }
 
         context.coordinator.focusTextViewIfRequested()
@@ -180,9 +222,25 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
             lastFocusRequest = parent.focusRequest
             guard shouldFocus else { return }
 
+            let toEnd = parent.cursorToEnd
             DispatchQueue.main.async { [weak self] in
-                guard let self, let textView = self.textView, let window = textView.window else { return }
-                window.makeFirstResponder(textView)
+                guard let self, let textView = self.textView else { return }
+                let applyFocus: (NSWindow, AgentInputCustomTextView) -> Void = { window, tv in
+                    window.makeFirstResponder(tv)
+                    let loc = toEnd ? (tv.string as NSString).length : 0
+                    let range = NSRange(location: loc, length: 0)
+                    tv.selectedRange = range
+                    tv.scrollRangeToVisible(range)
+                }
+
+                if let window = textView.window {
+                    applyFocus(window, textView)
+                } else {
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self, let textView = self.textView, let window = textView.window else { return }
+                        applyFocus(window, textView)
+                    }
+                }
             }
         }
 
@@ -193,10 +251,16 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
             }
             lastReportedHeight = newHeight
 
-            DispatchQueue.main.async { [weak self] in
-                guard let self, let heightBinding = self.heightBinding else { return }
-                guard abs(heightBinding.wrappedValue - newHeight) >= 1.0 else { return }
-                heightBinding.wrappedValue = newHeight
+            if let heightBinding = self.heightBinding, abs(heightBinding.wrappedValue - newHeight) >= 1.0 {
+                if Thread.isMainThread {
+                    heightBinding.wrappedValue = newHeight
+                } else {
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self, let heightBinding = self.heightBinding else { return }
+                        guard abs(heightBinding.wrappedValue - newHeight) >= 1.0 else { return }
+                        heightBinding.wrappedValue = newHeight
+                    }
+                }
             }
         }
 
@@ -225,6 +289,39 @@ public final class AgentInputCustomTextView: NSTextView {
     public var onFocusChanged: ((Bool) -> Void)?
     public var onImagesPasted: (([AgentImageAttachment]) -> Void)?
     public var onDeleteBackwardWhenEmpty: (() -> Void)?
+    public var onNavigatePrevious: ((_ toEnd: Bool) -> Bool)?
+    public var onNavigateNext: ((_ toStart: Bool) -> Bool)?
+
+    public func isCursorOnFirstLine() -> Bool {
+        let sel = selectedRange()
+        guard sel.length == 0 else { return false }
+        if sel.location == 0 { return true }
+        guard let lm = layoutManager, let tc = textContainer else { return true }
+        lm.ensureLayout(for: tc)
+        let charIdx = min(sel.location, max(0, (string as NSString).length - 1))
+        let glyphIdx = lm.glyphIndexForCharacter(at: charIdx)
+        let cursorRect = lm.lineFragmentRect(forGlyphAt: glyphIdx, effectiveRange: nil)
+        let firstLineRect = lm.lineFragmentRect(forGlyphAt: 0, effectiveRange: nil)
+        return cursorRect.minY <= firstLineRect.minY + 2
+    }
+
+    public func isCursorOnLastLine() -> Bool {
+        let sel = selectedRange()
+        let len = (string as NSString).length
+        guard sel.length == 0 else { return false }
+        if sel.location == len { return true }
+        guard let lm = layoutManager, let tc = textContainer else { return true }
+        lm.ensureLayout(for: tc)
+        if lm.extraLineFragmentTextContainer != nil {
+            return false
+        }
+        let charIdx = min(sel.location, max(0, len - 1))
+        let glyphIdx = lm.glyphIndexForCharacter(at: charIdx)
+        let cursorRect = lm.lineFragmentRect(forGlyphAt: glyphIdx, effectiveRange: nil)
+        let lastGlyph = max(0, lm.numberOfGlyphs - 1)
+        let lastLineRect = lm.lineFragmentRect(forGlyphAt: lastGlyph, effectiveRange: nil)
+        return cursorRect.maxY >= lastLineRect.maxY - 2
+    }
 
     public override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -247,6 +344,25 @@ public final class AgentInputCustomTextView: NSTextView {
         ])
     }
 
+    public var customParagraphStyle: NSParagraphStyle?
+
+    public override var typingAttributes: [NSAttributedString.Key: Any] {
+        get {
+            var attrs = super.typingAttributes
+            if attrs[.paragraphStyle] == nil, let p = customParagraphStyle {
+                attrs[.paragraphStyle] = p
+            }
+            return attrs
+        }
+        set {
+            var newAttrs = newValue
+            if newAttrs[.paragraphStyle] == nil, let p = customParagraphStyle {
+                newAttrs[.paragraphStyle] = p
+            }
+            super.typingAttributes = newAttrs
+        }
+    }
+
     public override func becomeFirstResponder() -> Bool {
         let didBecomeFirstResponder = super.becomeFirstResponder()
         if didBecomeFirstResponder {
@@ -263,11 +379,25 @@ public final class AgentInputCustomTextView: NSTextView {
         return didResignFirstResponder
     }
 
+    public override func scrollRangeToVisible(_ range: NSRange) {
+        if let sv = enclosingScrollView {
+            let usedH = layoutManager?.usedRect(for: textContainer!).height ?? bounds.height
+            if usedH <= 160 {
+                sv.contentView.scroll(to: .zero)
+                return
+            }
+        }
+        super.scrollRangeToVisible(range)
+    }
+
     public override func keyDown(with event: NSEvent) {
         if event.keyCode == 36 { // Enter
             if event.modifierFlags.contains(.shift) || event.modifierFlags.contains(.option) {
                 insertNewlineIgnoringFieldEditor(nil)
                 recalculateHeight()
+                if let sv = enclosingScrollView, sv.bounds.height < 160 {
+                    sv.contentView.scroll(to: .zero)
+                }
             } else {
                 onSend?()
             }
@@ -279,8 +409,39 @@ public final class AgentInputCustomTextView: NSTextView {
                 return
             }
         }
+        if event.modifierFlags.intersection([.shift, .command, .control]).isEmpty {
+            if event.keyCode == 126 { // Up arrow
+                if isCursorOnFirstLine() {
+                    if let onNavigatePrevious, onNavigatePrevious(true) {
+                        return
+                    }
+                }
+            } else if event.keyCode == 125 { // Down arrow
+                if isCursorOnLastLine() {
+                    if let onNavigateNext, onNavigateNext(true) {
+                        return
+                    }
+                }
+            } else if event.keyCode == 123 { // Left arrow
+                if selectedRange().location == 0 && selectedRange().length == 0 {
+                    if let onNavigatePrevious, onNavigatePrevious(true) {
+                        return
+                    }
+                }
+            } else if event.keyCode == 124 { // Right arrow
+                let len = (string as NSString).length
+                if selectedRange().location == len && selectedRange().length == 0 {
+                    if let onNavigateNext, onNavigateNext(true) {
+                        return
+                    }
+                }
+            }
+        }
         super.keyDown(with: event)
         recalculateHeight()
+        if let sv = enclosingScrollView, sv.bounds.height < 160 {
+            sv.contentView.scroll(to: .zero)
+        }
     }
 
     public override func paste(_ sender: Any?) {
@@ -318,7 +479,11 @@ public final class AgentInputCustomTextView: NSTextView {
         lm.ensureLayout(for: tc)
         let usedRect = lm.usedRect(for: tc)
         let newH = ceil(usedRect.height)
-        onHeightChanged?(max(22, newH))
+        let clampedH = min(160, max(22, newH))
+        if let sv = enclosingScrollView, clampedH < 160 {
+            sv.contentView.scroll(to: .zero)
+        }
+        onHeightChanged?(clampedH)
     }
 
     public override func draw(_ dirtyRect: NSRect) {
@@ -339,12 +504,20 @@ public struct AgentInputTextBlockState: Identifiable, Equatable, Sendable {
     public var text: String
     public var height: CGFloat
     public var focusRequest: Int
+    public var cursorToEnd: Bool
 
-    public init(id: String = UUID().uuidString, text: String = "", height: CGFloat = 22, focusRequest: Int = 0) {
+    public init(
+        id: String = UUID().uuidString,
+        text: String = "",
+        height: CGFloat = 22,
+        focusRequest: Int = 0,
+        cursorToEnd: Bool = true
+    ) {
         self.id = id
         self.text = text
         self.height = height
         self.focusRequest = focusRequest
+        self.cursorToEnd = cursorToEnd
     }
 }
 
@@ -396,7 +569,11 @@ public struct AgentInputView: View {
     @ObservedObject private var quoteStore = SelectionQuoteStore.shared
     @State private var blocks: [AgentInputBlock] = [.text(AgentInputTextBlockState(text: ""))]
     @State private var focusedBlockId: String = ""
-    @State private var blocksContentHeight: CGFloat = 0
+    @State private var maxAvatarWidth: CGFloat = AgentMessageCell.maxAvatarWidth
+    @State private var isQuoteButtonHovered: Bool = false
+    /// Reports the full natural height of the input stack (banner + queue + editor) so the
+    /// host can reserve room for it instead of letting extra rows overlap the chat above.
+    public var onTotalHeightChange: ((CGFloat) -> Void)?
 
     public init(
         text: Binding<String>,
@@ -465,6 +642,15 @@ public struct AgentInputView: View {
 
     public var body: some View {
         expandedView
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .background(
+                GeometryReader { geo in
+                    Color.clear.preference(key: AgentInputTotalHeightPreferenceKey.self, value: geo.size.height)
+                }
+            )
+            .onPreferenceChange(AgentInputTotalHeightPreferenceKey.self) { newHeight in
+                if newHeight > 0 { onTotalHeightChange?(newHeight) }
+            }
             .onDrop(of: [UTType.image, UTType.fileURL, UTType.png, UTType.jpeg, UTType.tiff, UTType.webP, UTType.heic, UTType.url, UTType.data, UTType.item], isTargeted: $isInputDropTargeted) { providers in
                 ImageAttachmentHelpers.extractImages(from: providers) { droppedImages in
                     guard !droppedImages.isEmpty else { return }
@@ -486,6 +672,11 @@ public struct AgentInputView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffFocusAgentInput"))) { _ in
                 inputFocusRequest &+= 1
+            }
+            .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffAgentAddCurrentQuote"))) { _ in
+                if let quote = quoteStore.currentQuote, !isAlreadyQuoted(quote) {
+                    addQuote(quote)
+                }
             }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffDeleteDraftImage"))) { notification in
             if let delIdx = notification.userInfo?["index"] as? Int {
@@ -559,43 +750,22 @@ public struct AgentInputView: View {
                 .transition(.opacity)
             }
 
-            if !agentManager.promptQueue.isEmpty {
-                AgentPromptQueueView(
-                    queue: agentManager.promptQueue,
+            if let permission = agentManager.pendingPermission {
+                AgentPermissionCardView(
+                    permission: permission,
                     theme: theme,
-                    accentColor: accentColor,
-                    isAgentBusy: isBusy,
-                    onEdit: { id, newText in
-                        agentManager.updateQueuedPrompt(id: id, text: newText)
-                    },
-                    onDelete: { id in
-                        withAnimation(.easeInOut(duration: 0.18)) {
-                            agentManager.removeQueuedPrompt(id: id)
-                        }
-                    },
-                    onMove: { id, direction in
-                        withAnimation(.easeInOut(duration: 0.18)) {
-                            agentManager.moveQueuedPrompt(id: id, direction: direction)
-                        }
-                    },
-                    onRunNow: { id in
-                        agentManager.runQueuedPrompt(id: id, workingDirectory: "")
-                    },
-                    onClearQueue: {
-                        withAnimation(.easeInOut(duration: 0.18)) {
-                            agentManager.clearQueue()
-                        }
+                    onRespond: { optionId in
+                        agentManager.respondToPermission(optionId: optionId)
                     }
                 )
-                .transition(.asymmetric(
-                    insertion: .opacity.combined(with: .move(edge: .bottom)),
-                    removal: .opacity.combined(with: .scale(scale: 0.95))
-                ))
+                .padding(.horizontal, 10)
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
 
             HStack(alignment: .top, spacing: 12) {
                 // User avatar on the left, dynamically sized to user avatar size
                 AgentAvatarProvider.userAvatarSwiftUIView()
+                    .frame(width: maxAvatarWidth, alignment: .center)
 
                 VStack(alignment: .leading, spacing: 6) {
                     // Attached images miniature strip
@@ -622,211 +792,152 @@ public struct AgentInputView: View {
                     }
 
                     // Blocks flow (interleaved quotes and text)
-                    if !hasQuotes, blocks.count == 1, case .text(let state) = blocks[0] {
-                        HStack(alignment: .top, spacing: 8) {
-                            AgentAutoGrowingTextView(
-                                text: Binding(
-                                    get: { state.text },
-                                    set: { newText in updateTextBlock(id: state.id, text: newText) }
-                                ),
-                                placeholder: (!agentManager.authMethods.isEmpty || agentManager.isAuthenticating) ? "Sign in above to start chatting..." : "Ask anything...",
-                                theme: theme,
-                                minHeight: 22,
-                                maxHeight: 160,
-                                focusRequest: state.focusRequest + inputFocusRequest,
-                                calculatedHeight: Binding(
-                                    get: { state.height },
-                                    set: { newH in updateTextBlockHeight(id: state.id, height: newH) }
-                                ),
-                                onSend: handleSend,
-                                onFocusChanged: { focused in
-                                    isInputFocused = focused
-                                    if focused { focusedBlockId = state.id }
-                                },
-                                onImagesPasted: { newImages in
-                                    withAnimation(.spring(response: 0.25, dampingFraction: 0.75)) {
-                                        attachedImages = ImageAttachmentHelpers.deduplicateAttachments(attachedImages + newImages)
-                                    }
-                                }
-                            )
-                            .padding(.top, 1)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: state.height + 1)
-                        }
-                    } else {
-                        let currentHeight = blocksContentHeight > 0 ? blocksContentHeight : estimatedBlocksHeight
-                        let clampedHeight = min(max(currentHeight, 24), 280)
+                    HStack(alignment: .bottom, spacing: 8) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            let totalHeight = estimatedBlocksHeight
+                            let needsScroll = totalHeight > 280
 
-                        ScrollView(.vertical, showsIndicators: true) {
-                            VStack(spacing: 8) {
-                                ForEach(Array(blocks.enumerated()), id: \.element.id) { index, block in
-                                    switch block {
-                                    case .quote(let id, let quote):
-                                        quoteBadgeView(id: id, quote: quote)
-
-                                    case .text(let state):
-                                        let placeholder = (index == 0 && blocks.first?.isText == true && blocks.dropFirst().first?.isQuote == true)
-                                            ? "Add context before quote (optional)..."
-                                            : "Ask anything, add comment or instructions..."
-                                        AgentAutoGrowingTextView(
-                                            text: Binding(
-                                                get: { state.text },
-                                                set: { newText in updateTextBlock(id: state.id, text: newText) }
-                                            ),
-                                            placeholder: placeholder,
-                                            theme: theme,
-                                            minHeight: 22,
-                                            maxHeight: 120,
-                                            focusRequest: state.focusRequest + inputFocusRequest,
-                                            calculatedHeight: Binding(
-                                                get: { state.height },
-                                                set: { newH in updateTextBlockHeight(id: state.id, height: newH) }
-                                            ),
-                                            onSend: handleSend,
-                                            onFocusChanged: { focused in
-                                                isInputFocused = focused
-                                                if focused { focusedBlockId = state.id }
-                                            },
-                                            onImagesPasted: { newImages in
-                                                withAnimation(.spring(response: 0.25, dampingFraction: 0.75)) {
-                                                    attachedImages = ImageAttachmentHelpers.deduplicateAttachments(attachedImages + newImages)
-                                                }
-                                            },
-                                            onDeleteBackwardWhenEmpty: {
-                                                handleDeleteBackward(inBlockId: state.id, index: index)
-                                            }
-                                        )
-                                        .padding(.top, index == 0 ? 1 : 0)
-                                        .frame(maxWidth: .infinity)
-                                        .frame(height: state.height + (index == 0 ? 1 : 0))
-                                    }
+                            if needsScroll {
+                                ScrollView(.vertical, showsIndicators: true) {
+                                    blocksContentView(needsScroll: true)
                                 }
-                            }
-                            .padding(.vertical, 2)
-                            .background(
-                                GeometryReader { geo in
-                                    Color.clear.preference(
-                                        key: AgentInputBlocksHeightPreferenceKey.self,
-                                        value: geo.size.height
-                                    )
-                                }
-                            )
-                        }
-                        .frame(height: clampedHeight)
-                        .onPreferenceChange(AgentInputBlocksHeightPreferenceKey.self) { newHeight in
-                            if newHeight > 0, abs(blocksContentHeight - newHeight) >= 1.0 {
-                                blocksContentHeight = newHeight
+                                .frame(height: 280)
+                            } else {
+                                blocksContentView(needsScroll: false)
                             }
                         }
+                        .frame(maxWidth: .infinity)
                     }
 
                     if let quote = quoteStore.currentQuote,
                        !isAlreadyQuoted(quote) {
-                        HStack {
-                            Spacer()
+                        HStack(spacing: 6) {
                             Button(action: {
                                 addQuote(quote)
                             }) {
-                                HStack(spacing: 4) {
-                                    Image(systemName: "quote.opening")
-                                        .font(.system(size: 11, weight: .semibold))
-                                    Text("Quote selection (\(quote.label))")
-                                        .font(.system(size: 11, weight: .medium))
-                                }
-                                .foregroundColor(accentColor)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 4)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                        .fill(accentColor.opacity(0.12))
-                                )
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                        .stroke(accentColor.opacity(0.35), lineWidth: 1)
-                                )
+                                Image(systemName: "quote.opening")
+                                    .font(.system(size: 11.5, weight: .semibold))
+                                    .foregroundColor(accentColor)
+                                    .frame(width: 24, height: 24)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                            .fill(accentColor.opacity(isQuoteButtonHovered ? 0.18 : 0.08))
+                                    )
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                            .stroke(accentColor.opacity(isQuoteButtonHovered ? 0.28 : 0.0), lineWidth: 1)
+                                    )
                             }
                             .buttonStyle(.plain)
+                            .onHover { hovering in
+                                withAnimation(.easeOut(duration: 0.12)) {
+                                    isQuoteButtonHovered = hovering
+                                }
+                            }
+                            .overlay(AgentInputPointingHandCursorView())
                             .help("Quote selection (\(quote.label)): \"\(quote.text.prefix(60).replacingOccurrences(of: "\n", with: " "))\"")
+                            .accessibilityLabel("Quote selection (\(quote.label))")
                             .transition(.scale(scale: 0.85).combined(with: .opacity))
+
+                            Spacer()
                         }
                         .padding(.top, 2)
                     }
                 }
+                .frame(maxWidth: AgentMessageCell.maxContentWidth, alignment: .leading)
+
+                Spacer(minLength: 0)
             }
             .padding(.leading, 18)
             .padding(.trailing, 18)
-            .padding(.top, 6)
-            .padding(.bottom, 10)
+            .padding(.top, 2)
+            .padding(.bottom, 6)
             .background(Color.clear)
             .contentShape(Rectangle())
             .onTapGesture {
                 inputFocusRequest &+= 1
+            }
+            .onReceive(NotificationCenter.default.publisher(for: AgentAvatarProvider.avatarDidChangeNotification)) { _ in
+                maxAvatarWidth = AgentMessageCell.maxAvatarWidth
             }
         }
         .animation(.easeInOut(duration: 0.14), value: shouldShowLiveEditedSummary)
     }
 
     private func quoteBadgeView(id: String, quote: SelectionQuote) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: "quote.opening")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundColor(accentColor)
-
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(quote.label)
-                        .font(.system(size: 11.5, weight: .semibold))
-                        .foregroundColor(Color(theme.foreground))
-                        .lineLimit(1)
-
-                    if let range = quote.lineRange {
-                        Text(range.lowerBound == range.upperBound ? "line \(range.lowerBound)" : "lines \(range.lowerBound)–\(range.upperBound)")
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundColor(Color(theme.gutterForeground).opacity(0.85))
-                            .lineLimit(1)
-                    }
-                }
-
-                let cleanText = quote.text
-                    .replacingOccurrences(of: "\r\n", with: " ")
-                    .replacingOccurrences(of: "\n", with: " ")
-                    .trimmingCharacters(in: .whitespaces)
-
-                Text(cleanText)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundColor(Color(theme.gutterForeground).opacity(0.9))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-            }
-
-            Spacer(minLength: 4)
-
-            Button(action: {
+        AgentInputQuoteBadgeView(
+            id: id,
+            quote: quote,
+            theme: theme,
+            accentColor: accentColor,
+            onRemove: {
                 removeQuoteBlock(id: id)
-            }) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundColor(Color(theme.gutterForeground).opacity(0.75))
-                    .frame(width: 18, height: 18)
-                    .background(
-                        Circle()
-                            .fill(Color(theme.foreground).opacity(0.06))
-                    )
             }
-            .buttonStyle(.plain)
-            .help("Remove quote")
-            .accessibilityLabel("Remove quote from \(quote.label)")
+        )
+    }
+
+    @ViewBuilder
+    private func blocksContentView(needsScroll: Bool) -> some View {
+        VStack(spacing: 6) {
+            ForEach(Array(blocks.enumerated()), id: \.element.id) { index, block in
+                switch block {
+                case .quote(let id, let quote):
+                    quoteBadgeView(id: id, quote: quote)
+
+                case .text(let state):
+                    let placeholder: String = {
+                        if blocks.count == 1 {
+                            return (!agentManager.authMethods.isEmpty || agentManager.isAuthenticating)
+                                ? "Sign in above to start chatting..."
+                                : "Ask anything..."
+                        } else if index == 0 && blocks.first?.isText == true {
+                            return "Add context before quote (optional)..."
+                        } else {
+                            return "Ask anything, add comment or instructions..."
+                        }
+                    }()
+
+                    AgentAutoGrowingTextView(
+                        text: Binding(
+                            get: { state.text },
+                            set: { newText in updateTextBlock(id: state.id, text: newText) }
+                        ),
+                        placeholder: placeholder,
+                        theme: theme,
+                        minHeight: 22,
+                        maxHeight: needsScroll ? 120 : 160,
+                        focusRequest: state.focusRequest + inputFocusRequest,
+                        cursorToEnd: state.cursorToEnd,
+                        calculatedHeight: Binding(
+                            get: { state.height },
+                            set: { newH in updateTextBlockHeight(id: state.id, height: newH) }
+                        ),
+                        onSend: handleSend,
+                        onFocusChanged: { focused in
+                            isInputFocused = focused
+                            if focused { focusedBlockId = state.id }
+                        },
+                        onImagesPasted: { newImages in
+                            withAnimation(.spring(response: 0.25, dampingFraction: 0.75)) {
+                                attachedImages = ImageAttachmentHelpers.deduplicateAttachments(attachedImages + newImages)
+                            }
+                        },
+                        onDeleteBackwardWhenEmpty: {
+                            handleDeleteBackward(inBlockId: state.id, index: index)
+                        },
+                        onNavigatePrevious: { toEnd in
+                            navigateToPreviousTextBlock(fromIndex: index, toEnd: toEnd)
+                        },
+                        onNavigateNext: { toStart in
+                            navigateToNextTextBlock(fromIndex: index, toStart: toStart)
+                        }
+                    )
+                    .padding(.top, index == 0 ? 2 : 0)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: state.height + (index == 0 ? 2 : 0))
+                }
+            }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color(theme.inputBackground).opacity(0.75))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(accentColor.opacity(0.35), lineWidth: 1)
-        )
     }
 
     private var hasQuotes: Bool {
@@ -856,15 +967,21 @@ public struct AgentInputView: View {
     private var estimatedBlocksHeight: CGFloat {
         var total: CGFloat = 4
         for (i, block) in blocks.enumerated() {
-            if i > 0 { total += 8 }
+            if i > 0 { total += 6 }
             switch block {
             case .quote:
-                total += 38
+                total += 42
             case .text(let state):
                 total += max(22, state.height)
             }
         }
         return total
+    }
+
+    private func recalculateTotalHeight() {
+        let minH = max(AgentMessageCell.userAvatarSize + 8, 38)
+        let total = estimatedBlocksHeight
+        self.calculatedHeight = max(minH, min(total + 8, 280))
     }
 
     private func updateTextBlockHeight(id: String, height: CGFloat) {
@@ -873,11 +990,7 @@ public struct AgentInputView: View {
             state.height = height
             blocks[index] = .text(state)
         }
-        if !hasQuotes {
-            self.calculatedHeight = height
-        } else {
-            self.calculatedHeight = min(estimatedBlocksHeight, 280)
-        }
+        recalculateTotalHeight()
     }
 
     private func addQuote(_ quote: SelectionQuote) {
@@ -909,7 +1022,15 @@ public struct AgentInputView: View {
         )
 
         withAnimation(.easeOut(duration: 0.16)) {
-            if blocks.count == 1, case .text(let state) = blocks[0], state.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let isSingleEmpty: Bool = {
+                if blocks.count == 1, case .text(let state) = blocks[0] {
+                    return state.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        && self.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                }
+                return false
+            }()
+
+            if isSingleEmpty {
                 blocks = [quoteBlock, nextTextBlock]
             } else {
                 let focusIdx = blocks.firstIndex(where: { $0.id == focusedBlockId })
@@ -917,6 +1038,8 @@ public struct AgentInputView: View {
                 blocks.insert(contentsOf: [quoteBlock, nextTextBlock], at: insertAt)
             }
             focusedBlockId = nextTextBlockId
+            recalculateTotalHeight()
+            inputFocusRequest &+= 1
         }
 
         quoteStore.clearQuote(scopedToId: quote.id)
@@ -942,22 +1065,30 @@ public struct AgentInputView: View {
                     merged = prevT.isEmpty ? nextT : prevT
                 }
                 prevState.text = merged
+                prevState.cursorToEnd = true
                 prevState.focusRequest += 1
                 blocks[prevIdx] = .text(prevState)
                 blocks.remove(at: nextIdx)
                 focusedBlockId = prevState.id
             } else if prevIdx >= 0, case .text(var prevState) = blocks[prevIdx] {
+                prevState.cursorToEnd = true
                 prevState.focusRequest += 1
                 blocks[prevIdx] = .text(prevState)
                 focusedBlockId = prevState.id
+            } else if nextIdx < blocks.count, case .text(var nextState) = blocks[nextIdx] {
+                nextState.cursorToEnd = true
+                nextState.focusRequest += 1
+                blocks[nextIdx] = .text(nextState)
+                focusedBlockId = nextState.id
             }
 
             if blocks.isEmpty {
                 let fallbackState = AgentInputTextBlockState(text: "", height: 22, focusRequest: 1)
                 blocks = [.text(fallbackState)]
-                blocksContentHeight = 0
                 focusedBlockId = fallbackState.id
                 self.text = ""
+                recalculateTotalHeight()
+                inputFocusRequest &+= 1
                 return
             }
 
@@ -973,10 +1104,12 @@ public struct AgentInputView: View {
                 let singleId = blocks.first(where: \.isText)?.id ?? UUID().uuidString
                 let finalState = AgentInputTextBlockState(id: singleId, text: singleText, height: 22, focusRequest: 1)
                 blocks = [.text(finalState)]
-                blocksContentHeight = 0
                 focusedBlockId = singleId
                 self.text = singleText
+                inputFocusRequest &+= 1
             }
+
+            recalculateTotalHeight()
         }
     }
 
@@ -987,6 +1120,36 @@ public struct AgentInputView: View {
         if case .quote(let quoteId, _) = prevBlock {
             removeQuoteBlock(id: quoteId)
         }
+    }
+
+    @discardableResult
+    private func navigateToPreviousTextBlock(fromIndex index: Int, toEnd: Bool) -> Bool {
+        guard index > 0 else { return false }
+        for i in (0..<index).reversed() {
+            if case .text(var targetState) = blocks[i] {
+                targetState.cursorToEnd = toEnd
+                targetState.focusRequest &+= 1
+                blocks[i] = .text(targetState)
+                focusedBlockId = targetState.id
+                return true
+            }
+        }
+        return false
+    }
+
+    @discardableResult
+    private func navigateToNextTextBlock(fromIndex index: Int, toStart: Bool) -> Bool {
+        guard index + 1 < blocks.count else { return false }
+        for i in (index + 1)..<blocks.count {
+            if case .text(var targetState) = blocks[i] {
+                targetState.cursorToEnd = !toStart
+                targetState.focusRequest &+= 1
+                blocks[i] = .text(targetState)
+                focusedBlockId = targetState.id
+                return true
+            }
+        }
+        return false
     }
 
     private var canSubmitPrompt: Bool {
@@ -1010,11 +1173,12 @@ public struct AgentInputView: View {
         let imagesToSend = attachedImages
 
         attachedImages = []
-        blocks = [.text(AgentInputTextBlockState(text: "", height: 22, focusRequest: 1))]
-        blocksContentHeight = 0
+        let newId = UUID().uuidString
+        blocks = [.text(AgentInputTextBlockState(id: newId, text: "", height: 22, focusRequest: 1))]
         text = ""
-        calculatedHeight = 22
-        focusedBlockId = blocks[0].id
+        focusedBlockId = newId
+        recalculateTotalHeight()
+        inputFocusRequest &+= 1
 
         onSend(finalPrompt, imagesToSend)
     }
@@ -1187,14 +1351,101 @@ public struct AgentLiveChangesBannerView: View {
     }
 }
 
-private struct AgentInputBlocksHeightPreferenceKey: PreferenceKey {
+private struct AgentInputTotalHeightPreferenceKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         let next = nextValue()
-        if next > 0 {
-            value = next
+        if next > 0 { value = next }
+    }
+}
+
+private struct AgentInputQuoteBadgeView: View {
+    let id: String
+    let quote: SelectionQuote
+    let theme: Theme
+    let accentColor: Color
+    let onRemove: () -> Void
+
+    @State private var isHovered: Bool = false
+    @State private var isCloseHovered: Bool = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                .fill(accentColor)
+                .frame(width: 3)
+                .padding(.vertical, 2)
+
+            Image(systemName: "quote.opening")
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundColor(accentColor)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(quote.label)
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundColor(Color(theme.foreground))
+                        .lineLimit(1)
+
+                    if let range = quote.lineRange {
+                        Text(range.lowerBound == range.upperBound ? "line \(range.lowerBound)" : "lines \(range.lowerBound)–\(range.upperBound)")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(Color(theme.gutterForeground).opacity(0.85))
+                            .lineLimit(1)
+                    }
+                }
+
+                let cleanText = quote.text
+                    .replacingOccurrences(of: "\r\n", with: " ")
+                    .replacingOccurrences(of: "\n", with: " ")
+                    .trimmingCharacters(in: .whitespaces)
+
+                Text(cleanText)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(Color(theme.gutterForeground).opacity(0.9))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+
+            Spacer(minLength: 4)
+
+            Button(action: onRemove) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 8.5, weight: .bold))
+                    .foregroundColor(Color(theme.gutterForeground).opacity(isCloseHovered ? 1.0 : 0.75))
+                    .frame(width: 18, height: 18)
+                    .background(
+                        Circle()
+                            .fill(Color(theme.foreground).opacity(isCloseHovered ? 0.12 : 0.06))
+                    )
+            }
+            .buttonStyle(.plain)
+            .help("Remove quote")
+            .accessibilityLabel("Remove quote from \(quote.label)")
+            .overlay(AgentInputPointingHandCursorView())
+            .onHover { hovering in
+                withAnimation(.easeOut(duration: 0.1)) {
+                    isCloseHovered = hovering
+                }
+            }
+            .opacity(isHovered ? 1.0 : 0.0)
+            .allowsHitTesting(isHovered)
+        }
+        .padding(.leading, 6)
+        .padding(.trailing, 8)
+        .padding(.vertical, 5)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Color(theme.foreground).opacity(isHovered ? 0.05 : 0.03))
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.12)) {
+                isHovered = hovering
+            }
         }
     }
 }
+
 
 

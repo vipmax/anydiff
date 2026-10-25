@@ -42,6 +42,8 @@ public final class AgentMessageCell: NSView {
     let maxUserTextCollapsedHeight: CGFloat = 180
     let userTextCollapseThreshold: CGFloat = 240
     var expandedToolIds: Set<String> = []
+    var expandedToolGroupKeys: Set<String> = []
+    var toolGroupViewsByKey: [String: AgentToolGroupView] = [:]
     var toolCallIDs: [String] = []
     var inlineThoughtViews: [AgentThoughtBlockView] = []
     var markdownViewsByTextPart: [[NSView]] = []
@@ -99,10 +101,18 @@ public final class AgentMessageCell: NSView {
 
     // Subviews
     public let roleIconView = AgentAvatarImageView()
+    /// Unstuck (layout) Y of the avatar inside the cell.
+    var stickyAvatarBaseY: CGFloat = 1
+    /// Top of the visible viewport in this cell's coordinates (may be negative/greater than height).
+    private var stickyViewportTop: CGFloat = -.greatestFiniteMagnitude
+    private static let stickyAvatarInset: CGFloat = 6
     public let typingIndicatorView = AgentTypingIndicatorView()
     public private(set) var agentIconName: String = "sparkles"
     public private(set) var agentId: String = "default"
     let userBubbleView = AgentFlippedView()
+    let queuedHeaderView = AgentQueuedHeaderView()
+    public let queuedEditorView = AgentQueuedInlineEditorView()
+    public private(set) var isEditingQueuedMessage: Bool = false
     let userContentContainerView = AgentFlippedView()
     let userTextView = AgentSelectableTextView()
     let userExpandButton = AgentHoverButton()
@@ -110,6 +120,11 @@ public final class AgentMessageCell: NSView {
     var userContentViews: [NSView] = []
     var renderedUserContent: String? = nil
     public var onPreviewImages: (([AgentImageAttachment], Int) -> Void)?
+    public var onDeleteQueuedMessage: ((UUID) -> Void)?
+    public var onEditQueuedMessage: ((UUID) -> Void)?
+    public var onUpdateQueuedMessage: ((UUID, String) -> Void)?
+    public var onMoveQueuedMessage: ((UUID, QueueMoveDirection) -> Void)?
+    public var onRequestLayout: (() -> Void)?
     let thoughtHeaderButton = AgentHoverButton()
     let thoughtTextView = AgentSelectableTextView()
     var toolCallViews: [NSView] = []
@@ -199,6 +214,8 @@ public final class AgentMessageCell: NSView {
         userContentContainerView.wantsLayer = true
         userContentContainerView.layerContentsRedrawPolicy = .onSetNeedsDisplay
         userContentContainerView.layer?.masksToBounds = true
+        userBubbleView.addSubview(queuedHeaderView)
+        userBubbleView.addSubview(queuedEditorView)
         userBubbleView.addSubview(userContentContainerView)
         userBubbleView.addSubview(userExpandButton)
         addSubview(userBubbleView)
@@ -356,6 +373,69 @@ public final class AgentMessageCell: NSView {
 
             rebuildUserContentViews(content: message.content)
             updateUserExpandButtonAppearance()
+
+            if message.isQueued {
+                userBubbleView.alphaValue = 0.94
+                roleIconView.alphaValue = 0.88
+                queuedHeaderView.isHidden = false
+                queuedHeaderView.configure(
+                    position: message.queuePosition ?? 1,
+                    total: message.queueTotal ?? 1,
+                    theme: theme,
+                    accentColor: accentColor
+                )
+                queuedHeaderView.onMoveUp = { [weak self] in
+                    guard let self else { return }
+                    self.onMoveQueuedMessage?(self.message.id, .up)
+                }
+                queuedHeaderView.onMoveDown = { [weak self] in
+                    guard let self else { return }
+                    self.onMoveQueuedMessage?(self.message.id, .down)
+                }
+                queuedHeaderView.onEdit = { [weak self] in
+                    guard let self else { return }
+                    if self.isEditingQueuedMessage {
+                        self.stopEditingQueuedMessage()
+                    } else {
+                        self.startEditingQueuedMessage()
+                    }
+                }
+                queuedHeaderView.onDelete = { [weak self] in
+                    guard let self else { return }
+                    self.onDeleteQueuedMessage?(self.message.id)
+                }
+
+                queuedEditorView.onSave = { [weak self] newText in
+                    guard let self else { return }
+                    self.stopEditingQueuedMessage()
+                    self.onUpdateQueuedMessage?(self.message.id, newText)
+                }
+                queuedEditorView.onCancel = { [weak self] in
+                    guard let self else { return }
+                    self.stopEditingQueuedMessage()
+                }
+                queuedEditorView.onHeightChange = { [weak self] in
+                    guard let self else { return }
+                    self.invalidateLayoutCache()
+                    self.onRequestLayout?()
+                }
+
+                if isEditingQueuedMessage {
+                    queuedEditorView.updateTheme(theme: theme, accentColor: accentColor)
+                    queuedEditorView.isHidden = false
+                    userContentContainerView.isHidden = true
+                    userExpandButton.isHidden = true
+                } else {
+                    queuedEditorView.isHidden = true
+                }
+            } else {
+                isEditingQueuedMessage = false
+                userBubbleView.alphaValue = 1.0
+                roleIconView.alphaValue = 1.0
+                queuedHeaderView.isHidden = true
+                queuedEditorView.isHidden = true
+            }
+
             clearAssistantViews()
         } else {
             clearUserViews()
@@ -530,11 +610,9 @@ public final class AgentMessageCell: NSView {
                 animateStreamingTextUpdate()
             }
 
-            if isWaitingForResponse {
-                typingIndicatorView.isHidden = false
-                let dotColor = NSColor(cgColor: theme.foreground.cgColor)?.withAlphaComponent(0.65) ?? .secondaryLabelColor
-                typingIndicatorView.configure(color: dotColor)
-                typingIndicatorView.startAnimating()
+            typingIndicatorView.stopAnimating()
+            typingIndicatorView.isHidden = true
+            if message.role == .assistant && message.isStreaming {
                 if roleIconView.layer?.animation(forKey: "agentRolePulse") == nil {
                     let pulse = CABasicAnimation(keyPath: "opacity")
                     pulse.fromValue = 0.45
@@ -546,8 +624,6 @@ public final class AgentMessageCell: NSView {
                     roleIconView.layer?.add(pulse, forKey: "agentRolePulse")
                 }
             } else {
-                typingIndicatorView.stopAnimating()
-                typingIndicatorView.isHidden = true
                 roleIconView.layer?.removeAnimation(forKey: "agentRolePulse")
                 roleIconView.layer?.opacity = 1.0
             }
@@ -618,7 +694,6 @@ public final class AgentMessageCell: NSView {
                     if prevItem != item {
                         let replacement = makeToolCallView(item: item, index: index)
                         existing.removeFromSuperview()
-                        addSubview(replacement)
                         nextViews.append(replacement)
                         retainedViewIDs.insert(ObjectIdentifier(replacement))
                     } else {
@@ -627,7 +702,6 @@ public final class AgentMessageCell: NSView {
                     }
                 } else {
                     let view = makeToolCallView(item: item, index: index)
-                    addSubview(view)
                     nextViews.append(view)
                     retainedViewIDs.insert(ObjectIdentifier(view))
                     if !previousIDs.contains(item.id) {
@@ -657,7 +731,6 @@ public final class AgentMessageCell: NSView {
 
         for (index, item) in newItems.enumerated() {
             let view = makeToolCallView(item: item, index: index)
-            addSubview(view)
             toolCallViews.append(view)
             toolCallIDs.append(item.id)
             let continuesPreviousCall = index < previousItems.count &&
@@ -799,6 +872,10 @@ public final class AgentMessageCell: NSView {
         for v in toolCallViews { v.removeFromSuperview() }
         toolCallViews.removeAll()
         toolCallIDs.removeAll()
+        for (_, groupView) in toolGroupViewsByKey {
+            groupView.removeFromSuperview()
+        }
+        toolGroupViewsByKey.removeAll()
         pendingToolCallAppearances.removeAll()
         pendingEditedFilesCardAppearance = nil
         pendingUserMessageAppearance = false
@@ -865,7 +942,33 @@ public final class AgentMessageCell: NSView {
         refreshAvatars()
     }
 
+    public func startEditingQueuedMessage() {
+        guard message.isQueued else { return }
+        isEditingQueuedMessage = true
+        queuedEditorView.setText(message.content, theme: theme, accentColor: accentColor)
+        queuedEditorView.isHidden = false
+        userContentContainerView.isHidden = true
+        userExpandButton.isHidden = true
+        invalidateLayoutCache()
+        onRequestLayout?()
+        DispatchQueue.main.async { [weak self] in
+            self?.queuedEditorView.focus()
+        }
+    }
+
+    public func stopEditingQueuedMessage() {
+        guard isEditingQueuedMessage else { return }
+        isEditingQueuedMessage = false
+        queuedEditorView.isHidden = true
+        userContentContainerView.isHidden = userContentViews.isEmpty
+        invalidateLayoutCache()
+        onRequestLayout?()
+    }
+
     func clearUserViews() {
+        queuedHeaderView.isHidden = true
+        queuedEditorView.isHidden = true
+        isEditingQueuedMessage = false
         for v in userContentViews { v.removeFromSuperview() }
         userContentViews.removeAll()
         userImageViews.forEach { $0.removeFromSuperview() }
@@ -899,6 +1002,7 @@ public final class AgentMessageCell: NSView {
             let bodyColor = NSColor(cgColor: theme.foreground.cgColor) ?? .textColor
             let bodyStyle = NSMutableParagraphStyle()
             bodyStyle.lineSpacing = 3
+            bodyStyle.paragraphSpacing = 0
             tv.textStorage?.setAttributedString(NSAttributedString(string: trimmed, attributes: [
                 .font: bodyFont,
                 .foregroundColor: bodyColor,
@@ -934,7 +1038,14 @@ public final class AgentMessageCell: NSView {
         let bodyColor = NSColor(cgColor: theme.foreground.cgColor) ?? .textColor
         let bodyStyle = NSMutableParagraphStyle()
         bodyStyle.lineSpacing = 3
-        bodyStyle.paragraphSpacing = 6
+        bodyStyle.paragraphSpacing = 0
+        let separatorAttrs: [NSAttributedString.Key: Any] = [
+            .font: bodyFont,
+            .foregroundColor: bodyColor,
+            .paragraphStyle: bodyStyle
+        ]
+
+        var lastBlockWasListItem = false
 
         for block in blocks {
             switch block {
@@ -952,43 +1063,52 @@ public final class AgentMessageCell: NSView {
                 )
                 userContentContainerView.addSubview(codeView)
                 userContentViews.append(codeView)
+                lastBlockWasListItem = false
 
             case .paragraph(let text):
                 let attr = formatInlineMarkdownString(text, font: bodyFont, color: bodyColor, paragraphStyle: bodyStyle)
                 if currentText.length > 0 {
-                    currentText.append(NSAttributedString(string: "\n\n", attributes: [.font: bodyFont]))
+                    currentText.append(NSAttributedString(string: "\n\n", attributes: separatorAttrs))
                 }
                 currentText.append(attr)
+                lastBlockWasListItem = false
 
             case .header(let level, let text):
                 let hFont = NSFont.systemFont(ofSize: level <= 2 ? 14.5 : 13.5, weight: .bold)
                 let attr = formatInlineMarkdownString(text, font: hFont, color: bodyColor, paragraphStyle: bodyStyle)
                 if currentText.length > 0 {
-                    currentText.append(NSAttributedString(string: "\n\n", attributes: [.font: bodyFont]))
+                    currentText.append(NSAttributedString(string: "\n\n", attributes: separatorAttrs))
                 }
                 currentText.append(attr)
+                lastBlockWasListItem = false
 
             case .bulletItem(let text):
                 let bStyle = NSMutableParagraphStyle()
                 bStyle.lineSpacing = 3
                 bStyle.headIndent = 14
                 bStyle.firstLineHeadIndent = 0
+                bStyle.paragraphSpacing = 0
                 let attr = formatInlineMarkdownString("• \(text)", font: bodyFont, color: bodyColor, paragraphStyle: bStyle)
                 if currentText.length > 0 {
-                    currentText.append(NSAttributedString(string: "\n\n", attributes: [.font: bodyFont]))
+                    let sep = lastBlockWasListItem ? "\n" : "\n\n"
+                    currentText.append(NSAttributedString(string: sep, attributes: separatorAttrs))
                 }
                 currentText.append(attr)
+                lastBlockWasListItem = true
 
             case .numberedItem(let number, let text):
                 let nStyle = NSMutableParagraphStyle()
                 nStyle.lineSpacing = 3
                 nStyle.headIndent = 14
                 nStyle.firstLineHeadIndent = 0
+                nStyle.paragraphSpacing = 0
                 let attr = formatInlineMarkdownString("\(number). \(text)", font: bodyFont, color: bodyColor, paragraphStyle: nStyle)
                 if currentText.length > 0 {
-                    currentText.append(NSAttributedString(string: "\n\n", attributes: [.font: bodyFont]))
+                    let sep = lastBlockWasListItem ? "\n" : "\n\n"
+                    currentText.append(NSAttributedString(string: sep, attributes: separatorAttrs))
                 }
                 currentText.append(attr)
+                lastBlockWasListItem = true
 
             case .quote(let text):
                 flushCurrentText()
@@ -1081,7 +1201,6 @@ public final class AgentMessageCell: NSView {
                 self?.invalidateLayoutCache()
                 self?.onToggleThought?()
             }
-            addSubview(thoughtView)
             inlineThoughtViews.append(thoughtView)
             thoughtIndex += 1
         }
@@ -1152,24 +1271,89 @@ public final class AgentMessageCell: NSView {
         var textPartIndex = 0
         var thoughtPartIndex = 0
         var nextViews: [NSView] = []
+        var activeGroupKeys = Set<String>()
+        var currentToolRun: [(id: String, view: NSView)] = []
+
+        func flushToolRun() {
+            guard !currentToolRun.isEmpty else { return }
+            if currentToolRun.count >= 2 {
+                let groupKey = currentToolRun[0].id
+                activeGroupKeys.insert(groupKey)
+                let viewsInGroup = currentToolRun.map(\.view)
+                let isExp = expandedToolGroupKeys.contains(groupKey)
+                let groupView: AgentToolGroupView
+                if let existing = toolGroupViewsByKey[groupKey] {
+                    groupView = existing
+                    groupView.update(toolViews: viewsInGroup, theme: theme, isExpanded: isExp)
+                    if groupView.superview !== self {
+                        addSubview(groupView)
+                    }
+                } else {
+                    groupView = AgentToolGroupView(
+                        groupKey: groupKey,
+                        toolViews: viewsInGroup,
+                        theme: theme,
+                        isExpanded: isExp
+                    )
+                    groupView.onToggle = { [weak self, weak groupView] in
+                        guard let self, let groupView else { return }
+                        if groupView.isExpanded {
+                            self.expandedToolGroupKeys.insert(groupView.groupKey)
+                        } else {
+                            self.expandedToolGroupKeys.remove(groupView.groupKey)
+                        }
+                        self.invalidateLayoutCache()
+                        self.onToggleTool?()
+                    }
+                    addSubview(groupView)
+                    toolGroupViewsByKey[groupKey] = groupView
+                }
+                if !isExp {
+                    for v in viewsInGroup where v.superview != nil {
+                        v.removeFromSuperview()
+                    }
+                }
+                let groupedViewIDs = Set(viewsInGroup.map(ObjectIdentifier.init))
+                pendingToolCallAppearances.removeAll { groupedViewIDs.contains(ObjectIdentifier($0)) }
+                nextViews.append(groupView)
+            } else {
+                let singleView = currentToolRun[0].view
+                if singleView.superview !== self {
+                    singleView.removeFromSuperview()
+                    addSubview(singleView)
+                }
+                singleView.isHidden = false
+                singleView.alphaValue = 1
+                nextViews.append(singleView)
+            }
+            currentToolRun.removeAll(keepingCapacity: true)
+        }
 
         for part in message.orderedParts {
             switch part {
             case .toolCall(let id):
                 if let index = toolCallIDs.firstIndex(of: id) {
-                    nextViews.append(toolCallViews[index])
+                    currentToolRun.append((id: id, view: toolCallViews[index]))
                 }
+            case .thought:
+                if thoughtPartIndex < inlineThoughtViews.count {
+                    let thoughtView = inlineThoughtViews[thoughtPartIndex]
+                    currentToolRun.append((id: "thought_\(thoughtPartIndex)", view: thoughtView))
+                }
+                thoughtPartIndex += 1
             case .text:
+                flushToolRun()
                 if textPartIndex < markdownViewsByTextPart.count {
                     nextViews.append(contentsOf: markdownViewsByTextPart[textPartIndex])
                 }
                 textPartIndex += 1
-            case .thought:
-                if thoughtPartIndex < inlineThoughtViews.count {
-                    nextViews.append(inlineThoughtViews[thoughtPartIndex])
-                }
-                thoughtPartIndex += 1
             }
+        }
+        flushToolRun()
+
+        for (key, groupView) in toolGroupViewsByKey where !activeGroupKeys.contains(key) {
+            groupView.removeFromSuperview()
+            toolGroupViewsByKey.removeValue(forKey: key)
         }
 
         if let card = editedFilesCardView {
@@ -1456,3 +1640,69 @@ public final class AgentMessageCell: NSView {
         }
     }
 }
+
+extension AgentMessageCell {
+    /// Keeps the avatar pinned to the top of the viewport while the message is scrolled,
+    /// without leaving the cell bounds.
+    func updateStickyAvatar(viewportTopInDocument clipTop: CGFloat) {
+        stickyViewportTop = clipTop - frame.minY
+        applyStickyAvatar()
+    }
+
+    /// Returns true if the message contains only a single visual line of text without
+    /// images, quotes, tools, code blocks, or thoughts.
+    var isSingleLineMessage: Bool {
+        if message.role == .user {
+            guard !message.isQueued,
+                  userImageViews.isEmpty,
+                  userContentViews.count == 1,
+                  let tv = userContentViews.first as? AgentSelectableTextView else {
+                return false
+            }
+            return isSingleLineTextView(tv)
+        } else {
+            let hasTopThought = (message.thought?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
+            guard message.toolCalls.isEmpty,
+                  !hasTopThought,
+                  !hasInlineThoughtParts,
+                  inlineThoughtViews.isEmpty,
+                  !message.isStreaming,
+                  orderedAssistantViews.count == 1,
+                  let tv = orderedAssistantViews.first as? AgentSelectableTextView else {
+                return false
+            }
+            return isSingleLineTextView(tv)
+        }
+    }
+
+    private func isSingleLineTextView(_ tv: NSTextView) -> Bool {
+        guard let layoutManager = tv.layoutManager,
+              let textContainer = tv.textContainer else {
+            return !tv.string.contains("\n")
+        }
+        if tv.string.contains("\n") { return false }
+        layoutManager.ensureLayout(for: textContainer)
+        let numberOfGlyphs = layoutManager.numberOfGlyphs
+        guard numberOfGlyphs > 0 else { return true }
+        var lineRange = NSRange(location: 0, length: 0)
+        layoutManager.lineFragmentRect(forGlyphAt: 0, effectiveRange: &lineRange)
+        return NSMaxRange(lineRange) >= numberOfGlyphs
+    }
+
+    func applyStickyAvatar() {
+        guard !roleIconView.isHidden, stickyViewportTop > -.greatestFiniteMagnitude / 2 else { return }
+        if isSingleLineMessage {
+            if roleIconView.frame.origin.y != stickyAvatarBaseY {
+                roleIconView.frame.origin.y = stickyAvatarBaseY
+            }
+            return
+        }
+        let size = roleIconView.frame.height
+        let maxY = max(stickyAvatarBaseY, bounds.height - size - 2)
+        let y = min(maxY, max(stickyAvatarBaseY, stickyViewportTop + Self.stickyAvatarInset))
+        if abs(roleIconView.frame.origin.y - y) > 0.01 {
+            roleIconView.frame.origin.y = y
+        }
+    }
+}
+

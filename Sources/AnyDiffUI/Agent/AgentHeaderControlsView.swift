@@ -104,16 +104,17 @@ public struct AgentHeaderControlsView: View {
 
         return ZStack {
             Circle()
-                .stroke(Color(theme.gutterForeground).opacity(0.25), lineWidth: 1.5)
+                .stroke(Color(nsColor: .secondaryLabelColor).opacity(0.25), lineWidth: 1.5)
             Circle()
                 .trim(from: 0, to: progress)
                 .stroke(
-                    percentage > 85 ? Color.orange : accentColor,
+                    Color(nsColor: .secondaryLabelColor).opacity(0.85),
                     style: StrokeStyle(lineWidth: 1.5, lineCap: .round)
                 )
                 .rotationEffect(.degrees(-90))
         }
         .frame(width: 13, height: 13)
+        .frame(width: 16, height: 16)
         .overlay(alignment: .top) {
             if isUsageHovered {
                 Text("\(percentage)%")
@@ -136,31 +137,31 @@ public struct AgentHeaderControlsView: View {
 
     @ViewBuilder
     private var sendOrCancelControls: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 2) {
             if isBusy {
                 Button(action: { agentManager.cancel() }) {
-                    Image(systemName: "stop.circle.fill")
-                        .font(.system(size: 15, weight: .bold))
+                    Image(systemName: "stop.fill")
+                        .font(.system(size: 10, weight: .bold))
                         .foregroundColor(isStopHovered ? Color.red : Color.red.opacity(0.85))
-                        .frame(width: 18, height: 18)
+                        .frame(width: 16, height: 16)
                 }
                 .buttonStyle(.plain)
                 .help("Stop Generation (Esc)")
                 .onHover { isStopHovered = $0 }
             }
 
-            if !isBusy || canSend {
+            if !isBusy {
                 Button(action: handleTriggerSend) {
-                    Image(systemName: isBusy ? "text.badge.plus" : "arrow.up.circle.fill")
-                        .font(.system(size: 15, weight: .bold))
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.system(size: 13, weight: .bold))
                         .foregroundColor(canSend ? accentColor : Color(theme.gutterForeground).opacity(0.35))
-                        .frame(width: 18, height: 18)
+                        .frame(width: 16, height: 16)
                         .scaleEffect(isSendHovered && canSend ? 1.08 : 1.0)
                         .animation(.easeOut(duration: 0.12), value: isSendHovered)
                 }
                 .buttonStyle(.plain)
                 .disabled(!canSend)
-                .help(isBusy ? "Add to Queue (Enter)" : "Send Message (Enter)")
+                .help("Send Message (Enter)")
                 .onHover { isSendHovered = $0 }
             }
         }

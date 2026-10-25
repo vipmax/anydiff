@@ -172,7 +172,7 @@ public final class AgentDiffStatsButton: AgentFlippedView {
 
     public override func layout() {
         super.layout()
-        badgeLabel.frame = NSRect(x: 4, y: 1, width: max(0, bounds.width - 8), height: bounds.height - 2)
+        badgeLabel.frame = NSRect(x: 0, y: -0.5, width: max(0, bounds.width), height: bounds.height)
     }
 }
 

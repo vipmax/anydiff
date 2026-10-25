@@ -93,6 +93,11 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
 
     public var targetLoadSessionId: String? = nil
 
+    /// Last ACP session id that backs `messages`. Survives disconnects/restarts so a
+    /// reconnect resumes the same agent session instead of silently creating a new
+    /// one under the old chat. Cleared only by `clearSession()`.
+    private var lastSessionId: String? = nil
+
     public func prepareAgent(workingDirectory: String, loadSessionId: String?) {
         self.targetLoadSessionId = loadSessionId
         self.prepareAgent(workingDirectory: workingDirectory)
@@ -314,6 +319,7 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
         messages.removeAll()
         currentStreamMessageId = nil
         currentSessionId = nil
+        lastSessionId = nil
         authMethods = []
         isAuthenticating = false
         authErrorMessage = nil
@@ -424,6 +430,11 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
             resolvedTitle = self.agentTitle.isEmpty ? "Agent" : self.agentTitle
         }
 
+        // Reconnect with an existing chat: resume the same agent session.
+        if targetLoadSessionId == nil, currentSessionId == nil, !messages.isEmpty, let last = lastSessionId {
+            targetLoadSessionId = last
+        }
+
         guard currentSessionId == nil || targetLoadSessionId != nil else { return }
 
         let sessId: String
@@ -431,11 +442,21 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
         let isNewSession = (targetLoadSessionId == nil)
 
         if let targetId = targetLoadSessionId {
+            let previousMessages = self.messages
             self.messages.removeAll()
-            let loadResult = try await client.loadSession(sessionId: targetId, cwd: workingDirectory)
-            sessId = targetId
-            initialOpts = loadResult.configOptions
+            do {
+                let loadResult = try await client.loadSession(sessionId: targetId, cwd: workingDirectory)
+                sessId = targetId
+                initialOpts = loadResult.configOptions
+            } catch {
+                // Keep the visible chat if the agent cannot resume it.
+                self.messages = previousMessages
+                self.targetLoadSessionId = nil
+                throw error
+            }
             self.targetLoadSessionId = nil
+            // The agent did not replay history (e.g. nothing persisted): keep what we had.
+            if self.messages.isEmpty { self.messages = previousMessages }
             for i in self.messages.indices {
                 self.messages[i].completeRunningToolCalls()
             }
@@ -457,6 +478,7 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
         self.agentTitle = resolvedTitle
         self.statusMessage = "Connected to \(resolvedTitle)"
         self.currentSessionId = sessId
+        self.lastSessionId = sessId
         if !finalOpts.isEmpty {
             self.applyConfigOptions(finalOpts)
         }

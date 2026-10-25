@@ -35,20 +35,26 @@ public struct AgentPromptQueueView: View {
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            // Header
+        VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
-                Image(systemName: "list.bullet.rectangle")
+                Image(systemName: "tray.full.fill")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundColor(accentColor)
 
-                Text("Queued Prompts (\(queue.count))")
-                    .font(.system(size: 11, weight: .semibold))
+                Text("Prompt Queue")
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundColor(Color(theme.foreground).opacity(0.95))
+
+                Text("\(queue.count)")
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
                     .foregroundColor(Color(theme.gutterForeground))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 1)
+                    .background(Capsule().fill(Color(theme.foreground).opacity(0.08)))
 
                 if isAgentBusy {
-                    Text("• will send after current turn")
-                        .font(.system(size: 10, weight: .regular))
+                    Text("• sends after turn")
+                        .font(.system(size: 10.5))
                         .foregroundColor(Color(theme.gutterForeground).opacity(0.8))
                 }
 
@@ -56,9 +62,9 @@ public struct AgentPromptQueueView: View {
 
                 if let onClearQueue, queue.count > 1 {
                     Button(action: onClearQueue) {
-                        Text("Clear All")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundColor(Color(theme.gutterForeground).opacity(0.75))
+                        Text("Clear all")
+                            .font(.system(size: 10.5, weight: .medium))
+                            .foregroundColor(Color(theme.gutterForeground))
                     }
                     .buttonStyle(.plain)
                     .help("Clear all queued messages")
@@ -66,25 +72,20 @@ public struct AgentPromptQueueView: View {
             }
             .padding(.horizontal, 4)
 
-            // Queue items list
+            Divider()
+                .padding(.horizontal, 2)
+
             if queue.count > 3 {
                 ScrollView(.vertical, showsIndicators: true) {
                     itemsStack
                 }
-                .frame(maxHeight: 180)
+                .frame(maxHeight: 240)
             } else {
                 itemsStack
             }
         }
-        .padding(8)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color(theme.gutterBackground).opacity(0.75))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .stroke(Color(theme.excerptHeaderBorder).opacity(0.65), lineWidth: 1)
-                )
-        )
+        .padding(10)
+        .frame(width: 330)
     }
 
     private var itemsStack: some View {
@@ -133,10 +134,14 @@ private struct AgentPromptQueueItemRow: View {
             }
         }
         .padding(.horizontal, 9)
-        .padding(.vertical, 6)
+        .padding(.vertical, 7)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color(theme.inputBackground).opacity(isHovered ? 0.95 : 0.75))
+                .fill(Color(theme.background))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color(theme.inputBackground).opacity(isHovered ? 0.95 : 0.75))
+                )
                 .overlay(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .stroke(
@@ -153,34 +158,23 @@ private struct AgentPromptQueueItemRow: View {
     }
 
     private var displayView: some View {
-        HStack(alignment: .top, spacing: 8) {
-            // Position Badge (#1 Next, #2, etc.)
-            HStack(spacing: 3) {
-                Text("#\(index + 1)")
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .foregroundColor(index == 0 ? accentColor : Color(theme.gutterForeground))
+        HStack(alignment: .center, spacing: 9) {
+            Text("\(index + 1)")
+                .font(.system(size: 10, weight: .bold, design: .rounded))
+                .foregroundColor(index == 0 ? accentColor : Color(theme.gutterForeground))
+                .frame(width: 18, height: 18)
+                .background(
+                    Circle().fill((index == 0 ? accentColor : Color(theme.foreground)).opacity(index == 0 ? 0.16 : 0.08))
+                )
+                .help(index == 0 ? "Next to send" : "Position \(index + 1)")
 
-                if index == 0 {
-                    Text("Next")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundColor(accentColor)
-                }
-            }
-            .padding(.horizontal, 5)
-            .padding(.vertical, 2)
-            .background(
-                RoundedRectangle(cornerRadius: 4, style: .continuous)
-                    .fill((index == 0 ? accentColor : Color(theme.gutterForeground)).opacity(0.12))
-            )
-
-            // Content preview (text + attachments)
             VStack(alignment: .leading, spacing: 2) {
                 if !item.images.isEmpty {
                     HStack(spacing: 3) {
                         Image(systemName: "photo")
                             .font(.system(size: 9))
                         Text("\(item.images.count) \(item.images.count == 1 ? "image" : "images")")
-                            .font(.system(size: 9.5, weight: .medium))
+                            .font(.system(size: 10, weight: .medium))
                     }
                     .foregroundColor(Color(theme.gutterForeground))
                 }
@@ -188,84 +182,49 @@ private struct AgentPromptQueueItemRow: View {
                 Text(item.text.isEmpty ? "(Image prompt)" : item.text)
                     .font(.system(size: 12))
                     .foregroundColor(Color(theme.foreground).opacity(0.92))
-                    .lineLimit(3)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            Spacer(minLength: 4)
-
-            // Action buttons
-            HStack(spacing: 3) {
-                // Reorder buttons (if multiple items)
+            HStack(spacing: 2) {
                 if totalCount > 1 {
                     if index > 0 {
-                        Button(action: { onMove(item.id, .up) }) {
-                            Image(systemName: "chevron.up")
-                                .font(.system(size: 9, weight: .semibold))
-                                .foregroundColor(Color(theme.gutterForeground))
-                                .frame(width: 18, height: 18)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .help("Move Up")
+                        actionButton("chevron.up", help: "Move up") { onMove(item.id, .up) }
                     }
-
                     if index < totalCount - 1 {
-                        Button(action: { onMove(item.id, .down) }) {
-                            Image(systemName: "chevron.down")
-                                .font(.system(size: 9, weight: .semibold))
-                                .foregroundColor(Color(theme.gutterForeground))
-                                .frame(width: 18, height: 18)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .help("Move Down")
+                        actionButton("chevron.down", help: "Move down") { onMove(item.id, .down) }
                     }
                 }
-
-                // Run Now button (when agent is idle)
                 if !isAgentBusy, let onRunNow {
-                    Button(action: { onRunNow(item.id) }) {
-                        Image(systemName: "play.fill")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundColor(accentColor)
-                            .frame(width: 18, height: 18)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help("Run this prompt now")
+                    actionButton("play.fill", help: "Run this prompt now", tint: accentColor) { onRunNow(item.id) }
                 }
-
-                // Edit button
-                Button(action: {
+                actionButton("pencil", help: "Edit prompt") {
                     editedText = item.text
                     isEditing = true
                     isEditorFocused = true
-                }) {
-                    Image(systemName: "pencil")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundColor(Color(theme.gutterForeground))
-                        .frame(width: 18, height: 18)
-                        .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
-                .help("Edit prompt")
-
-                // Delete button
-                Button(action: {
-                    onDelete(item.id)
-                }) {
-                    Image(systemName: "trash")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundColor(Color(theme.gutterForeground).opacity(0.85))
-                        .frame(width: 18, height: 18)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("Remove from queue")
+                actionButton("xmark", help: "Remove from queue") { onDelete(item.id) }
             }
-            .opacity(isHovered ? 1.0 : 0.65)
+            .opacity(isHovered ? 1.0 : 0.0)
         }
+    }
+
+    private func actionButton(
+        _ symbol: String,
+        help: String,
+        tint: Color? = nil,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 9.5, weight: .semibold))
+                .foregroundColor(tint ?? Color(theme.gutterForeground))
+                .frame(width: 20, height: 20)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
     }
 
     private var editingView: some View {

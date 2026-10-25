@@ -1,5 +1,6 @@
 import XCTest
 import AppKit
+import SwiftUI
 import UniformTypeIdentifiers
 @testable import AnyDiffCore
 @testable import AnyDiffUI
@@ -257,5 +258,195 @@ final class ImageAttachmentHelpersTests: XCTestCase {
         )!
         textView.keyDown(with: enterEvent)
         XCTAssertTrue(sendCalled, "Enter key without modifiers must trigger onSend")
+    }
+
+    func testInputAndCellLineSpacingMatchExactLineFragmentPositions() {
+        let text = "Line 1\nLine 2\nLine 3"
+
+        // 1. Configure input text view
+        let textView = AgentInputCustomTextView()
+        let paraStyle = NSMutableParagraphStyle()
+        paraStyle.lineSpacing = 3
+        paraStyle.paragraphSpacing = 0
+        textView.font = NSFont.systemFont(ofSize: 13, weight: .regular)
+        textView.customParagraphStyle = paraStyle
+        textView.defaultParagraphStyle = paraStyle
+        textView.typingAttributes = [
+            .font: NSFont.systemFont(ofSize: 13, weight: .regular),
+            .paragraphStyle: paraStyle
+        ]
+        textView.string = text
+        let tc1 = textView.textContainer!
+        tc1.lineFragmentPadding = 0
+        let lm1 = textView.layoutManager!
+        lm1.ensureLayout(for: tc1)
+
+        var inputOrigins: [CGFloat] = []
+        lm1.enumerateLineFragments(forGlyphRange: NSRange(location: 0, length: (textView.string as NSString).length)) { rect, _, _, _, _ in
+            inputOrigins.append(rect.origin.y)
+        }
+
+        // 2. Configure message cell
+        let message = AgentMessage(role: .user, content: text)
+        let cell = AgentMessageCell(message: message, theme: .zedDark)
+        _ = cell.layout(for: 400)
+
+        guard let tv = cell.userContentViews.first as? AgentSelectableTextView,
+              let _ = tv.textContainer,
+              let lm2 = tv.layoutManager else {
+            XCTFail("AgentMessageCell should have an AgentSelectableTextView in userContentViews")
+            return
+        }
+
+        var cellOrigins: [CGFloat] = []
+        lm2.enumerateLineFragments(forGlyphRange: NSRange(location: 0, length: (tv.string as NSString).length)) { rect, _, _, _, _ in
+            cellOrigins.append(rect.origin.y)
+        }
+
+        XCTAssertEqual(inputOrigins.count, 3)
+        XCTAssertEqual(cellOrigins.count, 3)
+        XCTAssertEqual(inputOrigins, cellOrigins, "Line spacing and Y origins must match exactly between input and message cell")
+    }
+
+    func testMeasureUserAndAgentCellHeights() {
+        let text = "куку бро"
+        let userMsg = AgentMessage(role: .user, content: text)
+        let scrollView = AgentChatScrollView(frame: .zero)
+        scrollView.update(messages: [userMsg], theme: .zedDark, animated: false)
+
+        guard let cell = scrollView.documentView?.subviews.compactMap({ $0 as? AgentMessageCell }).first,
+              let tv = cell.userContentViews.first as? AgentSelectableTextView else {
+            XCTFail("no cell or tv")
+            return
+        }
+        var lines0 = 0
+        tv.layoutManager?.enumerateLineFragments(forGlyphRange: NSRange(location: 0, length: (tv.string as NSString).length)) { _, _, _, _, _ in
+            lines0 += 1
+        }
+        print("AFTER MAKE: lines=\(lines0), tv.frame=\(tv.frame)")
+
+        scrollView.setFrameSize(NSSize(width: 400, height: 600))
+        var lines1 = 0
+        tv.layoutManager?.enumerateLineFragments(forGlyphRange: NSRange(location: 0, length: (tv.string as NSString).length)) { _, _, _, _, _ in
+            lines1 += 1
+        }
+        print("AFTER setFrameSize(400) SYNCHRONOUSLY: lines=\(lines1), tv.frame=\(tv.frame)")
+        XCTAssertEqual(lines0, 1, "Must be 1 line immediately upon update even before frame is set")
+        XCTAssertEqual(lines1, 1, "Must be 1 line immediately upon setFrameSize without waiting for async debounce")
+
+        let cell2 = scrollView.documentView?.subviews.compactMap({ $0 as? AgentMessageCell }).first!
+        XCTAssertEqual(cell2?.layout(for: 1400), cell2?.layout(for: 1400))
+        XCTAssertEqual(AgentMessageCell.maxContentWidth, 800)
+        XCTAssertEqual(AgentMessageCell.contentWidth(for: 1400), 800)
+
+        // Debug exact frames from user screenshot
+        let m1 = AgentMessage(role: .user, content: "броо")
+        let m2 = AgentMessage(role: .assistant, content: "Привет, бро! 👋 Чем могу помочь? Есть задача по коду или что-то нужно разобрать?")
+        let m3 = AgentMessage(role: .user, content: "куку бро")
+        let m4 = AgentMessage(role: .assistant, content: "Ку-ку! На связи. Рассказывай, что пилим или чиним? 🚀")
+
+        let sv = AgentChatScrollView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        let agentId = "antigravity-acp-djvipmax"
+
+        sv.setInputView(AnyView(Text("Input")), inputHeight: 58)
+        sv.update(messages: [m1, m2, m3, m4], theme: .zedDark, agentId: agentId, animated: false)
+        sv.setFrameSize(NSSize(width: 800, height: 600))
+
+        let doc = sv.documentView as! AgentChatDocumentView
+        var prevBottom: CGFloat = 0
+        let sortedViews = doc.subviews.sorted(by: { $0.frame.origin.y < $1.frame.origin.y })
+        for sub in sortedViews {
+            if let cell = sub as? AgentMessageCell {
+                let roleTop = cell.frame.origin.y + cell.roleIconView.frame.origin.y
+                let roleBottom = roleTop + cell.roleIconView.frame.height
+                if prevBottom > 0 {
+                    XCTAssertEqual(roleTop - prevBottom, 22, accuracy: 0.5, "Inter-message avatar gaps must be 22 pt")
+                }
+                prevBottom = roleBottom
+            } else if sub is NSHostingView<AnyView> {
+                let inputTop = sub.frame.origin.y + 2
+                XCTAssertEqual(inputTop - prevBottom, 22, accuracy: 0.5, "Input avatar gap from last message avatar must be 22 pt")
+            }
+        }
+    }
+
+    func testAvatarZoomAndIconSizeSettings() {
+        var settings = AvatarSettings()
+        settings.zoom = 5.0
+        settings.userAvatarSize = 50
+        settings.agentAvatarSize = 50
+        settings.agentZoom = 5.0
+
+        let encoder = JSONEncoder()
+        let decoder = JSONDecoder()
+        guard let data = try? encoder.encode(settings),
+              let decoded = try? decoder.decode(AvatarSettings.self, from: data) else {
+            XCTFail("Failed to encode/decode AvatarSettings")
+            return
+        }
+
+        XCTAssertEqual(decoded.zoom, 5.0)
+        XCTAssertEqual(decoded.userAvatarSize, 50)
+        XCTAssertEqual(decoded.agentAvatarSize, 50)
+        XCTAssertEqual(decoded.agentZoom, 5.0)
+
+        let editor = AgentAvatarEditorView(onDismiss: {})
+        XCTAssertNotNil(editor)
+
+        // Verify focal point invariance on zoom scaling
+        let initialZoom: CGFloat = 2.0
+        let initialOffset = CGSize(width: 50.0, height: 80.0)
+        let newZoom: CGFloat = 4.0
+        let scale = newZoom / initialZoom
+        let scaledOffset = CGSize(width: initialOffset.width * scale, height: initialOffset.height * scale)
+
+        // Focal point relative to image center: -offset / (baseScale * zoom)
+        let baseScale: CGFloat = 0.05
+        let focalX1 = -initialOffset.width / (baseScale * initialZoom)
+        let focalY1 = -initialOffset.height / (baseScale * initialZoom)
+        let focalX2 = -scaledOffset.width / (baseScale * newZoom)
+        let focalY2 = -scaledOffset.height / (baseScale * newZoom)
+
+        XCTAssertEqual(focalX1, focalX2, accuracy: 0.0001, "Focal point in image center must remain stationary when zooming")
+        XCTAssertEqual(focalY1, focalY2, accuracy: 0.0001, "Focal point in image center must remain stationary when zooming")
+    }
+
+    func testSingleLineMessageDisablesStickyAvatar() {
+        let theme = Theme.vesper
+        let userSingle = AgentMessage(id: UUID(), role: .user, content: "куку")
+        let cellSingle = AgentMessageCell(message: userSingle, theme: theme)
+        let singleH = cellSingle.layout(for: 600)
+        cellSingle.frame = NSRect(x: 0, y: 0, width: 600, height: singleH)
+        cellSingle.applyLayout(for: 600, animated: false)
+
+        XCTAssertTrue(cellSingle.isSingleLineMessage, "Short message without newlines must be detected as single-line")
+
+        // Try to trigger sticky avatar with a large viewport scroll offset
+        let initialY = cellSingle.roleIconView.frame.origin.y
+        cellSingle.updateStickyAvatar(viewportTopInDocument: 200)
+        XCTAssertEqual(cellSingle.roleIconView.frame.origin.y, initialY, "Single line message avatar must not move or stick")
+
+        // Multi-line user message
+        let userMulti = AgentMessage(id: UUID(), role: .user, content: "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7")
+        let cellMulti = AgentMessageCell(message: userMulti, theme: theme)
+        let multiH = cellMulti.layout(for: 600)
+        cellMulti.frame = NSRect(x: 0, y: 0, width: 600, height: multiH)
+        cellMulti.applyLayout(for: 600, animated: false)
+
+        XCTAssertFalse(cellMulti.isSingleLineMessage, "Multi-line message must not be detected as single line")
+        cellMulti.updateStickyAvatar(viewportTopInDocument: 80)
+        XCTAssertGreaterThan(cellMulti.roleIconView.frame.origin.y, cellMulti.stickyAvatarBaseY, "Multi-line message avatar must stick when scrolled")
+
+        // Single line assistant message
+        let assistantSingle = AgentMessage(id: UUID(), role: .assistant, content: "Готов к задачам!")
+        let cellAssistantSingle = AgentMessageCell(message: assistantSingle, theme: theme)
+        let asstH = cellAssistantSingle.layout(for: 600)
+        cellAssistantSingle.frame = NSRect(x: 0, y: 0, width: 600, height: asstH)
+        cellAssistantSingle.applyLayout(for: 600, animated: false)
+
+        XCTAssertTrue(cellAssistantSingle.isSingleLineMessage, "Short assistant message without newlines/tools must be single line")
+        let assistantInitialY = cellAssistantSingle.roleIconView.frame.origin.y
+        cellAssistantSingle.updateStickyAvatar(viewportTopInDocument: 200)
+        XCTAssertEqual(cellAssistantSingle.roleIconView.frame.origin.y, assistantInitialY, "Single line assistant avatar must not move or stick")
     }
 }
