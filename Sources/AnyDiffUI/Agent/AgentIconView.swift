@@ -65,6 +65,7 @@ public struct AgentIconView: View {
 
     @State private var loadedImage: NSImage? = nil
     @State private var customAvatar: NSImage? = nil
+    @State private var isShowingEditor: Bool = false
 
     public init(icon: String, agentId: String? = nil, tintColor: Color = .primary, size: CGFloat = 20) {
         self.icon = icon
@@ -106,15 +107,26 @@ public struct AgentIconView: View {
         .contentShape(Circle())
         .onTapGesture {
             if let agentId = agentId, !agentId.isEmpty {
-                AgentAvatarProvider.showEditorFromKeyWindow(initialTab: .agent, agentId: agentId)
+                isShowingEditor = true
             }
         }
         .contextMenu {
             if let agentId = agentId, !agentId.isEmpty {
                 Button("Customize Avatar...") {
-                    AgentAvatarProvider.showEditorFromKeyWindow(initialTab: .agent, agentId: agentId)
+                    DispatchQueue.main.async {
+                        isShowingEditor = true
+                    }
                 }
             }
+        }
+        .popover(isPresented: $isShowingEditor, arrowEdge: .trailing) {
+            AgentAvatarEditorView(
+                initialTab: .agent,
+                initialAgentId: agentId,
+                onDismiss: {
+                    isShowingEditor = false
+                }
+            )
         }
     }
 

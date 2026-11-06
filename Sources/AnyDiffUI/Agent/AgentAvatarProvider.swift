@@ -745,6 +745,7 @@ public struct AgentUserAvatarView: View {
 
     @State private var avatarImage: NSImage = AgentAvatarProvider.userAvatarImage
     @State private var currentSize: CGFloat
+    @State private var isShowingEditor: Bool = false
 
     public init(size: CGFloat? = nil, allowsEditing: Bool = true) {
         self.size = size
@@ -767,11 +768,12 @@ public struct AgentUserAvatarView: View {
                 )
 
             if allowsEditing {
-                AgentAvatarClickableAnchor { anchorView in
-                    AgentAvatarProvider.showEditor(relativeTo: anchorView, preferredEdge: .maxY, initialTab: .user)
-                }
-                .frame(width: displaySize, height: displaySize)
-                .clipShape(Circle())
+                Color.clear
+                    .contentShape(Circle())
+                    .onTapGesture {
+                        isShowingEditor = true
+                    }
+                    .frame(width: displaySize, height: displaySize)
             }
         }
         .frame(width: displaySize, height: displaySize)
@@ -785,7 +787,9 @@ public struct AgentUserAvatarView: View {
         .contextMenu {
             if allowsEditing {
                 Button("Customize Avatar Settings...") {
-                    AgentAvatarProvider.showEditorFromKeyWindow(initialTab: .user)
+                    DispatchQueue.main.async {
+                        isShowingEditor = true
+                    }
                 }
                 if AgentAvatarProvider.loadSettings().useCustom {
                     Button("Reset to macOS Avatar") {
@@ -793,6 +797,14 @@ public struct AgentUserAvatarView: View {
                     }
                 }
             }
+        }
+        .popover(isPresented: $isShowingEditor, arrowEdge: .bottom) {
+            AgentAvatarEditorView(
+                initialTab: .user,
+                onDismiss: {
+                    isShowingEditor = false
+                }
+            )
         }
     }
 }
