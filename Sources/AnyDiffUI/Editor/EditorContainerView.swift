@@ -193,7 +193,7 @@ public struct EditorContainerView: View {
         .onChange(of: search.query.query) { _ in
             search.hasExecutedSearch = false
         }
-        .background(Color(theme.background))
+        .background(Color(theme.background).ignoresSafeArea())
     }
 
     // MARK: - Header Views

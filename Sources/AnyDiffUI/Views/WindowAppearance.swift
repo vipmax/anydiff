@@ -76,7 +76,21 @@ public final class WindowLifecycleView: NSView {
         ) { [weak self] _ in
             self?.applyAppearance()
         }
-        observers.append(contentsOf: [subviewsObs, resizeObs])
+        let fsEnterObs = center.addObserver(
+            forName: NSWindow.didEnterFullScreenNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.applyAppearance()
+        }
+        let fsExitObs = center.addObserver(
+            forName: NSWindow.didExitFullScreenNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.applyAppearance()
+        }
+        observers.append(contentsOf: [subviewsObs, resizeObs, fsEnterObs, fsExitObs])
     }
 
     public override func viewDidMoveToWindow() {
@@ -91,13 +105,42 @@ public final class WindowLifecycleView: NSView {
 
     public func applyAppearance() {
         guard let window = self.window else { return }
+        let targetAppearance = NSAppearance(named: theme.isDark ? .darkAqua : .aqua)
         window.backgroundColor = theme.background
-        window.appearance = NSAppearance(named: theme.isDark ? .darkAqua : .aqua)
+        window.appearance = targetAppearance
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
         configureSplitViewControllerHoldingPriorities(in: window)
         updateSplitViewDividers(in: window, color: theme.panelDivider)
+        configureFullScreenToolbars(theme: theme)
     }
+}
+
+public func configureFullScreenToolbars(theme: Theme) {
+    let targetAppearance = NSAppearance(named: theme.isDark ? .darkAqua : .aqua)
+    for window in NSApp.windows {
+        let className = String(describing: type(of: window))
+        if className.contains("FullScreen") || className.contains("Toolbar") {
+            window.backgroundColor = theme.background
+            window.appearance = targetAppearance
+            window.titlebarAppearsTransparent = true
+            window.titlebarSeparatorStyle = .none
+            if let root = window.contentView?.superview ?? window.contentView {
+                hideAuxiliaryTitlebarBackgrounds(in: root)
+            }
+        }
+    }
+}
+
+public func hideAuxiliaryTitlebarBackgrounds(in root: NSView) {
+    func rec(v: NSView) {
+        let name = String(describing: type(of: v))
+        if name.contains("TitlebarBackgroundView") || name.contains("ScrollPocket") {
+            v.isHidden = true
+        }
+        for s in v.subviews { rec(v: s) }
+    }
+    rec(v: root)
 }
 
 public func configureSplitViewControllerHoldingPriorities(in window: NSWindow) {

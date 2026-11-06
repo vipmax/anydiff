@@ -59,7 +59,7 @@ public struct TerminalPanelView: View {
                 emptyStateView
             }
         }
-        .background(Color(theme.background))
+        .background(Color(theme.background).ignoresSafeArea())
     }
 
     // MARK: - Tab Bar (Leading)

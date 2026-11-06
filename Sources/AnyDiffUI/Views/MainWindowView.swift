@@ -147,9 +147,13 @@ public struct MainWindowView: View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             panelView(for: .left)
                 .navigationSplitViewColumnWidth(min: panelLayout.minWidth(for: .left), ideal: panelLayout.idealWidth(for: .left), max: panelLayout.maxWidth(for: .left))
+                .toolbarBackground(.hidden, for: .windowToolbar)
+                .toolbarColorScheme(activeTheme.isDark ? .dark : .light, for: .windowToolbar)
         } content: {
             panelView(for: .center)
                 .navigationSplitViewColumnWidth(min: panelLayout.minWidth(for: .center), ideal: panelLayout.idealWidth(for: .center), max: panelLayout.maxWidth(for: .center))
+                .toolbarBackground(.hidden, for: .windowToolbar)
+                .toolbarColorScheme(activeTheme.isDark ? .dark : .light, for: .windowToolbar)
                 .toolbar {
                     ToolbarItem(id: "mainWindowToolbarNav", placement: .navigation) {
                         toolbarNavigationItems
@@ -165,6 +169,8 @@ public struct MainWindowView: View {
         } detail: {
             panelView(for: .right)
                 .navigationSplitViewColumnWidth(min: panelLayout.minWidth(for: .right), ideal: panelLayout.idealWidth(for: .right), max: panelLayout.maxWidth(for: .right))
+                .toolbarBackground(.hidden, for: .windowToolbar)
+                .toolbarColorScheme(activeTheme.isDark ? .dark : .light, for: .windowToolbar)
         }
         .onChange(of: columnVisibility) { newVisibility in
             let isOpen = (newVisibility == .all)
@@ -323,6 +329,8 @@ public struct MainWindowView: View {
             Color.clear
         } else {
             panelContent(for: slot)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color(activeTheme.background).ignoresSafeArea())
         }
     }
 
@@ -980,13 +988,14 @@ public struct MainWindowView: View {
 
     private func updateWindowAppearance() {
         let targetAppearance = NSAppearance(named: activeTheme.isDark ? .darkAqua : .aqua)
-        for window in NSApp.windows where window.canBecomeMain && !(window is NSPanel) && window.level == .normal {
+        for window in NSApp.windows {
             window.backgroundColor = activeTheme.background
             window.appearance = targetAppearance
             window.titlebarAppearsTransparent = true
             window.titlebarSeparatorStyle = .none
             updateSplitViewDividers(in: window, color: activeTheme.panelDivider)
         }
+        configureFullScreenToolbars(theme: activeTheme)
     }
 }
 
