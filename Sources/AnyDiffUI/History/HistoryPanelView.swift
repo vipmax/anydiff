@@ -20,7 +20,7 @@ public struct HistoryPanelView: View {
     @State private var isLoading: Bool = false
     @State private var isLoadingMore: Bool = false
     @State private var hasMoreCommits: Bool = true
-    @State private var showAllBranches: Bool = false
+    @State private var isGraphVisible: Bool = true
     @State private var searchText: String = ""
     @State private var isSearchVisible: Bool = false
     @FocusState private var isSearchFocused: Bool
@@ -98,6 +98,7 @@ public struct HistoryPanelView: View {
                     selectedCommitHash: selectedCommitHash,
                     isWorkingChangesSelected: isWorkingChangesSelected,
                     workingChangesFileCount: workingChangesCount,
+                    showGraph: isGraphVisible,
                     theme: theme,
                     onSelectCommit: onSelectCommit,
                     onSelectCommitFile: onSelectCommitFile,
@@ -117,9 +118,6 @@ public struct HistoryPanelView: View {
         }
         .onChange(of: reloadToken) { _ in
             loadInitialCommits(directory: directory, clearImmediately: commits.isEmpty)
-        }
-        .onChange(of: showAllBranches) { _ in
-            loadInitialCommits(clearImmediately: true)
         }
         .onChange(of: searchText) { newQuery in
             triggerSearch(query: newQuery)
@@ -177,17 +175,17 @@ public struct HistoryPanelView: View {
     @ViewBuilder
     private func headerTrailingActions(availableWidth: CGFloat) -> some View {
         HStack(spacing: 2) {
-            // Toggle All Branches / Current Branch
+            // Toggle Git Graph Rendering
             Button(action: {
-                showAllBranches.toggle()
+                isGraphVisible.toggle()
             }) {
-                Image(systemName: showAllBranches ? "arrow.triangle.branch" : "point.topleft.down.to.point.bottomright.curvepath")
+                Image(systemName: "point.topleft.down.to.point.bottomright.curvepath")
                     .font(.system(size: 11))
-                    .foregroundColor(showAllBranches ? Color(theme.accentColor) : Color(theme.gutterForeground))
+                    .foregroundColor(isGraphVisible ? Color(theme.accentColor) : Color(theme.gutterForeground))
                     .frame(width: 20, height: 20)
             }
             .buttonStyle(ToolbarHoverButtonStyle())
-            .help(showAllBranches ? "Showing all branches (--all)" : "Showing current branch only")
+            .help(isGraphVisible ? "Hide Git graph" : "Show Git graph")
 
             // Reload
             Button(action: {
@@ -307,7 +305,6 @@ public struct HistoryPanelView: View {
         isLoading = true
         hasMoreCommits = true
 
-        let all = showAllBranches
         let limit = Self.batchSize
         let query = searchText.trimmingCharacters(in: .whitespaces)
 
@@ -316,7 +313,7 @@ public struct HistoryPanelView: View {
                 directory: dir,
                 limit: limit,
                 skip: 0,
-                all: all
+                all: false
             )
 
             let rows = Self.calculateGraphRows(commits: loaded, query: query, directory: dir)
@@ -336,7 +333,6 @@ public struct HistoryPanelView: View {
         isLoadingMore = true
 
         let dir = directory
-        let all = showAllBranches
         let skip = commits.count
         let limit = Self.batchSize
         let query = searchText.trimmingCharacters(in: .whitespaces)
@@ -346,7 +342,7 @@ public struct HistoryPanelView: View {
                 directory: dir,
                 limit: limit,
                 skip: skip,
-                all: all
+                all: false
             )
 
             DispatchQueue.main.async {

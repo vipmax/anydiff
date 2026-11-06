@@ -8,6 +8,7 @@ public struct VirtualizedCommitGraphListView: NSViewRepresentable {
     public var selectedCommitHash: String?
     public var isWorkingChangesSelected: Bool
     public var workingChangesFileCount: Int
+    public var showGraph: Bool
     public var theme: Theme
     public var onSelectCommit: (GitCommit) -> Void
     public var onSelectCommitFile: ((GitCommit, String) -> Void)?
@@ -21,6 +22,7 @@ public struct VirtualizedCommitGraphListView: NSViewRepresentable {
         selectedCommitHash: String?,
         isWorkingChangesSelected: Bool,
         workingChangesFileCount: Int = 0,
+        showGraph: Bool = true,
         theme: Theme,
         onSelectCommit: @escaping (GitCommit) -> Void,
         onSelectCommitFile: ((GitCommit, String) -> Void)? = nil,
@@ -33,6 +35,7 @@ public struct VirtualizedCommitGraphListView: NSViewRepresentable {
         self.selectedCommitHash = selectedCommitHash
         self.isWorkingChangesSelected = isWorkingChangesSelected
         self.workingChangesFileCount = workingChangesFileCount
+        self.showGraph = showGraph
         self.theme = theme
         self.onSelectCommit = onSelectCommit
         self.onSelectCommitFile = onSelectCommitFile
@@ -111,13 +114,15 @@ public struct VirtualizedCommitGraphListView: NSViewRepresentable {
         let rowsChanged = context.coordinator.cachedRows.count != rows.count || context.coordinator.cachedRowIds != rows.map(\.id)
         let themeChanged = context.coordinator.cachedThemeId != theme.id
         let countChanged = context.coordinator.cachedWorkingChangesCount != workingChangesFileCount
+        let showGraphChanged = context.coordinator.cachedShowGraph != showGraph
 
-        if rowsChanged || themeChanged || countChanged {
+        if rowsChanged || themeChanged || countChanged || showGraphChanged {
             CommitGraphTableCellView.dismissActivePopover()
             context.coordinator.cachedRows = rows
             context.coordinator.cachedRowIds = rows.map(\.id)
             context.coordinator.cachedThemeId = theme.id
             context.coordinator.cachedWorkingChangesCount = workingChangesFileCount
+            context.coordinator.cachedShowGraph = showGraph
             tableView.reloadData()
             if themeChanged {
                 let selectionColor = theme.accentColor.withAlphaComponent(0.18)
@@ -161,6 +166,7 @@ public struct VirtualizedCommitGraphListView: NSViewRepresentable {
         var cachedRowIds: [String] = []
         var cachedThemeId: String = ""
         var cachedWorkingChangesCount: Int = 0
+        var cachedShowGraph: Bool = true
 
         init(_ parent: VirtualizedCommitGraphListView) {
             self.parent = parent
@@ -168,6 +174,7 @@ public struct VirtualizedCommitGraphListView: NSViewRepresentable {
             self.cachedRowIds = parent.rows.map(\.id)
             self.cachedThemeId = parent.theme.id
             self.cachedWorkingChangesCount = parent.workingChangesFileCount
+            self.cachedShowGraph = parent.showGraph
         }
 
         deinit {
@@ -233,6 +240,7 @@ public struct VirtualizedCommitGraphListView: NSViewRepresentable {
                 directory: parent.directory,
                 theme: parent.theme,
                 workingChangesCount: parent.workingChangesFileCount,
+                showGraph: parent.showGraph,
                 onSelectCommit: parent.onSelectCommit,
                 onSelectCommitFile: parent.onSelectCommitFile,
                 onShowDetails: parent.onShowCommitDetails
@@ -365,6 +373,7 @@ final class RefBadgeItemView: NSView {
 final class CommitGraphTableCellView: NSTableCellView {
     private let graphTrackView = GraphTrackView()
     private var graphWidthConstraint: NSLayoutConstraint?
+    private var containerLeadingConstraint: NSLayoutConstraint?
 
     // Outer vertical stack containing Row 1 (summary) and Row 2 (metadata)
     private let containerStack = NSStackView()
@@ -577,12 +586,15 @@ final class CommitGraphTableCellView: NSTableCellView {
         containerStack.addArrangedSubview(bottomRowStack)
         addSubview(containerStack)
 
+        let leadingConstraint = containerStack.leadingAnchor.constraint(equalTo: graphTrackView.trailingAnchor, constant: 4)
+        self.containerLeadingConstraint = leadingConstraint
+
         NSLayoutConstraint.activate([
             graphTrackView.leadingAnchor.constraint(equalTo: leadingAnchor),
             graphTrackView.topAnchor.constraint(equalTo: topAnchor),
             graphTrackView.bottomAnchor.constraint(equalTo: bottomAnchor),
 
-            containerStack.leadingAnchor.constraint(equalTo: graphTrackView.trailingAnchor, constant: 4),
+            leadingConstraint,
             containerStack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -8),
             containerStack.centerYAnchor.constraint(equalTo: centerYAnchor)
         ])
@@ -593,6 +605,7 @@ final class CommitGraphTableCellView: NSTableCellView {
         directory: String = "",
         theme: Theme,
         workingChangesCount: Int,
+        showGraph: Bool = true,
         onSelectCommit: ((GitCommit) -> Void)? = nil,
         onSelectCommitFile: ((GitCommit, String) -> Void)? = nil,
         onShowDetails: ((GitCommit) -> Void)? = nil
@@ -605,9 +618,18 @@ final class CommitGraphTableCellView: NSTableCellView {
         self.onShowDetailsAction = onShowDetails
 
         // Configure graph track
-        let graphWidth = GraphTrackView.preferredWidth(for: row.totalLanes)
-        graphWidthConstraint?.constant = graphWidth
-        graphTrackView.graphRow = row
+        if showGraph {
+            graphTrackView.isHidden = false
+            let graphWidth = GraphTrackView.preferredWidth(for: row.totalLanes)
+            graphWidthConstraint?.constant = graphWidth
+            containerLeadingConstraint?.constant = 4
+            graphTrackView.graphRow = row
+        } else {
+            graphTrackView.isHidden = true
+            graphWidthConstraint?.constant = 0
+            containerLeadingConstraint?.constant = 10
+            graphTrackView.graphRow = nil
+        }
 
         if row.isWorkingChanges {
             workingIconView.isHidden = false
