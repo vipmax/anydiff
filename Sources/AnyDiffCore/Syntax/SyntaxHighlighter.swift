@@ -186,30 +186,51 @@ public final class SyntaxHighlighter: @unchecked Sendable {
                 continue
             }
 
-            // Strings ("..." or '...' or `...` or $"..." or @"...")
-            if ch == "\"" || ch == "'" || ch == "`" ||
-               ((ch == "$" || ch == "@") && nextIndex < line.endIndex && (line[nextIndex] == "\"" || line[nextIndex] == "$" || line[nextIndex] == "@")) {
+            // Strings ("..." or '...' or `...`)
+            if ch == "\"" || ch == "'" || ch == "`" {
+                let quote = ch
                 let startOffset = currentUtf16Offset
-                var quoteChar: Character? = nil
+                currentUtf16Offset += ch.utf16.count
+                i = line.index(after: i)
 
-                if ch == "\"" || ch == "'" || ch == "`" {
-                    quoteChar = ch
-                    currentUtf16Offset += ch.utf16.count
-                    i = line.index(after: i)
-                } else {
-                    // Consume prefix characters '$', '@'
-                    while i < line.endIndex && (line[i] == "$" || line[i] == "@") {
-                        currentUtf16Offset += line[i].utf16.count
-                        i = line.index(after: i)
+                while i < line.endIndex {
+                    let sc = line[i]
+                    if sc == "\\" {
+                        currentUtf16Offset += sc.utf16.count
+                        let next = line.index(after: i)
+                        if next < line.endIndex {
+                            currentUtf16Offset += line[next].utf16.count
+                            i = line.index(after: next)
+                            continue
+                        } else {
+                            i = next
+                            break
+                        }
                     }
-                    if i < line.endIndex && (line[i] == "\"" || line[i] == "'") {
-                        quoteChar = line[i]
-                        currentUtf16Offset += line[i].utf16.count
-                        i = line.index(after: i)
+                    currentUtf16Offset += sc.utf16.count
+                    i = line.index(after: i)
+                    if sc == quote {
+                        break
                     }
                 }
+                spans.append(HighlightSpan(range: startOffset..<currentUtf16Offset, tokenType: .string))
+                continue
+            }
 
-                if let quote = quoteChar {
+            // Prefixed strings ($"...", @"...", $@"... or @$...)
+            if (ch == "$" || ch == "@") && nextIndex < line.endIndex {
+                var probe = i
+                var prefixUtf16 = 0
+                while probe < line.endIndex && (line[probe] == "$" || line[probe] == "@") {
+                    prefixUtf16 += line[probe].utf16.count
+                    probe = line.index(after: probe)
+                }
+                if probe < line.endIndex && (line[probe] == "\"" || line[probe] == "'") {
+                    let quote = line[probe]
+                    let startOffset = currentUtf16Offset
+                    currentUtf16Offset += prefixUtf16 + quote.utf16.count
+                    i = line.index(after: probe)
+
                     while i < line.endIndex {
                         let sc = line[i]
                         if sc == "\\" {
