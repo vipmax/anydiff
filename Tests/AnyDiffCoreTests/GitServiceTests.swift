@@ -24,7 +24,7 @@ final class GitServiceTests: XCTestCase {
         XCTAssertFalse(isGit)
     }
 
-    func testGitRepositoryLifecycle() throws {
+    func testGitRepositoryLifecycle() async throws {
         let path = tempDirectory.path
         // git init
         let initOut = GitService.shared.run(arguments: ["-C", path, "init"])
@@ -45,5 +45,13 @@ final class GitServiceTests: XCTestCase {
         XCTAssertEqual(files.count, 1)
         XCTAssertEqual(files.first?.displayPath, "test.txt")
         XCTAssertEqual(files.first?.status, .added)
+
+        // streamDiffFiles
+        var streamedFiles: [FileDiff] = []
+        for try await f in GitService.shared.streamDiffFiles(at: path, target: .workingTree) {
+            streamedFiles.append(f)
+        }
+        XCTAssertEqual(streamedFiles.count, 1)
+        XCTAssertEqual(streamedFiles.first?.displayPath, "test.txt")
     }
 }

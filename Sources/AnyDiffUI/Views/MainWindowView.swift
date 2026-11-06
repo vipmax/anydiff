@@ -61,6 +61,8 @@ public struct MainWindowView: View {
     @State private var showOpenSourcePopover: Bool = false
     @ObservedObject private var updates = UpdateCoordinator.shared
     @State private var isWindowDropTargeted: Bool = false
+    @State private var commitLoadTask: Task<Void, Never>? = nil
+    @State private var commitLoadGeneration: UInt64 = 0
 
     public var effectiveWorkingDirectory: String {
         repo.effectiveWorkingDirectory
@@ -530,20 +532,71 @@ public struct MainWindowView: View {
         review.multiBuffer.baseDirectory = dir
         review.displayMap.layoutMode = diffLayoutMode
 
-        DispatchQueue.global(qos: .userInitiated).async {
-            let (files, rawData) = GitService.shared.diffFiles(at: dir, target: .commit(hash: hash, summary: ""))
-            DispatchQueue.main.async {
-                guard case .commit(let currentHash, _) = self.repo.comparisonTarget, currentHash == hash else { return }
-                self.review.viewStateResetToken &+= 1
-                self.review.loadDiff(files: files, rawData: rawData, baseDirectory: self.effectiveBaseDirectory)
-                if let sel = self.repo.selectedFilePath, files.contains(where: { $0.displayPath == sel }) {
-                    self.repo.selectedFilePath = sel
-                } else {
-                    self.repo.selectedFilePath = files.first?.displayPath
+        commitLoadTask?.cancel()
+        commitLoadGeneration &+= 1
+        let generation = commitLoadGeneration
+
+        commitLoadTask = Task {
+            var allFiles: [FileDiff] = []
+            var initialRenderDone = false
+            var lastProgressUpdateTime = Date()
+
+            do {
+                for try await fileDiff in GitService.shared.streamDiffFiles(at: dir, target: .commit(hash: hash, summary: "")) {
+                    if Task.isCancelled { break }
+                    allFiles.append(fileDiff)
+
+                    // 1. Initial Instant Paint (<100ms): show the first file right away!
+                    if !initialRenderDone && allFiles.count >= 1 {
+                        initialRenderDone = true
+                        let firstBatch = allFiles
+                        await MainActor.run {
+                            guard self.commitLoadGeneration == generation else { return }
+                            guard case .commit(let currentHash, _) = self.repo.comparisonTarget, currentHash == hash else { return }
+                            self.review.viewStateResetToken &+= 1
+                            self.review.loadDiff(files: firstBatch, baseDirectory: self.effectiveBaseDirectory)
+                            if self.repo.selectedFilePath == nil {
+                                self.repo.selectedFilePath = firstBatch.first?.displayPath
+                            }
+                            if let target = targetFilePath {
+                                self.focusFileInMultiBuffer(target)
+                            }
+                        }
+                    }
+
+                    // 2. Throttle sidebar file list updates (every 250ms)
+                    let now = Date()
+                    if now.timeIntervalSince(lastProgressUpdateTime) >= 0.25 {
+                        lastProgressUpdateTime = now
+                        let currentList = allFiles
+                        await MainActor.run {
+                            guard self.commitLoadGeneration == generation else { return }
+                            guard case .commit(let currentHash, _) = self.repo.comparisonTarget, currentHash == hash else { return }
+                            self.review.fileDiffs = currentList
+                        }
+                    }
                 }
-                if let target = targetFilePath {
-                    self.focusFileInMultiBuffer(target)
+
+                // 3. Final atomic commit with all files
+                if !Task.isCancelled {
+                    let finalFiles = allFiles
+                    await MainActor.run {
+                        guard self.commitLoadGeneration == generation else { return }
+                        guard case .commit(let currentHash, _) = self.repo.comparisonTarget, currentHash == hash else { return }
+                        self.review.viewStateResetToken &+= 1
+                        self.review.loadDiff(files: finalFiles, baseDirectory: self.effectiveBaseDirectory)
+                        if let sel = self.repo.selectedFilePath, finalFiles.contains(where: { $0.displayPath == sel }) {
+                            self.repo.selectedFilePath = sel
+                        } else {
+                            self.repo.selectedFilePath = finalFiles.first?.displayPath
+                        }
+                        if let target = targetFilePath {
+                            self.focusFileInMultiBuffer(target)
+                        }
+                    }
                 }
+            } catch {
+                // Task cancelled or pipe error
             }
         }
     }

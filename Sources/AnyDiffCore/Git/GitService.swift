@@ -102,6 +102,104 @@ public final class GitService: Sendable {
         return (files: allFiles, data: rawData)
     }
 
+    /// Incrementally streams `FileDiff`s in real time as `git` outputs diff lines
+    public func streamDiffFiles(
+        at path: String,
+        target: ComparisonTarget = .workingTree,
+        pathFilter: Set<String>? = nil
+    ) -> AsyncThrowingStream<FileDiff, Error> {
+        let argumentSets: [[String]]
+        switch target {
+        case .workingTree:
+            argumentSets = [
+                ["-C", path, "diff", "HEAD"],
+                ["-C", path, "diff"],
+                ["-C", path, "diff", "--staged"]
+            ]
+        case .baseBranch(let base):
+            argumentSets = [
+                ["-C", path, "diff", "\(base)..."],
+                ["-C", path, "diff", "\(base)..HEAD"]
+            ]
+        case .directBranch(let branch):
+            argumentSets = [
+                ["-C", path, "diff", branch]
+            ]
+        case .commit(let hash, _):
+            argumentSets = [
+                ["-C", path, "show", "--format=", "--patch", "-m", "--first-parent", hash]
+            ]
+        case .remote:
+            return AsyncThrowingStream { $0.finish() }
+        }
+
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                for baseArgs in argumentSets {
+                    if Task.isCancelled { break }
+                    var args = baseArgs
+                    if let pathFilter, !pathFilter.isEmpty {
+                        args += ["--"] + pathFilter.sorted()
+                    }
+
+                    let process = Process()
+                    process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+                    process.arguments = args
+                    let pipe = Pipe()
+                    process.standardOutput = pipe
+                    process.standardError = FileHandle.nullDevice
+
+                    do {
+                        try process.run()
+                    } catch {
+                        continue
+                    }
+
+                    let streamer = StreamingGitDiffParser()
+                    var yieldedAny = false
+
+                    do {
+                        for try await line in pipe.fileHandleForReading.bytes.lines {
+                            if Task.isCancelled {
+                                process.terminate()
+                                break
+                            }
+                            if let file = streamer.feed(line: line) {
+                                yieldedAny = true
+                                continuation.yield(file)
+                            }
+                        }
+                        if !Task.isCancelled, let finalFile = streamer.finish() {
+                            yieldedAny = true
+                            continuation.yield(finalFile)
+                        }
+                    } catch {
+                        process.terminate()
+                    }
+                    process.waitUntilExit()
+
+                    if yieldedAny {
+                        break
+                    }
+                }
+
+                if case .workingTree = target, !Task.isCancelled {
+                    let untracked = untrackedFiles(at: path, pathFilter: pathFilter)
+                    let filtered = filterIgnoredFiles(untracked, at: path)
+                    for file in filtered {
+                        continuation.yield(file)
+                    }
+                }
+
+                continuation.finish()
+            }
+
+            continuation.onTermination = { _ in
+                task.cancel()
+            }
+        }
+    }
+
     public func filterIgnoredFiles(_ files: [FileDiff], at directory: String) -> [FileDiff] {
         guard !files.isEmpty else { return [] }
         let paths = files.map(\.displayPath)
