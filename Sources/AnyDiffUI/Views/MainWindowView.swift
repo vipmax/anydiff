@@ -988,7 +988,7 @@ public struct MainWindowView: View {
 
     private func updateWindowAppearance() {
         let targetAppearance = NSAppearance(named: activeTheme.isDark ? .darkAqua : .aqua)
-        for window in NSApp.windows {
+        for window in NSApp.primaryWindows {
             window.backgroundColor = activeTheme.background
             window.appearance = targetAppearance
             window.titlebarAppearsTransparent = true

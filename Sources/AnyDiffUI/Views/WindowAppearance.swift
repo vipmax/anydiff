@@ -118,7 +118,7 @@ public final class WindowLifecycleView: NSView {
 
 public func configureFullScreenToolbars(theme: Theme) {
     let targetAppearance = NSAppearance(named: theme.isDark ? .darkAqua : .aqua)
-    for window in NSApp.windows {
+    for window in NSApp.windows where !window.isMenuOrPanel {
         let className = String(describing: type(of: window))
         if className.contains("FullScreen") || className.contains("Toolbar") {
             window.backgroundColor = theme.background
@@ -234,3 +234,25 @@ public func updateSplitViewDividers(in window: NSWindow, color: NSColor = NSColo
         rec(v: root)
     }
 }
+
+// MARK: - Window Classification Helpers
+
+extension NSWindow {
+    /// Indicates whether this window is a primary document or main window (as opposed to popups, menus, panels, or overlays).
+    public var isPrimaryAppWindow: Bool {
+        canBecomeMain && !(self is NSPanel) && level == .normal
+    }
+
+    /// Indicates whether this window is an auxiliary panel, context menu, or popup.
+    public var isMenuOrPanel: Bool {
+        self is NSPanel || level == .popUpMenu
+    }
+}
+
+extension NSApplication {
+    /// Returns all primary application windows, excluding auxiliary panels, context menus, and overlays.
+    public var primaryWindows: [NSWindow] {
+        windows.filter(\.isPrimaryAppWindow)
+    }
+}
+
