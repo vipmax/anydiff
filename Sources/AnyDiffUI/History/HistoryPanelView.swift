@@ -319,7 +319,7 @@ public struct HistoryPanelView: View {
                 all: all
             )
 
-            let rows = Self.calculateGraphRows(commits: loaded, query: query)
+            let rows = Self.calculateGraphRows(commits: loaded, query: query, directory: dir)
 
             DispatchQueue.main.async {
                 guard self.directory == dir else { return }
@@ -359,7 +359,7 @@ public struct HistoryPanelView: View {
                     let allCommits = self.commits
 
                     DispatchQueue.global(qos: .userInitiated).async {
-                        let rows = Self.calculateGraphRows(commits: allCommits, query: query)
+                        let rows = Self.calculateGraphRows(commits: allCommits, query: query, directory: dir)
                         DispatchQueue.main.async {
                             self.graphRows = rows
                             self.isLoadingMore = false
@@ -419,8 +419,9 @@ public struct HistoryPanelView: View {
         }
 
         let allCommits = commits
+        let dir = directory
         let workItem = DispatchWorkItem {
-            let rows = Self.calculateGraphRows(commits: allCommits, query: trimmed)
+            let rows = Self.calculateGraphRows(commits: allCommits, query: trimmed, directory: dir)
             DispatchQueue.main.async {
                 guard self.searchText.trimmingCharacters(in: .whitespaces) == trimmed else { return }
                 self.graphRows = rows
@@ -428,11 +429,11 @@ public struct HistoryPanelView: View {
         }
 
         self.searchDebounceWorkItem = workItem
-        DispatchQueue.global(qos: .userInteractive).asyncAfter(deadline: .now() + 0.1, execute: workItem)
+        DispatchQueue.global(qos: .userInteractive).asyncAfter(deadline: .now() + 0.25, execute: workItem)
     }
 
-    private static func calculateGraphRows(commits: [GitCommit], query: String) -> [GraphRow] {
-        let filtered: [GitCommit]
+    private static func calculateGraphRows(commits: [GitCommit], query: String, directory: String? = nil) -> [GraphRow] {
+        var filtered: [GitCommit]
         let includeWorkingChanges: Bool
 
         if query.isEmpty {
@@ -440,11 +441,41 @@ public struct HistoryPanelView: View {
             includeWorkingChanges = true
         } else {
             includeWorkingChanges = false
+
+            // Clean query in case user pasted a GitHub commit URL or full reference
+            let cleanQuery: String
+            if let commitPart = query.components(separatedBy: "/commit/").last, !commitPart.isEmpty {
+                cleanQuery = commitPart.components(separatedBy: "/").first?.components(separatedBy: "?").first?.components(separatedBy: "#").first ?? query
+            } else {
+                cleanQuery = query
+            }
+
             filtered = commits.filter { commit in
-                commit.summary.localizedCaseInsensitiveContains(query) ||
-                commit.authorName.localizedCaseInsensitiveContains(query) ||
-                commit.shortHash.localizedCaseInsensitiveContains(query) ||
-                commit.hash.localizedCaseInsensitiveContains(query)
+                commit.summary.localizedCaseInsensitiveContains(cleanQuery) ||
+                commit.authorName.localizedCaseInsensitiveContains(cleanQuery) ||
+                commit.shortHash.localizedCaseInsensitiveContains(cleanQuery) ||
+                commit.hash.localizedCaseInsensitiveContains(cleanQuery)
+            }
+
+            if let dir = directory, !dir.isEmpty, cleanQuery.count >= 6 {
+                let isHex = cleanQuery.allSatisfy { $0.isHexDigit }
+                if isHex, let single = GitLogReader.shared.readCommit(directory: dir, hash: cleanQuery, includeShortstat: false) {
+                    if !filtered.contains(where: { $0.hash == single.hash }) {
+                        filtered.insert(single, at: 0)
+                    }
+                } else if filtered.isEmpty {
+                    if let single = GitLogReader.shared.readCommit(directory: dir, hash: cleanQuery, includeShortstat: false) {
+                        filtered = [single]
+                    } else if cleanQuery.count >= 3 {
+                        let searchResults = GitLogReader.shared.searchCommits(directory: dir, query: cleanQuery, limit: 30)
+                        for res in searchResults where !filtered.contains(where: { $0.hash == res.hash }) {
+                            filtered.append(res)
+                        }
+                    }
+                }
+            } else if let dir = directory, !dir.isEmpty, filtered.isEmpty, cleanQuery.count >= 3 {
+                let searchResults = GitLogReader.shared.searchCommits(directory: dir, query: cleanQuery, limit: 30)
+                filtered = searchResults
             }
         }
 

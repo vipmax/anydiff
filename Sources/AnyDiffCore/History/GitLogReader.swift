@@ -7,6 +7,12 @@ public final class GitLogReader: Sendable {
     public static let fieldSeparator: UInt8 = 0x1f // Unit Separator
     public static let recordSeparator: UInt8 = 0x1e // Record Separator
 
+    private let refsCacheLock = NSLock()
+    private final class CacheHolder: @unchecked Sendable {
+        var cache: [String: (timestamp: Date, refs: [String: [GitRef]])] = [:]
+    }
+    private let holder = CacheHolder()
+
     public init() {}
 
     /// Reads Git commits with topology and metadata from a repository directory.
@@ -19,7 +25,7 @@ public final class GitLogReader: Sendable {
     ) -> [GitCommit] {
         let refsByHash = fetchRefsByCommitHash(at: directory)
 
-        var args = ["-C", directory, "log", "--topo-order"]
+        var args = ["-C", directory, "log"]
         if all {
             args.append("--all")
         } else if let branch = branch, !branch.isEmpty {
@@ -40,18 +46,43 @@ public final class GitLogReader: Sendable {
         return parseLogData(data, refsByHash: refsByHash)
     }
 
-    /// Reads a single Git commit by hash with its metadata and diff stats.
-    public func readCommit(directory: String, hash: String) -> GitCommit? {
+    /// Reads a single Git commit by hash with its metadata and optional diff stats.
+    public func readCommit(
+        directory: String,
+        hash: String,
+        includeShortstat: Bool = false
+    ) -> GitCommit? {
         guard !directory.isEmpty, !hash.isEmpty else { return nil }
         let refsByHash = fetchRefsByCommitHash(at: directory)
-        let args = [
+        var args = [
             "-C", directory, "log", "-n", "1",
-            "--shortstat",
-            "--format=%x1e%H%x1f%h%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%s%x1f%b%x1f",
-            hash
+            "--format=%x1e%H%x1f%h%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%s%x1f%b%x1f"
         ]
+        if includeShortstat {
+            args.append("--shortstat")
+        }
+        args.append(hash)
         guard let data = runGitData(arguments: args) else { return nil }
         return parseLogData(data, refsByHash: refsByHash).first
+    }
+
+    /// Fast search of Git commits across history by message or author.
+    public func searchCommits(
+        directory: String,
+        query: String,
+        limit: Int = 50
+    ) -> [GitCommit] {
+        guard !directory.isEmpty, !query.isEmpty else { return [] }
+        let refsByHash = fetchRefsByCommitHash(at: directory)
+        let args = [
+            "-C", directory, "log",
+            "-n", String(limit),
+            "--grep=" + query,
+            "-i",
+            "--format=%x1e%H%x1f%h%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%s%x1f%b%x1f"
+        ]
+        guard let data = runGitData(arguments: args) else { return [] }
+        return parseLogData(data, refsByHash: refsByHash)
     }
 
     /// Reads the list of files changed in a commit with additions and deletions stats.
@@ -223,8 +254,16 @@ public final class GitLogReader: Sendable {
         return Substring(String(decoding: rawSlice, as: UTF8.self))
     }
 
-    /// Fetches all branch and tag references grouped by the commit hash they point to.
+    /// Fetches all branch and tag references grouped by the commit hash they point to with a 5s TTL cache.
     public func fetchRefsByCommitHash(at directory: String) -> [String: [GitRef]] {
+        refsCacheLock.lock()
+        if let cached = holder.cache[directory], Date().timeIntervalSince(cached.timestamp) < 5.0 {
+            let refs = cached.refs
+            refsCacheLock.unlock()
+            return refs
+        }
+        refsCacheLock.unlock()
+
         var result: [String: [GitRef]] = [:]
 
         // 1. Fetch current HEAD symbol
@@ -266,6 +305,10 @@ public final class GitLogReader: Sendable {
             let ref = GitRef(name: fullName, shortName: shortName, type: type)
             result[hash, default: []].append(ref)
         }
+
+        refsCacheLock.lock()
+        holder.cache[directory] = (Date(), result)
+        refsCacheLock.unlock()
 
         return result
     }
