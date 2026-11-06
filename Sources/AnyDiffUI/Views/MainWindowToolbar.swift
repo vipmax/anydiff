@@ -57,26 +57,27 @@ public struct MainWindowToolbarLeadingView: View {
                 updateButton(for: update)
             }
         }
+        .frame(height: 28)
         .padding(.leading, 8)
         .padding(.trailing, 8)
-        .padding(.vertical, 3)
     }
 
     @ViewBuilder
     private func updateButton(for update: UpdateInfo) -> some View {
         Button(action: onInstallUpdate) {
-            HStack(spacing: 5) {
-                Text(isUpdating ? "Updating…" : "Update available")
+            HStack(spacing: 4) {
+                Image(systemName: "arrow.down.circle.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(Color(theme.accentColor))
+                Text(isUpdating ? "Updating…" : "Update \(update.version.description)")
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(.primary)
-                Text("\(currentVersion.description) → \(update.version.description)")
-                    .font(.system(size: 12, weight: .regular).monospacedDigit())
-                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .layoutPriority(1)
             }
         }
         .buttonStyle(ToolbarHoverButtonStyle())
         .disabled(isUpdating)
-        .help("Install AnyDiff \(update.version.description) and restart")
+        .help("Install AnyDiff \(update.version.description) and restart (current: \(currentVersion.description))")
     }
 
     @ViewBuilder
@@ -90,6 +91,7 @@ public struct MainWindowToolbarLeadingView: View {
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(.primary)
                     .lineLimit(1)
+                    .layoutPriority(1)
                 Image(systemName: "chevron.down")
                     .font(.system(size: 8, weight: .bold))
                     .foregroundColor(.secondary)
@@ -113,6 +115,7 @@ public struct MainWindowToolbarLeadingView: View {
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(.primary)
                     .lineLimit(1)
+                    .layoutPriority(1)
                 Image(systemName: "chevron.down")
                     .font(.system(size: 8, weight: .bold))
                     .foregroundColor(.secondary)

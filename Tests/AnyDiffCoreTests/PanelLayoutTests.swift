@@ -297,4 +297,23 @@ final class PanelLayoutTests: XCTestCase {
         let sortedNames = names.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
         XCTAssertEqual(names, sortedNames, "Theme.allThemes should be sorted alphabetically by display name")
     }
+
+    func testEmptyPanelViewResponsiveLayout() {
+        let view = EmptyPanelView(
+            slot: .center,
+            theme: .vesper,
+            currentOccupant: { content in
+                content == .editor ? .left : nil
+            },
+            onSelect: { _ in }
+        )
+
+        let testWidths: [CGFloat] = [80, 160, 300, 600, 1100]
+        for w in testWidths {
+            let hosting = NSHostingView(rootView: view.frame(width: w, height: 600))
+            hosting.frame = NSRect(x: 0, y: 0, width: w, height: 600)
+            hosting.layoutSubtreeIfNeeded()
+            XCTAssertEqual(hosting.bounds.width, w)
+        }
+    }
 }

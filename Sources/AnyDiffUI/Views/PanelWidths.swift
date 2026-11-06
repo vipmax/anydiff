@@ -12,19 +12,10 @@ extension PanelLayoutManager {
             case .changes, .files, nil: return 200
             }
         case .center:
-            switch centerContent {
-            case .changes, .files, .history: return 200
-            case .agent, .terminal: return 280
-            case .editor, nil: return 320
-            }
+            return 0
         case .right:
             guard isRightPanelOpen else { return 0 }
-            switch rightContent {
-            case .changes, .files, .history: return 220
-            case .editor: return 360
-            case .agent, .terminal: return 320
-            case nil: return 240
-            }
+            return 50
         }
     }
 
@@ -57,21 +48,12 @@ extension PanelLayoutManager {
     public func maxWidth(for slot: PanelSlot) -> CGFloat {
         switch slot {
         case .left:
-            switch leftContent {
-            case .editor: return 1200
-            case .agent, .terminal: return 800
-            case .changes, .files, .history, nil: return 800
-            }
+            return 1600
         case .center:
             return 1600
         case .right:
             guard isRightPanelOpen else { return 0 }
-            switch rightContent {
-            case .changes, .files, .history: return 800
-            case .editor: return 1400
-            case .agent, .terminal: return 950
-            case nil: return 800
-            }
+            return 1600
         }
     }
 }

@@ -95,7 +95,59 @@ public final class WindowLifecycleView: NSView {
         window.appearance = NSAppearance(named: theme.isDark ? .darkAqua : .aqua)
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
+        configureSplitViewControllerHoldingPriorities(in: window)
         updateSplitViewDividers(in: window, color: theme.panelDivider)
+    }
+}
+
+public func configureSplitViewControllerHoldingPriorities(in window: NSWindow) {
+    func rec(v: NSView) {
+        if v is NSScrollView || v is MultiBufferEditorView {
+            return
+        }
+        if let sv = v as? NSSplitView, let svc = sv.delegate as? NSSplitViewController {
+            let items = svc.splitViewItems
+            let p260 = NSLayoutConstraint.Priority(260)
+            let p200 = NSLayoutConstraint.Priority(200)
+            if items.count >= 3 {
+                // Keep items[0] (left sidebar) untouched so native toggleSidebar collapse works cleanly
+                if items[0].holdingPriority != p260 {
+                    items[0].holdingPriority = p260
+                }
+                if items[1].holdingPriority != p200 {
+                    items[1].holdingPriority = p200
+                }
+                if items[1].minimumThickness != 0 {
+                    items[1].minimumThickness = 0
+                }
+                if items[2].holdingPriority != p260 {
+                    items[2].holdingPriority = p260
+                }
+                if items[2].minimumThickness > 50 {
+                    items[2].minimumThickness = 50
+                }
+                items[2].viewController.view.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(50), for: .horizontal)
+            } else if items.count == 2 {
+                if items[0].holdingPriority != p200 {
+                    items[0].holdingPriority = p200
+                }
+                if items[0].minimumThickness != 0 {
+                    items[0].minimumThickness = 0
+                }
+                if items[1].holdingPriority != p260 {
+                    items[1].holdingPriority = p260
+                }
+                if items[1].minimumThickness > 50 {
+                    items[1].minimumThickness = 50
+                }
+                items[1].viewController.view.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(50), for: .horizontal)
+            }
+            return
+        }
+        for s in v.subviews { rec(v: s) }
+    }
+    if let root = window.contentView?.superview ?? window.contentView {
+        rec(v: root)
     }
 }
 

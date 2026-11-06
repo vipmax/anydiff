@@ -56,6 +56,7 @@ public struct BranchPickerView: View {
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(.primary)
                     .lineLimit(1)
+                    .layoutPriority(1)
 
                 Image(systemName: "chevron.down")
                     .font(.system(size: 8, weight: .bold))
