@@ -586,6 +586,23 @@ private struct AgentCardButton: View {
     @State private var isHovered: Bool = false
     @State private var isSessionsHovered: Bool = false
     @State private var isProfileHovered: Bool = false
+    @State private var avatarToken: UInt64 = 0
+
+    private var customAvatar: NSImage? {
+        _ = avatarToken
+        if let img = AgentAvatarProvider.customAgentAvatarImage(for: group.selectedPreset.id) {
+            return img
+        }
+        if let img = AgentAvatarProvider.customAgentAvatarImage(for: group.basePreset.id) {
+            return img
+        }
+        for p in group.profiles {
+            if let img = AgentAvatarProvider.customAgentAvatarImage(for: p.id) {
+                return img
+            }
+        }
+        return nil
+    }
 
     private var preset: AgentPreset {
         group.selectedPreset
@@ -606,11 +623,26 @@ private struct AgentCardButton: View {
     var body: some View {
         HStack(spacing: 12) {
             ZStack {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(presetColor.opacity(isHovered ? 0.16 : 0.09))
-                    .frame(width: 40, height: 40)
-                AgentIconView(icon: group.basePreset.iconName, agentId: group.selectedPreset.id, tintColor: presetColor, size: 20)
+                if customAvatar == nil {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(presetColor.opacity(isHovered ? 0.16 : 0.09))
+                        .frame(width: 44, height: 44)
+                    AgentIconView(
+                        icon: group.basePreset.iconName,
+                        agentId: group.selectedPreset.id,
+                        tintColor: presetColor,
+                        size: 22
+                    )
+                } else {
+                    AgentIconView(
+                        icon: group.basePreset.iconName,
+                        agentId: group.selectedPreset.id,
+                        tintColor: presetColor,
+                        size: 44
+                    )
+                }
             }
+            .frame(width: 44, height: 44)
 
             VStack(alignment: .center, spacing: 3) {
                 Button(action: onSelect) {
@@ -721,6 +753,9 @@ private struct AgentCardButton: View {
         .animation(.easeOut(duration: 0.14), value: isHovered)
         .onHover { hovering in
             isHovered = hovering
+        }
+        .onReceive(NotificationCenter.default.publisher(for: AgentAvatarProvider.avatarDidChangeNotification)) { _ in
+            avatarToken &+= 1
         }
     }
 

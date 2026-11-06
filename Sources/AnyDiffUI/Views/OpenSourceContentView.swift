@@ -126,7 +126,7 @@ public struct OpenSourceContentView: View {
                         Text("Open")
                             .font(.system(size: 11, weight: .medium))
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.bordered)
                     .controlSize(.small)
                 }
 
@@ -177,10 +177,14 @@ public struct OpenSourceContentView: View {
                     .foregroundColor(.secondary)
                     .font(.system(size: 11))
 
-                TextField("https://github.com/... or owner/repo#123", text: $remoteURLInput)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 12))
-                    .onSubmit { submitRemoteURL() }
+                TextField(
+                    "",
+                    text: $remoteURLInput,
+                    prompt: Text(verbatim: "https://github.com/... or owner/repo#123")
+                )
+                .textFieldStyle(.plain)
+                .font(.system(size: 12))
+                .onSubmit { submitRemoteURL() }
 
                 if !remoteURLInput.isEmpty {
                     Button(action: {
@@ -206,7 +210,7 @@ public struct OpenSourceContentView: View {
                     Text("Open")
                         .font(.system(size: 11, weight: .medium))
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.bordered)
                 .controlSize(.small)
                 .disabled(remoteURLInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }

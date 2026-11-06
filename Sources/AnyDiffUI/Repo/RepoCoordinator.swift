@@ -220,6 +220,32 @@ public final class RepoCoordinator: ObservableObject {
                     }
                 }
             } catch {
+                let localDir = await MainActor.run(body: { self.effectiveWorkingDirectory })
+                if case .commit(let sha) = reference.kind,
+                   !localDir.isEmpty,
+                   GitService.shared.run(arguments: ["-C", localDir, "cat-file", "-e", sha]) != nil {
+                    let (files, rawData) = GitService.shared.diffFiles(at: localDir, target: .commit(hash: sha, summary: ""))
+                    if !files.isEmpty {
+                        await MainActor.run {
+                            guard self.loadGeneration == generation else { return }
+                            self.multiBuffer.clear()
+                            self.displayMap.clear()
+                            self.multiBuffer.baseDirectory = localDir
+                            self.fileDiffs = files
+                            self.appendFileDiffsToMultiBuffer(files, rawData: rawData)
+                            self.displayMap.rebuild()
+                            self.displayMap.markContentLoaded()
+                            self.isStreaming = false
+                            self.isReloading = false
+                            self.remoteLoadTask = nil
+                            self.streamingCount = files.count
+                            self.selectedFilePath = files.first?.displayPath
+                            self.repoStatus = .hasChanges
+                            self.remoteErrorMessage = nil
+                        }
+                        return
+                    }
+                }
                 await MainActor.run {
                     guard self.loadGeneration == generation else { return }
                     self.isStreaming = false

@@ -165,6 +165,7 @@ public struct EditorContainerView: View {
                             theme: theme,
                             loadableWorkingDirectory: repo.loadableWorkingDirectory,
                             repoStatus: repo.repoStatus,
+                            remoteErrorMessage: repo.remoteErrorMessage,
                             currentFolderName: repo.currentFolderName,
                             currentLocalPath: repo.currentPath,
                             currentComparisonTarget: repo.comparisonTarget,

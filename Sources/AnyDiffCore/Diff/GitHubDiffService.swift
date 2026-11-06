@@ -45,6 +45,7 @@ public final class GitHubDiffService: Sendable {
         case notFound
         case emptyDiff
         case forbiddenOrRateLimited
+        case diffTooLarge(String)
 
         public var errorDescription: String? {
             switch self {
@@ -58,6 +59,8 @@ public final class GitHubDiffService: Sendable {
                 return "The diff returned from GitHub was empty (no changes)."
             case .forbiddenOrRateLimited:
                 return "GitHub rate limit exceeded or access denied."
+            case .diffTooLarge(let reason):
+                return "Diff is too large for GitHub to generate online (\(reason)). GitHub limits web diffs to ~300 files."
             }
         }
     }
@@ -226,6 +229,10 @@ public final class GitHubDiffService: Sendable {
             if httpResponse.statusCode == 404 {
                 throw ServiceError.notFound
             } else if httpResponse.statusCode == 403 {
+                let body = String(data: data, encoding: .utf8) ?? ""
+                if body.contains("too big") || body.contains("too long") {
+                    throw ServiceError.diffTooLarge("error: too big or took too long to generate")
+                }
                 throw ServiceError.forbiddenOrRateLimited
             } else if httpResponse.statusCode < 200 || httpResponse.statusCode >= 300 {
                 throw ServiceError.networkError("HTTP Status \(httpResponse.statusCode)")
@@ -277,6 +284,14 @@ public final class GitHubDiffService: Sendable {
                     if httpResponse.statusCode == 404 {
                         throw ServiceError.notFound
                     } else if httpResponse.statusCode == 403 {
+                        var bodySnippet = ""
+                        var linesIter = asyncBytes.lines.makeAsyncIterator()
+                        if let firstLine = try await linesIter.next() {
+                            bodySnippet = firstLine
+                        }
+                        if bodySnippet.contains("too big") || bodySnippet.contains("too long") {
+                            throw ServiceError.diffTooLarge("error: too big or took too long to generate")
+                        }
                         throw ServiceError.forbiddenOrRateLimited
                     } else if httpResponse.statusCode < 200 || httpResponse.statusCode >= 300 {
                         throw ServiceError.networkError("HTTP Status \(httpResponse.statusCode)")

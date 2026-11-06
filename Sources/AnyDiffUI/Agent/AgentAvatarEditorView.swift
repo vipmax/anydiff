@@ -369,50 +369,58 @@ public struct AgentAvatarEditorView: View {
 
                 // User Row
                 HStack(spacing: 10) {
-                    if let img = userSourceImage {
-                        Image(nsImage: img)
+                    ZStack {
+                        Image(nsImage: AgentAvatarProvider.userAvatarImage)
                             .resizable()
                             .scaledToFill()
                             .frame(width: userAvatarSize, height: userAvatarSize)
                             .clipShape(Circle())
-                    } else {
-                        Circle()
-                            .fill(Color.secondary.opacity(0.3))
-                            .frame(width: userAvatarSize, height: userAvatarSize)
                     }
+                    .frame(width: 50, height: 50, alignment: .center)
 
                     Text("User message appearance")
                         .font(.system(size: 11.5))
                         .foregroundColor(.primary)
                 }
+                .frame(height: 50)
 
                 // Agent Row
                 HStack(spacing: 10) {
-                    if let customAgentImg = agentSourceImage, isAgentCustomActive {
-                        Image(nsImage: customAgentImg)
-                            .resizable()
-                            .scaledToFill()
-                            .frame(width: agentAvatarSize, height: agentAvatarSize)
-                            .clipShape(Circle())
-                    } else {
-                        ZStack {
-                            if showAgentCircle {
-                                Circle()
-                                    .fill(Color.primary.opacity(0.12))
-                                    .frame(width: agentAvatarSize, height: agentAvatarSize)
+                    ZStack {
+                        if let customAgentImg = AgentAvatarProvider.customAgentAvatarImage(for: selectedAgentId), isAgentCustomActive {
+                            Image(nsImage: customAgentImg)
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: agentAvatarSize, height: agentAvatarSize)
+                                .clipShape(Circle())
+                        } else if isAgentCustomActive, let rawAgent = agentSourceImage {
+                            Image(nsImage: rawAgent)
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: agentAvatarSize, height: agentAvatarSize)
+                                .clipShape(Circle())
+                        } else {
+                            ZStack {
+                                if showAgentCircle {
+                                    Circle()
+                                        .fill(Color.primary.opacity(0.12))
+                                        .frame(width: agentAvatarSize, height: agentAvatarSize)
+                                }
+                                Image(systemName: "sparkles")
+                                    .font(.system(size: showAgentCircle ? max(8, agentAvatarSize * 0.5) : max(10, agentAvatarSize * 0.75)))
+                                    .foregroundColor(.secondary)
                             }
-                            Image(systemName: "sparkles")
-                                .font(.system(size: showAgentCircle ? max(8, agentAvatarSize * 0.5) : max(10, agentAvatarSize * 0.75)))
-                                .foregroundColor(.secondary)
+                            .frame(width: agentAvatarSize, height: agentAvatarSize)
                         }
-                        .frame(width: agentAvatarSize, height: agentAvatarSize)
                     }
+                    .frame(width: 50, height: 50, alignment: .center)
 
                     Text("\(currentAgentDisplayName) response appearance")
                         .font(.system(size: 11.5))
                         .foregroundColor(.secondary)
                         .lineLimit(1)
                 }
+                .frame(height: 50)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(10)
@@ -428,24 +436,22 @@ public struct AgentAvatarEditorView: View {
             // Sliders Section
             VStack(spacing: 8) {
                 HStack {
-                    Text("User Avatar Size:")
+                    Text("Avatar Size:")
                         .font(.caption)
                         .frame(width: 110, alignment: .leading)
-                    Slider(value: $userAvatarSize, in: 16...50, step: 2)
-                        .controlSize(.small)
+                    Slider(
+                        value: Binding(
+                            get: { userAvatarSize },
+                            set: { newValue in
+                                userAvatarSize = newValue
+                                agentAvatarSize = newValue
+                            }
+                        ),
+                        in: 16...50,
+                        step: 2
+                    )
+                    .controlSize(.small)
                     Text("\(Int(userAvatarSize)) pt")
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundColor(.secondary)
-                        .frame(width: 40, alignment: .trailing)
-                }
-
-                HStack {
-                    Text("Agent Icon Size:")
-                        .font(.caption)
-                        .frame(width: 110, alignment: .leading)
-                    Slider(value: $agentAvatarSize, in: 16...50, step: 2)
-                        .controlSize(.small)
-                    Text("\(Int(agentAvatarSize)) pt")
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundColor(.secondary)
                         .frame(width: 40, alignment: .trailing)
@@ -463,17 +469,19 @@ public struct AgentAvatarEditorView: View {
 
                 HStack {
                     Spacer()
-                    if userAvatarSize != 24 || agentAvatarSize != 24 || showAgentCircle {
-                        Button("Reset sizes to default (24 pt)") {
-                            userAvatarSize = 24
-                            agentAvatarSize = 24
-                            showAgentCircle = false
-                        }
-                        .buttonStyle(.borderless)
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
+                    let isModified = userAvatarSize != 24 || agentAvatarSize != 24 || showAgentCircle
+                    Button("Reset size to default (24 pt)") {
+                        userAvatarSize = 24
+                        agentAvatarSize = 24
+                        showAgentCircle = false
                     }
+                    .buttonStyle(.borderless)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .opacity(isModified ? 1 : 0)
+                    .disabled(!isModified)
                 }
+                .frame(height: 16)
             }
             .padding(.horizontal, 2)
         }
@@ -605,7 +613,9 @@ public struct AgentAvatarEditorView: View {
 
         let settings = AgentAvatarProvider.loadSettings()
         isUserCustomActive = settings.useCustom
-        userAvatarSize = settings.userAvatarSize
+        let unifiedSize = max(settings.userAvatarSize, settings.agentAvatarSize)
+        userAvatarSize = unifiedSize
+        agentAvatarSize = unifiedSize
 
         // User image
         if let rawImg = AgentAvatarProvider.rawOriginalImage {
@@ -633,7 +643,7 @@ public struct AgentAvatarEditorView: View {
         let settings = AgentAvatarProvider.loadSettings()
         let config = settings.config(for: agentId)
         isAgentCustomActive = config.useCustom
-        agentAvatarSize = config.avatarSize
+        agentAvatarSize = userAvatarSize
         showAgentCircle = config.showCircle
 
         if let rawAgentImg = AgentAvatarProvider.rawAgentOriginalImage(for: agentId) {
@@ -858,7 +868,7 @@ public struct AgentAvatarEditorView: View {
         settings.offsetX = userOffset.width
         settings.offsetY = userOffset.height
         settings.userAvatarSize = userAvatarSize
-        settings.agentAvatarSize = agentAvatarSize
+        settings.agentAvatarSize = userAvatarSize
         settings.showAgentCircle = showAgentCircle
 
         let agentItemConfig = AgentAvatarItemConfig(
@@ -866,10 +876,13 @@ public struct AgentAvatarEditorView: View {
             zoom: agentZoom,
             offsetX: agentOffset.width,
             offsetY: agentOffset.height,
-            avatarSize: agentAvatarSize,
+            avatarSize: userAvatarSize,
             showCircle: showAgentCircle
         )
         settings.agentConfigs[selectedAgentId] = agentItemConfig
+        for key in settings.agentConfigs.keys {
+            settings.agentConfigs[key]?.avatarSize = userAvatarSize
+        }
 
         AgentAvatarProvider.saveAllAvatarSettings(
             settings: settings,

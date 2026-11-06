@@ -5,6 +5,7 @@ public struct EmptyDiffView: View {
     public let theme: Theme
     public let loadableWorkingDirectory: String?
     public let repoStatus: RepoCoordinator.RepoStatus
+    public let remoteErrorMessage: String?
     public let currentFolderName: String
     public let currentLocalPath: String?
     public let currentComparisonTarget: ComparisonTarget
@@ -17,6 +18,7 @@ public struct EmptyDiffView: View {
         theme: Theme,
         loadableWorkingDirectory: String?,
         repoStatus: RepoCoordinator.RepoStatus,
+        remoteErrorMessage: String? = nil,
         currentFolderName: String,
         currentLocalPath: String?,
         currentComparisonTarget: ComparisonTarget,
@@ -28,6 +30,7 @@ public struct EmptyDiffView: View {
         self.theme = theme
         self.loadableWorkingDirectory = loadableWorkingDirectory
         self.repoStatus = repoStatus
+        self.remoteErrorMessage = remoteErrorMessage
         self.currentFolderName = currentFolderName
         self.currentLocalPath = currentLocalPath
         self.currentComparisonTarget = currentComparisonTarget
@@ -63,7 +66,22 @@ public struct EmptyDiffView: View {
     @ViewBuilder
     private var statusHeaderView: some View {
         VStack(spacing: 6) {
-            if loadableWorkingDirectory == nil {
+            if let error = remoteErrorMessage {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.system(size: 34, weight: .light))
+                    .foregroundColor(.orange)
+
+                Text("Unable to Load Diff")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(Color(theme.foreground))
+
+                Text(error)
+                    .font(.system(size: 12))
+                    .foregroundColor(Color(theme.gutterForeground))
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 440)
+                    .padding(.horizontal, 16)
+            } else if loadableWorkingDirectory == nil {
                 Image(systemName: "folder.badge.plus")
                     .font(.system(size: 34, weight: .light))
                     .foregroundColor(Color(theme.gutterForeground).opacity(0.8))

@@ -285,19 +285,45 @@ public enum AgentAvatarProvider {
             return nil
         }
         let settings = loadSettings()
-        guard let config = settings.agentConfigs[id], config.useCustom else {
-            return nil
+
+        // 1. Exact match on agentId
+        if let config = settings.agentConfigs[id], config.useCustom {
+            if let cached = cachedAgentAvatars[id] {
+                return cached
+            }
+            let rendURL = agentRenderedAvatarURL(for: id)
+            if FileManager.default.fileExists(atPath: rendURL.path),
+               let data = try? Data(contentsOf: rendURL),
+               let diskImage = NSImage(data: data) {
+                cachedAgentAvatars[id] = diskImage
+                return diskImage
+            }
         }
-        if let cached = cachedAgentAvatars[id] {
-            return cached
+
+        // 2. Base ID match and sibling profile match (e.g. "antigravity-acp-max93petrov" -> "antigravity-acp" -> "antigravity-acp-djvipmax")
+        let basePrefix: String
+        if let dashIdx = id.lastIndex(of: "-") {
+            basePrefix = String(id[..<dashIdx])
+        } else {
+            basePrefix = id
         }
-        let rendURL = agentRenderedAvatarURL(for: id)
-        if FileManager.default.fileExists(atPath: rendURL.path),
-           let data = try? Data(contentsOf: rendURL),
-           let diskImage = NSImage(data: data) {
-            cachedAgentAvatars[id] = diskImage
-            return diskImage
+
+        // Check if the base ID itself has a config
+        if basePrefix != id, let baseConfig = settings.agentConfigs[basePrefix], baseConfig.useCustom {
+            if let img = customAgentAvatarImage(for: basePrefix) {
+                return img
+            }
         }
+
+        // Check sibling profiles sharing the same base prefix
+        for (cfgId, cfg) in settings.agentConfigs where cfg.useCustom && cfgId != id {
+            if cfgId.hasPrefix(basePrefix + "-") || cfgId == basePrefix {
+                if let img = customAgentAvatarImage(for: cfgId) {
+                    return img
+                }
+            }
+        }
+
         return nil
     }
 
