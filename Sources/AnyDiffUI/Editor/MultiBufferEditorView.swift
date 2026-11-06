@@ -40,13 +40,12 @@ public final class MultiBufferEditorView: NSView, NSTextInputClient, NSUserInter
                 .sink { [weak self] _ in
                     guard let self = self else { return }
                     self.invalidateLayout()
-                    self.ensureAllFilesOpenedInLSP()
                     self.refreshDiagnosticsFromLSPWorkspace()
                 }
                 .store(in: &displayMapCancellables)
             invalidateLayout()
             setupBufferSaveHook()
-            ensureAllFilesOpenedInLSP()
+            ensureFocusedFileOpenedInLSP()
             refreshDiagnosticsFromLSPWorkspace()
         }
     }
@@ -485,6 +484,8 @@ public final class MultiBufferEditorView: NSView, NSTextInputClient, NSUserInter
         NotificationCenter.default.addObserver(self, selector: #selector(handleGoToPreviousDiagnosticNotification(_:)), name: .goToPreviousDiagnostic, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleDiagnosticsChangedNotification(_:)), name: .lspDiagnosticsDidChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(saveActiveDocumentNotification(_:)), name: .saveActiveDocument, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(handleAutostartDidChangeNotification(_:)), name: LSPWorkspaceService.autostartDidChangeNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(handleServersDidChangeNotification(_:)), name: LSPWorkspaceService.serversDidChangeNotification, object: nil)
     }
 
     deinit {
@@ -822,6 +823,10 @@ public final class MultiBufferEditorView: NSView, NSTextInputClient, NSUserInter
             isCollapsed: loc.isCollapsed
         )
 
+        if let fileSecIdx = cachedFileSections.firstIndex(where: { $0.info.filePath == excerpt.filePath }) {
+            cachedFileSections[fileSecIdx].info.isCollapsed = excerpt.isCollapsed
+        }
+
         // 2. If height or line count changed, shift subsequent excerpt start positions
         if heightDelta != 0 || displayDelta != 0 {
             for j in (excerptIdx + 1)..<excerptLayouts.count {
@@ -846,6 +851,28 @@ public final class MultiBufferEditorView: NSView, NSTextInputClient, NSUserInter
         updateViewportMetrics()
         clampCursorToValidBounds()
         needsDisplay = true
+    }
+
+    /// O(1) Fast scoped collapse/expand toggle for a single file without rebuilding the entire document
+    public func toggleCollapse(filePath: String) {
+        guard let dm = displayMap else { return }
+        let mb = dm.multiBuffer
+        guard mb.excerpts.contains(where: { $0.filePath == filePath }) else { return }
+
+        // 1. Toggle collapse state in multiBuffer
+        mb.toggleCollapse(filePath: filePath)
+
+        // 2. Incrementally rebuild only the excerpt(s) of this file
+        let matchingIndices = mb.excerpts.indices.filter { mb.excerpts[$0].filePath == filePath }
+        for exIdx in matchingIndices {
+            if let deltas = dm.rebuildExcerpt(at: exIdx) {
+                updateLayoutAfterExcerptRebuild(
+                    excerptIdx: exIdx,
+                    displayDelta: deltas.displayDelta,
+                    oldDisplayRange: deltas.oldDisplayRange
+                )
+            }
+        }
     }
 
     public func yOffset(for multiBufferRow: MultiBufferRow) -> CGFloat? {
@@ -1044,13 +1071,19 @@ public final class MultiBufferEditorView: NSView, NSTextInputClient, NSUserInter
     }
 
     public func ensureAllFilesOpenedInLSP() {
-        guard let dm = displayMap else { return }
-        var seen = Set<String>()
-        for excerpt in dm.multiBuffer.excerpts {
-            let path = excerpt.filePath
-            guard !seen.contains(path) else { continue }
-            seen.insert(path)
-            ensureFileOpenedInLSP(filePath: path)
+        // Files are opened on-demand in LSP when focused, navigated to, or edited.
+        ensureFocusedFileOpenedInLSP()
+    }
+
+    @objc private func handleAutostartDidChangeNotification(_ notification: Notification) {
+        if LSPWorkspaceService.isAutoStartConfigured {
+            ensureFocusedFileOpenedInLSP()
+        }
+    }
+
+    @objc private func handleServersDidChangeNotification(_ notification: Notification) {
+        if LSPWorkspaceService.isAutoStartConfigured {
+            ensureFocusedFileOpenedInLSP()
         }
     }
 

@@ -10,7 +10,7 @@ enum SelectionGranularity: Sendable, Equatable {
 
 /// Cached section metrics for excerpt headers and content boundaries
 struct FileSection: Sendable, Equatable {
-    let info: ExcerptHeaderInfo
+    var info: ExcerptHeaderInfo
     var headerMinY: CGFloat
     var contentMaxY: CGFloat
 }

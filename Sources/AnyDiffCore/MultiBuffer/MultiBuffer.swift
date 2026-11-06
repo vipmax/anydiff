@@ -4,6 +4,7 @@ import Combine
 /// Continuous virtual document composing multiple file diff excerpts into a single editable canvas
 public final class MultiBuffer: ObservableObject, @unchecked Sendable {
     public private(set) var buffers: [BufferId: Buffer] = [:]
+    private var buffersByPath: [String: [BufferId]] = [:]
     public private(set) var excerpts: [Excerpt] = []
     public let undoManager: MultiBufferUndoManager
 
@@ -29,6 +30,7 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
 
     public func addBuffer(_ buffer: Buffer) {
         buffers[buffer.id] = buffer
+        buffersByPath[buffer.filePath, default: []].append(buffer.id)
         version &+= 1
     }
 
@@ -37,10 +39,16 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
     }
 
     public func buffer(forFilePath filePath: String) -> Buffer? {
-        if let buf = buffers.values.first(where: { $0.filePath == filePath }) {
+        if let id = buffersByPath[filePath]?.first, let buf = buffers[id] {
             return buf
         }
         let normalized = (filePath as NSString).standardizingPath
+        if let id = buffersByPath[normalized]?.first, let buf = buffers[id] {
+            return buf
+        }
+        if let buf = buffers.values.first(where: { $0.filePath == filePath }) {
+            return buf
+        }
         return buffers.values.first { ($0.filePath as NSString).standardizingPath == normalized }
     }
 
@@ -69,9 +77,11 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
         for id in oldBufferIDs {
             buffers.removeValue(forKey: id)
         }
+        buffersByPath.removeValue(forKey: filePath)
 
         for buffer in newBuffers {
             buffers[buffer.id] = buffer
+            buffersByPath[buffer.filePath, default: []].append(buffer.id)
         }
 
         let clampedIndex = min(insertionIndex, excerpts.count)
@@ -90,6 +100,7 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
         for id in oldBufferIDs {
             buffers.removeValue(forKey: id)
         }
+        buffersByPath.removeValue(forKey: filePath)
         version &+= 1
     }
 
@@ -107,6 +118,7 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
 
     public func clear() {
         buffers.removeAll()
+        buffersByPath.removeAll()
         excerpts.removeAll()
         contentMode = .diff
         undoManager.clear()
@@ -1175,17 +1187,23 @@ public final class MultiBuffer: ObservableObject, @unchecked Sendable {
 
     /// Returns the complete file content (disk or promoted in-memory buffer) for a file in the MultiBuffer
     public func fullFileContent(for filePath: String, baseDirectory: String? = nil) -> String? {
-        if let buf = buffers.values.first(where: { $0.filePath == filePath && $0.isFullFile && !$0.isLazySlice }) {
+        let matchingBuffers: [Buffer] = {
+            if let ids = buffersByPath[filePath] {
+                return ids.compactMap { buffers[$0] }
+            }
+            return buffers.values.filter { $0.filePath == filePath }
+        }()
+        if let buf = matchingBuffers.first(where: { $0.isFullFile && !$0.isLazySlice }) {
             return buf.text()
         }
         let base = baseDirectory ?? self.baseDirectory
-        let fullPath = buffers.values.first(where: { $0.filePath == filePath })?.fullDiskPath
+        let fullPath = matchingBuffers.first?.fullDiskPath
             ?? base.map { ($0 as NSString).appendingPathComponent(filePath) }
             ?? ((filePath as NSString).isAbsolutePath ? filePath : nil)
         if let path = fullPath, let text = try? String(contentsOfFile: path, encoding: .utf8) {
             return text
         }
-        if let buf = buffers.values.first(where: { $0.filePath == filePath }) {
+        if let buf = matchingBuffers.first {
             return buf.text()
         }
         return nil

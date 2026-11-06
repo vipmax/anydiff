@@ -708,9 +708,7 @@ extension MultiBufferEditorView {
         // 1. If the file/excerpt is collapsed, expand it!
         let excerpt = dm.multiBuffer.excerpts[targetIdx]
         if excerpt.isCollapsed {
-            dm.multiBuffer.expand(filePath: excerpt.filePath)
-            dm.rebuild()
-            invalidateLayout()
+            toggleCollapse(filePath: excerpt.filePath)
         }
 
         // 2. Find target MultiBuffer row and display line in target hunk

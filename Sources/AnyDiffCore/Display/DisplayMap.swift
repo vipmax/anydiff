@@ -259,6 +259,18 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
 
     // MARK: - Rebuild & Range Indexing
 
+    private func hunkLineCount(for excerpt: Excerpt) -> Int {
+        if let hunk = excerpt.hunk {
+            if !hunk.lineSpans.isEmpty {
+                return hunk.lineSpans.count
+            }
+            if !hunk.lines.isEmpty {
+                return hunk.lines.count
+            }
+        }
+        return excerpt.bufferRange.count
+    }
+
     /// Rebuilds the prefix-sum Virtual Range Index across excerpts in O(Excerpts)
     public func rebuild(invalidatingPaths: Set<String>? = nil) {
         rebuildVersion &+= 1
@@ -342,25 +354,43 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
             if excerpt.isCollapsed {
                 codeCount = 0
             } else if effectiveLayoutMode == .sideBySide {
-                let splitRows = getCachedSplitRows(for: excerptIdx)
-                codeCount = splitRows.count
-                for row in splitRows {
-                    calculatedMaxChars = max(calculatedMaxChars, row.left.text.count, row.right.text.count)
+                if excerpt.fileStatus == .added || excerpt.fileStatus == .deleted {
+                    codeCount = hunkLineCount(for: excerpt)
+                    let sampleLimit = min(codeCount, 20)
+                    if let spans = excerpt.hunk?.lineSpans, !spans.isEmpty {
+                        for i in 0..<min(spans.count, sampleLimit) {
+                            calculatedMaxChars = max(calculatedMaxChars, Int(spans[i].length))
+                        }
+                    } else if let lines = excerpt.hunk?.lines, !lines.isEmpty {
+                        for i in 0..<min(lines.count, sampleLimit) {
+                            calculatedMaxChars = max(calculatedMaxChars, lines[i].text.count)
+                        }
+                    }
+                } else {
+                    let splitRows = getCachedSplitRows(for: excerptIdx)
+                    codeCount = splitRows.count
+                    let sampleLimit = min(splitRows.count, 20)
+                    for i in 0..<sampleLimit {
+                        calculatedMaxChars = max(calculatedMaxChars, splitRows[i].left.text.count, splitRows[i].right.text.count)
+                    }
                 }
             } else if multiBuffer.contentMode == .diff,
                       let hunk = excerpt.hunk,
                       usesOriginalHunk(excerpt: excerpt, buffer: buffer) {
                 if !hunk.lineSpans.isEmpty {
                     codeCount = hunk.lineSpans.count
-                    for span in hunk.lineSpans { calculatedMaxChars = max(calculatedMaxChars, Int(span.length)) }
+                    let sampleLimit = min(hunk.lineSpans.count, 20)
+                    for i in 0..<sampleLimit { calculatedMaxChars = max(calculatedMaxChars, Int(hunk.lineSpans[i].length)) }
                 } else {
                     codeCount = hunk.lines.count
-                    for line in hunk.lines { calculatedMaxChars = max(calculatedMaxChars, line.text.count) }
+                    let sampleLimit = min(hunk.lines.count, 20)
+                    for i in 0..<sampleLimit { calculatedMaxChars = max(calculatedMaxChars, hunk.lines[i].text.count) }
                 }
             } else {
                 let diffLines = getCachedDiffLines(for: excerptIdx)
                 codeCount = diffLines.count
-                for item in diffLines { calculatedMaxChars = max(calculatedMaxChars, item.line.text.count) }
+                let sampleLimit = min(diffLines.count, 20)
+                for i in 0..<sampleLimit { calculatedMaxChars = max(calculatedMaxChars, diffLines[i].line.text.count) }
             }
 
             let totalDisplayCount = (hasHeader ? 1 : 0) + (hasTopGap ? 1 : 0) + codeCount + (hasBottomGap ? 1 : 0)
@@ -425,10 +455,25 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
         if excerpt.isCollapsed {
             newCodeCount = 0
         } else if effectiveLayoutMode == .sideBySide {
-            let splitRows = getCachedSplitRows(for: excerptIdx)
-            newCodeCount = splitRows.count
-            for row in splitRows {
-                maxLineChars = max(maxLineChars, row.left.text.count, row.right.text.count)
+            if excerpt.fileStatus == .added || excerpt.fileStatus == .deleted {
+                newCodeCount = hunkLineCount(for: excerpt)
+                let sampleLimit = min(newCodeCount, 20)
+                if let spans = excerpt.hunk?.lineSpans, !spans.isEmpty {
+                    for i in 0..<min(spans.count, sampleLimit) {
+                        maxLineChars = max(maxLineChars, Int(spans[i].length))
+                    }
+                } else if let lines = excerpt.hunk?.lines, !lines.isEmpty {
+                    for i in 0..<min(lines.count, sampleLimit) {
+                        maxLineChars = max(maxLineChars, lines[i].text.count)
+                    }
+                }
+            } else {
+                let splitRows = getCachedSplitRows(for: excerptIdx)
+                newCodeCount = splitRows.count
+                let sampleLimit = min(splitRows.count, 20)
+                for i in 0..<sampleLimit {
+                    maxLineChars = max(maxLineChars, splitRows[i].left.text.count, splitRows[i].right.text.count)
+                }
             }
             if buffer.isFullFile {
                 let diffLines = getCachedDiffLines(for: excerptIdx)
@@ -451,15 +496,18 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
                   usesOriginalHunk(excerpt: excerpt, buffer: buffer) {
             if !hunk.lineSpans.isEmpty {
                 newCodeCount = hunk.lineSpans.count
-                for span in hunk.lineSpans { maxLineChars = max(maxLineChars, Int(span.length)) }
+                let sampleLimit = min(hunk.lineSpans.count, 20)
+                for i in 0..<sampleLimit { maxLineChars = max(maxLineChars, Int(hunk.lineSpans[i].length)) }
             } else {
                 newCodeCount = hunk.lines.count
-                for line in hunk.lines { maxLineChars = max(maxLineChars, line.text.count) }
+                let sampleLimit = min(hunk.lines.count, 20)
+                for i in 0..<sampleLimit { maxLineChars = max(maxLineChars, hunk.lines[i].text.count) }
             }
         } else {
             let diffLines = getCachedDiffLines(for: excerptIdx)
             newCodeCount = diffLines.count
-            for item in diffLines { maxLineChars = max(maxLineChars, item.line.text.count) }
+            let sampleLimit = min(diffLines.count, 20)
+            for i in 0..<sampleLimit { maxLineChars = max(maxLineChars, diffLines[i].line.text.count) }
             if buffer.isFullFile {
                 let addedCount = diffLines.reduce(into: 0) { count, item in
                     if item.line.kind != .deleted { count += 1 }
@@ -478,7 +526,9 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
         }
 
         // 3. Recompute total display line count for this excerpt ONLY
-        let newTotalDisplayCount = (oldLoc.hasHeader ? 1 : 0) + (oldLoc.hasTopGap ? 1 : 0) + newCodeCount + (oldLoc.hasBottomGap ? 1 : 0)
+        let hasTopGap = (!excerpt.isCollapsed && oldLoc.topHidden > 0)
+        let hasBottomGap = (!excerpt.isCollapsed && oldLoc.bottomHidden > 0)
+        let newTotalDisplayCount = (oldLoc.hasHeader ? 1 : 0) + (hasTopGap ? 1 : 0) + newCodeCount + (hasBottomGap ? 1 : 0)
 
         let displayDelta = newTotalDisplayCount - oldDisplayCount
         let codeDelta = newCodeCount - oldCodeCount
@@ -486,6 +536,14 @@ public final class DisplayMap: ObservableObject, @unchecked Sendable {
         // 4. Update the excerpt slice in-place
         excerptLocations[excerptIdx].displayCount = UInt32(newTotalDisplayCount)
         excerptLocations[excerptIdx].codeCount = UInt32(newCodeCount)
+        if excerpt.isCollapsed {
+            excerptLocations[excerptIdx].flags.insert(.isCollapsed)
+            excerptLocations[excerptIdx].flags.remove([.hasTopGap, .hasBottomGap])
+        } else {
+            excerptLocations[excerptIdx].flags.remove(.isCollapsed)
+            if hasTopGap { excerptLocations[excerptIdx].flags.insert(.hasTopGap) } else { excerptLocations[excerptIdx].flags.remove(.hasTopGap) }
+            if hasBottomGap { excerptLocations[excerptIdx].flags.insert(.hasBottomGap) } else { excerptLocations[excerptIdx].flags.remove(.hasBottomGap) }
+        }
 
         // 5. If counts changed (e.g. newline added/deleted), shift subsequent excerpts with fast SIMD-friendly integer additions
         if displayDelta != 0 || codeDelta != 0 {

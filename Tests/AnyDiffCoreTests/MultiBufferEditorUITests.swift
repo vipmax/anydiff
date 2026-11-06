@@ -1258,4 +1258,42 @@ final class MultiBufferEditorUITests: XCTestCase {
         curLoc = fixture.displayMap.fastSourceLocation(forCodeRow: editor.cursorPoint.row)
         XCTAssertEqual(curLoc?.lineNumber, 2)
     }
+
+    func testToggleCollapseSingleFileFastPath() throws {
+        let multiBuffer = MultiBuffer()
+        let buf1 = Buffer(filePath: "FileA.swift", text: "line 1\nline 2\nline 3\nline 4\nline 5")
+        let buf2 = Buffer(filePath: "FileB.swift", text: "hello 1\nhello 2")
+        multiBuffer.addBuffer(buf1)
+        multiBuffer.addBuffer(buf2)
+        multiBuffer.setExcerpts([
+            Excerpt(bufferId: buf1.id, filePath: "FileA.swift", bufferRange: 0..<5, isFileStart: true),
+            Excerpt(bufferId: buf2.id, filePath: "FileB.swift", bufferRange: 0..<2, isFileStart: true)
+        ])
+
+        let displayMap = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
+        let editor = MultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        editor.frame = NSRect(x: 0, y: 0, width: 800, height: 600)
+        editor.invalidateLayout()
+
+        let initialHeight = editor.totalDocumentHeight
+        let initialFile2StartY = editor.excerptStartYs[1]
+        XCTAssertFalse(editor.cachedFileSections[0].info.isCollapsed)
+        XCTAssertFalse(editor.excerptLayouts[0].isCollapsed)
+
+        // 1. Fast collapse FileA
+        editor.toggleCollapse(filePath: "FileA.swift")
+
+        XCTAssertTrue(editor.cachedFileSections[0].info.isCollapsed)
+        XCTAssertTrue(editor.excerptLayouts[0].isCollapsed)
+        XCTAssertLessThan(editor.totalDocumentHeight, initialHeight)
+        XCTAssertLessThan(editor.excerptStartYs[1], initialFile2StartY)
+
+        // 2. Fast re-expand FileA
+        editor.toggleCollapse(filePath: "FileA.swift")
+
+        XCTAssertFalse(editor.cachedFileSections[0].info.isCollapsed)
+        XCTAssertFalse(editor.excerptLayouts[0].isCollapsed)
+        XCTAssertEqual(editor.totalDocumentHeight, initialHeight)
+        XCTAssertEqual(editor.excerptStartYs[1], initialFile2StartY)
+    }
 }

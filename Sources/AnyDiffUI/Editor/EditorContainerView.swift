@@ -202,7 +202,8 @@ public struct EditorContainerView: View {
     }
 
     private func toggleCollapseAll() {
-        withAnimation(.easeInOut(duration: 0.16)) {
+        let shouldAnimate = multiBuffer.excerpts.count <= 50
+        let performToggle = {
             if hasAnyCollapsedFiles {
                 multiBuffer.expandAll()
             } else {
@@ -210,6 +211,14 @@ public struct EditorContainerView: View {
             }
             displayMap.rebuild()
             displayMap.markContentLoaded()
+        }
+
+        if shouldAnimate {
+            withAnimation(.easeInOut(duration: 0.16)) {
+                performToggle()
+            }
+        } else {
+            performToggle()
         }
     }
 

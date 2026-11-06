@@ -61,9 +61,7 @@ extension MultiBufferEditorView {
                 delegate?.editorDidRequestOpenExternalIDE(filePath: stickyInfo.filePath, lineNumber: nil)
                 return
             }
-            displayMap.multiBuffer.toggleCollapse(filePath: stickyInfo.filePath)
-            displayMap.rebuild()
-            invalidateLayout()
+            toggleCollapse(filePath: stickyInfo.filePath)
             return
         }
 
@@ -96,9 +94,7 @@ extension MultiBufferEditorView {
                     delegate?.editorDidRequestOpenExternalIDE(filePath: header.filePath, lineNumber: nil)
                     return
                 }
-                displayMap.multiBuffer.toggleCollapse(filePath: header.filePath)
-                displayMap.rebuild()
-                invalidateLayout()
+                toggleCollapse(filePath: header.filePath)
                 return
             case .foldGap(let gap):
                 selectionAnchor = cursorPoint
