@@ -7,6 +7,9 @@ import AnyDiffUI
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var window: NSWindow?
     var checkForUpdatesItem: NSMenuItem?
+    var automaticUpdatesItem: NSMenuItem?
+    var autostartLSPAppItem: NSMenuItem?
+    var autostartLSPMenuItem: NSMenuItem?
     var updateStateObservation: AnyCancellable?
     private let iconLoader = AppIconLoader()
 

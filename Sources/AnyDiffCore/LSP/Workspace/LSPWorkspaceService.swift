@@ -34,9 +34,29 @@ public struct LSPServerStatusItem: Identifiable, Sendable {
 public actor LSPWorkspaceService {
     public static let shared = LSPWorkspaceService()
     public static let serversDidChangeNotification = Notification.Name("anyDiffLSPServersDidChange")
+    public static let autostartDidChangeNotification = Notification.Name("anyDiffLSPAutoStartDidChange")
     public static let defaultIdleTimeout: TimeInterval = 300 // 5 minutes
     public static let autoStopEnabledUserDefaultsKey = "anyDiffLSPAutoStopEnabled"
+    public static let autoStartEnabledUserDefaultsKey = "anyDiffLSPAutoStartEnabled"
     public static let idleTimeoutUserDefaultsKey = "anyDiffLSPIdleTimeoutSeconds"
+
+    /// Synchronously returns whether LSP autostart is enabled in preferences (defaults to `true`).
+    public static var isAutoStartConfigured: Bool {
+        if UserDefaults.standard.object(forKey: autoStartEnabledUserDefaultsKey) == nil {
+            return true
+        }
+        return UserDefaults.standard.bool(forKey: autoStartEnabledUserDefaultsKey)
+    }
+
+    /// Global convenience to toggle or set LSP autostart setting from any thread.
+    public static func setAutoStartEnabled(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: autoStartEnabledUserDefaultsKey)
+        NotificationCenter.default.post(name: autostartDidChangeNotification, object: nil)
+        NotificationCenter.default.post(name: serversDidChangeNotification, object: nil)
+        Task {
+            await LSPWorkspaceService.shared.syncAutoStartSetting()
+        }
+    }
 
     private var activeClients: [String: LSPClient] = [:] // key: languageId
     private var startingClients: [String: Task<LSPClient?, Error>] = [:] // key: languageId
@@ -45,6 +65,7 @@ public actor LSPWorkspaceService {
     private var pendingDocumentChangeTasks: [String: Task<Void, Never>] = [:] // key: filePath -> debounced change task
     private var lastActivityDates: [String: Date] = [:] // key: languageId
     private var diagnosticsByFile: [String: [LSPDiagnostic]] = [:] // key: canonical filePath -> diagnostics
+    public private(set) var isAutoStartEnabled: Bool = LSPWorkspaceService.isAutoStartConfigured
     public private(set) var idleTimeout: TimeInterval = {
         let saved = UserDefaults.standard.double(forKey: "anyDiffLSPIdleTimeoutSeconds")
         return saved > 0 ? saved : 300
@@ -57,6 +78,20 @@ public actor LSPWorkspaceService {
     }()
 
     public init() {}
+
+    /// Enables or disables automatic start of LSP servers on file open or edit.
+    public func setAutoStartEnabled(_ enabled: Bool, persist: Bool = true) {
+        isAutoStartEnabled = enabled
+        if persist {
+            UserDefaults.standard.set(enabled, forKey: Self.autoStartEnabledUserDefaultsKey)
+        }
+        NotificationCenter.default.post(name: Self.autostartDidChangeNotification, object: nil)
+        NotificationCenter.default.post(name: Self.serversDidChangeNotification, object: nil)
+    }
+
+    public func syncAutoStartSetting() {
+        self.isAutoStartEnabled = Self.isAutoStartConfigured
+    }
 
     /// Enables or disables automatic idle shutdown of LSP servers.
     public func setAutoStopEnabled(_ enabled: Bool, persist: Bool = true) {
@@ -227,7 +262,11 @@ public actor LSPWorkspaceService {
 
     // MARK: - Client Management
 
-    public func getOrStartClient(for languageId: String, rootPath: String) async throws -> LSPClient? {
+    public func getOrStartClient(
+        for languageId: String,
+        rootPath: String,
+        force: Bool = false
+    ) async throws -> LSPClient? {
         let lang = languageId.lowercased()
         if let existing = activeClients[lang] {
             let state = await existing.state
@@ -240,6 +279,10 @@ public actor LSPWorkspaceService {
             await existing.stop()
             activeClients.removeValue(forKey: lang)
             openDocumentLanguages = openDocumentLanguages.filter { $0.value != lang }
+        }
+
+        guard isAutoStartEnabled || force else {
+            return nil
         }
 
         if let inFlight = startingClients[lang] {
@@ -330,7 +373,7 @@ public actor LSPWorkspaceService {
 
     public func restartServer(for languageId: String, rootPath: String) async throws -> LSPClient? {
         await stopServer(for: languageId)
-        let client = try await getOrStartClient(for: languageId, rootPath: rootPath)
+        let client = try await getOrStartClient(for: languageId, rootPath: rootPath, force: true)
         NotificationCenter.default.post(name: Self.serversDidChangeNotification, object: nil)
         return client
     }
@@ -456,6 +499,8 @@ public actor LSPWorkspaceService {
 
         openDocumentLanguages[absPath] = lang
 
+        guard isAutoStartEnabled || activeClients[lang] != nil else { return }
+
         do {
             if let client = try await getOrStartClient(for: lang, rootPath: rootPath) {
                 try await client.ensureDocumentOpen(filePath: absPath, text: text, languageId: docLang)
@@ -479,6 +524,7 @@ public actor LSPWorkspaceService {
 
         // 1. If not yet opened in LSP, auto-open immediately with current buffer content
         if openDocumentLanguages[absPath] == nil && openDocumentLanguages[filePath] == nil {
+            guard isAutoStartEnabled || activeClients[lang] != nil else { return }
             openDocumentLanguages[absPath] = lang
             do {
                 if let client = try await getOrStartClient(for: lang, rootPath: resolvedRoot) {

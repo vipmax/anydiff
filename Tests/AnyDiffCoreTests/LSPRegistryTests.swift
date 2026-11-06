@@ -497,6 +497,105 @@ final class LSPRegistryTests: XCTestCase {
         XCTAssertEqual(clientState, .stopped)
     }
 
+    func testLSPAutoStartPreferenceAndSuppression() async throws {
+        let ws = LSPWorkspaceService()
+
+        // 1. Check default is enabled
+        let defaultEnabled = await ws.isAutoStartEnabled
+        XCTAssertTrue(defaultEnabled)
+
+        // 2. Disable autostart
+        await ws.setAutoStartEnabled(false, persist: false)
+        let isDisabled = await ws.isAutoStartEnabled
+        XCTAssertFalse(isDisabled)
+
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .path
+
+        // When autostart is disabled, getOrStartClient returns nil
+        let clientWithoutForce = try await ws.getOrStartClient(for: "swift", rootPath: repoRoot)
+        XCTAssertNil(clientWithoutForce, "When autostart is disabled, getOrStartClient should return nil")
+
+        // When force: true is provided (e.g. manual start or restart), it starts
+        let clientWithForce = try await ws.getOrStartClient(for: "swift", rootPath: repoRoot, force: true)
+        XCTAssertNotNil(clientWithForce, "When force is true, client should start even if autostart is disabled")
+
+        // Once running, getOrStartClient returns existing active client even if autostart is disabled
+        let clientExisting = try await ws.getOrStartClient(for: "swift", rootPath: repoRoot)
+        XCTAssertNotNil(clientExisting, "Active running client should be returned even if autostart is false")
+
+        await ws.stopAll()
+
+        // Re-enable autostart
+        await ws.setAutoStartEnabled(true, persist: false)
+        let isEnabledAgain = await ws.isAutoStartEnabled
+        XCTAssertTrue(isEnabledAgain)
+    }
+
+    func testNotifyDocumentOpenedRespectsAutostartSetting() async throws {
+        let ws = LSPWorkspaceService()
+        await ws.stopAll()
+
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .path
+        let dummySwiftFile = (repoRoot as NSString).appendingPathComponent("Sources/AnyDiff/main.swift")
+
+        // 1. With autostart disabled, notifyDocumentOpened does NOT start the server
+        await ws.setAutoStartEnabled(false, persist: false)
+        await ws.notifyDocumentOpened(filePath: dummySwiftFile, text: "// test", rootPath: repoRoot)
+
+        var statuses = await ws.activeServerStatuses()
+        XCTAssertTrue(statuses.isEmpty, "notifyDocumentOpened should not spin up LSP server when autostart is disabled")
+
+        // 2. Start server manually using force: true
+        _ = try await ws.getOrStartClient(for: "swift", rootPath: repoRoot, force: true)
+        statuses = await ws.activeServerStatuses()
+        XCTAssertEqual(statuses.count, 1, "Server should be active after forced start")
+
+        // 3. Now that server is active, notifyDocumentOpened syncs document without issue even if autostart is false
+        await ws.notifyDocumentOpened(filePath: dummySwiftFile, text: "// test 2", rootPath: repoRoot)
+        let isOpen = await ws.isDocumentOpen(filePath: dummySwiftFile, rootPath: repoRoot)
+        XCTAssertTrue(isOpen)
+
+        await ws.stopAll()
+        await ws.setAutoStartEnabled(true, persist: false)
+    }
+
+    func testLSPAutoStartPersistsAcrossRestarts() async throws {
+        let original = UserDefaults.standard.object(forKey: LSPWorkspaceService.autoStartEnabledUserDefaultsKey)
+        defer {
+            if let orig = original {
+                UserDefaults.standard.set(orig, forKey: LSPWorkspaceService.autoStartEnabledUserDefaultsKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: LSPWorkspaceService.autoStartEnabledUserDefaultsKey)
+            }
+        }
+
+        // 1. Persist disabled setting
+        await LSPWorkspaceService.shared.setAutoStartEnabled(false, persist: true)
+        XCTAssertFalse(LSPWorkspaceService.isAutoStartConfigured)
+
+        // 2. Simulate fresh app start / new service instance
+        let freshService = LSPWorkspaceService()
+        let freshEnabled = await freshService.isAutoStartEnabled
+        XCTAssertFalse(freshEnabled, "LSP autostart should remain false across fresh instances")
+
+        // 3. Persist enabled setting
+        await LSPWorkspaceService.shared.setAutoStartEnabled(true, persist: true)
+        XCTAssertTrue(LSPWorkspaceService.isAutoStartConfigured)
+
+        // 4. Simulate fresh app start again
+        let restartService = LSPWorkspaceService()
+        let restartEnabled = await restartService.isAutoStartEnabled
+        XCTAssertTrue(restartEnabled, "LSP autostart should remain true across fresh instances")
+    }
+
     func testTypeScriptReactServerStartsWithBundledTsServer() async throws {
         try requireIntegrationTestsEnabled()
 

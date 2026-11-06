@@ -17,6 +17,7 @@ public struct LSPStatusPopoverView: View {
     @FocusState private var isSearchFieldFocused: Bool
     @State private var isLoading: Bool = false
     @State private var errorMessage: String? = nil
+    @State private var isAutoStartEnabled: Bool = LSPWorkspaceService.isAutoStartConfigured
     @State private var isAutoStopEnabled: Bool = true
     @State private var idleTimeoutSeconds: TimeInterval = 300
     @State private var now: Date = Date()
@@ -101,6 +102,10 @@ public struct LSPStatusPopoverView: View {
             now = Date()
             loadStatuses()
         }
+        .onReceive(NotificationCenter.default.publisher(for: LSPWorkspaceService.autostartDidChangeNotification)) { _ in
+            now = Date()
+            refreshActiveStatuses()
+        }
         .onReceive(countdownTimer) { tick in
             now = tick
             if !activeServers.isEmpty {
@@ -164,6 +169,35 @@ public struct LSPStatusPopoverView: View {
             }
 
             HStack(spacing: 5) {
+                Button(action: toggleAutoStart) {
+                    HStack(spacing: 3.5) {
+                        Image(systemName: isAutoStartEnabled ? "bolt.fill" : "bolt.slash")
+                            .font(.system(size: 9.5, weight: .semibold))
+                        Text(isAutoStartEnabled ? "Auto" : "Off")
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    }
+                    .foregroundColor(isAutoStartEnabled ? Color(theme.accentColor) : tertiaryTextColor)
+                    .padding(.horizontal, 7)
+                    .frame(height: 20)
+                    .background(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(isAutoStartEnabled ? Color(theme.accentColor).opacity(0.12) : Color(theme.foreground).opacity(0.04))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .stroke(isAutoStartEnabled ? Color(theme.accentColor).opacity(0.35) : Color(theme.excerptHeaderBorder).opacity(0.35), lineWidth: 0.5)
+                    )
+                }
+                .buttonStyle(.plain)
+                .contextMenu {
+                    Button(isAutoStartEnabled ? "Disable Autostart" : "Enable Autostart") {
+                        toggleAutoStart()
+                    }
+                }
+                .help(isAutoStartEnabled
+                    ? "Autostart enabled (starts language servers automatically on file open). Click to turn off."
+                    : "Autostart disabled (servers only start when manually requested). Click to turn on.")
+
                 Button(action: toggleAutoStop) {
                     HStack(spacing: 3.5) {
                         Image(systemName: "timer")
@@ -643,6 +677,16 @@ public struct LSPStatusPopoverView: View {
         }
     }
 
+    private func toggleAutoStart() {
+        let newValue = !isAutoStartEnabled
+        isAutoStartEnabled = newValue
+        Task { @MainActor in
+            await LSPWorkspaceService.shared.setAutoStartEnabled(newValue)
+            now = Date()
+            refreshActiveStatuses()
+        }
+    }
+
     private func toggleAutoStop() {
         let newValue = !isAutoStopEnabled
         isAutoStopEnabled = newValue
@@ -655,9 +699,11 @@ public struct LSPStatusPopoverView: View {
 
     private func refreshActiveStatuses() {
         Task { @MainActor in
+            let autoStart = await LSPWorkspaceService.shared.isAutoStartEnabled
             let autoStop = await LSPWorkspaceService.shared.isAutoStopEnabled
             let timeout = await LSPWorkspaceService.shared.idleTimeout
             let statuses = await LSPWorkspaceService.shared.activeServerStatuses()
+            self.isAutoStartEnabled = autoStart
             self.isAutoStopEnabled = autoStop
             if timeout > 0 {
                 self.idleTimeoutSeconds = timeout
@@ -669,9 +715,11 @@ public struct LSPStatusPopoverView: View {
     private func loadStatuses() {
         Task { @MainActor in
             isLoading = true
+            let autoStart = await LSPWorkspaceService.shared.isAutoStartEnabled
             let autoStop = await LSPWorkspaceService.shared.isAutoStopEnabled
             let timeout = await LSPWorkspaceService.shared.idleTimeout
             let statuses = await LSPWorkspaceService.shared.activeServerStatuses()
+            self.isAutoStartEnabled = autoStart
             self.isAutoStopEnabled = autoStop
             if timeout > 0 {
                 self.idleTimeoutSeconds = timeout

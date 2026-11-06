@@ -7,11 +7,13 @@
 
 import AppKit
 
-let app = NSApplication.shared
-let delegate = AppDelegate()
-app.delegate = delegate
-app.setActivationPolicy(.regular)
-if let icon = delegate.loadAppIcon() {
-    app.applicationIconImage = icon
+MainActor.assumeIsolated {
+    let app = NSApplication.shared
+    let delegate = AppDelegate()
+    app.delegate = delegate
+    app.setActivationPolicy(.regular)
+    if let icon = delegate.loadAppIcon() {
+        app.applicationIconImage = icon
+    }
+    app.run()
 }
-app.run()

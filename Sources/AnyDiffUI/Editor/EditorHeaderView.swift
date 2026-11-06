@@ -180,6 +180,9 @@ public struct EditorHeaderActionsView: View {
             .onReceive(NotificationCenter.default.publisher(for: LSPWorkspaceService.serversDidChangeNotification)) { _ in
                 updateLSPCount()
             }
+            .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffToggleLSPPopover"))) { _ in
+                isShowingLSPPopover.toggle()
+            }
 
             if availableWidth >= 290 || isSearchActive {
                 Button(action: onToggleSearch) {

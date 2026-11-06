@@ -10,13 +10,19 @@ extension AppDelegate {
         // App Menu (Standard Application metadata, hide & quit)
         let appMenuItem = NSMenuItem()
         let appMenu = NSMenu()
+        appMenu.delegate = self
         appMenu.addItem(NSMenuItem(title: "About AnyDiff", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: ""))
         let updatesItem = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdatesAction(_:)), keyEquivalent: "")
         self.checkForUpdatesItem = updatesItem
         appMenu.addItem(updatesItem)
         let automaticUpdatesItem = NSMenuItem(title: "Automatically Check for Updates", action: #selector(toggleAutomaticUpdateChecksAction(_:)), keyEquivalent: "")
         automaticUpdatesItem.state = UpdateCoordinator.shared.automaticChecksEnabled ? .on : .off
+        self.automaticUpdatesItem = automaticUpdatesItem
         appMenu.addItem(automaticUpdatesItem)
+        let autostartLSPAppItem = NSMenuItem(title: "Autostart Language Servers (LSP)", action: #selector(toggleAutostartLSPAction(_:)), keyEquivalent: "")
+        autostartLSPAppItem.state = LSPWorkspaceService.isAutoStartConfigured ? .on : .off
+        self.autostartLSPAppItem = autostartLSPAppItem
+        appMenu.addItem(autostartLSPAppItem)
         appMenu.addItem(NSMenuItem.separator())
 
         let servicesMenuItem = NSMenuItem(title: "Services", action: nil, keyEquivalent: "")
@@ -200,6 +206,32 @@ extension AppDelegate {
         navigateMenuItem.submenu = navigateMenu
         mainMenu.addItem(navigateMenuItem)
 
+        // LSP Menu
+        let lspMenuItem = NSMenuItem()
+        let lspMenu = NSMenu(title: "LSP")
+        lspMenu.delegate = self
+
+        let autostartLSPMenuItem = NSMenuItem(title: "Autostart Language Servers", action: #selector(toggleAutostartLSPAction(_:)), keyEquivalent: "")
+        autostartLSPMenuItem.state = LSPWorkspaceService.isAutoStartConfigured ? .on : .off
+        self.autostartLSPMenuItem = autostartLSPMenuItem
+        lspMenu.addItem(autostartLSPMenuItem)
+
+        lspMenu.addItem(NSMenuItem.separator())
+
+        let restartServersItem = NSMenuItem(title: "Restart Active Servers", action: #selector(restartLSPServersAction(_:)), keyEquivalent: "")
+        lspMenu.addItem(restartServersItem)
+
+        let stopServersItem = NSMenuItem(title: "Stop All Servers", action: #selector(stopAllLSPServersAction(_:)), keyEquivalent: "")
+        lspMenu.addItem(stopServersItem)
+
+        lspMenu.addItem(NSMenuItem.separator())
+
+        let showLSPStatusItem = NSMenuItem(title: "Show Language Servers Popover", action: #selector(showLSPStatusAction(_:)), keyEquivalent: "")
+        lspMenu.addItem(showLSPStatusItem)
+
+        lspMenuItem.submenu = lspMenu
+        mainMenu.addItem(lspMenuItem)
+
         // Window Menu
         let windowMenuItem = NSMenuItem()
         let windowMenu = NSMenu(title: "Window")
@@ -234,7 +266,38 @@ extension AppDelegate {
                     item.state = (id == currentLayout) ? .on : .off
                 }
             }
+        } else if menu.title == "LSP" || menu.title == "AnyDiff" || menu.title.isEmpty {
+            let enabled = LSPWorkspaceService.isAutoStartConfigured
+            autostartLSPAppItem?.state = enabled ? .on : .off
+            autostartLSPMenuItem?.state = enabled ? .on : .off
         }
+    }
+
+    @objc func toggleAutostartLSPAction(_ sender: NSMenuItem) {
+        let newValue = !LSPWorkspaceService.isAutoStartConfigured
+        LSPWorkspaceService.setAutoStartEnabled(newValue)
+        sender.state = newValue ? .on : .off
+        autostartLSPAppItem?.state = newValue ? .on : .off
+        autostartLSPMenuItem?.state = newValue ? .on : .off
+    }
+
+    @objc func restartLSPServersAction(_ sender: Any?) {
+        Task {
+            let statuses = await LSPWorkspaceService.shared.activeServerStatuses()
+            for item in statuses {
+                _ = try? await LSPWorkspaceService.shared.restartServer(for: item.languageId, rootPath: FileManager.default.currentDirectoryPath)
+            }
+        }
+    }
+
+    @objc func stopAllLSPServersAction(_ sender: Any?) {
+        Task {
+            await LSPWorkspaceService.shared.stopAll()
+        }
+    }
+
+    @objc func showLSPStatusAction(_ sender: Any?) {
+        NotificationCenter.default.post(name: Notification.Name("anyDiffToggleLSPPopover"), object: nil)
     }
 
     @objc func selectDiffLayoutAction(_ sender: NSMenuItem) {
