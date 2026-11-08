@@ -22,7 +22,7 @@ if ! [[ "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
 fi
 
 TAG="v${VERSION}"
-echo "🚀 Preparing release ${TAG}..."
+echo "🚀 Preparing release ${TAG} (GitHub Actions build)..."
 
 # 2. Check for unstaged/uncommitted changes (ignoring release-related files)
 if [ -n "$(git status --porcelain -uno | grep -v 'CHANGELOG.md\|README.md\|package_app.sh\|install.sh\|\.github\|justfile\|release.sh')" ]; then
@@ -62,36 +62,7 @@ sed -i '' -E "/CFBundleVersion/{n;s|<string>[^<]+</string>|<string>${NEW_BUILD}<
 # Update README.md release download links
 sed -i '' -E "s|releases/download/v[0-9]+\.[0-9]+\.[0-9]+/|releases/download/${TAG}/|g" README.md
 
-# 6. Run release tests and packaging
-echo "🧪 Running check (release build & unit test suite)..."
-just check
-
-echo "📦 Packaging AnyDiff.app, ZIP, and DMG for all architectures (arm64 & x86_64)..."
-./scripts/package_app.sh all
-
-DIST_ARM64_ZIP="dist/AnyDiff-macOS-arm64.zip"
-DIST_ARM64_DMG="dist/AnyDiff-macOS-arm64.dmg"
-DIST_X86_ZIP="dist/AnyDiff-macOS-x86_64.zip"
-DIST_X86_DMG="dist/AnyDiff-macOS-x86_64.dmg"
-DIST_LEGACY_ZIP="dist/AnyDiff-macOS.zip"
-DIST_LEGACY_DMG="dist/AnyDiff.dmg"
-
-for dist_file in "${DIST_ARM64_ZIP}" "${DIST_ARM64_DMG}" "${DIST_X86_ZIP}" "${DIST_X86_DMG}"; do
-    if [ ! -f "${dist_file}" ]; then
-        echo "❌ Error: Missing distribution artifact: ${dist_file}"
-        exit 1
-    fi
-done
-
-# 7. Compute SHA-256 of the zip archives for both architectures
-SHA256_ARM64=$(shasum -a 256 "${DIST_ARM64_ZIP}" | awk '{print $1}')
-SHA256_X86_64=$(shasum -a 256 "${DIST_X86_ZIP}" | awk '{print $1}')
-echo "🔒 Calculated SHA-256 for arm64 (${DIST_ARM64_ZIP}):"
-echo "   ${SHA256_ARM64}"
-echo "🔒 Calculated SHA-256 for x86_64 (${DIST_X86_ZIP}):"
-echo "   ${SHA256_X86_64}"
-
-# 8. Commit version bump and create git tag
+# 6. Commit version bump and create git tag
 echo "📝 Committing version bump to git..."
 git add scripts/package_app.sh scripts/release.sh scripts/install.sh README.md CHANGELOG.md .github/workflows/release.yml justfile
 git commit -m "chore(release): bump version to ${TAG}" || true
@@ -102,33 +73,46 @@ if git rev-parse "${TAG}" >/dev/null 2>&1; then
 fi
 git tag -a "${TAG}" -m "Release ${TAG}"
 
-# 9. Push git branch and tag to origin
+# 7. Push git branch and tag to origin to trigger GitHub Actions
 echo "⬆️ Pushing commits and tag to origin..."
 git push origin main
 git push origin "${TAG}" --force
 
-# 10. Create GitHub Release with native assets (both architectures + legacy aliases)
-RELEASE_ASSETS=(
-    "${DIST_ARM64_DMG}"
-    "${DIST_ARM64_ZIP}"
-    "${DIST_X86_DMG}"
-    "${DIST_X86_ZIP}"
-    "${DIST_LEGACY_DMG}"
-    "${DIST_LEGACY_ZIP}"
-)
-
-echo "☁️ Creating GitHub Release ${TAG}..."
+# 8. Create GitHub Release with release notes (assets will be uploaded by GitHub Actions)
+echo "☁️ Setting up GitHub Release ${TAG} notes..."
 if gh release view "${TAG}" >/dev/null 2>&1; then
-    echo "Release ${TAG} already exists on GitHub, updating notes and assets..."
     gh release edit "${TAG}" --title "AnyDiff ${TAG}" --notes-file "${NOTES_TMP}"
-    gh release upload "${TAG}" "${RELEASE_ASSETS[@]}" --clobber
 else
-    gh release create "${TAG}" \
-        --title "AnyDiff ${TAG}" \
-        --notes-file "${NOTES_TMP}" \
-        "${RELEASE_ASSETS[@]}"
+    gh release create "${TAG}" --title "AnyDiff ${TAG}" --notes-file "${NOTES_TMP}"
 fi
 rm -f "${NOTES_TMP}"
+
+# 9. Wait for GitHub Actions release build to complete
+echo "⏳ Waiting for GitHub Actions release workflow to finish building..."
+sleep 5
+RUN_ID=$(gh run list --workflow="Release AnyDiff" --branch="${TAG}" --limit 1 --json databaseId -q '.[0].databaseId' 2>/dev/null || true)
+if [ -n "${RUN_ID}" ]; then
+    gh run watch "${RUN_ID}"
+else
+    echo "Waiting for assets to appear on GitHub Release..."
+    until gh release view "${TAG}" --json assets -q '.assets.[].name' 2>/dev/null | grep -q "AnyDiff-macOS-arm64.zip"; do
+        sleep 5
+    done
+fi
+
+# 10. Fetch release archives from GitHub Release and compute SHA-256 for Homebrew
+echo "⬇️ Downloading CI release archives to compute SHA-256..."
+TMP_DIR=$(mktemp -d)
+gh release download "${TAG}" -p "AnyDiff-macOS-*.zip" -D "${TMP_DIR}"
+
+SHA256_ARM64=$(shasum -a 256 "${TMP_DIR}/AnyDiff-macOS-arm64.zip" | awk '{print $1}')
+SHA256_X86_64=$(shasum -a 256 "${TMP_DIR}/AnyDiff-macOS-x86_64.zip" | awk '{print $1}')
+rm -rf "${TMP_DIR}"
+
+echo "🔒 Calculated SHA-256 for arm64 (CI build):"
+echo "   ${SHA256_ARM64}"
+echo "🔒 Calculated SHA-256 for x86_64 (CI build):"
+echo "   ${SHA256_X86_64}"
 
 # 11. Update Homebrew tap
 TAP_DIR="$(brew --repo vipmax/tap 2>/dev/null || true)"
@@ -180,7 +164,7 @@ else
 fi
 
 echo ""
-echo "🎉 Release ${TAG} successfully published!"
+echo "🎉 Release ${TAG} successfully published via GitHub Actions!"
 echo "   - GitHub Release: https://github.com/vipmax/anydiff/releases/tag/${TAG}"
 echo "   - Apple Silicon SHA-256: ${SHA256_ARM64}"
 echo "   - Intel SHA-256:         ${SHA256_X86_64}"

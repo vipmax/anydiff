@@ -59,14 +59,8 @@ jobs:
             dist/AnyDiff-macOS.zip
           )
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG already exists."
-            EXISTING_ASSETS=$(gh release view "$TAG" --json assets -q '.assets.[].name' 2>/dev/null || true)
-            if echo "$EXISTING_ASSETS" | grep -q "AnyDiff-macOS-arm64.zip"; then
-              echo "Release assets already exist for $TAG. Skipping upload to protect Homebrew checksum integrity."
-            else
-              echo "Uploading assets to existing release $TAG..."
-              gh release upload "$TAG" "${RELEASE_FILES[@]}"
-            fi
+            echo "Uploading assets to existing release $TAG..."
+            gh release upload "$TAG" "${RELEASE_FILES[@]}" --clobber
           else
             gh release create "$TAG" \
               --title "AnyDiff $TAG" \
