@@ -2029,6 +2029,54 @@ final class TerminalTests: XCTestCase {
     }
 
     @MainActor
+    func testTerminalInputBarTypingDoesNotAutoTriggerSuggestions() {
+        let repoDir = FileManager.default.currentDirectoryPath
+        let session = BlockTerminalSession(workingDirectory: repoDir)
+        let bar = TerminalInputBarView(session: session, theme: .vesper)
+        let hosting = NSHostingView(rootView: bar)
+        hosting.frame = NSRect(x: 0, y: 0, width: 600, height: 100)
+        let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 100), styleMask: [.borderless], backing: .buffered, defer: false)
+        win.contentView = hosting
+        win.makeKeyAndOrderFront(nil)
+        hosting.layoutSubtreeIfNeeded()
+
+        func findTextView(_ v: NSView) -> NSTextView? {
+            if let tv = v as? NSTextView { return tv }
+            for sub in v.subviews {
+                if let tv = findTextView(sub) { return tv }
+            }
+            return nil
+        }
+
+        guard let tv = findTextView(hosting) else {
+            XCTFail("Expected NSTextView inside TerminalInputBarView")
+            return
+        }
+
+        // Typing characters should NOT automatically make suggestion cards visible
+        tv.string = "g"
+        NotificationCenter.default.post(name: NSText.didChangeNotification, object: tv)
+        tv.string = "gi"
+        NotificationCenter.default.post(name: NSText.didChangeNotification, object: tv)
+        tv.string = "git"
+        NotificationCenter.default.post(name: NSText.didChangeNotification, object: tv)
+
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+
+        func isSuggestionCardPresent(_ v: NSView) -> Bool {
+            let desc = String(describing: type(of: v))
+            if desc.contains("Suggestion") || desc.contains("suggestion") {
+                return true
+            }
+            for sub in v.subviews {
+                if isSuggestionCardPresent(sub) { return true }
+            }
+            return false
+        }
+        XCTAssertFalse(isSuggestionCardPresent(hosting), "Typing without pressing Tab must not automatically trigger suggestions popup")
+    }
+
+    @MainActor
     func testTerminalInputBarViewRenderingWithFolderMenu() {
         let session = BlockTerminalSession(workingDirectory: FileManager.default.currentDirectoryPath)
         let bar = TerminalInputBarView(session: session, theme: .vesper)

@@ -624,6 +624,8 @@ private struct TerminalCommandTextView: NSViewRepresentable {
         }
 
         func updateSuggestions(tv: KeyCatchingTextView) {
+            // Only update/filter suggestions if completion was explicitly triggered (e.g. via Tab)
+            guard parent.suggestionState.isVisible else { return }
             let trimmed = tv.string.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else {
                 parent.suggestionState.hide()
