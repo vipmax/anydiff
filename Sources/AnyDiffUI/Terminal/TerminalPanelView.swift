@@ -105,6 +105,7 @@ public struct TerminalPanelView: View {
                                 _ = coordinator.createTab(for: slot)
                             }
                         )
+                        .fixedSize(horizontal: true, vertical: false)
                     }
 
                     // Empty space between tabs and trailing actions:
@@ -112,6 +113,7 @@ public struct TerminalPanelView: View {
                     Color.clear
                         .contentShape(Rectangle())
                         .frame(minWidth: 40, maxWidth: .infinity, maxHeight: .infinity)
+                        .layoutPriority(-1)
                         .onTapGesture(count: 2) {
                             _ = coordinator.createTab(for: slot)
                         }
@@ -258,6 +260,7 @@ private struct TerminalTabItemView: View {
                         .font(.system(size: 11, weight: .medium))
                         .foregroundColor(isActive ? Color(theme.foreground) : Color(theme.foreground).opacity(0.75))
                         .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                         .padding(.leading, 9)
                         .padding(.trailing, 4)
                         .padding(.vertical, 3.5)
@@ -292,6 +295,7 @@ private struct TerminalTabItemView: View {
                 )
         )
         .contentShape(Capsule(style: .continuous))
+        .fixedSize(horizontal: true, vertical: false)
         .onHover { isHovered = $0 }
         .contextMenu {
             Button("New Terminal") { onNewTab() }
