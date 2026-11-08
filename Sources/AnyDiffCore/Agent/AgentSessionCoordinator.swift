@@ -313,6 +313,57 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
         set { isPanelOpen = newValue }
     }
     @Published public var showStartScreen: Bool = false
+    /// Tracks which session is currently active in each panel slot (.right, .center, .left)
+    @Published public var slotSessions: [PanelSlot: UUID] = [:]
+    /// Tracks whether the start screen is being shown in a specific panel slot
+    @Published public var slotShowStartScreen: [PanelSlot: Bool] = [:]
+
+    public func activeSession(for slot: PanelSlot) -> AgentSessionItem? {
+        if let id = slotSessions[slot], let session = sessions.first(where: { $0.id == id }) {
+            return session
+        }
+        if slot == .right {
+            return sessions.first(where: { $0.id == activeSessionId }) ?? sessions.first
+        }
+        // For other slots, if not explicitly assigned, find an unassigned session or return nil for start screen
+        let occupiedIds = Set(slotSessions.values)
+        if let freeSession = sessions.first(where: { !occupiedIds.contains($0.id) && $0.id != activeSessionId }) {
+            return freeSession
+        }
+        return nil
+    }
+
+    public func isShowingStartScreen(for slot: PanelSlot) -> Bool {
+        if let show = slotShowStartScreen[slot] {
+            return show
+        }
+        if slot == .right {
+            return showStartScreen || activeSession == nil
+        }
+        return activeSession(for: slot) == nil
+    }
+
+    public func setStartScreen(_ show: Bool, for slot: PanelSlot) {
+        slotShowStartScreen[slot] = show
+        if slot == .right {
+            showStartScreen = show
+        }
+        objectWillChange.send()
+    }
+
+    public func selectSession(id: UUID, for slot: PanelSlot) {
+        slotSessions[slot] = id
+        slotShowStartScreen[slot] = false
+        if slot == .right {
+            activeSessionId = id
+            showStartScreen = false
+        }
+        for s in sessions {
+            s.isCurrentlyActive = (s.id == id)
+        }
+        objectWillChange.send()
+    }
+
     @Published public var activeReviewSummary: AgentEditedFilesSummary? = nil
 
     public func startReview(summary: AgentEditedFilesSummary) {
@@ -525,7 +576,7 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
     }
 
     @discardableResult
-    public func createNewSession(workingDirectory: String, preset: AgentPreset? = nil) -> AgentSessionItem {
+    public func createNewSession(workingDirectory: String, preset: AgentPreset? = nil, for slot: PanelSlot? = nil) -> AgentSessionItem {
         #if DEBUG
         let fallbackPreset = isMockAgent ? AgentPreset.mock : (allPresets.first(where: { !$0.isMock }) ?? AgentPreset(id: "live", name: "Agent", command: ""))
         #else
@@ -573,6 +624,10 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
         sessions.append(newSession)
         activeSessionId = newSession.id
         showStartScreen = false
+        if let slot = slot {
+            slotSessions[slot] = newSession.id
+            slotShowStartScreen[slot] = false
+        }
         self.isMockAgent = isMock
         self.selectedPresetId = chosenPreset.id
 
@@ -622,6 +677,13 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
         session.manager.clearSession()
 
         sessions.remove(at: index)
+
+        for (slot, sessionId) in slotSessions where sessionId == id {
+            slotSessions[slot] = sessions.last?.id
+            if sessions.isEmpty {
+                slotShowStartScreen[slot] = true
+            }
+        }
 
         if sessions.isEmpty {
             activeSessionId = nil

@@ -3,6 +3,7 @@ import AnyDiffCore
 
 public struct AgentContainerView: View {
     @ObservedObject public var coordinator: AgentSessionCoordinator
+    public let slot: PanelSlot
     public let theme: Theme
     public let workingDirectory: String
     public let selectedFilePath: String?
@@ -18,6 +19,7 @@ public struct AgentContainerView: View {
 
     public init(
         coordinator: AgentSessionCoordinator,
+        slot: PanelSlot = .right,
         theme: Theme,
         workingDirectory: String,
         selectedFilePath: String?,
@@ -28,6 +30,7 @@ public struct AgentContainerView: View {
         onOpenURL: @escaping (URL) -> Void
     ) {
         self.coordinator = coordinator
+        self.slot = slot
         self.theme = theme
         self.workingDirectory = workingDirectory
         self.selectedFilePath = selectedFilePath
@@ -38,12 +41,16 @@ public struct AgentContainerView: View {
         self.onOpenURL = onOpenURL
     }
 
+    private var activeSession: AgentSessionItem? {
+        coordinator.activeSession(for: slot)
+    }
+
     private var accentColor: Color {
-        coordinator.activeSession?.preset.color ?? Color(theme.accentColor)
+        activeSession?.preset.color ?? Color(theme.accentColor)
     }
 
     private var isShowingStartScreen: Bool {
-        coordinator.showStartScreen || coordinator.activeSession == nil
+        coordinator.isShowingStartScreen(for: slot)
     }
 
     public var body: some View {
@@ -62,16 +69,16 @@ public struct AgentContainerView: View {
             }
 
             Group {
-                if !coordinator.showStartScreen, let activeSession = coordinator.activeSession {
+                if !isShowingStartScreen, let currentSession = activeSession {
                     AgentPanelView(
-                        agentManager: activeSession.manager,
+                        agentManager: currentSession.manager,
                         theme: theme,
                         workingDirectory: workingDirectory,
                         currentSelectedFile: selectedFilePath,
                         fileDiffsSummary: fileDiffsSummary,
-                        agentAccentColor: activeSession.preset.color,
-                        agentIcon: activeSession.preset.iconName,
-                        agentId: activeSession.preset.id,
+                        agentAccentColor: currentSession.preset.color,
+                        agentIcon: currentSession.preset.iconName,
+                        agentId: currentSession.preset.id,
                         toolcallColorMode: toolcallColorMode,
                         externalFocusRequest: inputFocusTrigger,
                         onReview: onReview,
@@ -80,10 +87,11 @@ public struct AgentContainerView: View {
                         },
                         onOpenURL: onOpenURL
                     )
-                    .id(activeSession.id)
+                    .id(currentSession.id)
                 } else {
                     AgentStartScreenView(
                         coordinator: coordinator,
+                        slot: slot,
                         theme: theme,
                         workingDirectory: workingDirectory
                     )
@@ -104,9 +112,9 @@ public struct AgentContainerView: View {
     @ViewBuilder
     private var headerActions: some View {
         HStack(alignment: .center, spacing: 4) {
-            if let activeSession = coordinator.activeSession {
+            if let currentSession = activeSession {
                 Button(action: { isSessionsPresented.toggle() }) {
-                    Text(activeSession.preset.name)
+                    Text(currentSession.preset.name)
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundColor(isSessionsHovered || isSessionsPresented
                             ? Color(nsColor: .labelColor)
@@ -130,13 +138,20 @@ public struct AgentContainerView: View {
                         coordinator: coordinator,
                         theme: theme,
                         workingDirectory: workingDirectory,
-                        onClose: { isSessionsPresented = false }
+                        activeSessionId: currentSession.id,
+                        onClose: { isSessionsPresented = false },
+                        onSelectSession: { id in
+                            coordinator.selectSession(id: id, for: slot)
+                        },
+                        onNewSession: {
+                            coordinator.setStartScreen(true, for: slot)
+                        }
                     )
                 }
                 .onHover { isSessionsHovered = $0 }
 
                 AgentHeaderControlsView(
-                    agentManager: activeSession.manager,
+                    agentManager: currentSession.manager,
                     theme: theme,
                     accentColor: accentColor,
                     workingDirectory: workingDirectory,
@@ -149,28 +164,28 @@ public struct AgentContainerView: View {
                 )
 
                 Button(action: {
-                    activeSession.isNotificationsEnabled.toggle()
+                    currentSession.isNotificationsEnabled.toggle()
                 }) {
-                    Image(systemName: activeSession.isNotificationsEnabled ? "bell.fill" : "bell.slash")
+                    Image(systemName: currentSession.isNotificationsEnabled ? "bell.fill" : "bell.slash")
                         .font(.system(size: 11, weight: .medium))
                         .frame(width: 16, height: 16)
-                        .foregroundColor(activeSession.isNotificationsEnabled
+                        .foregroundColor(currentSession.isNotificationsEnabled
                             ? accentColor
                             : Color(nsColor: .secondaryLabelColor).opacity(0.85))
                 }
                 .buttonStyle(AgentToolbarActionButtonStyle(
                     accentColor: accentColor,
-                    isActive: activeSession.isNotificationsEnabled
+                    isActive: currentSession.isNotificationsEnabled
                 ))
-                .help(activeSession.isNotificationsEnabled
+                .help(currentSession.isNotificationsEnabled
                     ? "Sound notifications enabled (Click to mute)"
                     : "Sound notifications disabled (Click to enable)")
             }
 
-            if coordinator.activeSession != nil {
+            if activeSession != nil {
                 Button(action: {
                     withAnimation(.easeInOut(duration: 0.15)) {
-                        _ = coordinator.createNewSession(workingDirectory: workingDirectory)
+                        _ = coordinator.createNewSession(workingDirectory: workingDirectory, for: slot)
                     }
                 }) {
                     Image(systemName: "plus")
@@ -183,13 +198,7 @@ public struct AgentContainerView: View {
 
                 Button(action: {
                     withAnimation(.easeInOut(duration: 0.18)) {
-                        if isShowingStartScreen {
-                            if let active = coordinator.activeSession {
-                                coordinator.selectSession(id: active.id)
-                            }
-                        } else {
-                            coordinator.openStartScreen()
-                        }
+                        coordinator.setStartScreen(!isShowingStartScreen, for: slot)
                     }
                 }) {
                     Image(systemName: isShowingStartScreen ? "chevron.right" : "chevron.left")

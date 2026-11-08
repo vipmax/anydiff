@@ -663,6 +663,7 @@ public struct MainWindowView: View {
     private func agentPanelView(for slot: PanelSlot) -> some View {
         AgentContainerView(
             coordinator: agentCoordinator,
+            slot: slot,
             theme: activeTheme,
             workingDirectory: effectiveWorkingDirectory,
             selectedFilePath: repo.selectedFilePath,

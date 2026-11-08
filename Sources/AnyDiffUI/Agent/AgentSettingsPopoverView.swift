@@ -6,18 +6,27 @@ public struct AgentSettingsPopoverView: View {
     @ObservedObject public var coordinator: AgentSessionCoordinator
     public var theme: Theme
     public var workingDirectory: String
+    public var activeSessionId: UUID?
     public var onClose: () -> Void
+    public var onSelectSession: ((UUID) -> Void)?
+    public var onNewSession: (() -> Void)?
 
     public init(
         coordinator: AgentSessionCoordinator,
         theme: Theme,
         workingDirectory: String,
-        onClose: @escaping () -> Void
+        activeSessionId: UUID? = nil,
+        onClose: @escaping () -> Void,
+        onSelectSession: ((UUID) -> Void)? = nil,
+        onNewSession: (() -> Void)? = nil
     ) {
         self.coordinator = coordinator
         self.theme = theme
         self.workingDirectory = workingDirectory
+        self.activeSessionId = activeSessionId
         self.onClose = onClose
+        self.onSelectSession = onSelectSession
+        self.onNewSession = onNewSession
     }
 
     public var body: some View {
@@ -28,6 +37,21 @@ public struct AgentSettingsPopoverView: View {
                         .font(.system(size: 9, weight: .bold))
                         .foregroundColor(.secondary)
                     Spacer()
+                    if let onNewSession = onNewSession {
+                        Button(action: {
+                            onClose()
+                            onNewSession()
+                        }) {
+                            HStack(spacing: 3) {
+                                Image(systemName: "plus")
+                                    .font(.system(size: 8, weight: .bold))
+                                Text("New")
+                                    .font(.system(size: 9.5, weight: .medium))
+                            }
+                            .foregroundColor(Color(theme.accentColor))
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
                 .padding(.horizontal, 6)
                 .padding(.top, 4)
@@ -36,12 +60,16 @@ public struct AgentSettingsPopoverView: View {
                     ForEach(coordinator.sessions) { session in
                         AgentSessionRowView(
                             session: session,
-                            isActive: session.id == coordinator.activeSessionId,
+                            isActive: session.id == (activeSessionId ?? coordinator.activeSessionId),
                             canClose: coordinator.sessions.count > 1,
                             theme: theme,
                             onSelect: {
                                 withAnimation(.easeInOut(duration: 0.15)) {
-                                    coordinator.selectSession(id: session.id)
+                                    if let onSelectSession = onSelectSession {
+                                        onSelectSession(session.id)
+                                    } else {
+                                        coordinator.selectSession(id: session.id)
+                                    }
                                     onClose()
                                 }
                             },

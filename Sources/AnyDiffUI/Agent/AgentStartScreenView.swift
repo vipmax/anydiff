@@ -3,6 +3,7 @@ import AnyDiffCore
 
 public struct AgentStartScreenView: View {
     @ObservedObject public var coordinator: AgentSessionCoordinator
+    public var slot: PanelSlot = .right
     public var theme: Theme
     public var workingDirectory: String
 
@@ -22,10 +23,12 @@ public struct AgentStartScreenView: View {
 
     public init(
         coordinator: AgentSessionCoordinator,
+        slot: PanelSlot = .right,
         theme: Theme,
         workingDirectory: String
     ) {
         self.coordinator = coordinator
+        self.slot = slot
         self.theme = theme
         self.workingDirectory = workingDirectory
     }
@@ -58,7 +61,8 @@ public struct AgentStartScreenView: View {
                         viewingSessionsPreset = nil
                         _ = coordinator.createNewSession(
                             workingDirectory: workingDirectory,
-                            preset: preset
+                            preset: preset,
+                            for: slot
                         )
                     }
                 }
@@ -118,7 +122,8 @@ public struct AgentStartScreenView: View {
                                         withAnimation(.easeInOut(duration: 0.2)) {
                                             _ = coordinator.createNewSession(
                                                 workingDirectory: workingDirectory,
-                                                preset: group.selectedPreset
+                                                preset: group.selectedPreset,
+                                                for: slot
                                             )
                                         }
                                     },
@@ -525,7 +530,7 @@ public struct AgentStartScreenView: View {
         customIcon = "terminal"
         isAddingCustom = false
         withAnimation(.easeInOut(duration: 0.2)) {
-            _ = coordinator.createNewSession(workingDirectory: workingDirectory, preset: preset)
+            _ = coordinator.createNewSession(workingDirectory: workingDirectory, preset: preset, for: slot)
         }
     }
 
@@ -546,7 +551,7 @@ public struct AgentStartScreenView: View {
             if !name.isEmpty {
                 let duplicated = coordinator.duplicatePreset(preset, profileName: name)
                 withAnimation(.easeInOut(duration: 0.2)) {
-                    _ = coordinator.createNewSession(workingDirectory: workingDirectory, preset: duplicated)
+                    _ = coordinator.createNewSession(workingDirectory: workingDirectory, preset: duplicated, for: slot)
                 }
             }
         }

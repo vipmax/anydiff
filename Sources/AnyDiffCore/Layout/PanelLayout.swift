@@ -59,6 +59,16 @@ public enum PanelContent: String, CaseIterable, Codable, Hashable, Identifiable,
         case .terminal: return "Integrated interactive shell terminal"
         }
     }
+
+    /// Whether this content type can be opened in multiple panel slots concurrently.
+    public var allowsMultipleInstances: Bool {
+        switch self {
+        case .editor, .agent, .terminal:
+            return true
+        case .changes, .files, .history:
+            return false
+        }
+    }
 }
 
 /// Manages the layout state of the 3 panels (left, center, right), handling content assignment,
@@ -118,6 +128,7 @@ public final class PanelLayoutManager: ObservableObject {
     }
 
     /// Returns which slot currently contains the specified content, if any.
+    /// If multiple slots contain this content, returns the primary/first matching slot.
     public func slot(for content: PanelContent) -> PanelSlot? {
         if leftContent == content { return .left }
         if centerContent == content { return .center }
@@ -125,18 +136,30 @@ public final class PanelLayoutManager: ObservableObject {
         return nil
     }
 
+    /// Returns all slots containing the specified content.
+    public func allSlots(for content: PanelContent) -> [PanelSlot] {
+        var slots: [PanelSlot] = []
+        if leftContent == content { slots.append(.left) }
+        if centerContent == content { slots.append(.center) }
+        if rightContent == content { slots.append(.right) }
+        return slots
+    }
+
     /// Assigns content to the specified slot.
-    /// If the content is already present in another slot, it is moved (the other slot becomes empty/nil).
+    /// If the content is already present in another slot and does not allow multiple instances,
+    /// it is moved (the other slot becomes empty/nil).
     public func assign(_ content: PanelContent, to slot: PanelSlot) {
-        // Vacate other slot if already occupied by this content
-        if slot != .left && leftContent == content {
-            leftContent = nil
-        }
-        if slot != .center && centerContent == content {
-            centerContent = nil
-        }
-        if slot != .right && rightContent == content {
-            rightContent = nil
+        // Vacate other slot if already occupied by this content and multiple instances are not allowed
+        if !content.allowsMultipleInstances {
+            if slot != .left && leftContent == content {
+                leftContent = nil
+            }
+            if slot != .center && centerContent == content {
+                centerContent = nil
+            }
+            if slot != .right && rightContent == content {
+                rightContent = nil
+            }
         }
 
         // Assign to target slot

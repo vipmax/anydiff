@@ -27,18 +27,38 @@ final class PanelLayoutTests: XCTestCase {
         XCTAssertTrue(manager.isRightPanelOpen)
     }
 
-    func testAssignMovesContentFromPreviousSlot() {
+    func testAssignMovesContentFromPreviousSlotForUniqueContent() {
+        let manager = PanelLayoutManager(defaults: testDefaults, loadPersisted: false)
+        XCTAssertEqual(manager.slot(for: .changes), .left)
+
+        // Assign changes (unique) to center slot
+        manager.assign(.changes, to: .center)
+
+        // Center now has changes, left was vacated
+        XCTAssertNil(manager.leftContent)
+        XCTAssertEqual(manager.centerContent, .changes)
+        XCTAssertEqual(manager.rightContent, .agent)
+        XCTAssertEqual(manager.slot(for: .changes), .center)
+    }
+
+    func testAssignAllowsMultipleInstancesForEditorAgentTerminal() {
         let manager = PanelLayoutManager(defaults: testDefaults, loadPersisted: false)
         XCTAssertEqual(manager.slot(for: .editor), .center)
+        XCTAssertEqual(manager.slot(for: .agent), .right)
 
-        // Assign editor to left slot
+        // Assign editor to left slot without vacating center
         manager.assign(.editor, to: .left)
-
-        // Left now has editor, center was vacated
         XCTAssertEqual(manager.leftContent, .editor)
-        XCTAssertNil(manager.centerContent)
+        XCTAssertEqual(manager.centerContent, .editor)
         XCTAssertEqual(manager.rightContent, .agent)
-        XCTAssertEqual(manager.slot(for: .editor), .left)
+        XCTAssertEqual(manager.allSlots(for: .editor), [.left, .center])
+
+        // Assign agent to center slot without vacating right
+        manager.assign(.agent, to: .center)
+        XCTAssertEqual(manager.leftContent, .editor)
+        XCTAssertEqual(manager.centerContent, .agent)
+        XCTAssertEqual(manager.rightContent, .agent)
+        XCTAssertEqual(manager.allSlots(for: .agent), [.center, .right])
     }
 
     func testClearSlot() {
