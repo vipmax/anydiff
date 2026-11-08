@@ -69,39 +69,46 @@ public struct AgentStartScreenView: View {
     }
 
     private var mainStartScreenView: some View {
-        VStack(spacing: 0) {
+        GeometryReader { proxy in
+            let availableWidth = max(0, proxy.size.width)
+            let minContentWidth: CGFloat = 280
+            let maxContentWidth: CGFloat = 380
+            let horizontalPadding: CGFloat = 14
+
+            let isOverflowing = (availableWidth - horizontalPadding * 2) < minContentWidth
+            let contentWidth = isOverflowing ? minContentWidth : min(availableWidth - horizontalPadding * 2, maxContentWidth)
+
             ScrollView(.vertical, showsIndicators: false) {
-                VStack(spacing: 20) {
-                    // If there are existing sessions, show running sessions list
-                    if !coordinator.sessions.isEmpty {
-                        HStack(spacing: 0) {
-                            Spacer(minLength: 0)
-                            runningSessionsSection
-                            Spacer(minLength: 0)
-                        }
-                    }
-
-                    // Header
-                    VStack(spacing: 12) {
-                        VStack(spacing: 5) {
-                            Text("Choose an Agent")
-                                .font(.system(size: 20, weight: .bold))
-                                .foregroundColor(Color(theme.foreground))
-
-                            Text("Select an AI agent to inspect diffs, write code, and run commands.")
-                                .font(.system(size: 12))
-                                .foregroundColor(Color(theme.gutterForeground))
-                                .multilineTextAlignment(.center)
-                                .lineSpacing(2)
-                                .frame(maxWidth: 320)
-                        }
-                    }
-                    .padding(.top, coordinator.sessions.isEmpty ? 15 : 0)
-
-                    // Agent Cards
-                    HStack(spacing: 0) {
+                HStack(spacing: 0) {
+                    if !isOverflowing {
                         Spacer(minLength: 0)
+                    }
 
+                    VStack(spacing: 20) {
+                        // If there are existing sessions, show running sessions list
+                        if !coordinator.sessions.isEmpty {
+                            runningSessionsSection
+                        }
+
+                        // Header
+                        VStack(spacing: 12) {
+                            VStack(spacing: 4) {
+                                Text("Choose an Agent")
+                                    .font(.system(size: 20, weight: .bold))
+                                    .foregroundColor(Color(theme.foreground))
+                                    .lineLimit(1)
+
+                                Text("Select an AI agent to inspect diffs, write code, and run commands.")
+                                    .font(.system(size: 12))
+                                    .foregroundColor(Color(theme.gutterForeground))
+                                    .multilineTextAlignment(.center)
+                                    .lineSpacing(2)
+                                    .frame(maxWidth: 320)
+                            }
+                        }
+                        .padding(.top, coordinator.sessions.isEmpty ? 15 : 0)
+
+                        // Agent Cards
                         VStack(spacing: 10) {
                             ForEach(coordinator.agentGroups) { group in
                                 AgentCardButton(
@@ -149,17 +156,20 @@ public struct AgentStartScreenView: View {
                                 addCustomAgentButton
                             }
                         }
-                        .frame(maxWidth: 380)
-                        .padding(.horizontal, 16)
 
+                        Spacer(minLength: 20)
+                    }
+                    .frame(width: contentWidth)
+                    .padding(.leading, isOverflowing ? horizontalPadding : 0)
+
+                    if !isOverflowing {
                         Spacer(minLength: 0)
                     }
-
-                    Spacer(minLength: 20)
                 }
-                .frame(maxWidth: .infinity)
+                .frame(minWidth: availableWidth, alignment: .leading)
                 .padding(.vertical, 16)
             }
+            .clipped()
         }
         .background(Color(theme.background))
     }
@@ -205,8 +215,7 @@ public struct AgentStartScreenView: View {
                     .stroke(Color(theme.excerptHeaderBorder).opacity(0.5), lineWidth: 1)
             )
         }
-        .frame(maxWidth: 380)
-        .padding(.horizontal, 16)
+        .frame(maxWidth: .infinity)
         .padding(.bottom, 4)
     }
 
@@ -218,36 +227,39 @@ public struct AgentStartScreenView: View {
             }
         }) {
             HStack(spacing: 12) {
+                let boxSize: CGFloat = 44
                 ZStack {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .stroke(
                             isAddCustomHovered ? Color(theme.accentColor).opacity(0.7) : Color(theme.gutterForeground).opacity(0.4),
                             style: StrokeStyle(lineWidth: 1, dash: [3])
                         )
                         .background(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
                                 .fill(isAddCustomHovered ? Color(theme.accentColor).opacity(0.12) : Color.clear)
                         )
-                        .frame(width: 34, height: 34)
+                        .frame(width: boxSize, height: boxSize)
                     Image(systemName: "plus")
-                        .font(.system(size: 13, weight: .medium))
+                        .font(.system(size: 18, weight: .medium))
                         .foregroundColor(isAddCustomHovered ? Color(theme.accentColor) : Color(theme.gutterForeground))
                 }
 
-                VStack(alignment: .center, spacing: 2) {
+                VStack(alignment: .center, spacing: 3) {
                     Text("Add Custom Agent")
-                        .font(.system(size: 12.5, weight: .semibold))
-                        .foregroundColor(isAddCustomHovered ? Color(theme.accentColor) : Color(theme.foreground))
-                        .multilineTextAlignment(.center)
+                        .font(.system(size: 14.5, weight: .semibold))
+                        .foregroundColor(Color(theme.foreground))
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .center)
 
                     Text("Run any ACP-compatible command or local server")
                         .font(.system(size: 10.5))
                         .foregroundColor(Color(theme.gutterForeground))
                         .multilineTextAlignment(.center)
+                        .lineLimit(1)
                 }
                 .frame(maxWidth: .infinity, alignment: .center)
             }
-            .padding(.horizontal, 14)
+            .padding(.horizontal, 11)
             .padding(.vertical, 10)
             .background(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -268,11 +280,11 @@ public struct AgentStartScreenView: View {
             }
         }) {
             HStack(spacing: 12) {
-                // Globe icon container exactly matching AgentCardButton dimensions (40x40)
+                let boxSize: CGFloat = 44
                 ZStack {
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .fill(Color(theme.accentColor).opacity(isRegistryHovered ? 0.18 : 0.10))
-                        .frame(width: 40, height: 40)
+                        .frame(width: boxSize, height: boxSize)
                     Image(systemName: "globe")
                         .font(.system(size: 20, weight: .medium))
                         .foregroundColor(Color(theme.accentColor))
@@ -284,6 +296,7 @@ public struct AgentStartScreenView: View {
                         .font(.system(size: 14.5, weight: .semibold))
                         .foregroundColor(Color(theme.foreground))
                         .lineLimit(1)
+                        .truncationMode(.tail)
                         .frame(maxWidth: .infinity, alignment: .center)
 
                     Text("Explore, install, and run certified ACP agents")
@@ -305,8 +318,8 @@ public struct AgentStartScreenView: View {
                     .animation(.easeOut(duration: 0.15), value: isRegistryHovered)
                     .frame(width: 20, height: 20)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 12)
+            .padding(.horizontal, 11)
+            .padding(.vertical, 10)
             .background(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .fill(Color(theme.foreground).opacity(isRegistryHovered ? 0.07 : 0.035))
@@ -651,14 +664,15 @@ private struct AgentCardButton: View {
                             .font(.system(size: 14.5, weight: .semibold))
                             .foregroundColor(Color(theme.foreground))
                             .lineLimit(1)
+                            .truncationMode(.tail)
                             .frame(maxWidth: .infinity, alignment: .center)
 
                         if !group.basePreset.isExecutableAvailable {
                             HStack(spacing: 3) {
                                 Image(systemName: "exclamationmark.triangle.fill")
-                                    .font(.system(size: 8.5))
+                                    .font(.system(size: 8))
                                 Text("Missing Binary")
-                                    .font(.system(size: 9.5, weight: .medium))
+                                    .font(.system(size: 9, weight: .medium))
                             }
                             .foregroundColor(.orange)
                             .padding(.horizontal, 5)
@@ -684,7 +698,7 @@ private struct AgentCardButton: View {
                         Text(descriptionText)
                             .font(.system(size: 11))
                             .foregroundColor(Color(theme.gutterForeground).opacity(0.82))
-                            .lineLimit(1)
+                            .lineLimit(2)
                             .multilineTextAlignment(.center)
                             .frame(maxWidth: .infinity)
                     }
@@ -697,11 +711,12 @@ private struct AgentCardButton: View {
                     profileSelectorMenu
 
                     Button(action: onOpenSessions) {
-                        HStack(spacing: 4) {
+                        HStack(spacing: 3.5) {
                             Image(systemName: "clock.arrow.circlepath")
                                 .font(.system(size: 9.5, weight: .medium))
                             Text("Sessions")
                                 .font(.system(size: 10.5, weight: .medium))
+                                .lineLimit(1)
                         }
                         .foregroundColor(Color(theme.gutterForeground).opacity(isSessionsHovered ? 1.0 : 0.72))
                         .padding(.horizontal, 5)
@@ -712,6 +727,7 @@ private struct AgentCardButton: View {
                         )
                     }
                     .buttonStyle(.plain)
+                    .fixedSize()
                     .onHover { isSessionsHovered = $0 }
                     .help("View past sessions for this agent")
                 }
@@ -733,7 +749,7 @@ private struct AgentCardButton: View {
             }
             .buttonStyle(.plain)
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 11)
         .padding(.vertical, 10)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -762,12 +778,13 @@ private struct AgentCardButton: View {
     @ViewBuilder
     private var profileSelectorMenu: some View {
         Button(action: showProfileMenu) {
-            HStack(spacing: 4) {
+            HStack(spacing: 3.5) {
                 Image(systemName: "person.crop.circle")
                     .font(.system(size: 9.5, weight: .medium))
                 Text(preset.profileDisplayName)
                     .font(.system(size: 10.5, weight: .medium))
                     .lineLimit(1)
+                    .truncationMode(.tail)
                 Image(systemName: "chevron.down")
                     .font(.system(size: 7.5, weight: .bold))
             }
@@ -781,7 +798,7 @@ private struct AgentCardButton: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .fixedSize()
+        .lineLimit(1)
         .onHover { isProfileHovered = $0 }
         .help("Select or create an isolated account profile in ~/.anydiff/profiles")
     }

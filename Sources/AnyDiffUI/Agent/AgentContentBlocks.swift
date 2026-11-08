@@ -27,7 +27,7 @@ public final class AgentCodeBlockHeaderView: AgentFlippedView {
     public let toggleButton = AgentHoverButton()
     public let copyBtn = AgentHoverButton()
     private var trackingArea: NSTrackingArea?
-    public private(set) var isExpanded = false
+    public private(set) var isExpanded = true
     public var onToggle: (() -> Void)?
 
     public override init(frame frameRect: NSRect) {

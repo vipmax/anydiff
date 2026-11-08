@@ -305,6 +305,7 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
     @Published public var isPanelOpen: Bool {
         didSet {
             userDefaults.set(isPanelOpen, forKey: Self.isRightPanelOpenKey)
+            activeSession?.manager.isPanelOpen = isPanelOpen
         }
     }
     public var isRightPanelOpen: Bool {

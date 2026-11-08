@@ -12,6 +12,7 @@ public struct AgentSessionRowView: View {
 
     @State private var isHovered: Bool = false
     @State private var isCloseHovered: Bool = false
+    @State private var customAvatar: NSImage? = nil
 
     public init(
         session: AgentSessionItem,
@@ -33,7 +34,8 @@ public struct AgentSessionRowView: View {
         let accentColor = Color(theme.accentColor)
         HStack(spacing: 8) {
             Button(action: onSelect) {
-                HStack(spacing: 8) {
+                HStack(spacing: 7) {
+                    avatarView
                     statusIconView
 
                     VStack(alignment: .leading, spacing: 1.5) {
@@ -149,6 +151,39 @@ public struct AgentSessionRowView: View {
             }
         }
         .help(session.displaySessionId != nil ? "Session ID: \(session.displaySessionId!)" : session.title)
+        .onAppear {
+            refreshAvatar()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: AgentAvatarProvider.avatarDidChangeNotification)) { _ in
+            refreshAvatar()
+        }
+    }
+
+    private func refreshAvatar() {
+        customAvatar = AgentAvatarProvider.customAgentAvatarImage(for: session.preset.id)
+    }
+
+    @ViewBuilder
+    private var avatarView: some View {
+        if let custom = customAvatar {
+            Image(nsImage: custom)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 22, height: 22)
+                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+        } else {
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(sessionColor.opacity(isActive ? 0.22 : 0.12))
+                .frame(width: 22, height: 22)
+                .overlay(
+                    AgentIconView(
+                        icon: session.preset.iconName,
+                        agentId: session.preset.id,
+                        tintColor: sessionColor,
+                        size: 12
+                    )
+                )
+        }
     }
 
     @ViewBuilder
@@ -156,48 +191,48 @@ public struct AgentSessionRowView: View {
         let accentColor = Color(theme.accentColor)
         if session.manager.pendingPermission != nil {
             Image(systemName: "hand.raised.fill")
-                .font(.system(size: 11))
+                .font(.system(size: 10))
                 .foregroundColor(.orange)
-                .frame(width: 14)
+                .frame(width: 10)
         } else {
             switch session.manager.status {
             case .busy:
                 ZStack {
                     Circle()
                         .fill(accentColor.opacity(0.2))
-                        .frame(width: 14, height: 14)
+                        .frame(width: 12, height: 12)
                     Circle()
                         .stroke(accentColor, lineWidth: 1.5)
-                        .frame(width: 10, height: 10)
+                        .frame(width: 9, height: 9)
                     Image(systemName: "sparkle")
-                        .font(.system(size: 7, weight: .bold))
+                        .font(.system(size: 6, weight: .bold))
                         .foregroundColor(accentColor)
                 }
-                .frame(width: 14)
+                .frame(width: 10)
             case .connecting:
                 Circle()
                     .fill(Color.yellow)
-                    .frame(width: 8, height: 8)
-                    .frame(width: 14)
+                    .frame(width: 7, height: 7)
+                    .frame(width: 10)
             case .error:
                 Image(systemName: "exclamationmark.circle.fill")
-                    .font(.system(size: 11))
+                    .font(.system(size: 10))
                     .foregroundColor(.red)
-                    .frame(width: 14)
+                    .frame(width: 10)
             case .idle:
                 Circle()
                     .fill(isActive ? accentColor : sessionColor)
-                    .frame(width: 8, height: 8)
+                    .frame(width: 7, height: 7)
                     .overlay(
                         Circle()
                             .stroke(isActive ? Color.white.opacity(0.25) : Color.primary.opacity(0.18), lineWidth: 0.8)
                     )
-                    .frame(width: 14)
+                    .frame(width: 10)
             case .disconnected:
                 Circle()
                     .fill(isActive ? accentColor.opacity(0.8) : Color.secondary.opacity(0.5))
-                    .frame(width: 8, height: 8)
-                    .frame(width: 14)
+                    .frame(width: 7, height: 7)
+                    .frame(width: 10)
             }
         }
     }
@@ -207,7 +242,8 @@ public struct AgentSessionRowView: View {
     }
 
     private var sessionSubtitle: String {
-        let prefix = session.manager.agentTitle
+        let hasProfileBadge = session.preset.profile?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        let prefix = hasProfileBadge ? session.preset.name : session.manager.agentTitle
         if session.manager.pendingPermission != nil {
             return "\(prefix) · Permission required"
         }

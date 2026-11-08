@@ -238,7 +238,7 @@ extension AgentMessageCell {
             header.wantsLayer = true
             header.layer?.backgroundColor = headerBg.cgColor
             header.frame = NSRect(x: 0, y: 0, width: 300, height: 26)
-            header.setExpanded(false)
+            header.setExpanded(true)
             header.onToggle = { [weak self, weak container] in
                 guard let self, let container else { return }
                 self.invalidateLayoutCache()
@@ -247,7 +247,13 @@ extension AgentMessageCell {
             }
 
             let langLabel = container.header.langLabel
-            langLabel.stringValue = lang?.uppercased() ?? "CODE"
+            if let lang = lang, !lang.isEmpty {
+                langLabel.stringValue = lang.uppercased()
+            } else if code.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("|") {
+                langLabel.stringValue = "TABLE"
+            } else {
+                langLabel.stringValue = "CODE"
+            }
             langLabel.isBezeled = false
             langLabel.drawsBackground = false
             langLabel.isEditable = false

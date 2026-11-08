@@ -113,6 +113,8 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
         context.coordinator.textView = textView
         context.coordinator.scrollView = scrollView
 
+        context.coordinator.focusTextViewIfRequested()
+
         DispatchQueue.main.async {
             textView.recalculateHeight()
         }
@@ -223,22 +225,24 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
             guard shouldFocus else { return }
 
             let toEnd = parent.cursorToEnd
-            DispatchQueue.main.async { [weak self] in
-                guard let self, let textView = self.textView else { return }
-                let applyFocus: (NSWindow, AgentInputCustomTextView) -> Void = { window, tv in
-                    window.makeFirstResponder(tv)
-                    let loc = toEnd ? (tv.string as NSString).length : 0
-                    let range = NSRange(location: loc, length: 0)
-                    tv.selectedRange = range
-                    tv.scrollRangeToVisible(range)
-                }
+            let applyFocus: (NSWindow, AgentInputCustomTextView) -> Void = { window, tv in
+                window.makeFirstResponder(tv)
+                let loc = toEnd ? (tv.string as NSString).length : 0
+                let range = NSRange(location: loc, length: 0)
+                tv.selectedRange = range
+                tv.scrollRangeToVisible(range)
+            }
 
+            if let textView = self.textView {
+                textView.needsAutoFocusOnWindowAttachment = true
                 if let window = textView.window {
                     applyFocus(window, textView)
                 } else {
-                    DispatchQueue.main.async { [weak self] in
-                        guard let self, let textView = self.textView, let window = textView.window else { return }
-                        applyFocus(window, textView)
+                    for delay in [0.04, 0.12, 0.25, 0.4] {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                            guard let self, let textView = self.textView, let window = textView.window else { return }
+                            applyFocus(window, textView)
+                        }
                     }
                 }
             }
@@ -291,6 +295,7 @@ public final class AgentInputCustomTextView: NSTextView {
     public var onDeleteBackwardWhenEmpty: (() -> Void)?
     public var onNavigatePrevious: ((_ toEnd: Bool) -> Bool)?
     public var onNavigateNext: ((_ toStart: Bool) -> Bool)?
+    public var needsAutoFocusOnWindowAttachment: Bool = false
 
     public func isCursorOnFirstLine() -> Bool {
         let sel = selectedRange()
@@ -327,6 +332,17 @@ public final class AgentInputCustomTextView: NSTextView {
         super.viewDidMoveToWindow()
         if window != nil {
             setupDragDrop()
+            if needsAutoFocusOnWindowAttachment {
+                needsAutoFocusOnWindowAttachment = false
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, let window = self.window else { return }
+                    window.makeFirstResponder(self)
+                    let loc = (self.string as NSString).length
+                    let range = NSRange(location: loc, length: 0)
+                    self.selectedRange = range
+                    self.scrollRangeToVisible(range)
+                }
+            }
         }
     }
 
@@ -561,13 +577,14 @@ public struct AgentInputView: View {
     public var onPreviewImages: (([AgentImageAttachment], Int, Bool) -> Void)?
 
     @Binding public var attachedImages: [AgentImageAttachment]
+    public var externalFocusRequest: Int = 0
     @State private var previewImageIndex: Int? = nil
     @Binding private var calculatedHeight: CGFloat
     @State private var isInputFocused: Bool = false
     @State private var inputFocusRequest: Int = 0
     @State private var isInputDropTargeted: Bool = false
     @ObservedObject private var quoteStore = SelectionQuoteStore.shared
-    @State private var blocks: [AgentInputBlock] = [.text(AgentInputTextBlockState(text: ""))]
+    @State private var blocks: [AgentInputBlock] = [.text(AgentInputTextBlockState(text: "", focusRequest: 1))]
     @State private var focusedBlockId: String = ""
     @State private var maxAvatarWidth: CGFloat = AgentMessageCell.maxAvatarWidth
     @State private var isQuoteButtonHovered: Bool = false
@@ -583,6 +600,7 @@ public struct AgentInputView: View {
         accentColor: Color = .accentColor,
         isCollapsed: Binding<Bool>? = nil,
         calculatedHeight: Binding<CGFloat>,
+        externalFocusRequest: Int = 0,
         onSend: @escaping (String, [AgentImageAttachment]) -> Void,
         onCancel: @escaping () -> Void,
         onReview: ((AgentEditedFilesSummary) -> Void)? = nil,
@@ -597,6 +615,7 @@ public struct AgentInputView: View {
         self.theme = theme
         self.accentColor = accentColor
         self._calculatedHeight = calculatedHeight
+        self.externalFocusRequest = externalFocusRequest
         self.onSend = onSend
         self.onCancel = onCancel
         self.onReview = onReview
@@ -611,6 +630,7 @@ public struct AgentInputView: View {
         accentColor: Color = .accentColor,
         isCollapsed: Binding<Bool>? = nil,
         calculatedHeight: Binding<CGFloat>,
+        externalFocusRequest: Int = 0,
         onSend: @escaping (String) -> Void,
         onCancel: @escaping () -> Void,
         onReview: ((AgentEditedFilesSummary) -> Void)? = nil,
@@ -625,6 +645,7 @@ public struct AgentInputView: View {
         self.theme = theme
         self.accentColor = accentColor
         self._calculatedHeight = calculatedHeight
+        self.externalFocusRequest = externalFocusRequest
         self.onSend = { prompt, _ in onSend(prompt) }
         self.onCancel = onCancel
         self.onReview = onReview
@@ -723,6 +744,21 @@ public struct AgentInputView: View {
                 state.text = text
                 blocks[0] = .text(state)
                 focusedBlockId = state.id
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                inputFocusRequest &+= 1
+            }
+        }
+        .onChange(of: agentManager.isPanelOpen) { isOpen in
+            if isOpen {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                    inputFocusRequest &+= 1
+                }
+            }
+        }
+        .onChange(of: externalFocusRequest) { _ in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                inputFocusRequest &+= 1
             }
         }
         .onChange(of: text) { newText in
@@ -906,7 +942,7 @@ public struct AgentInputView: View {
                         theme: theme,
                         minHeight: 22,
                         maxHeight: needsScroll ? 120 : 160,
-                        focusRequest: state.focusRequest + inputFocusRequest,
+                        focusRequest: state.focusRequest + inputFocusRequest + externalFocusRequest,
                         cursorToEnd: state.cursorToEnd,
                         calculatedHeight: Binding(
                             get: { state.height },

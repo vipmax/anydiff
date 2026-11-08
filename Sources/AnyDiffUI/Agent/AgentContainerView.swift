@@ -14,6 +14,7 @@ public struct AgentContainerView: View {
 
     @State private var isSessionsPresented: Bool = false
     @State private var isSessionsHovered: Bool = false
+    @State private var inputFocusTrigger: Int = 0
 
     public init(
         coordinator: AgentSessionCoordinator,
@@ -72,6 +73,7 @@ public struct AgentContainerView: View {
                         agentIcon: activeSession.preset.iconName,
                         agentId: activeSession.preset.id,
                         toolcallColorMode: toolcallColorMode,
+                        externalFocusRequest: inputFocusTrigger,
                         onReview: onReview,
                         onPreviewImages: { imgs, idx, isDraft in
                             coordinator.showImagePreview(images: imgs, selectedIndex: idx, isDraft: isDraft)
@@ -88,6 +90,14 @@ public struct AgentContainerView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .onAppear {
+            inputFocusTrigger &+= 1
+        }
+        .onChange(of: coordinator.isPanelOpen) { isOpen in
+            if isOpen {
+                inputFocusTrigger &+= 1
+            }
         }
     }
 

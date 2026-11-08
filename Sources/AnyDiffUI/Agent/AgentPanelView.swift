@@ -17,6 +17,8 @@ public struct AgentPanelView: View {
     public var onPreviewImages: (([AgentImageAttachment], Int, Bool) -> Void)?
 
     @State private var isChatNearBottom: Bool = true
+    public var externalFocusRequest: Int = 0
+    @State private var internalFocusTrigger: Int = 0
     @State private var scrollToBottomRequest: Int = 0
     @State private var inputContentHeight: CGFloat = max(AgentMessageCell.userAvatarSize + 8, 38)
     @State private var inputTotalHeight: CGFloat = 0
@@ -40,6 +42,7 @@ public struct AgentPanelView: View {
         agentIcon: String = "sparkles",
         agentId: String = "default",
         toolcallColorMode: ToolcallColorMode = AgentDisplayPreferences.toolcallColorMode,
+        externalFocusRequest: Int = 0,
         onReview: ((AgentEditedFilesSummary) -> Void)? = nil,
         onPreviewImages: (([AgentImageAttachment], Int, Bool) -> Void)? = nil,
         onOpenURL: ((URL) -> Void)? = nil
@@ -53,6 +56,7 @@ public struct AgentPanelView: View {
         self.agentIcon = agentIcon
         self.agentId = agentId
         self.toolcallColorMode = toolcallColorMode
+        self.externalFocusRequest = externalFocusRequest
         self.onReview = onReview
         self.onPreviewImages = onPreviewImages
         self.onOpenURL = onOpenURL
@@ -138,6 +142,12 @@ public struct AgentPanelView: View {
         }
         .onAppear {
             agentManager.prepareAgent(workingDirectory: workingDirectory)
+            internalFocusTrigger &+= 1
+        }
+        .onChange(of: agentManager.isPanelOpen) { isOpen in
+            if isOpen {
+                internalFocusTrigger &+= 1
+            }
         }
         .onChange(of: workingDirectory) { newDirectory in
             agentManager.prepareAgent(workingDirectory: newDirectory)
@@ -167,6 +177,7 @@ public struct AgentPanelView: View {
             theme: theme,
             accentColor: agentAccentColor,
             calculatedHeight: $inputContentHeight,
+            externalFocusRequest: externalFocusRequest + internalFocusTrigger,
             onSend: { prompt, images in
                 handleSendPrompt(prompt, images: images)
             },
