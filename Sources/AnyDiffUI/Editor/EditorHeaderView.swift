@@ -65,10 +65,13 @@ public struct EditorHeaderActionsView: View {
     public let totalDels: Int
     public let disableHunkNavigation: Bool
     public var workingDirectory: String? = nil
+    public let isEditingLocked: Bool
+    public let isReadOnlyForced: Bool
     public let onPreviousHunk: () -> Void
     public let onNextHunk: () -> Void
     public let onToggleCollapse: () -> Void
     public let onToggleLayout: () -> Void
+    public let onToggleEditingLock: () -> Void
     public let onToggleSearch: () -> Void
 
     @State private var isShowingLSPPopover: Bool = false
@@ -84,10 +87,13 @@ public struct EditorHeaderActionsView: View {
         totalDels: Int = 0,
         disableHunkNavigation: Bool = false,
         workingDirectory: String? = nil,
+        isEditingLocked: Bool = false,
+        isReadOnlyForced: Bool = false,
         onPreviousHunk: @escaping () -> Void,
         onNextHunk: @escaping () -> Void,
         onToggleCollapse: @escaping () -> Void,
         onToggleLayout: @escaping () -> Void,
+        onToggleEditingLock: @escaping () -> Void = {},
         onToggleSearch: @escaping () -> Void
     ) {
         self.theme = theme
@@ -99,10 +105,13 @@ public struct EditorHeaderActionsView: View {
         self.totalDels = totalDels
         self.disableHunkNavigation = disableHunkNavigation
         self.workingDirectory = workingDirectory
+        self.isEditingLocked = isEditingLocked
+        self.isReadOnlyForced = isReadOnlyForced
         self.onPreviousHunk = onPreviousHunk
         self.onNextHunk = onNextHunk
         self.onToggleCollapse = onToggleCollapse
         self.onToggleLayout = onToggleLayout
+        self.onToggleEditingLock = onToggleEditingLock
         self.onToggleSearch = onToggleSearch
     }
 
@@ -183,6 +192,26 @@ public struct EditorHeaderActionsView: View {
             .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffToggleLSPPopover"))) { _ in
                 isShowingLSPPopover.toggle()
             }
+
+            // MultiBuffer editing lock toggle button (placed next to LSP)
+            Button(action: onToggleEditingLock) {
+                Image(systemName: (isEditingLocked || isReadOnlyForced) ? "lock.fill" : "lock.open")
+                    .font(.system(size: 10.5, weight: .medium))
+                    .frame(width: 14, height: 14)
+                    .foregroundColor(
+                        (isEditingLocked || isReadOnlyForced)
+                            ? Color(theme.foreground)
+                            : Color(theme.gutterForeground)
+                    )
+            }
+            .buttonStyle(ToolbarHoverButtonStyle())
+            .disabled(isReadOnlyForced)
+            .help(
+                isReadOnlyForced
+                    ? "Read-Only (commit diff or review active)"
+                    : (isEditingLocked ? "MultiBuffer editing is locked. Click to unlock (⇧⌘L)" : "Lock MultiBuffer editing (prevent accidental typing) (⇧⌘L)")
+            )
+            .accessibilityLabel((isEditingLocked || isReadOnlyForced) ? "MultiBuffer editing is locked" : "MultiBuffer editing is unlocked")
 
             if availableWidth >= 290 || isSearchActive {
                 Button(action: onToggleSearch) {

@@ -1457,4 +1457,47 @@ final class ReadOnlyEditorTests: XCTestCase {
         // Ensure editorRight did not become first responder
         XCTAssertFalse(editorRight.window?.firstResponder === editorRight)
     }
+
+    @MainActor
+    func testEditingLockTogglingAndEditorNonEditability() {
+        let repo = RepoCoordinator()
+        let initialLock = repo.isEditingLocked
+        defer {
+            repo.isEditingLocked = initialLock
+        }
+
+        repo.isEditingLocked = false
+        XCTAssertFalse(repo.isEditingLocked)
+
+        repo.toggleEditingLock()
+        XCTAssertTrue(repo.isEditingLocked)
+
+        let mb = MultiBuffer()
+        let text = "let a = 1\n"
+        let buf = Buffer(filePath: "LockTest.swift", text: text)
+        mb.addBuffer(buf)
+        mb.setExcerpts([Excerpt(bufferId: buf.id, filePath: "LockTest.swift", bufferRange: 0..<1)])
+        let dm = DisplayMap(multiBuffer: mb, reviewManager: ReviewManager())
+        dm.rebuild()
+
+        let editor = MultiBufferEditorView(displayMap: dm, theme: .unifiedDark)
+        // Set isEditable according to repo state
+        editor.isEditable = !repo.isEditingLocked
+        XCTAssertFalse(editor.isEditable)
+
+        // Typing must be prevented
+        editor.cursorPoint = MultiBufferPoint(row: 0, column: 0)
+        editor.insertText("MUTATION", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertEqual(buf.text(), text, "Buffer must remain unchanged while editing is locked")
+
+        // Unlock editing
+        repo.toggleEditingLock()
+        XCTAssertFalse(repo.isEditingLocked)
+        editor.isEditable = !repo.isEditingLocked
+        XCTAssertTrue(editor.isEditable)
+
+        // Typing should now succeed
+        editor.insertText("MUTATION", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertTrue(buf.text().contains("MUTATION"), "Buffer should accept modifications after unlocking")
+    }
 }

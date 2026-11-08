@@ -107,7 +107,21 @@ public final class MultiBufferEditorView: NSView, NSTextInputClient, NSUserInter
         }
     }
 
-    public var isEditable: Bool = true
+    public var isEditable: Bool = true {
+        didSet {
+            guard oldValue != isEditable else { return }
+            if isEditable {
+                if window?.firstResponder === self {
+                    startCursorBlink()
+                }
+            } else {
+                cursorTimer?.invalidate()
+                cursorTimer = nil
+                isCursorVisible = false
+            }
+            needsDisplay = true
+        }
+    }
     /// Blocks mutations while keeping cursor movement, selection, copying,
     /// and scrolling available to read-only consumers such as tool output.
     public var ignoreEdits: Bool = false

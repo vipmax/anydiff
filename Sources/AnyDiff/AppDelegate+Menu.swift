@@ -80,6 +80,10 @@ extension AppDelegate {
         editMenu.addItem(NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v"))
         editMenu.addItem(NSMenuItem(title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
         editMenu.addItem(NSMenuItem.separator())
+        let toggleLockItem = NSMenuItem(title: "Toggle MultiBuffer Editing Lock", action: #selector(toggleEditingLockAction(_:)), keyEquivalent: "L")
+        toggleLockItem.keyEquivalentModifierMask = [.command, .shift]
+        editMenu.addItem(toggleLockItem)
+        editMenu.addItem(NSMenuItem.separator())
         let findItem = NSMenuItem(title: "Find...", action: #selector(findInProjectAction(_:)), keyEquivalent: "f")
         findItem.keyEquivalentModifierMask = [.command]
         editMenu.addItem(findItem)
@@ -424,5 +428,9 @@ extension AppDelegate {
 
     @objc func saveDocumentAction(_ sender: Any?) {
         NotificationCenter.default.post(name: .saveActiveDocument, object: nil)
+    }
+
+    @objc func toggleEditingLockAction(_ sender: Any?) {
+        NotificationCenter.default.post(name: .toggleEditingLock, object: nil)
     }
 }

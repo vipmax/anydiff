@@ -58,6 +58,18 @@ public final class RepoCoordinator: ObservableObject {
     @Published public var remoteTarget: GitHubDiffReference? = nil
     @Published public var remoteErrorMessage: String? = nil
 
+    public static let isEditingLockedKey = "anydiff_is_editing_locked"
+
+    @Published public var isEditingLocked: Bool = UserDefaults.standard.bool(forKey: isEditingLockedKey) {
+        didSet {
+            UserDefaults.standard.set(isEditingLocked, forKey: Self.isEditingLockedKey)
+        }
+    }
+
+    public func toggleEditingLock() {
+        isEditingLocked.toggle()
+    }
+
     // MARK: - Owned Storage
 
     public let multiBuffer: MultiBuffer

@@ -304,6 +304,11 @@ public struct MainWindowView: View {
             },
             onToggleTerminal: {
                 toggleTerminalPanel()
+            },
+            onToggleEditingLock: {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    repo.toggleEditingLock()
+                }
             }
         ))
     }

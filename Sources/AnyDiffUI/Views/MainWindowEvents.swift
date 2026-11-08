@@ -22,6 +22,7 @@ public struct MainWindowEventsModifier: ViewModifier {
     public let onResetPanelsLayout: () -> Void
     public let onToolcallColorModeChanged: (ToolcallColorMode) -> Void
     public let onToggleTerminal: (() -> Void)?
+    public let onToggleEditingLock: (() -> Void)?
 
     public init(
         onUpdateAppearance: @escaping () -> Void,
@@ -42,7 +43,8 @@ public struct MainWindowEventsModifier: ViewModifier {
         onResetZoom: @escaping () -> Void,
         onResetPanelsLayout: @escaping () -> Void,
         onToolcallColorModeChanged: @escaping (ToolcallColorMode) -> Void,
-        onToggleTerminal: (() -> Void)? = nil
+        onToggleTerminal: (() -> Void)? = nil,
+        onToggleEditingLock: (() -> Void)? = nil
     ) {
         self.onUpdateAppearance = onUpdateAppearance
         self.onFocusEditor = onFocusEditor
@@ -63,6 +65,7 @@ public struct MainWindowEventsModifier: ViewModifier {
         self.onResetPanelsLayout = onResetPanelsLayout
         self.onToolcallColorModeChanged = onToolcallColorModeChanged
         self.onToggleTerminal = onToggleTerminal
+        self.onToggleEditingLock = onToggleEditingLock
     }
 
     public func body(content: Content) -> some View {
@@ -163,6 +166,9 @@ public struct MainWindowEventsModifier: ViewModifier {
             }
             .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffResetPanelsLayout"))) { _ in
                 onResetPanelsLayout()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .toggleEditingLock)) { _ in
+                onToggleEditingLock?()
             }
     }
 }

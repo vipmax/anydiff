@@ -317,10 +317,17 @@ public struct EditorContainerView: View {
             totalDels: totalDels,
             disableHunkNavigation: fileDiffs.isEmpty,
             workingDirectory: repo.effectiveWorkingDirectory,
+            isEditingLocked: repo.isEditingLocked,
+            isReadOnlyForced: (isReadOnlyActive || repo.comparisonTarget != .workingTree),
             onPreviousHunk: { NotificationCenter.default.post(name: .goToPreviousHunk, object: slot) },
             onNextHunk: { NotificationCenter.default.post(name: .goToNextHunk, object: slot) },
             onToggleCollapse: toggleCollapseAll,
             onToggleLayout: onToggleLayout,
+            onToggleEditingLock: {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    repo.toggleEditingLock()
+                }
+            },
             onToggleSearch: {
                 withAnimation(.easeInOut(duration: 0.16)) {
                     search.toggle(in: repo.effectiveWorkingDirectory, selectedText: displayMap.getSelectionText(), in: slot)
@@ -337,7 +344,7 @@ public struct EditorContainerView: View {
             displayMap: displayMap,
             theme: theme,
             fontSize: fontSize,
-            isEditable: (!isReadOnlyActive && repo.comparisonTarget == .workingTree),
+            isEditable: (!isReadOnlyActive && repo.comparisonTarget == .workingTree && !repo.isEditingLocked),
             selectedFilePath: repo.selectedFilePath(for: slot),
             slot: slot,
             activeEditorSlot: repo.activeEditorSlot,

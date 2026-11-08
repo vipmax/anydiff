@@ -120,4 +120,5 @@ extension Notification.Name {
     public static let goToNextDiagnostic = Notification.Name("AnyDiff_goToNextDiagnostic")
     public static let goToPreviousDiagnostic = Notification.Name("AnyDiff_goToPreviousDiagnostic")
     public static let saveActiveDocument = Notification.Name("AnyDiff_saveActiveDocument")
+    public static let toggleEditingLock = Notification.Name("anyDiffToggleEditingLock")
 }
