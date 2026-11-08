@@ -46,6 +46,13 @@ public struct TerminalPanelView: View {
                 headerTrailingActions
             }
             .frame(maxWidth: .infinity, minHeight: 28, maxHeight: 28)
+            .background(
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture(count: 2) {
+                        _ = coordinator.createTab()
+                    }
+            )
             .zIndex(2)
 
             if let activeTab = coordinator.activeTab {
@@ -66,30 +73,47 @@ public struct TerminalPanelView: View {
 
     @ViewBuilder
     private var tabBarLeadingView: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 3) {
-                ForEach(coordinator.tabs) { tab in
-                    TerminalTabItemView(
-                        tab: tab,
-                        isActive: tab.id == coordinator.activeTab?.id,
-                        canClose: coordinator.tabs.count > 1,
-                        theme: theme,
-                        onSelect: {
-                            coordinator.selectTab(id: tab.id)
-                        },
-                        onClose: {
-                            coordinator.closeTab(id: tab.id)
-                        },
-                        onCloseOthers: {
-                            coordinator.closeOtherTabs(except: tab.id)
-                        },
-                        onNewTab: {
+        GeometryReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 3) {
+                    ForEach(coordinator.tabs) { tab in
+                        TerminalTabItemView(
+                            tab: tab,
+                            isActive: tab.id == coordinator.activeTab?.id,
+                            canClose: coordinator.tabs.count > 1,
+                            theme: theme,
+                            onSelect: {
+                                coordinator.selectTab(id: tab.id)
+                            },
+                            onClose: {
+                                coordinator.closeTab(id: tab.id)
+                            },
+                            onCloseOthers: {
+                                coordinator.closeOtherTabs(except: tab.id)
+                            },
+                            onNewTab: {
+                                _ = coordinator.createTab()
+                            }
+                        )
+                    }
+
+                    // Empty space between tabs and trailing actions:
+                    // double-clicking creates a new terminal tab.
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .frame(minWidth: 40, maxWidth: .infinity, maxHeight: .infinity)
+                        .onTapGesture(count: 2) {
                             _ = coordinator.createTab()
                         }
-                    )
+                        .contextMenu {
+                            Button("New Terminal") {
+                                _ = coordinator.createTab()
+                            }
+                        }
                 }
+                .frame(minWidth: proxy.size.width, alignment: .leading)
+                .padding(.vertical, 2)
             }
-            .padding(.vertical, 2)
         }
         .padding(.leading, 2)
     }
@@ -190,33 +214,52 @@ private struct TerminalTabItemView: View {
     @State private var isCloseHovered = false
     @State private var isEditingTitle = false
     @State private var editingTitleText = ""
+    @FocusState private var isTitleFocused: Bool
 
     var body: some View {
         HStack(spacing: 0) {
-            Button(action: onSelect) {
-                HStack(spacing: 0) {
-                    // Tab title / inline editor
-                    if isEditingTitle {
-                        TextField("", text: $editingTitleText, onCommit: {
-                            tab.rename(to: editingTitleText)
-                            isEditingTitle = false
-                        })
-                        .font(.system(size: 11, weight: .medium))
-                        .textFieldStyle(.plain)
-                        .frame(minWidth: 40, maxWidth: 100)
-                    } else {
-                        Text(tab.displayTitle)
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(isActive ? Color(theme.foreground) : Color(theme.foreground).opacity(0.75))
-                            .lineLimit(1)
+            if isEditingTitle {
+                TextField("", text: $editingTitleText)
+                    .focused($isTitleFocused)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(Color(theme.foreground))
+                    .lineLimit(1)
+                    .offset(y: 1)
+                    .frame(minWidth: 36, maxWidth: 220, alignment: .leading)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .padding(.leading, 9)
+                    .padding(.trailing, 4)
+                    .padding(.vertical, 3.5)
+                    .onSubmit {
+                        commitRename()
                     }
+                    .onExitCommand {
+                        cancelRename()
+                    }
+                    .onChange(of: isTitleFocused) { focused in
+                        if !focused && isEditingTitle {
+                            commitRename()
+                        }
+                    }
+            } else {
+                Button(action: onSelect) {
+                    Text(tab.displayTitle)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(isActive ? Color(theme.foreground) : Color(theme.foreground).opacity(0.75))
+                        .lineLimit(1)
+                        .padding(.leading, 9)
+                        .padding(.trailing, 4)
+                        .padding(.vertical, 3.5)
+                        .contentShape(Rectangle())
                 }
-                .padding(.leading, 9)
-                .padding(.trailing, 4)
-                .padding(.vertical, 3.5)
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
+                .simultaneousGesture(
+                    TapGesture(count: 2).onEnded {
+                        startRenaming()
+                    }
+                )
             }
-            .buttonStyle(.plain)
 
             // Reserved trailing slot (14x14 so the tab layout stays stable and balanced)
             trailingSlot
@@ -226,7 +269,7 @@ private struct TerminalTabItemView: View {
         .background(
             Capsule(style: .continuous)
                 .fill(
-                    isActive
+                    (isActive || isEditingTitle)
                         ? Color(theme.gutterForeground).opacity(0.2)
                         : (isHovered ? Color(theme.gutterForeground).opacity(0.09) : Color.clear)
                 )
@@ -234,7 +277,7 @@ private struct TerminalTabItemView: View {
         .overlay(
             Capsule(style: .continuous)
                 .stroke(
-                    isActive ? Color(theme.excerptHeaderBorder).opacity(0.7) : Color.clear,
+                    (isActive || isEditingTitle) ? Color(theme.excerptHeaderBorder).opacity(0.7) : Color.clear,
                     lineWidth: 0.8
                 )
         )
@@ -244,8 +287,7 @@ private struct TerminalTabItemView: View {
             Button("New Terminal") { onNewTab() }
             Divider()
             Button("Rename...") {
-                editingTitleText = tab.customTitle ?? tab.title
-                isEditingTitle = true
+                startRenaming()
             }
             Button("Clear Output") { tab.clear() }
             Button("Restart Shell") { tab.restart() }
@@ -255,6 +297,35 @@ private struct TerminalTabItemView: View {
                 Button("Close Other Terminals") { onCloseOthers() }
             }
         }
+    }
+
+    private func startRenaming() {
+        onSelect()
+        editingTitleText = tab.displayTitle
+        isEditingTitle = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
+            isTitleFocused = true
+            DispatchQueue.main.async {
+                NSApp.sendAction(#selector(NSText.selectAll(_:)), to: nil, from: nil)
+            }
+        }
+    }
+
+    private func commitRename() {
+        let trimmed = editingTitleText.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty {
+            tab.rename(to: "")
+        } else if trimmed == tab.displayTitle && tab.customTitle == nil {
+            isEditingTitle = false
+            return
+        } else {
+            tab.rename(to: trimmed)
+        }
+        isEditingTitle = false
+    }
+
+    private func cancelRename() {
+        isEditingTitle = false
     }
 
     @ViewBuilder

@@ -167,7 +167,7 @@ public final class TerminalTab: ObservableObject, Identifiable {
 public final class TerminalCoordinator: ObservableObject {
     @Published public private(set) var tabs: [TerminalTab] = []
     @Published public var activeTabId: UUID? = nil
-    public var defaultWorkingDirectory: String
+    @Published public var defaultWorkingDirectory: String
 
     private var nextTerminalNumber: Int = 1
     private var tabSubscriptions: [UUID: AnyCancellable] = [:]
@@ -202,7 +202,7 @@ public final class TerminalCoordinator: ObservableObject {
     /// Creates and switches to a new background terminal tab.
     @discardableResult
     public func createTab(workingDirectory: String? = nil, title: String? = nil) -> TerminalTab {
-        let dir = workingDirectory ?? activeTab?.currentDirectory ?? defaultWorkingDirectory
+        let dir = workingDirectory ?? defaultWorkingDirectory
         let num = nextTerminalNumber
         nextTerminalNumber += 1
         let tabTitle = title ?? "Terminal \(num)"
@@ -222,9 +222,7 @@ public final class TerminalCoordinator: ObservableObject {
         tabs.remove(at: index)
 
         if tabs.isEmpty {
-            // Keep at least one tab open
-            let newTab = createTab()
-            activeTabId = newTab.id
+            activeTabId = nil
         } else if activeTabId == id {
             let nextIndex = min(index, tabs.count - 1)
             activeTabId = tabs[nextIndex].id
@@ -277,6 +275,7 @@ public final class TerminalCoordinator: ObservableObject {
         }
         tabs.removeAll()
         tabSubscriptions.removeAll()
+        activeTabId = nil
     }
 
     private func bindTab(_ tab: TerminalTab) {

@@ -237,6 +237,9 @@ public struct MainWindowView: View {
         .onChange(of: repo.isWatchModeEnabled) { enabled in
             repo.setWatchModeEnabled(enabled)
         }
+        .onChange(of: repo.currentPath) { _ in
+            terminalCoordinator.defaultWorkingDirectory = repo.effectiveWorkingDirectory
+        }
         .onChange(of: effectiveWorkingDirectory) { newDir in
             terminalCoordinator.defaultWorkingDirectory = newDir
         }

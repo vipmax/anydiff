@@ -63,8 +63,15 @@ public final class TerminalEscapeParser: @unchecked Sendable {
                 screen.tab()
             } else if byte == 0x07 { // BEL
                 onBell?()
-            } else if byte >= 0x20 || byte >= 0x80 {
-                // Printable character or UTF-8 multibyte sequence
+            } else if byte >= 0x20 && byte < 0x80 {
+                // Fast path for ASCII printable character: zero heap allocation
+                if utf8Buffer.isEmpty {
+                    screen.putCharacter(Character(UnicodeScalar(byte)))
+                } else {
+                    appendUtf8Byte(byte)
+                }
+            } else if byte >= 0x80 {
+                // Multibyte UTF-8 sequence
                 appendUtf8Byte(byte)
             }
 

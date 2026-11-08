@@ -119,4 +119,23 @@ public final class TerminalBlock: Identifiable, ObservableObject, @unchecked Sen
         let folder = URL(fileURLWithPath: workingDirectory).lastPathComponent
         return folder.isEmpty ? workingDirectory : folder
     }
+
+    /// Lines of the command if multiline, or single element array.
+    public var commandLines: [String] {
+        if command.contains("\n") {
+            return command.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        }
+        return [command]
+    }
+
+    /// Single-line flattened display representation for block headers.
+    public var headerDisplayCommand: String {
+        if command.contains("\n") {
+            return command
+                .split(separator: "\n", omittingEmptySubsequences: false)
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .joined(separator: " ↵ ")
+        }
+        return command
+    }
 }

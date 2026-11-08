@@ -57,6 +57,12 @@ public struct TerminalLine: Hashable, Sendable {
         }
     }
 
+    public mutating func clear() {
+        for i in 0..<cells.count {
+            cells[i] = .empty
+        }
+    }
+
     /// Returns plain text representation of this line, trimming trailing empty spaces.
     public func plainText() -> String {
         var end = cells.count
@@ -67,6 +73,10 @@ public struct TerminalLine: Hashable, Sendable {
         var result = ""
         result.reserveCapacity(end)
         for i in 0..<end {
+            // Skip wide character continuation cells so copied/exported text doesn't contain phantom spaces
+            if cells[i].attributes.contains(.wideContinuation) {
+                continue
+            }
             result.append(cells[i].character)
         }
         return result
@@ -202,27 +212,121 @@ public final class TerminalScreen: @unchecked Sendable {
 
     // MARK: - Character Output
 
+    /// Calculates column display width (0, 1, or 2) in a fixed-width monospace terminal grid.
+    public static func characterWidth(_ char: Character) -> Int {
+        guard let firstScalar = char.unicodeScalars.first else { return 1 }
+        let value = firstScalar.value
+
+        // Zero-width control characters (0x00...0x1F, 0x7F...0x9F)
+        if value < 0x20 || (value >= 0x7F && value < 0xA0) {
+            return 0
+        }
+
+        // Fast path for ASCII printable (0x20...0x7E)
+        if value < 0x7F {
+            return 1
+        }
+
+        // Zero-width combining marks & variation selectors
+        if (value >= 0x0300 && value <= 0x036F) || // Combining Diacritical Marks
+           (value >= 0x200B && value <= 0x200F) || // Zero-width spaces & joiners
+           (value >= 0xFE00 && value <= 0xFE0E) {   // Variation Selectors (non-emoji)
+            return 0
+        }
+
+        // Fullwidth forms & CJK ranges:
+        if (value >= 0x1100 && value <= 0x115F) || // Hangul Jamo
+           (value >= 0x2E80 && value <= 0xA4CF && value != 0x303F) || // CJK Radicals, Symbols, Hiragana, Katakana, Ideographs
+           (value >= 0xAC00 && value <= 0xD7A3) || // Hangul Syllables
+           (value >= 0xF900 && value <= 0xFAFF) || // CJK Compatibility Ideographs
+           (value >= 0xFE10 && value <= 0xFE19) || // Vertical forms
+           (value >= 0xFE30 && value <= 0xFE6F) || // CJK Compatibility Forms
+           (value >= 0xFF01 && value <= 0xFF60) || // Fullwidth forms
+           (value >= 0xFFE0 && value <= 0xFFE6) || // Fullwidth signs
+           (value >= 0x20000 && value <= 0x2FFFD) || // CJK Extension B-F
+           (value >= 0x30000 && value <= 0x3FFFD) {
+            return 2
+        }
+
+        // Emoji presentation property
+        if firstScalar.properties.isEmojiPresentation {
+            return 2
+        }
+
+        // Variation Selector-16 (forces emoji presentation)
+        if char.unicodeScalars.contains(where: { $0.value == 0xFE0F }) {
+            return 2
+        }
+
+        // Emoji & Symbols ranges
+        if (value >= 0x1F300 && value <= 0x1F64F) || // Misc Symbols & Pictographs, Emoticons
+           (value >= 0x1F680 && value <= 0x1F6FF) || // Transport & Map Symbols
+           (value >= 0x1F900 && value <= 0x1FAFF) {   // Supplemental Symbols & Pictographs
+            return 2
+        }
+
+        return 1
+    }
+
     public func putCharacter(_ char: Character) {
-        if cursorX >= cols {
-            cursorX = 0
-            cursorY += 1
-            if cursorY > scrollBottom {
-                scrollUp(lines: 1)
-                cursorY = scrollBottom
+        let width = Self.characterWidth(char)
+        if width == 0 {
+            return
+        }
+
+        if width == 2 {
+            // If the wide character does not fit on the current line, wrap to next line
+            if cursorX >= cols - 1 {
+                cursorX = 0
+                cursorY += 1
+                if cursorY > scrollBottom {
+                    scrollUp(lines: 1)
+                    cursorY = scrollBottom
+                }
+            }
+        } else {
+            if cursorX >= cols {
+                cursorX = 0
+                cursorY += 1
+                if cursorY > scrollBottom {
+                    scrollUp(lines: 1)
+                    cursorY = scrollBottom
+                }
             }
         }
 
-        clampCursor()
-        guard lines.indices.contains(cursorY),
-              lines[cursorY].cells.indices.contains(cursorX) else { return }
-        let cell = TerminalCell(
-            character: char,
-            fg: currentFg,
-            bg: currentBg,
-            attributes: currentAttributes
-        )
-        lines[cursorY].cells[cursorX] = cell
-        cursorX += 1
+        if cursorY >= 0 && cursorY < lines.count {
+            let lineCellCount = lines[cursorY].cells.count
+
+            // If overwriting a continuation cell from a previous wide character, clear its left half
+            if cursorX > 0 && cursorX < lineCellCount && lines[cursorY].cells[cursorX].attributes.contains(.wideContinuation) {
+                lines[cursorY].cells[cursorX - 1] = .empty
+            }
+
+            if cursorX >= 0 && cursorX < lineCellCount {
+                lines[cursorY].cells[cursorX] = TerminalCell(
+                    character: char,
+                    fg: currentFg,
+                    bg: currentBg,
+                    attributes: currentAttributes
+                )
+            }
+
+            if width == 2 && cursorX + 1 < lineCellCount {
+                // Continuation cell for the right half of the wide character: overwrites any leftover characters
+                lines[cursorY].cells[cursorX + 1] = TerminalCell(
+                    character: " ",
+                    fg: currentFg,
+                    bg: currentBg,
+                    attributes: currentAttributes.union(.wideContinuation)
+                )
+            } else if width == 1 && cursorX + 1 < lineCellCount && lines[cursorY].cells[cursorX + 1].attributes.contains(.wideContinuation) {
+                // Overwrote the left half of a wide character with a 1-width char: clear orphaned continuation cell
+                lines[cursorY].cells[cursorX + 1] = .empty
+            }
+        }
+
+        cursorX += width
     }
 
     public func carriageReturn() {
@@ -381,12 +485,17 @@ public final class TerminalScreen: @unchecked Sendable {
                 if !isAlternateBufferActive {
                     scrollback.append(lines[0])
                     trimScrollback()
+                    lines.removeFirst()
+                    lines.append(TerminalLine(width: cols))
+                } else {
+                    var recycled = lines.removeFirst()
+                    recycled.clear()
+                    lines.append(recycled)
                 }
-                lines.removeFirst()
-                lines.append(TerminalLine(width: cols))
-            } else if lines.indices.contains(scrollTop) && lines.indices.contains(scrollBottom) {
-                lines.remove(at: scrollTop)
-                lines.insert(TerminalLine(width: cols), at: scrollBottom)
+            } else if scrollTop >= 0 && scrollBottom < lines.count && scrollTop <= scrollBottom {
+                var recycled = lines.remove(at: scrollTop)
+                recycled.clear()
+                lines.insert(recycled, at: scrollBottom)
             }
         }
     }
@@ -394,9 +503,10 @@ public final class TerminalScreen: @unchecked Sendable {
     public func scrollDown(lines count: Int) {
         guard count > 0, !lines.isEmpty else { return }
         for _ in 0..<count {
-            if lines.indices.contains(scrollTop) && lines.indices.contains(scrollBottom) {
-                lines.remove(at: scrollBottom)
-                lines.insert(TerminalLine(width: cols), at: scrollTop)
+            if scrollTop >= 0 && scrollBottom < lines.count && scrollTop <= scrollBottom {
+                var recycled = lines.remove(at: scrollBottom)
+                recycled.clear()
+                lines.insert(recycled, at: scrollTop)
             }
         }
     }

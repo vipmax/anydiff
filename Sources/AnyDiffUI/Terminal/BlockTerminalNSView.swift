@@ -80,7 +80,18 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
     private var badgeFont: NSFont = .monospacedSystemFont(ofSize: 10, weight: .bold)
 
     public private(set) var lineHeight: CGFloat = 17.0
-    public let headerHeight: CGFloat = 28.0
+    public let baseHeaderHeight: CGFloat = 28.0
+    public var headerHeight: CGFloat { baseHeaderHeight }
+
+    public func headerHeight(for block: TerminalBlock) -> CGFloat {
+        let lines = block.commandLines
+        if lines.count <= 1 {
+            return baseHeaderHeight
+        }
+        let displayedCount = min(lines.count, 8)
+        let extraRows = (lines.count > 8) ? displayedCount : (displayedCount - 1)
+        return baseHeaderHeight + CGFloat(extraRows) * lineHeight + 4.0
+    }
     private var fontAscent: CGFloat = 10.0
     private var fontDescent: CGFloat = 3.0
 
@@ -107,6 +118,7 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
     }
 
     private var userScrolledAwayFromBottom: Bool = false
+    private var lastBlockCount: Int = 0
     private var lastScrollEventTime = Date.distantPast
 
     // Cache of pre-built CTLines: [Key: CTLine]
@@ -213,6 +225,14 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
             }
             .store(in: &cancellables)
 
+        session.commandSubmitted
+            .sink { [weak self] in
+                guard let self = self else { return }
+                self.userScrolledAwayFromBottom = false
+                self.scrollToBottom()
+            }
+            .store(in: &cancellables)
+
         if session.isProcessRunning {
             startSpinnerAnimation()
         }
@@ -271,11 +291,19 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
             needsDisplay = true
         }
         clampScrollOffset()
+        if !userScrolledAwayFromBottom {
+            scrollToBottom()
+        }
         updateTrackingAreas()
     }
 
     public func rebuildLayout() {
         let blocks = session.multiBuffer.blocks
+        if blocks.count > lastBlockCount || blocks.isEmpty {
+            userScrolledAwayFromBottom = false
+        }
+        lastBlockCount = blocks.count
+
         var layouts: [TerminalBlockLayout] = []
         layouts.reserveCapacity(blocks.count)
 
@@ -296,13 +324,14 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
             let paddingBottom: CGFloat = (!block.isCollapsed && lineCount > 0) ? 6.0 : 0.0
             let contentH: CGFloat = linesHeight + paddingBottom
             let gap: CGFloat = (index < blocks.count - 1) ? blockSpacing : 0.0
-            let totalH = headerHeight + contentH + gap
+            let bHeaderHeight = headerHeight(for: block)
+            let totalH = bHeaderHeight + contentH + gap
 
             let layout = TerminalBlockLayout(
                 blockIndex: index,
                 blockId: block.id,
                 startY: currentY,
-                headerHeight: headerHeight,
+                headerHeight: bHeaderHeight,
                 contentHeight: contentH,
                 totalHeight: totalH,
                 isCollapsed: block.isCollapsed,
@@ -313,14 +342,13 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
         }
 
         self.blockLayouts = layouts
-        self.totalDocumentHeight = currentY + 30.0 // Bottom padding
+        self.totalDocumentHeight = currentY + 2.0
         self.maxLineWidth = CGFloat(maxCols) * charWidth + codeLeftMargin + 48.0
         self.totalDocumentWidth = max(bounds.width, self.maxLineWidth)
 
-        if !userScrolledAwayFromBottom && session.isProcessRunning {
+        clampScrollOffset()
+        if !userScrolledAwayFromBottom {
             scrollToBottom()
-        } else {
-            clampScrollOffset()
         }
 
         needsDisplay = true
@@ -329,6 +357,7 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
     public func scrollToBottom() {
         let maxScrollY = max(0, totalDocumentHeight - bounds.height)
         scrollOffsetY = maxScrollY
+        userScrolledAwayFromBottom = false
         needsDisplay = true
     }
 
@@ -416,11 +445,11 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
             var stickyScreenY: CGFloat = 0
             if let nextMinY = nextHeaderMinY {
                 let nextScreenY = nextMinY - scrollOffsetY
-                if nextScreenY < headerHeight {
-                    stickyScreenY = nextScreenY - headerHeight
+                if nextScreenY < layout.headerHeight {
+                    stickyScreenY = nextScreenY - layout.headerHeight
                 }
             }
-            let stickyFrame = CGRect(x: 0, y: stickyScreenY, width: bounds.width, height: headerHeight)
+            let stickyFrame = CGRect(x: 0, y: stickyScreenY, width: bounds.width, height: layout.headerHeight)
             return (layout, stickyFrame)
         }
         return nil
@@ -554,10 +583,12 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
         context.setFillColor(theme.excerptHeaderBackground.cgColor)
         context.fill(headerRect)
 
-        // 2. Border top separating command blocks
-        let borderTopRect = CGRect(x: 0, y: rect.minY, width: fullWidth, height: 1.0)
-        context.setFillColor(theme.excerptHeaderBorder.cgColor)
-        context.fill(borderTopRect)
+        // 2. Border top separating command blocks (only when separating from a preceding block below the panel header)
+        if blockIndex > 0 && rect.minY > 0.5 {
+            let borderTopRect = CGRect(x: 0, y: rect.minY, width: fullWidth, height: 1.0)
+            context.setFillColor(theme.excerptHeaderBorder.cgColor)
+            context.fill(borderTopRect)
+        }
 
         // 2. Strong, fast fade out for title, chevron, badges, and buttons as soon as header starts being pushed
         let contentAlpha: CGFloat
@@ -577,8 +608,8 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
         context.saveGState()
         context.setAlpha(contentAlpha)
 
-        let cy = round(rect.midY)
-        let headerBaselineY = rect.minY + round(rect.height / 2.0 + (fontAscent - fontDescent) / 2.0) - 1.0
+        let cy = round(rect.minY + 14.0)
+        let headerBaselineY = rect.minY + round(28.0 / 2.0 + (fontAscent - fontDescent) / 2.0) - 1.0
 
         // 3. Smooth vector chevron
         let cx: CGFloat = headerChevronX
@@ -605,80 +636,29 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
         }
         context.restoreGState()
 
-        // 3. Folder Name & Command Text (directly after chevron)
-        var currentCmdX = headerCommandX
-        if let (folderLine, folderWidth) = getOrCreateFolderCTLine(blockIndex: blockIndex, folder: block.folderDisplayName) {
-            context.saveGState()
-            context.textMatrix = .identity
-            context.translateBy(x: currentCmdX, y: headerBaselineY)
-            context.scaleBy(x: 1.0, y: -1.0)
-            CTLineDraw(folderLine, context)
-            context.restoreGState()
+        // 4. Calculate Right Elements layout (pre-computed to prevent collisions)
+        let copyButtonWidth: CGFloat = 18.0
+        let copyButtonRightMargin: CGFloat = 16.0
+        let hasCopyButton = (rect.width >= 90)
+        let copyRect = hasCopyButton
+            ? CGRect(x: rect.width - copyButtonRightMargin - copyButtonWidth, y: round(cy - 9), width: copyButtonWidth, height: 18)
+            : nil
 
-            currentCmdX += folderWidth + 8.0
-        }
+        var rightX = hasCopyButton ? (copyRect!.minX - 8.0) : (rect.width - 8.0)
 
-        let cmdLine = getOrCreateHeaderCTLine(blockIndex: blockIndex, command: block.command)
+        // Status indicator (running spinner, exit code badge, or cancelled badge)
+        var statusRect: CGRect? = nil
+        var statusCTLine: CTLine? = nil
+        var statusBgColor: NSColor? = nil
 
-        // Draw selection highlight on command text if selected
-        if let sel = normalizedSelection {
-            drawHeaderSelectionHighlight(
-                blockIndex: blockIndex,
-                command: block.command,
-                ctLine: cmdLine,
-                commandStartX: currentCmdX,
-                headerRect: rect,
-                sel: sel,
-                context: context
-            )
-        }
-
-        context.saveGState()
-        context.textMatrix = .identity
-        context.translateBy(x: currentCmdX, y: headerBaselineY)
-        context.scaleBy(x: 1.0, y: -1.0)
-        CTLineDraw(cmdLine, context)
-        context.restoreGState()
-
-        // 4. Right Elements: Status Badge / Progress Spinner, Duration, and Action Buttons
-        var rightX = rect.width - 16.0
-
-        // Copy button
-        let copyRect = CGRect(x: rightX - 20, y: round(cy - 9), width: 18, height: 18)
-        let isCopyHovered = (hoveredCopyBlockIndex == blockIndex)
-        drawCopyButton(in: copyRect, isHovered: isCopyHovered, context: context)
-        rightX -= 26.0
-
-        // Duration string
-        let durationText = block.durationString
-        if !durationText.isEmpty {
-            let durString = NSAttributedString(string: durationText, attributes: [
-                .font: badgeFont,
-                .foregroundColor: theme.gutterForeground
-            ])
-            let durLine = CTLineCreateWithAttributedString(durString)
-            let durWidth = CGFloat(CTLineGetTypographicBounds(durLine, nil, nil, nil))
-            rightX -= durWidth
-
-            context.saveGState()
-            context.textMatrix = .identity
-            context.translateBy(x: rightX, y: headerBaselineY)
-            context.scaleBy(x: 1.0, y: -1.0)
-            CTLineDraw(durLine, context)
-            context.restoreGState()
-
-            rightX -= 12.0
-        }
-
-        // Status indicator: animated circular spinner if running, pill badge if failure/cancelled
         if block.status == .running {
             let spinnerSize: CGFloat = 13.0
-            let spinnerRect = CGRect(x: rightX - spinnerSize, y: round(cy - spinnerSize / 2.0), width: spinnerSize, height: spinnerSize)
-            drawSpinner(in: spinnerRect, context: context)
-            rightX -= (spinnerSize + 8.0)
+            if (rightX - spinnerSize) >= (headerCommandX + 30.0) {
+                statusRect = CGRect(x: rightX - spinnerSize, y: round(cy - spinnerSize / 2.0), width: spinnerSize, height: spinnerSize)
+                rightX = statusRect!.minX - 8.0
+            }
         } else if block.status != .success {
             let statusString: NSAttributedString
-            let statusBgColor: NSColor
             switch block.status {
             case .failure:
                 let ec = block.exitCode ?? 1
@@ -688,41 +668,199 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
                 ])
                 statusBgColor = theme.diffDeletedGutter.withAlphaComponent(0.15)
             case .cancelled:
-                statusString = NSAttributedString(string: "⊘ CANCELLED", attributes: [
+                let cancelLabel = (rect.width < 280) ? "⊘" : "⊘ CANCELLED"
+                statusString = NSAttributedString(string: cancelLabel, attributes: [
                     .font: badgeFont,
                     .foregroundColor: theme.gutterForeground
                 ])
                 statusBgColor = theme.gutterForeground.withAlphaComponent(0.15)
             default:
                 statusString = NSAttributedString()
-                statusBgColor = .clear
+                statusBgColor = nil
             }
 
-            let stLine = CTLineCreateWithAttributedString(statusString)
-            let stWidth = CGFloat(CTLineGetTypographicBounds(stLine, nil, nil, nil))
-            let badgePillWidth = stWidth + 12.0
-            let badgePillHeight: CGFloat = 18.0
-            let badgeRect = CGRect(x: rightX - badgePillWidth, y: round(cy - badgePillHeight / 2.0), width: badgePillWidth, height: badgePillHeight)
+            if statusString.length > 0 {
+                let stLine = CTLineCreateWithAttributedString(statusString)
+                let stWidth = CGFloat(CTLineGetTypographicBounds(stLine, nil, nil, nil))
+                let badgePillWidth = stWidth + 12.0
+                let badgePillHeight: CGFloat = 18.0
+                let candidateX = rightX - badgePillWidth
+                if candidateX >= (headerCommandX + 30.0) {
+                    statusCTLine = stLine
+                    statusRect = CGRect(x: candidateX, y: round(cy - badgePillHeight / 2.0), width: badgePillWidth, height: badgePillHeight)
+                    rightX = candidateX - 8.0
+                }
+            }
+        }
 
-            // Pill background
-            let pillPath = CGPath(roundedRect: badgeRect, cornerWidth: 3.5, cornerHeight: 3.5, transform: nil)
+        // Duration string: only show if width is generous (>= 260) and leaves ample room for command text
+        var durationCTLine: CTLine? = nil
+        var durationPoint: CGPoint? = nil
+
+        let durationText = block.durationString
+        if !durationText.isEmpty && rect.width >= 260 {
+            let durString = NSAttributedString(string: durationText, attributes: [
+                .font: badgeFont,
+                .foregroundColor: theme.gutterForeground
+            ])
+            let durLine = CTLineCreateWithAttributedString(durString)
+            let durWidth = CGFloat(CTLineGetTypographicBounds(durLine, nil, nil, nil))
+
+            if (rightX - durWidth) >= (headerCommandX + 120.0) {
+                let durX = rightX - durWidth
+                durationCTLine = durLine
+                durationPoint = CGPoint(x: durX, y: headerBaselineY)
+                rightX = durX - 8.0
+            }
+        }
+
+        // Left boundary for right elements = rightX.
+        // Command text must be strictly clipped before reaching right elements.
+        let maxCommandRightX = max(headerCommandX, rightX)
+
+        // 3. Folder Name & Command Text (directly after chevron)
+        var currentCmdX = headerCommandX
+        if shouldShowFolderInHeader, let (folderLine, folderWidth) = getOrCreateFolderCTLine(blockIndex: blockIndex, folder: block.folderDisplayName) {
+            // Only draw folder if it leaves at least 50pt for the command before right elements
+            if currentCmdX + folderWidth + 8.0 + 50.0 <= maxCommandRightX {
+                context.saveGState()
+                context.textMatrix = .identity
+                context.translateBy(x: currentCmdX, y: headerBaselineY)
+                context.scaleBy(x: 1.0, y: -1.0)
+                CTLineDraw(folderLine, context)
+                context.restoreGState()
+
+                currentCmdX += folderWidth + 8.0
+            }
+        }
+
+        let cmdLines = block.commandLines
+        let displayedCount = min(cmdLines.count, 8)
+        let firstLineText = cmdLines.isEmpty ? block.command : cmdLines[0]
+        let cmdLine0 = getOrCreateHeaderCTLine(blockIndex: blockIndex, lineIndex: 0, command: firstLineText)
+
+        // Clip command text and its selection highlight strictly to available horizontal space
+        let cmdClipWidth = max(0, maxCommandRightX - currentCmdX)
+        if cmdClipWidth > 0 {
             context.saveGState()
-            context.setFillColor(statusBgColor.cgColor)
-            context.addPath(pillPath)
-            context.fillPath()
+            context.clip(to: CGRect(x: currentCmdX, y: rect.minY, width: cmdClipWidth, height: 28.0))
+
+            // Draw selection highlight on command text if selected
+            let headerLine0Idx = -cmdLines.count
+            if let sel = normalizedSelection {
+                drawHeaderSelectionHighlight(
+                    blockIndex: blockIndex,
+                    headerLineIdx: headerLine0Idx,
+                    command: firstLineText,
+                    ctLine: cmdLine0,
+                    commandStartX: currentCmdX,
+                    lineRect: CGRect(x: 0, y: rect.minY, width: rect.width, height: 28.0),
+                    sel: sel,
+                    context: context
+                )
+            }
+
+            context.textMatrix = .identity
+            context.translateBy(x: currentCmdX, y: headerBaselineY)
+            context.scaleBy(x: 1.0, y: -1.0)
+            CTLineDraw(cmdLine0, context)
             context.restoreGState()
+        }
 
-            let badgeAscent = CTFontGetAscent(badgeFont as CTFont)
-            let badgeDescent = CTFontGetDescent(badgeFont as CTFont)
-            let badgeBaselineY = badgeRect.minY + round(badgePillHeight / 2.0 + (badgeAscent - badgeDescent) / 2.0) - 1.0
+        // Draw subsequent lines (lines 1..<displayedCount) if multiline
+        if displayedCount > 1 {
+            let multilineClipWidth = max(0, rect.width - 16.0 - currentCmdX)
+            for i in 1..<displayedCount {
+                let lineText = cmdLines[i]
+                let ctLine = getOrCreateHeaderCTLine(blockIndex: blockIndex, lineIndex: i, command: lineText)
+                let lineStartY = rect.minY + 28.0 + CGFloat(i - 1) * lineHeight
+                let lineBaseY = lineStartY + round(lineHeight / 2.0 + (fontAscent - fontDescent) / 2.0) - 1.0
+                let lineRect = CGRect(x: 0, y: lineStartY, width: rect.width, height: lineHeight)
+                let headerLineI = -cmdLines.count + i
 
-            // Text inside pill
+                if multilineClipWidth > 0 {
+                    context.saveGState()
+                    context.clip(to: CGRect(x: currentCmdX, y: lineStartY, width: multilineClipWidth, height: lineHeight))
+
+                    if let sel = normalizedSelection {
+                        drawHeaderSelectionHighlight(
+                            blockIndex: blockIndex,
+                            headerLineIdx: headerLineI,
+                            command: lineText,
+                            ctLine: ctLine,
+                            commandStartX: currentCmdX,
+                            lineRect: lineRect,
+                            sel: sel,
+                            context: context
+                        )
+                    }
+
+                    context.textMatrix = .identity
+                    context.translateBy(x: currentCmdX, y: lineBaseY)
+                    context.scaleBy(x: 1.0, y: -1.0)
+                    CTLineDraw(ctLine, context)
+                    context.restoreGState()
+                }
+            }
+
+            if cmdLines.count > displayedCount {
+                let moreText = "... (+\(cmdLines.count - displayedCount) more lines)"
+                let moreAttr = NSAttributedString(string: moreText, attributes: [
+                    .font: badgeFont,
+                    .foregroundColor: theme.gutterForeground.withAlphaComponent(0.7)
+                ])
+                let moreLine = CTLineCreateWithAttributedString(moreAttr)
+                let moreStartY = rect.minY + 28.0 + CGFloat(displayedCount - 1) * lineHeight
+                let moreBaseY = moreStartY + round(lineHeight / 2.0 + (fontAscent - fontDescent) / 2.0) - 1.0
+                context.saveGState()
+                context.textMatrix = .identity
+                context.translateBy(x: currentCmdX, y: moreBaseY)
+                context.scaleBy(x: 1.0, y: -1.0)
+                CTLineDraw(moreLine, context)
+                context.restoreGState()
+            }
+        }
+
+        // 5. Draw Right Elements
+        // Duration
+        if let durLine = durationCTLine, let durPt = durationPoint {
             context.saveGState()
             context.textMatrix = .identity
-            context.translateBy(x: badgeRect.minX + 6.0, y: badgeBaselineY)
+            context.translateBy(x: durPt.x, y: durPt.y)
             context.scaleBy(x: 1.0, y: -1.0)
-            CTLineDraw(stLine, context)
+            CTLineDraw(durLine, context)
             context.restoreGState()
+        }
+
+        // Status indicator
+        if let sRect = statusRect {
+            if block.status == .running {
+                drawSpinner(in: sRect, context: context)
+            } else if let stLine = statusCTLine, let bgColor = statusBgColor {
+                let pillPath = CGPath(roundedRect: sRect, cornerWidth: 3.5, cornerHeight: 3.5, transform: nil)
+                context.saveGState()
+                context.setFillColor(bgColor.cgColor)
+                context.addPath(pillPath)
+                context.fillPath()
+                context.restoreGState()
+
+                let badgeAscent = CTFontGetAscent(badgeFont as CTFont)
+                let badgeDescent = CTFontGetDescent(badgeFont as CTFont)
+                let badgeBaselineY = sRect.minY + round(sRect.height / 2.0 + (badgeAscent - badgeDescent) / 2.0) - 1.0
+
+                context.saveGState()
+                context.textMatrix = .identity
+                context.translateBy(x: sRect.minX + 6.0, y: badgeBaselineY)
+                context.scaleBy(x: 1.0, y: -1.0)
+                CTLineDraw(stLine, context)
+                context.restoreGState()
+            }
+        }
+
+        // Copy button
+        if let cRect = copyRect {
+            let isCopyHovered = (hoveredCopyBlockIndex == blockIndex)
+            drawCopyButton(in: cRect, isHovered: isCopyHovered, context: context)
         }
 
         context.restoreGState() // Restore contentAlpha state
@@ -795,19 +933,34 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
         return lineEnd >= sel.start && lineStart <= sel.end
     }
 
+    private func textForPoint(_ point: TerminalDocumentPoint, in block: TerminalBlock) -> String {
+        if point.lineIndex < 0 {
+            let cmdLines = block.commandLines
+            let cmdIdx = point.lineIndex + cmdLines.count
+            if cmdIdx >= 0 && cmdIdx < cmdLines.count {
+                return cmdLines[cmdIdx]
+            }
+            return block.command
+        } else if point.lineIndex < block.lines.count {
+            return block.lines[point.lineIndex].rawText
+        }
+        return ""
+    }
+
     private func drawHeaderSelectionHighlight(
         blockIndex: Int,
+        headerLineIdx: Int,
         command: String,
         ctLine: CTLine,
         commandStartX: CGFloat,
-        headerRect: CGRect,
+        lineRect: CGRect,
         sel: (start: TerminalDocumentPoint, end: TerminalDocumentPoint),
         context: CGContext
     ) {
-        guard isLineInSelection(blockIdx: blockIndex, lineIdx: -1, sel: sel) else { return }
+        guard isLineInSelection(blockIdx: blockIndex, lineIdx: headerLineIdx, sel: sel) else { return }
 
-        let isStart = (sel.start.blockIndex == blockIndex && sel.start.lineIndex == -1)
-        let isEnd = (sel.end.blockIndex == blockIndex && sel.end.lineIndex == -1)
+        let isStart = (sel.start.blockIndex == blockIndex && sel.start.lineIndex == headerLineIdx)
+        let isEnd = (sel.end.blockIndex == blockIndex && sel.end.lineIndex == headerLineIdx)
 
         let charCount = command.count
         guard charCount > 0 else { return }
@@ -820,16 +973,27 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
         let startX = ctLine.xOffset(forCharacterIndex: startCol, in: command)
         let endX = ctLine.xOffset(forCharacterIndex: endCol, in: command)
 
+        let selY: CGFloat
+        let selHeight: CGFloat
+        if lineRect.height < 28.0 {
+            selY = lineRect.minY
+            selHeight = lineRect.height
+        } else {
+            selY = lineRect.minY + 4.0
+            selHeight = lineRect.height - 4.0
+        }
+
         let selRect = CGRect(
             x: commandStartX + startX,
-            y: headerRect.minY + 4.0,
+            y: selY,
             width: max(3.0, endX - startX),
-            height: headerRect.height - 8.0
+            height: selHeight
         )
 
         let selColor = theme.selectionBackground.withAlphaComponent(max(0.35, theme.selectionBackground.alphaComponent))
         context.saveGState()
-        let path = CGPath(roundedRect: selRect, cornerWidth: 3.0, cornerHeight: 3.0, transform: nil)
+        let cornerRadius: CGFloat = (isStart || isEnd) ? 3.0 : 0.0
+        let path = CGPath(roundedRect: selRect, cornerWidth: cornerRadius, cornerHeight: cornerRadius, transform: nil)
         context.setFillColor(selColor.cgColor)
         context.addPath(path)
         context.fillPath()
@@ -897,7 +1061,7 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
 
         let attrString = NSAttributedString(string: folder, attributes: [
             .font: headerFont,
-            .foregroundColor: theme.gutterForeground
+            .foregroundColor: theme.accentColor
         ])
         let line = CTLineCreateWithAttributedString(attrString)
         lineCache[key] = line
@@ -905,15 +1069,19 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
         return (line, width)
     }
 
+    private var shouldShowFolderInHeader: Bool {
+        bounds.width >= 280
+    }
+
     private func commandStartX(for blockIndex: Int, block: TerminalBlock) -> CGFloat {
-        if let (_, width) = getOrCreateFolderCTLine(blockIndex: blockIndex, folder: block.folderDisplayName) {
+        if shouldShowFolderInHeader, let (_, width) = getOrCreateFolderCTLine(blockIndex: blockIndex, folder: block.folderDisplayName) {
             return headerCommandX + width + 8.0
         }
         return headerCommandX
     }
 
-    private func getOrCreateHeaderCTLine(blockIndex: Int, command: String) -> CTLine {
-        let key = (UInt64(blockIndex) << 32) | 0xFFFFFFFF
+    private func getOrCreateHeaderCTLine(blockIndex: Int, lineIndex: Int = 0, command: String) -> CTLine {
+        let key = (UInt64(blockIndex) << 32) | UInt64(0xF0000000 | (lineIndex & 0x0FFFFFFF))
         if let cached = lineCache[key] {
             return cached
         }
@@ -1071,52 +1239,82 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
 
     // MARK: - Empty State
     private func drawEmptyState(context: CGContext) {
-        let midX = bounds.midX
-        let centerY = bounds.midY - 24.0
+        guard bounds.height >= 30 && bounds.width >= 50 else { return }
+
+        let padding: CGFloat = 16.0
+        let availableWidth = max(40.0, bounds.width - padding * 2.0)
+        let contentWidth = min(380.0, availableWidth)
+        let isNarrow = bounds.width < 250
+        let isUltraNarrow = bounds.width < 170
 
         let paragraphStyle = NSMutableParagraphStyle()
         paragraphStyle.alignment = .center
-        paragraphStyle.lineSpacing = 4.0
+        paragraphStyle.lineBreakMode = .byWordWrapping
+        paragraphStyle.lineSpacing = 3.0
 
+        let titleFontSize: CGFloat = isUltraNarrow ? 12.0 : (isNarrow ? 13.5 : 15.0)
         let titleAttrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 15, weight: .bold),
+            .font: NSFont.systemFont(ofSize: titleFontSize, weight: .bold),
             .foregroundColor: theme.foreground,
             .paragraphStyle: paragraphStyle
         ]
-        let titleString = NSAttributedString(string: "Terminal MultiBuffer", attributes: titleAttrs)
-        let titleSize = titleString.size()
-
-        let subAttrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 11.5, weight: .regular),
-            .foregroundColor: theme.gutterForeground,
-            .paragraphStyle: paragraphStyle
-        ]
-        let subString = NSAttributedString(
-            string: "Commands run here become virtualized, collapsible code sections.\nContinuous text selection, 120 FPS scrolling, and full command history.",
-            attributes: subAttrs
-        )
-        let subSize = subString.size()
-
-        let spacing: CGFloat = 8.0
-        let totalH = titleSize.height + spacing + subSize.height
-        let startY = centerY - totalH / 2.0
-
-        let titleRect = CGRect(
-            x: midX - titleSize.width / 2.0,
-            y: startY,
-            width: titleSize.width,
-            height: titleSize.height
-        )
-        let subWidth = max(subSize.width, 480.0)
-        let subRect = CGRect(
-            x: midX - subWidth / 2.0,
-            y: startY + titleSize.height + spacing,
-            width: subWidth,
-            height: subSize.height + 6.0
+        let titleText = isUltraNarrow ? "MultiBuffer" : "Terminal MultiBuffer"
+        let titleString = NSAttributedString(string: titleText, attributes: titleAttrs)
+        let titleRect = titleString.boundingRect(
+            with: CGSize(width: contentWidth, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading]
         )
 
-        titleString.draw(in: titleRect)
-        subString.draw(in: subRect)
+        // Description text
+        let subString: NSAttributedString?
+        let subRect: CGRect
+        if bounds.height > 90 && !isUltraNarrow {
+            let subFontSize: CGFloat = isNarrow ? 10.0 : 11.5
+            let subAttrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: subFontSize, weight: .regular),
+                .foregroundColor: theme.gutterForeground,
+                .paragraphStyle: paragraphStyle
+            ]
+            let descriptionText: String
+            if isNarrow {
+                descriptionText = "Virtualized, collapsible command blocks and history."
+            } else {
+                descriptionText = "Commands run here become virtualized, collapsible code sections.\nContinuous text selection, 120 FPS scrolling, and full command history."
+            }
+            let str = NSAttributedString(string: descriptionText, attributes: subAttrs)
+            subString = str
+            let r = str.boundingRect(
+                with: CGSize(width: contentWidth, height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading]
+            )
+            subRect = r
+        } else {
+            subString = nil
+            subRect = .zero
+        }
+
+        let spacing: CGFloat = (subString != nil) ? 8.0 : 0.0
+        let totalH = ceil(titleRect.height) + spacing + ceil(subRect.height)
+        let centerY = bounds.midY - 20.0
+        let startY = max(padding, centerY - totalH / 2.0)
+
+        let finalTitleRect = CGRect(
+            x: round(bounds.midX - titleRect.width / 2.0),
+            y: round(startY),
+            width: ceil(titleRect.width),
+            height: ceil(titleRect.height)
+        )
+        titleString.draw(in: finalTitleRect)
+
+        if let sub = subString {
+            let finalSubRect = CGRect(
+                x: round(bounds.midX - subRect.width / 2.0),
+                y: round(startY + titleRect.height + spacing),
+                width: ceil(subRect.width),
+                height: ceil(subRect.height)
+            )
+            sub.draw(in: finalSubRect)
+        }
     }
 
     // MARK: - Mouse Events & Hit Testing
@@ -1150,15 +1348,16 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
         let docX = screenPoint.x + scrollOffsetX
 
         // 2. Sticky Header hit-testing
-        if let (stickyLayout, stickyFrame) = currentStickyHeader(), stickyFrame.minY >= -headerHeight * 0.45, stickyFrame.contains(screenPoint) {
-            handleHeaderClick(blockIndex: stickyLayout.blockIndex, clickX: screenPoint.x, screenPoint: screenPoint, event: event)
+        if let (stickyLayout, stickyFrame) = currentStickyHeader(), stickyFrame.minY >= -stickyLayout.headerHeight * 0.45, stickyFrame.contains(screenPoint) {
+            handleHeaderClick(blockIndex: stickyLayout.blockIndex, clickX: screenPoint.x, screenPoint: screenPoint, event: event, headerMinScreenY: stickyFrame.minY)
             return
         }
 
         // 3. Normal Header hit-testing
         for layout in blockLayouts {
             if docY >= layout.headerMinY && docY <= layout.headerMaxY {
-                handleHeaderClick(blockIndex: layout.blockIndex, clickX: screenPoint.x, screenPoint: screenPoint, event: event)
+                let headerScreenY = layout.headerMinY - scrollOffsetY
+                handleHeaderClick(blockIndex: layout.blockIndex, clickX: screenPoint.x, screenPoint: screenPoint, event: event, headerMinScreenY: headerScreenY)
                 return
             }
         }
@@ -1170,7 +1369,7 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
             if event.clickCount == 2 {
                 // Word selection
                 let block = session.multiBuffer.blocks[point.blockIndex]
-                let text = (point.lineIndex == -1) ? block.command : ((point.lineIndex < block.lines.count) ? block.lines[point.lineIndex].rawText : "")
+                let text = textForPoint(point, in: block)
                 let (wStart, wEnd) = wordRange(in: text, at: point.columnIndex)
                 selectionAnchor = TerminalDocumentPoint(blockIndex: point.blockIndex, lineIndex: point.lineIndex, columnIndex: wStart)
                 cursorPoint = TerminalDocumentPoint(blockIndex: point.blockIndex, lineIndex: point.lineIndex, columnIndex: wEnd)
@@ -1181,9 +1380,9 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
             } else if event.clickCount >= 3 {
                 // Line selection
                 let block = session.multiBuffer.blocks[point.blockIndex]
-                let lineLen = (point.lineIndex == -1) ? block.command.count : ((point.lineIndex < block.lines.count) ? block.lines[point.lineIndex].rawText.count : 0)
+                let text = textForPoint(point, in: block)
                 selectionAnchor = TerminalDocumentPoint(blockIndex: point.blockIndex, lineIndex: point.lineIndex, columnIndex: 0)
-                cursorPoint = TerminalDocumentPoint(blockIndex: point.blockIndex, lineIndex: point.lineIndex, columnIndex: lineLen)
+                cursorPoint = TerminalDocumentPoint(blockIndex: point.blockIndex, lineIndex: point.lineIndex, columnIndex: text.count)
                 selectionGranularity = .line(blockIndex: point.blockIndex, lineIndex: point.lineIndex)
                 isDraggingSelection = true
                 needsDisplay = true
@@ -1210,46 +1409,60 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
         }
     }
 
-    private func handleHeaderClick(blockIndex: Int, clickX: CGFloat, screenPoint: CGPoint, event: NSEvent) {
+    private func handleHeaderClick(blockIndex: Int, clickX: CGFloat, screenPoint: CGPoint, event: NSEvent, headerMinScreenY: CGFloat) {
         guard blockIndex >= 0 && blockIndex < session.multiBuffer.blocks.count else { return }
         let block = session.multiBuffer.blocks[blockIndex]
 
-        // 1. Copy button hit: bounds.width - 36 to bounds.width - 16
+        let relY = screenPoint.y - headerMinScreenY
+
+        // 1. Copy button hit: bounds.width - 36 to bounds.width - 16 on row 0
         let copyBtnX = bounds.width - 36.0
-        if screenPoint.x >= copyBtnX && screenPoint.x <= bounds.width - 16.0 {
+        if relY < 28.0 && screenPoint.x >= copyBtnX && screenPoint.x <= bounds.width - 16.0 {
             copyBlockOutput(block: block)
             return
         }
 
-        // 2. Chevron & prompt click (clickX < cmdStartX) -> toggle collapse if on chevron, or select
+        // 2. Chevron & prompt click (clickX < cmdStartX on row 0) -> toggle collapse if on chevron
         let cmdStartX = commandStartX(for: blockIndex, block: block)
-        if clickX < headerCommandX {
+        if relY < 28.0 && clickX < headerCommandX {
             session.multiBuffer.toggleCollapse(id: block.id)
             rebuildLayout()
             window?.invalidateCursorRects(for: self)
             return
         }
 
-        // 3. Command text click (clickX >= cmdStartX) -> text selection within command!
-        let cmdLine = getOrCreateHeaderCTLine(blockIndex: blockIndex, command: block.command)
+        // 3. Command text click -> text selection within command line!
+        let cmdLines = block.commandLines
+        let displayedCount = min(cmdLines.count, 8)
+        let cmdLineIdx: Int
+        if relY < 28.0 || displayedCount <= 1 {
+            cmdLineIdx = 0
+        } else {
+            let extraRow = Int((relY - 28.0) / lineHeight)
+            cmdLineIdx = max(0, min(displayedCount - 1, extraRow + 1))
+        }
+        let headerLineIdx = -cmdLines.count + cmdLineIdx
+        let currentLineText = (cmdLineIdx < cmdLines.count) ? cmdLines[cmdLineIdx] : block.command
+
+        let cmdLine = getOrCreateHeaderCTLine(blockIndex: blockIndex, lineIndex: cmdLineIdx, command: currentLineText)
         let relX = max(0, clickX - cmdStartX)
-        let col = cmdLine.characterIndex(at: relX, in: block.command)
-        let point = TerminalDocumentPoint(blockIndex: blockIndex, lineIndex: -1, columnIndex: col)
+        let col = cmdLine.characterIndex(at: relX, in: currentLineText)
+        let point = TerminalDocumentPoint(blockIndex: blockIndex, lineIndex: headerLineIdx, columnIndex: col)
 
         if event.clickCount == 2 {
             // Word selection in command
-            let (wStart, wEnd) = wordRange(in: block.command, at: col)
-            selectionAnchor = TerminalDocumentPoint(blockIndex: blockIndex, lineIndex: -1, columnIndex: wStart)
-            cursorPoint = TerminalDocumentPoint(blockIndex: blockIndex, lineIndex: -1, columnIndex: wEnd)
-            selectionGranularity = .word(anchorWordStart: wStart, anchorWordEnd: wEnd, blockIndex: blockIndex, lineIndex: -1)
+            let (wStart, wEnd) = wordRange(in: currentLineText, at: col)
+            selectionAnchor = TerminalDocumentPoint(blockIndex: blockIndex, lineIndex: headerLineIdx, columnIndex: wStart)
+            cursorPoint = TerminalDocumentPoint(blockIndex: blockIndex, lineIndex: headerLineIdx, columnIndex: wEnd)
+            selectionGranularity = .word(anchorWordStart: wStart, anchorWordEnd: wEnd, blockIndex: blockIndex, lineIndex: headerLineIdx)
             isDraggingSelection = true
             needsDisplay = true
             return
         } else if event.clickCount >= 3 {
             // Full command line selection
-            selectionAnchor = TerminalDocumentPoint(blockIndex: blockIndex, lineIndex: -1, columnIndex: 0)
-            cursorPoint = TerminalDocumentPoint(blockIndex: blockIndex, lineIndex: -1, columnIndex: block.command.count)
-            selectionGranularity = .line(blockIndex: blockIndex, lineIndex: -1)
+            selectionAnchor = TerminalDocumentPoint(blockIndex: blockIndex, lineIndex: headerLineIdx, columnIndex: 0)
+            cursorPoint = TerminalDocumentPoint(blockIndex: blockIndex, lineIndex: headerLineIdx, columnIndex: currentLineText.count)
+            selectionGranularity = .line(blockIndex: blockIndex, lineIndex: headerLineIdx)
             isDraggingSelection = true
             needsDisplay = true
             return
@@ -1281,6 +1494,7 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
                 let maxScrollY = max(0, totalDocumentHeight - visibleH)
                 let scrollChange = (deltaY / visibleH) * totalDocumentHeight
                 scrollOffsetY = max(0, min(maxScrollY, scrollbarDragStartScroll + scrollChange))
+                userScrolledAwayFromBottom = (scrollOffsetY < maxScrollY - 24.0)
                 showScrollbarsWithAutohide(for: .vertical)
             case .horizontal:
                 let deltaX = screenPoint.x - scrollbarDragStartPos
@@ -1331,13 +1545,7 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
                 let blocks = session.multiBuffer.blocks
                 if targetPoint.blockIndex < blocks.count {
                     let b = blocks[targetPoint.blockIndex]
-                    if targetPoint.lineIndex == -1 {
-                        targetText = b.command
-                    } else if targetPoint.lineIndex < b.lines.count {
-                        targetText = b.lines[targetPoint.lineIndex].rawText
-                    } else {
-                        targetText = ""
-                    }
+                    targetText = textForPoint(targetPoint, in: b)
                 } else {
                     targetText = ""
                 }
@@ -1355,13 +1563,7 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
                 let blocks = session.multiBuffer.blocks
                 if targetPoint.blockIndex < blocks.count {
                     let b = blocks[targetPoint.blockIndex]
-                    if targetPoint.lineIndex == -1 {
-                        targetText = b.command
-                    } else if targetPoint.lineIndex < b.lines.count {
-                        targetText = b.lines[targetPoint.lineIndex].rawText
-                    } else {
-                        targetText = ""
-                    }
+                    targetText = textForPoint(targetPoint, in: b)
                 } else {
                     targetText = ""
                 }
@@ -1373,7 +1575,7 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
                     let initText: String
                     if initBlock < blocks.count {
                         let ib = blocks[initBlock]
-                        initText = (initLine == -1) ? ib.command : ((initLine < ib.lines.count) ? ib.lines[initLine].rawText : "")
+                        initText = textForPoint(TerminalDocumentPoint(blockIndex: initBlock, lineIndex: initLine, columnIndex: 0), in: ib)
                     } else {
                         initText = ""
                     }
@@ -1542,7 +1744,9 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
 
         // Top clamp for drag
         if clampForDrag && docPoint.y <= 0 {
-            return TerminalDocumentPoint(blockIndex: 0, lineIndex: -1, columnIndex: 0)
+            let firstBlock = blocks[0]
+            let firstLineIdx = -max(1, firstBlock.commandLines.count)
+            return TerminalDocumentPoint(blockIndex: 0, lineIndex: firstLineIdx, columnIndex: 0)
         }
 
         // Bottom clamp for drag
@@ -1553,7 +1757,8 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
                 let lastLineIdx = lastBlock.lines.count - 1
                 return TerminalDocumentPoint(blockIndex: lastIdx, lineIndex: lastLineIdx, columnIndex: lastBlock.lines[lastLineIdx].rawText.count)
             } else {
-                return TerminalDocumentPoint(blockIndex: lastIdx, lineIndex: -1, columnIndex: lastBlock.command.count)
+                let lastCmdLine = (lastBlock.commandLines.last ?? lastBlock.command)
+                return TerminalDocumentPoint(blockIndex: lastIdx, lineIndex: -1, columnIndex: lastCmdLine.count)
             }
         }
 
@@ -1564,17 +1769,30 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
 
             // 1. Header hit
             if docPoint.y >= layout.headerMinY && docPoint.y < layout.headerMaxY {
-                let cmdLine = getOrCreateHeaderCTLine(blockIndex: bIdx, command: block.command)
+                let cmdLines = block.commandLines
+                let displayedCount = min(cmdLines.count, 8)
+                let relY = docPoint.y - layout.headerMinY
+                let cmdLineIdx: Int
+                if relY < 28.0 || displayedCount <= 1 {
+                    cmdLineIdx = 0
+                } else {
+                    let extraRow = Int((relY - 28.0) / lineHeight)
+                    cmdLineIdx = max(0, min(displayedCount - 1, extraRow + 1))
+                }
+                let headerLineIdx = -cmdLines.count + cmdLineIdx
+                let currentLineText = (cmdLineIdx < cmdLines.count) ? cmdLines[cmdLineIdx] : block.command
+                let cmdLine = getOrCreateHeaderCTLine(blockIndex: bIdx, lineIndex: cmdLineIdx, command: currentLineText)
                 let cmdStartX = commandStartX(for: bIdx, block: block)
                 let relX = max(0, (docPoint.x - scrollOffsetX) - cmdStartX)
-                let col = cmdLine.characterIndex(at: relX, in: block.command)
-                return TerminalDocumentPoint(blockIndex: bIdx, lineIndex: -1, columnIndex: col)
+                let col = cmdLine.characterIndex(at: relX, in: currentLineText)
+                return TerminalDocumentPoint(blockIndex: bIdx, lineIndex: headerLineIdx, columnIndex: col)
             }
 
             // 2. Content hit
             if docPoint.y >= layout.contentMinY && docPoint.y <= layout.contentMaxY {
                 if layout.isCollapsed || block.lines.isEmpty {
-                    return TerminalDocumentPoint(blockIndex: bIdx, lineIndex: -1, columnIndex: block.command.count)
+                    let lastCmdLine = (block.commandLines.last ?? block.command)
+                    return TerminalDocumentPoint(blockIndex: bIdx, lineIndex: -1, columnIndex: lastCmdLine.count)
                 }
 
                 let rawLineIdx = Int((docPoint.y - (layout.contentMinY + 2.0)) / lineHeight)
@@ -1594,7 +1812,8 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
                         let lastLineIdx = block.lines.count - 1
                         return TerminalDocumentPoint(blockIndex: bIdx, lineIndex: lastLineIdx, columnIndex: block.lines[lastLineIdx].rawText.count)
                     } else {
-                        return TerminalDocumentPoint(blockIndex: bIdx, lineIndex: -1, columnIndex: block.command.count)
+                        let lastCmdLine = (block.commandLines.last ?? block.command)
+                        return TerminalDocumentPoint(blockIndex: bIdx, lineIndex: -1, columnIndex: lastCmdLine.count)
                     }
                 }
             }
@@ -1603,7 +1822,13 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
         if clampForDrag {
             let lastIdx = blocks.count - 1
             let lastBlock = blocks[lastIdx]
-            return TerminalDocumentPoint(blockIndex: lastIdx, lineIndex: -1, columnIndex: lastBlock.command.count)
+            if !lastBlock.isCollapsed && !lastBlock.lines.isEmpty {
+                let lastLineIdx = lastBlock.lines.count - 1
+                return TerminalDocumentPoint(blockIndex: lastIdx, lineIndex: lastLineIdx, columnIndex: lastBlock.lines[lastLineIdx].rawText.count)
+            } else {
+                let lastCmdLine = (lastBlock.commandLines.last ?? lastBlock.command)
+                return TerminalDocumentPoint(blockIndex: lastIdx, lineIndex: -1, columnIndex: lastCmdLine.count)
+            }
         }
 
         return nil
@@ -1696,29 +1921,32 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
             guard bIdx >= 0 && bIdx < blocks.count else { continue }
             let block = blocks[bIdx]
 
-            let startLine = (bIdx == sel.start.blockIndex) ? sel.start.lineIndex : -1
-            let endLine = (bIdx == sel.end.blockIndex) ? min(block.lines.count - 1, sel.end.lineIndex) : block.lines.count - 1
+            let cmdLines = block.commandLines
+            let cmdCount = max(1, cmdLines.count)
 
-            // 1. Check command header line (line -1)
-            if startLine <= -1 && endLine >= -1 {
-                let cmd = block.command
-                let isStart = (bIdx == sel.start.blockIndex && sel.start.lineIndex == -1)
-                let isEnd = (bIdx == sel.end.blockIndex && sel.end.lineIndex == -1)
-                let startCol = isStart ? max(0, min(cmd.count, sel.start.columnIndex)) : 0
-                let endCol = isEnd ? max(0, min(cmd.count, sel.end.columnIndex)) : cmd.count
-                if startCol < endCol && endCol <= cmd.count {
-                    let sIdx = cmd.index(cmd.startIndex, offsetBy: startCol)
-                    let eIdx = cmd.index(cmd.startIndex, offsetBy: endCol)
-                    resultLines.append(String(cmd[sIdx..<eIdx]))
+            // 1. Check command header lines
+            for (i, lineText) in cmdLines.enumerated() {
+                let headerLineIdx = -cmdCount + i
+                if isLineInSelection(blockIdx: bIdx, lineIdx: headerLineIdx, sel: sel) {
+                    let isStart = (bIdx == sel.start.blockIndex && sel.start.lineIndex == headerLineIdx)
+                    let isEnd = (bIdx == sel.end.blockIndex && sel.end.lineIndex == headerLineIdx)
+                    let startCol = isStart ? max(0, min(lineText.count, sel.start.columnIndex)) : 0
+                    let endCol = isEnd ? max(0, min(lineText.count, sel.end.columnIndex)) : lineText.count
+                    if startCol <= endCol && endCol <= lineText.count {
+                        let sIdx = lineText.index(lineText.startIndex, offsetBy: startCol)
+                        let eIdx = lineText.index(lineText.startIndex, offsetBy: endCol)
+                        resultLines.append(String(lineText[sIdx..<eIdx]))
+                    }
                 }
             }
 
             // 2. Check output lines (0..<block.lines.count)
             guard !block.isCollapsed && !block.lines.isEmpty else { continue }
-            let actualStartLine = max(0, startLine)
-            guard actualStartLine <= endLine else { continue }
+            let startLine = (bIdx == sel.start.blockIndex) ? max(0, sel.start.lineIndex) : 0
+            let endLine = (bIdx == sel.end.blockIndex) ? min(block.lines.count - 1, sel.end.lineIndex) : block.lines.count - 1
+            guard startLine <= endLine else { continue }
 
-            for lIdx in actualStartLine...endLine {
+            for lIdx in startLine...endLine {
                 guard lIdx >= 0 && lIdx < block.lines.count else { continue }
                 let line = block.lines[lIdx]
                 let isFirst = (bIdx == sel.start.blockIndex && lIdx == sel.start.lineIndex)

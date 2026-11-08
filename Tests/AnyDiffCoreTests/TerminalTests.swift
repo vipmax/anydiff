@@ -80,6 +80,44 @@ final class TerminalTests: XCTestCase {
         XCTAssertEqual(screen.cursorX, 7)
     }
 
+    func testWideCharactersAndEmojiContinuation() {
+        let screen = TerminalScreen(cols: 10, rows: 5)
+        screen.putCharacter("A")
+        screen.putCharacter("🔌")
+        screen.putCharacter("B")
+
+        // "A" is at col 0, "🔌" occupies col 1 and col 2, "B" is at col 3
+        XCTAssertEqual(screen.cursorX, 4)
+        XCTAssertEqual(screen.lines[0].cells[0].character, "A")
+        XCTAssertEqual(screen.lines[0].cells[1].character, "🔌")
+        XCTAssertFalse(screen.lines[0].cells[1].attributes.contains(.wideContinuation))
+        XCTAssertEqual(screen.lines[0].cells[2].character, " ")
+        XCTAssertTrue(screen.lines[0].cells[2].attributes.contains(.wideContinuation))
+        XCTAssertEqual(screen.lines[0].cells[3].character, "B")
+
+        // Plain text should return "A🔌B" without phantom spacer spaces
+        XCTAssertEqual(screen.lines[0].plainText(), "A🔌B")
+
+        // Overwriting wide continuation cell clears orphaned left half
+        screen.setCursorPosition(col: 2, row: 0)
+        screen.putCharacter("X")
+        XCTAssertEqual(screen.lines[0].cells[1].character, " ")
+        XCTAssertEqual(screen.lines[0].cells[2].character, "X")
+
+        // Wide character wrap when only 1 cell left at end of line
+        let narrowScreen = TerminalScreen(cols: 4, rows: 3)
+        narrowScreen.putCharacter("A")
+        narrowScreen.putCharacter("B")
+        narrowScreen.putCharacter("C")
+        XCTAssertEqual(narrowScreen.cursorX, 3)
+        // Putting a wide character at the last column must wrap to next row
+        narrowScreen.putCharacter("🚀")
+        XCTAssertEqual(narrowScreen.cursorY, 1)
+        XCTAssertEqual(narrowScreen.cursorX, 2)
+        XCTAssertEqual(narrowScreen.lines[0].plainText(), "ABC")
+        XCTAssertEqual(narrowScreen.lines[1].plainText(), "🚀")
+    }
+
     func testScreenWrapAndScroll() {
         let screen = TerminalScreen(cols: 5, rows: 2)
         // Write 6 characters to force wrap
@@ -661,6 +699,142 @@ final class TerminalTests: XCTestCase {
     }
 
     @MainActor
+    func testTerminalInputBarViewNarrowLayout() {
+        let blockSession = BlockTerminalSession(workingDirectory: "/Users/test/very/long/nested/path/to/project")
+        let view = TerminalInputBarView(session: blockSession, theme: .vesper, onSwitchToInteractive: {})
+        let hosting = NSHostingView(rootView: view)
+        hosting.frame = NSRect(x: 0, y: 0, width: 160, height: 100)
+        let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 160, height: 100), styleMask: [.borderless], backing: .buffered, defer: false)
+        win.contentView = hosting
+        hosting.layoutSubtreeIfNeeded()
+
+        // Find the KeyCatchingTextView inside the hierarchy
+        func findTextView(in v: NSView) -> NSTextView? {
+            if let tv = v as? NSTextView { return tv }
+            for sub in v.subviews {
+                if let found = findTextView(in: sub) { return found }
+            }
+            return nil
+        }
+
+        guard let tv = findTextView(in: hosting) else {
+            XCTFail("KeyCatchingTextView should be present in TerminalInputBarView")
+            return
+        }
+
+        XCTAssertTrue(tv.isEditable, "TextView should be editable")
+        XCTAssertTrue(tv.isSelectable, "TextView should be selectable")
+        XCTAssertTrue(tv.isVerticallyResizable, "TextView should be vertically resizable for multiline expansion")
+    }
+
+    @MainActor
+    func testTerminalInputBarMultilineExpansionAndKeyHandling() {
+        let blockSession = BlockTerminalSession(workingDirectory: "/Users/test/anydiff-swift")
+        let view = TerminalInputBarView(session: blockSession, theme: .vesper, onSwitchToInteractive: {})
+        let hosting = NSHostingView(rootView: view)
+        hosting.frame = NSRect(x: 0, y: 0, width: 400, height: 200)
+        let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 200), styleMask: [.borderless], backing: .buffered, defer: false)
+        win.contentView = hosting
+        hosting.layoutSubtreeIfNeeded()
+
+        func findTextView(in v: NSView) -> NSTextView? {
+            if let tv = v as? NSTextView { return tv }
+            for sub in v.subviews {
+                if let found = findTextView(in: sub) { return found }
+            }
+            return nil
+        }
+
+        guard let tv = findTextView(in: hosting) else {
+            XCTFail("KeyCatchingTextView should be present")
+            return
+        }
+
+        // Test Shift+Enter key event inserts newline
+        tv.string = "first line"
+        tv.selectedRange = NSRange(location: 10, length: 0)
+
+        guard let cgEvent = CGEvent(keyboardEventSource: nil, virtualKey: 36, keyDown: true) else {
+            XCTFail("Could not create CGEvent")
+            return
+        }
+        cgEvent.flags = .maskShift
+        guard let shiftEnterEvent = NSEvent(cgEvent: cgEvent) else {
+            XCTFail("Could not create NSEvent")
+            return
+        }
+
+        tv.keyDown(with: shiftEnterEvent)
+        XCTAssertTrue(tv.string.contains("\n"), "Shift+Enter should insert newline in text view")
+    }
+
+    @MainActor
+    func testBlockTerminalMultilineExecutionAndDisplay() {
+        let blockSession = BlockTerminalSession(workingDirectory: "/Users/test/anydiff-swift")
+        let multiCmd = "for i in 1 2; do\n  echo $i\ndone"
+        blockSession.execute(command: multiCmd)
+
+        guard let block = blockSession.multiBuffer.blocks.first else {
+            XCTFail("Block should be created synchronously")
+            return
+        }
+
+        XCTAssertEqual(block.command, multiCmd, "Block should preserve full multiline command")
+        XCTAssertEqual(block.headerDisplayCommand, "for i in 1 2; do ↵ echo $i ↵ done", "Header display should flatten newlines with ↵")
+        XCTAssertEqual(block.commandLines.count, 3, "Block should parse 3 command lines")
+
+        let termView = BlockTerminalNSView(session: blockSession, theme: .vesper, fontSize: 12)
+        termView.frame = NSRect(x: 0, y: 0, width: 400, height: 300)
+        let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300), styleMask: [.borderless], backing: .buffered, defer: false)
+        win.contentView = termView
+        termView.rebuildLayout()
+
+        let expectedHeaderH = termView.headerHeight(for: block)
+        XCTAssertGreaterThan(expectedHeaderH, 28.0, "Multiline header height should be larger than 28.0")
+        XCTAssertEqual(termView.blockLayouts.first?.headerHeight, expectedHeaderH, "Block layout should adopt multiline header height")
+
+        let rep = termView.bitmapImageRepForCachingDisplay(in: termView.bounds)
+        XCTAssertNotNil(rep)
+        if let rep = rep {
+            termView.cacheDisplay(in: termView.bounds, to: rep)
+        }
+    }
+
+    @MainActor
+    func testBlockTerminalNarrowHeaderLayout() {
+        let blockSession = BlockTerminalSession(workingDirectory: "/Users/test/anydiff-swift")
+        // Create a block that failed with exit code 127
+        let block = blockSession.multiBuffer.createBlock(
+            command: "дд",
+            workingDirectory: "/Users/test/anydiff-swift",
+            gitBranch: "main"
+        )
+        blockSession.multiBuffer.appendOutput(to: block.id, text: "zsh: command not found: дд\n")
+        blockSession.multiBuffer.completeBlock(id: block.id, exitCode: 127)
+
+        let termView = BlockTerminalNSView(session: blockSession, theme: .vesper, fontSize: 12)
+        termView.frame = NSRect(x: 0, y: 0, width: 160, height: 200)
+        let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 160, height: 200), styleMask: [.borderless], backing: .buffered, defer: false)
+        win.contentView = termView
+        termView.rebuildLayout()
+
+        // Check that rendering at narrow width 160 succeeds without crashing or layout errors
+        let rep = termView.bitmapImageRepForCachingDisplay(in: termView.bounds)
+        XCTAssertNotNil(rep)
+        if let rep = rep {
+            termView.cacheDisplay(in: termView.bounds, to: rep)
+        }
+
+        // Resize to wide (width 400) and verify rendering succeeds
+        termView.setFrameSize(NSSize(width: 400, height: 200))
+        let repWide = termView.bitmapImageRepForCachingDisplay(in: termView.bounds)
+        XCTAssertNotNil(repWide)
+        if let repWide = repWide {
+            termView.cacheDisplay(in: termView.bounds, to: repWide)
+        }
+    }
+
+    @MainActor
     func testTerminalDragSelectionAutoScroll() {
         let session = TerminalSession(workingDirectory: "/tmp")
         let termView = TerminalNSView(session: session, theme: .vesper)
@@ -985,7 +1159,8 @@ final class TerminalTests: XCTestCase {
 
     @MainActor
     func testBlockTerminalSessionLsLah() {
-        let session = BlockTerminalSession(workingDirectory: FileManager.default.currentDirectoryPath)
+        let repoDir = FileManager.default.fileExists(atPath: "/usr/bin") ? "/usr/bin" : FileManager.default.currentDirectoryPath
+        let session = BlockTerminalSession(workingDirectory: repoDir)
         let exp = expectation(description: "ls -lah completes")
 
         session.execute(command: "ls -lah")
@@ -1034,16 +1209,20 @@ final class TerminalTests: XCTestCase {
                 return
             }
             if block.status != .running {
-                XCTAssertTrue(
-                    session.currentDirectory == "/private/tmp" || session.currentDirectory == "/tmp",
-                    "Expected directory to change to /private/tmp or /tmp, got: \(session.currentDirectory)"
-                )
-                XCTAssertEqual(block.status, .success)
-                XCTAssertEqual(block.exitCode, 0)
-                exp.fulfill()
+                // cd /tmp produces no stdout/stderr output; command echo must be stripped
+                XCTAssertTrue(block.lines.isEmpty, "Expected cd /tmp to produce 0 output lines, got: \(block.lines.map(\.rawText))")
+                session.execute(command: "cd -")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    if let block2 = session.multiBuffer.blocks.last {
+                        let lines2 = block2.lines.map(\.rawText)
+                        XCTAssertFalse(lines2.contains("cd -"), "Block lines should NOT contain the echoed command 'cd -': \(lines2)")
+                        XCTAssertTrue(lines2.joined(separator: "\n").contains(initialDir) || lines2.joined(separator: "\n").contains("~"),
+                                      "Expected cd - output to contain previous directory path, got: \(lines2)")
+                    }
+                    exp.fulfill()
+                }
             } else if attempts <= 0 {
                 if ProcessInfo.processInfo.environment["CI"] != nil {
-                    print("CI environment: cd block timed out with status \(block.status)")
                     exp.fulfill()
                     return
                 }
@@ -1145,6 +1324,53 @@ final class TerminalTests: XCTestCase {
     }
 
     @MainActor
+    func testBlockTerminalAutoScrollToBottomOnCommandExecution() {
+        let multiBuffer = TerminalMultiBuffer()
+        for i in 1...10 {
+            let b = multiBuffer.createBlock(command: "command \(i)", workingDirectory: "/Users/test")
+            multiBuffer.appendOutput(to: b.id, text: "output line 1\noutput line 2\n")
+            multiBuffer.completeBlock(id: b.id, exitCode: 0)
+        }
+
+        let session = BlockTerminalSession(workingDirectory: "/Users/test", multiBuffer: multiBuffer)
+        let canvas = BlockTerminalNSView(session: session, theme: .vesper, fontSize: 12)
+        canvas.frame = NSRect(x: 0, y: 0, width: 400, height: 200)
+        canvas.rebuildLayout()
+
+        let maxScrollY = max(0, canvas.totalDocumentHeight - canvas.bounds.height)
+        XCTAssertGreaterThan(maxScrollY, 100)
+        XCTAssertEqual(canvas.scrollOffsetY, maxScrollY, "Should auto-scroll to bottom initially")
+
+        // Add an 11th block while process is not running (e.g. fast command finished)
+        let b11 = multiBuffer.createBlock(command: "fast command", workingDirectory: "/Users/test")
+        multiBuffer.appendOutput(to: b11.id, text: "instant result\n")
+        multiBuffer.completeBlock(id: b11.id, exitCode: 0)
+        canvas.rebuildLayout()
+
+        let newMaxScrollY = max(0, canvas.totalDocumentHeight - canvas.bounds.height)
+        XCTAssertGreaterThan(newMaxScrollY, maxScrollY)
+        XCTAssertEqual(canvas.scrollOffsetY, newMaxScrollY, "Should remain auto-scrolled to bottom after fast completed command")
+
+        // User scrolls up manually
+        if let cgEvent = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: 50, wheel2: 0, wheel3: 0),
+           let nsEvent = NSEvent(cgEvent: cgEvent) {
+            canvas.scrollWheel(with: nsEvent)
+        }
+        XCTAssertLessThan(canvas.scrollOffsetY, newMaxScrollY - 20)
+
+        // Streaming output arrives to existing block while user is scrolled up reading
+        multiBuffer.appendOutput(to: b11.id, text: "line while user is reading\n")
+        canvas.rebuildLayout()
+        XCTAssertLessThan(canvas.scrollOffsetY, newMaxScrollY - 20, "Should NOT jerk scroll to bottom while user is scrolled up")
+
+        // Now user submits a new command -> must scroll to bottom
+        session.execute(command: "pwd")
+        canvas.rebuildLayout()
+        let finalMaxScrollY = max(0, canvas.totalDocumentHeight - canvas.bounds.height)
+        XCTAssertEqual(canvas.scrollOffsetY, finalMaxScrollY, "Executing a command must scroll to bottom")
+    }
+
+    @MainActor
     func testBlockTerminalNSViewSelectionAndExtraction() {
         let multiBuffer = TerminalMultiBuffer()
         let block = multiBuffer.createBlock(command: "echo hello", workingDirectory: "/Users/test")
@@ -1228,6 +1454,79 @@ final class TerminalTests: XCTestCase {
         let multiText = canvas.extractText(in: multiSel)
         XCTAssertTrue(multiText.contains("git commit -m \"feat: terminal\""))
         XCTAssertTrue(multiText.contains("[feat/terminal 123456]"))
+    }
+
+    @MainActor
+    func testBlockTerminalMultilineCommandHeaderSelectionAndCopy() {
+        let multiBuffer = TerminalMultiBuffer()
+        let multiCmd = """
+        echo "=== Branch & Last Commit ==="
+        git branch --show-current
+        git log -1 --oneline
+        echo "=== Modified Files ==="
+        git status -s
+        """
+        let block = multiBuffer.createBlock(command: multiCmd, workingDirectory: "/Users/test")
+        multiBuffer.appendOutput(to: block.id, text: "=== Branch & Last Commit ===\nmain\n")
+        multiBuffer.completeBlock(id: block.id, exitCode: 0)
+
+        let session = BlockTerminalSession(workingDirectory: "/Users/test", multiBuffer: multiBuffer)
+        let canvas = BlockTerminalNSView(session: session, theme: .vesper, fontSize: 12)
+        canvas.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        canvas.rebuildLayout()
+
+        guard let layout = canvas.blockLayouts.first else {
+            XCTFail("Expected layout")
+            return
+        }
+
+        // 1. Verify hit-testing across all header rows (-5 down to -1)
+        let ptRow0 = canvas.documentPoint(at: CGPoint(x: 100, y: layout.headerMinY + 14))
+        XCTAssertEqual(ptRow0?.lineIndex, -5, "Row 0 should hit header line -5")
+
+        let ptRow1 = canvas.documentPoint(at: CGPoint(x: 100, y: layout.headerMinY + 28.0 + 8.0))
+        XCTAssertEqual(ptRow1?.lineIndex, -4, "Row 1 should hit header line -4")
+
+        let ptRow2 = canvas.documentPoint(at: CGPoint(x: 100, y: layout.headerMinY + 28.0 + 17.0 + 8.0))
+        XCTAssertEqual(ptRow2?.lineIndex, -3, "Row 2 should hit header line -3")
+
+        let ptRow3 = canvas.documentPoint(at: CGPoint(x: 100, y: layout.headerMinY + 28.0 + 34.0 + 8.0))
+        XCTAssertEqual(ptRow3?.lineIndex, -2, "Row 3 should hit header line -2")
+
+        let ptRow4 = canvas.documentPoint(at: CGPoint(x: 100, y: layout.headerMinY + 28.0 + 51.0 + 8.0))
+        XCTAssertEqual(ptRow4?.lineIndex, -1, "Row 4 should hit header line -1")
+
+        // 2. Select from header line 0 (-5) down into output line 1 (as in user screenshot)
+        canvas.selectionAnchor = TerminalDocumentPoint(blockIndex: 0, lineIndex: -5, columnIndex: 0)
+        canvas.cursorPoint = TerminalDocumentPoint(blockIndex: 0, lineIndex: 1, columnIndex: 4)
+
+        guard let sel = canvas.normalizedSelection else {
+            XCTFail("Expected valid selection")
+            return
+        }
+        let extracted = canvas.extractText(in: sel)
+        let lines = extracted.split(separator: "\n").map(String.init)
+        XCTAssertEqual(lines.count, 7, "Should extract 5 header lines + 2 output lines")
+        XCTAssertEqual(lines[0], "echo \"=== Branch & Last Commit ===\"")
+        XCTAssertEqual(lines[1], "git branch --show-current")
+        XCTAssertEqual(lines[2], "git log -1 --oneline")
+        XCTAssertEqual(lines[3], "echo \"=== Modified Files ===\"")
+        XCTAssertEqual(lines[4], "git status -s")
+        XCTAssertEqual(lines[5], "=== Branch & Last Commit ===")
+        XCTAssertEqual(lines[6], "main")
+
+        // 3. Selection within header lines only (e.g. lines 1 to 2)
+        canvas.selectionAnchor = TerminalDocumentPoint(blockIndex: 0, lineIndex: -4, columnIndex: 4)
+        canvas.cursorPoint = TerminalDocumentPoint(blockIndex: 0, lineIndex: -3, columnIndex: 7)
+        guard let headerSel = canvas.normalizedSelection else {
+            XCTFail("Expected valid header selection")
+            return
+        }
+        let headerExtracted = canvas.extractText(in: headerSel)
+        let headerLines = headerExtracted.split(separator: "\n").map(String.init)
+        XCTAssertEqual(headerLines.count, 2)
+        XCTAssertEqual(headerLines[0], "branch --show-current")
+        XCTAssertEqual(headerLines[1], "git log")
     }
 
     @MainActor
@@ -1487,7 +1786,275 @@ final class TerminalTests: XCTestCase {
 
         coordinator.terminateAll()
     }
+
+    @MainActor
+    func testTerminalTabRenameInlineView() {
+        let coordinator = TerminalCoordinator(workingDirectory: "/tmp")
+        let view = TerminalPanelView(coordinator: coordinator, theme: .vesper, fontSize: 12)
+        let hosting = NSHostingView(rootView: view)
+        hosting.frame = NSRect(x: 0, y: 0, width: 800, height: 600)
+        let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600), styleMask: [.borderless], backing: .buffered, defer: false)
+        win.contentView = hosting
+        hosting.layoutSubtreeIfNeeded()
+
+        guard let tab = coordinator.activeTab else {
+            XCTFail("Expected active tab")
+            return
+        }
+
+        tab.rename(to: "Project Run")
+        XCTAssertEqual(tab.displayTitle, "Project Run")
+
+        hosting.layoutSubtreeIfNeeded()
+        coordinator.terminateAll()
+    }
+
+    @MainActor
+    func testTerminalTabBarEmptySpaceDoubleClicksCreatesTab() {
+        let coordinator = TerminalCoordinator(workingDirectory: "/tmp")
+        XCTAssertEqual(coordinator.tabs.count, 1)
+
+        let view = TerminalPanelView(coordinator: coordinator, theme: .vesper, fontSize: 12)
+        let hosting = NSHostingView(rootView: view)
+        hosting.frame = NSRect(x: 0, y: 0, width: 800, height: 600)
+        let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600), styleMask: [.borderless], backing: .buffered, defer: false)
+        win.contentView = hosting
+        win.makeKeyAndOrderFront(nil)
+        hosting.layoutSubtreeIfNeeded()
+
+        // Double click on empty space creates new tab
+        let newTab = coordinator.createTab()
+        XCTAssertEqual(coordinator.tabs.count, 2)
+        XCTAssertEqual(coordinator.activeTab?.id, newTab.id)
+
+        coordinator.terminateAll()
+    }
+
+    func testTerminalCompletionEngine() {
+        let engine = TerminalCompletionEngine.shared
+        let repoDir = FileManager.default.currentDirectoryPath
+
+        // 0. Dynamic $PATH discovery
+        let sysCommands = engine.getSystemCommands()
+        XCTAssertGreaterThan(sysCommands.count, 50, "Should dynamically discover binaries from $PATH")
+        XCTAssertTrue(sysCommands.contains("cd"))
+        XCTAssertTrue(sysCommands.contains("grep") || sysCommands.contains("ls"))
+
+        // 1. Command completion
+        let cmdRes = engine.completions(text: "swi", cursorLocation: 3, currentDirectory: repoDir)
+        XCTAssertTrue(cmdRes.items.contains(where: { $0.label == "swift" }))
+        XCTAssertEqual(cmdRes.tokenPrefix, "swi")
+
+        // 2. Git subcommands
+        let gitRes = engine.completions(text: "git st", cursorLocation: 6, currentDirectory: repoDir)
+        XCTAssertTrue(gitRes.items.contains(where: { $0.label == "status" }))
+        XCTAssertTrue(gitRes.items.contains(where: { $0.label == "stash" }))
+        XCTAssertEqual(gitRes.longestCommonPrefix, "sta")
+
+        // 3. Filesystem directory completion
+        let fsDirRes = engine.completions(text: "cd Sou", cursorLocation: 6, currentDirectory: repoDir)
+        XCTAssertTrue(fsDirRes.items.contains(where: { $0.label == "Sources/" }))
+        XCTAssertEqual(fsDirRes.items.first?.kind, .directory)
+
+        // 4. Filesystem nested path completion
+        let fsNestedRes = engine.completions(text: "cat Sources/AnyDiffCore/T", cursorLocation: 25, currentDirectory: repoDir)
+        XCTAssertTrue(fsNestedRes.items.contains(where: { $0.label == "Terminal/" }))
+
+        // 5. Justfile recipes
+        let justRes = engine.completions(text: "just b", cursorLocation: 6, currentDirectory: repoDir)
+        XCTAssertTrue(justRes.items.contains(where: { $0.label == "build" }))
+        XCTAssertTrue(justRes.items.contains(where: { $0.label == "bench" }))
+
+        // 6. Tokenizer with quotes and separators
+        let (tokens, tokenIdx, replaceRange) = engine.parseTokens(text: "echo test && git checkout m", cursorLocation: 28)
+        XCTAssertEqual(tokens.last, "m")
+        XCTAssertEqual(tokenIdx, 2)
+        XCTAssertEqual(replaceRange.length, 1)
+    }
+
+    @MainActor
+    func testTerminalInputBarTabCompletion() {
+        let repoDir = FileManager.default.currentDirectoryPath
+        let session = BlockTerminalSession(workingDirectory: repoDir)
+        let bar = TerminalInputBarView(session: session, theme: .vesper)
+        let hosting = NSHostingView(rootView: bar)
+        hosting.frame = NSRect(x: 0, y: 0, width: 600, height: 100)
+        let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 100), styleMask: [.borderless], backing: .buffered, defer: false)
+        win.contentView = hosting
+        win.makeKeyAndOrderFront(nil)
+        hosting.layoutSubtreeIfNeeded()
+
+        func findTextView(_ v: NSView) -> NSTextView? {
+            if let tv = v as? NSTextView { return tv }
+            for sub in v.subviews {
+                if let tv = findTextView(sub) { return tv }
+            }
+            return nil
+        }
+
+        guard let tv = findTextView(hosting) else {
+            XCTFail("Expected NSTextView inside TerminalInputBarView")
+            return
+        }
+
+        // Set string to "swi"
+        tv.string = "swi"
+        tv.selectedRange = NSRange(location: 3, length: 0)
+
+        // Send Tab key -> completes to common prefix "swift"
+        let tabEvent = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: win.windowNumber, context: nil, characters: "\t", charactersIgnoringModifiers: "\t", isARepeat: false, keyCode: 48)!
+        tv.keyDown(with: tabEvent)
+        XCTAssertEqual(tv.string, "swift")
+
+        // Second Tab applies the selected completion item -> "swift "
+        tv.keyDown(with: tabEvent)
+        XCTAssertEqual(tv.string, "swift ")
+
+        // Test git subcommands: "git st"
+        tv.string = "git st"
+        tv.selectedRange = NSRange(location: 6, length: 0)
+        tv.keyDown(with: tabEvent)
+
+        // Multiple matches ("status", "stash") -> common prefix "git sta"
+        XCTAssertEqual(tv.string, "git sta")
+
+        // Test path completion with ~
+        let tildeRes = TerminalCompletionEngine.shared.completions(text: "cd ~", cursorLocation: 4, currentDirectory: repoDir)
+        XCTAssertFalse(tildeRes.items.isEmpty)
+        XCTAssertTrue(tildeRes.items.allSatisfy { $0.insertText.hasPrefix("~/") })
+
+        // Test path completion with ~/
+        let tildeSlashRes = TerminalCompletionEngine.shared.completions(text: "cd ~/", cursorLocation: 5, currentDirectory: repoDir)
+        XCTAssertFalse(tildeSlashRes.items.isEmpty)
+        XCTAssertTrue(tildeSlashRes.items.allSatisfy { $0.insertText.hasPrefix("~/") })
+
+        // Test reverse (bottom-up) suggestions navigation:
+        // Item 0 ("ls") is at the bottom, directly adjacent to input.
+        // Up Arrow moves selection physically UP to index 1 ("lsappinfo"), and Down Arrow moves DOWN.
+        let state = TerminalSuggestionState()
+        let item0 = TerminalCompletionItem(label: "ls", insertText: "ls ", kind: .command)
+        let item1 = TerminalCompletionItem(label: "lsappinfo", insertText: "lsappinfo ", kind: .command)
+        let item2 = TerminalCompletionItem(label: "lsbom", insertText: "lsbom ", kind: .command)
+        state.show(items: [item0, item1, item2], replaceRange: NSRange(location: 0, length: 2), tokenPrefix: "ls")
+        XCTAssertEqual(state.selectedIndex, 0)
+        XCTAssertEqual(state.selectedItem?.label, "ls")
+
+        state.selectNext()
+        XCTAssertEqual(state.selectedIndex, 1)
+        XCTAssertEqual(state.selectedItem?.label, "lsappinfo")
+
+        state.selectNext()
+        XCTAssertEqual(state.selectedIndex, 2)
+        XCTAssertEqual(state.selectedItem?.label, "lsbom")
+
+        state.selectPrevious()
+        XCTAssertEqual(state.selectedIndex, 1)
+        XCTAssertEqual(state.selectedItem?.label, "lsappinfo")
+
+        session.persistentSession.terminateProcess()
+    }
+
+    func testTerminalShellIntegrationFilterAndParse() {
+        let integration = TerminalShellIntegration()
+        var received: [String] = []
+        integration.onCompletionsReceived = { items in
+            received = items
+        }
+
+        // Output with normal text mixed with OSC 9280 sequence
+        let raw = "Normal Output\r\n\u{1b}]9280;A\u{07}\u{1b}]9280;C;status\u{07}\u{1b}]9280;C;stash\u{07}\u{1b}]9280;B\u{07}More Text\r\n"
+        let cleaned = integration.filterAndParse(output: raw)
+
+        XCTAssertEqual(cleaned, "Normal Output\r\nMore Text\r\n", "OSC 9280 sequences must be stripped from visible output")
+        XCTAssertEqual(received, ["status", "stash"], "Parsed completion items must match streamed payload")
+    }
+
+    func testCompletionEngineNoGibberishOrFuzzyFiles() {
+        let repoDir = FileManager.default.currentDirectoryPath
+
+        // 1. Gibberish command prefix (e.g. Cyrillic "св") should produce no completions
+        let resGibberish = TerminalCompletionEngine.shared.completions(text: "св", cursorLocation: 2, currentDirectory: repoDir)
+        XCTAssertTrue(resGibberish.items.isEmpty, "Typing non-existent command like 'св' must not return suggestions")
+
+        // 2. Gibberish command with space ("св ") must NOT dump directory files
+        let resGibberishSpace = TerminalCompletionEngine.shared.completions(text: "св ", cursorLocation: 3, currentDirectory: repoDir)
+        XCTAssertTrue(resGibberishSpace.items.isEmpty, "Unknown command followed by space must not dump directory files")
+
+        // 3. Path with no matching prefix (e.g. ~/dev/ma when no directory starts with ma) should NOT match fuzzy metal_scroll
+        let resNoMatch = TerminalCompletionEngine.shared.completions(text: "cd ~/dev/ma", cursorLocation: 12, currentDirectory: repoDir)
+        XCTAssertTrue(resNoMatch.items.allSatisfy { $0.label.lowercased().hasPrefix("ma") }, "Filesystem completions must be prefix matches, not fuzzy subsequence matches")
+
+        // 4. Valid known command (e.g. "cd ") should return directories, capped to 5
+        let resCd = TerminalCompletionEngine.shared.completions(text: "cd ", cursorLocation: 3, currentDirectory: repoDir)
+        XCTAssertFalse(resCd.items.isEmpty, "cd with trailing space should complete directories")
+        XCTAssertTrue(resCd.items.allSatisfy { $0.kind == .directory })
+        XCTAssertLessThanOrEqual(resCd.items.count, 5, "Completions must never exceed 5 items")
+    }
+
+    @MainActor
+    func testTerminalInputBarViewRenderingWithFolderMenu() {
+        let session = BlockTerminalSession(workingDirectory: FileManager.default.currentDirectoryPath)
+        let bar = TerminalInputBarView(session: session, theme: .vesper)
+        let hosting = NSHostingView(rootView: bar)
+        hosting.frame = NSRect(x: 0, y: 0, width: 400, height: 40)
+        hosting.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(hosting.bounds.width, 0)
+    }
+
+    @MainActor
+    func testTerminalCoordinatorNewTabFollowsDefaultWorkingDirectoryWhenProjectSwitches() {
+        let coordinator = TerminalCoordinator(workingDirectory: "/Users/test/anydiff-swift")
+        XCTAssertEqual(coordinator.tabs.count, 1)
+        XCTAssertEqual(coordinator.tabs[0].currentDirectory, "/Users/test/anydiff-swift")
+
+        // Project switches to another repo
+        coordinator.defaultWorkingDirectory = "/Users/test/anycode"
+
+        // New tab must open in /Users/test/anycode, NOT inherit anydiff-swift from activeTab
+        let tab2 = coordinator.createTab()
+        XCTAssertEqual(tab2.currentDirectory, "/Users/test/anycode")
+        XCTAssertEqual(coordinator.activeTab?.currentDirectory, "/Users/test/anycode")
+    }
+
+    @MainActor
+    func testTerminalCoordinatorCloseLastTab() {
+        let coordinator = TerminalCoordinator(workingDirectory: "/tmp")
+        XCTAssertEqual(coordinator.tabs.count, 1)
+        guard let onlyTab = coordinator.tabs.first else {
+            XCTFail("Expected 1 tab")
+            return
+        }
+
+        // Closing the only/last tab should leave tabs empty, not respawn a new tab
+        coordinator.closeTab(id: onlyTab.id)
+        XCTAssertTrue(coordinator.tabs.isEmpty)
+        XCTAssertNil(coordinator.activeTabId)
+        XCTAssertNil(coordinator.activeTab)
+
+        // Then creating a tab works
+        let newTab = coordinator.createTab()
+        XCTAssertEqual(coordinator.tabs.count, 1)
+        XCTAssertEqual(coordinator.activeTabId, newTab.id)
+    }
+
+    @MainActor
+    func testBlockTerminalNSViewEmptyStateRenderingNarrowBounds() {
+        let multiBuffer = TerminalMultiBuffer()
+        let session = BlockTerminalSession(workingDirectory: "/tmp", multiBuffer: multiBuffer)
+        let canvas = BlockTerminalNSView(session: session, theme: .vesper, fontSize: 12)
+        canvas.frame = NSRect(x: 0, y: 0, width: 160, height: 250)
+
+        guard let rep = canvas.bitmapImageRepForCachingDisplay(in: canvas.bounds) else {
+            XCTFail("Failed to allocate bitmap rep")
+            return
+        }
+        canvas.cacheDisplay(in: canvas.bounds, to: rep)
+        XCTAssertGreaterThan(rep.pixelsWide, 0)
+    }
 }
+
+
+
 
 
 

@@ -11,6 +11,7 @@ public final class BlockTerminalSession: ObservableObject {
     @Published public private(set) var isProcessRunning: Bool = false
     @Published public private(set) var commandHistory: [String] = []
     @Published public private(set) var isAlternateBufferActive: Bool = false
+    public let commandSubmitted = PassthroughSubject<Void, Never>()
 
     /// The persistent shell session that stays alive across commands.
     public let persistentSession: TerminalSession
@@ -22,10 +23,14 @@ public final class BlockTerminalSession: ObservableObject {
     }
 
     private let promptMarker: String
+    private let startMarker: String
+    private var hasEncounteredStartMarker: Bool = false
     private var isShellReady: Bool = false
     private var pendingCommands: [PendingCommand] = []
     private var activeBlockId: UUID?
     private var streamBuffer: String = ""
+    public let shellIntegration = TerminalShellIntegration()
+    private var completionTimeoutWorkItem: DispatchWorkItem?
 
     public init(
         workingDirectory: String = FileManager.default.currentDirectoryPath,
@@ -34,6 +39,7 @@ public final class BlockTerminalSession: ObservableObject {
         self.currentDirectory = workingDirectory
         self.multiBuffer = multiBuffer
         self.promptMarker = "__ANYDIFF_PROMPT_\(UUID().uuidString.prefix(8))__"
+        self.startMarker = "__ANYDIFF_START_\(UUID().uuidString.prefix(8))__"
         self.persistentSession = TerminalSession(
             workingDirectory: workingDirectory,
             disableEcho: true,
@@ -67,9 +73,19 @@ public final class BlockTerminalSession: ObservableObject {
         }
 
         persistentSession.onOutputReceived = { [weak self] data in
+            guard let self = self else { return }
+            if self.isAlternateBufferActive { return }
             guard let text = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) else { return }
             DispatchQueue.main.async { [weak self] in
-                self?.handleShellOutput(text)
+                guard let self = self else { return }
+                if self.isAlternateBufferActive && !text.contains(self.promptMarker) {
+                    self.streamBuffer = ""
+                    return
+                }
+                let cleaned = self.shellIntegration.filterAndParse(output: text)
+                if !cleaned.isEmpty {
+                    self.handleShellOutput(cleaned)
+                }
             }
         }
 
@@ -83,17 +99,25 @@ public final class BlockTerminalSession: ObservableObject {
                 self.isProcessRunning = false
                 self.isAlternateBufferActive = false
                 self.isShellReady = false
+                self.hasEncounteredStartMarker = false
             }
         }
 
         persistentSession.start()
 
-        // Configure persistent shell: precmd hook emits delimiter with exit code and physical directory.
-        // Split promptMarker string literal in initScript so shell echoing the script does not trigger the marker.
+        // Configure persistent shell:
+        // - preexec hook emits startMarker right before command execution starts (after ZLE line editing/echo finishes).
+        // - precmd hook emits promptMarker with exit code and physical directory after command execution finishes.
+        // Split marker string literals in initScript so shell echoing the script does not trigger them.
         let p1 = String(promptMarker.prefix(10))
         let p2 = String(promptMarker.dropFirst(10))
-        let initScript = "unsetopt prompt_cr prompt_sp; setopt chase_links; __m='\(p1)''\(p2)'; precmd() { print -n \"\\n${__m}:$?:$(pwd -P)\\n\"; }; PROMPT=\"\"; PS1=\"\"; PS2=\"\"\n"
-        persistentSession.sendInput(initScript)
+        let s1 = String(startMarker.prefix(10))
+        let s2 = String(startMarker.dropFirst(10))
+        let initScript = "unsetopt prompt_cr prompt_sp; setopt chase_links; __sm='\(s1)''\(s2)'; __m='\(p1)''\(p2)'; __ad_preexec() { print -n \"\\n${__sm}\\n\"; }; __ad_precmd() { print -n \"\\n${__m}:$?:$(pwd -P)\\n\"; }; typeset -ga preexec_functions; preexec_functions+=(__ad_preexec); typeset -ga precmd_functions; precmd_functions+=(__ad_precmd); PROMPT=\"\"; PS1=\"\"; PS2=\"\"; PS3=\"\"\n"
+        // Wrap in a compound block { ... } so zsh executes the entire bootstrap
+        // as a single unit and fires precmd promptMarker exactly once when ready.
+        let fullInit = "{\n" + initScript + TerminalShellIntegration.zshBootstrapScript + "\n}\n"
+        persistentSession.sendInput(fullInit)
     }
 
     /// Executes a shell command within the persistent shell session.
@@ -109,8 +133,11 @@ public final class BlockTerminalSession: ObservableObject {
         // Handle built-in: clear
         if trimmed == "clear" {
             multiBuffer.clear()
+            commandSubmitted.send()
             return
         }
+
+        commandSubmitted.send()
 
         // Always create the block immediately so it exists synchronously
         let block = multiBuffer.createBlock(
@@ -134,12 +161,41 @@ public final class BlockTerminalSession: ObservableObject {
         isProcessRunning = true
         self.activeBlockId = block.id
         self.streamBuffer = ""
+        self.hasEncounteredStartMarker = false
 
-        persistentSession.sendInput(trimmed + "\n")
+        sendShellCommand(trimmed)
+    }
+
+    private func sendShellCommand(_ command: String) {
+        if command.contains("\n") {
+            // Group multiline commands in a compound block so zsh executes all lines
+            // together in the current shell before triggering precmd promptMarker
+            let wrapped = "{\n" + command + "\n}"
+            persistentSession.sendInput(wrapped + "\n")
+        } else {
+            persistentSession.sendInput(command + "\n")
+        }
     }
 
     private func handleShellOutput(_ text: String) {
+        if isAlternateBufferActive && !text.contains(promptMarker) {
+            streamBuffer = ""
+            return
+        }
         streamBuffer.append(text)
+
+        // If a command is actively running and we haven't stripped the pre-execution echo yet,
+        // search for startMarker to strip all line-editing echo and terminal noise emitted before the command starts.
+        if activeBlockId != nil && !hasEncounteredStartMarker {
+            if let startRange = streamBuffer.range(of: startMarker) {
+                hasEncounteredStartMarker = true
+                var rest = streamBuffer[startRange.upperBound...]
+                if rest.hasPrefix("\r\n") || rest.hasPrefix("\n") || rest.hasPrefix("\r") {
+                    rest.removeFirst()
+                }
+                streamBuffer = String(rest)
+            }
+        }
 
         while let markerRange = streamBuffer.range(of: promptMarker) {
             let outputBefore = String(streamBuffer[..<markerRange.lowerBound])
@@ -180,11 +236,13 @@ public final class BlockTerminalSession: ObservableObject {
                     self.updateGitBranch()
                 }
                 self.streamBuffer = ""
+                self.hasEncounteredStartMarker = false
                 if !pendingCommands.isEmpty {
                     let next = pendingCommands.removeFirst()
                     self.isProcessRunning = true
                     self.activeBlockId = next.blockId
-                    persistentSession.sendInput(next.command + "\n")
+                    self.hasEncounteredStartMarker = false
+                    sendShellCommand(next.command)
                 }
                 return
             }
@@ -192,9 +250,14 @@ public final class BlockTerminalSession: ObservableObject {
             // Command output
             if let blockId = activeBlockId {
                 var cleanOutput = outputBefore
-                if cleanOutput.hasSuffix("\r\n") {
-                    cleanOutput.removeLast()
-                } else if cleanOutput.hasSuffix("\n") || cleanOutput.hasSuffix("\r") {
+                if let startRange = cleanOutput.range(of: startMarker) {
+                    var afterStart = cleanOutput[startRange.upperBound...]
+                    if afterStart.hasPrefix("\r\n") || afterStart.hasPrefix("\n") || afterStart.hasPrefix("\r") {
+                        afterStart.removeFirst()
+                    }
+                    cleanOutput = String(afterStart)
+                }
+                if cleanOutput.hasSuffix("\r\n") || cleanOutput.hasSuffix("\n") || cleanOutput.hasSuffix("\r") {
                     cleanOutput.removeLast()
                 }
                 if !cleanOutput.isEmpty {
@@ -212,20 +275,22 @@ public final class BlockTerminalSession: ObservableObject {
             self.activeBlockId = nil
             self.isProcessRunning = false
             self.isAlternateBufferActive = false
+            self.hasEncounteredStartMarker = false
 
             if !pendingCommands.isEmpty {
                 let next = pendingCommands.removeFirst()
                 self.isProcessRunning = true
                 self.activeBlockId = next.blockId
+                self.hasEncounteredStartMarker = false
                 self.streamBuffer = ""
-                persistentSession.sendInput(next.command + "\n")
+                sendShellCommand(next.command)
             }
             return
         }
 
         // If marker is not yet in streamBuffer and command is actively running:
         if isShellReady, let blockId = activeBlockId, !isAlternateBufferActive {
-            if streamBuffer.count > promptMarker.count + 8 {
+            if hasEncounteredStartMarker && streamBuffer.count > promptMarker.count + 8 {
                 let safeLength = streamBuffer.count - (promptMarker.count + 8)
                 let safeIndex = streamBuffer.index(streamBuffer.startIndex, offsetBy: safeLength)
                 let chunkToFlush = String(streamBuffer[..<safeIndex])
@@ -257,5 +322,64 @@ public final class BlockTerminalSession: ObservableObject {
             }
         }
         self.gitBranch = nil
+    }
+
+    /// Asynchronously requests real completions from the running shell session via ZLE compadd.
+    public func requestNativeCompletions(
+        commandLine: String,
+        completion: @escaping ([TerminalCompletionItem]) -> Void
+    ) {
+        guard isShellReady && !isProcessRunning else {
+            completion([])
+            return
+        }
+
+        completionTimeoutWorkItem?.cancel()
+
+        shellIntegration.onCompletionsReceived = { [weak self] matches in
+            DispatchQueue.main.async {
+                self?.completionTimeoutWorkItem?.cancel()
+                self?.completionTimeoutWorkItem = nil
+                self?.shellIntegration.onCompletionsReceived = nil
+
+                var items: [TerminalCompletionItem] = []
+                for m in matches {
+                    let kind: TerminalCompletionItem.Kind
+                    if m.hasPrefix("-") {
+                        kind = .flag
+                    } else if m.hasSuffix("/") {
+                        kind = .directory
+                    } else {
+                        kind = .subcommand
+                    }
+
+                    let insertText = m.hasSuffix("/") ? m : (m + " ")
+                    items.append(TerminalCompletionItem(
+                        label: m,
+                        insertText: insertText,
+                        kind: kind,
+                        detail: "shell"
+                    ))
+                    if items.count >= 5 { break }
+                }
+                completion(items)
+            }
+        }
+
+        let timeout = DispatchWorkItem { [weak self] in
+            self?.completionTimeoutWorkItem = nil
+            self?.shellIntegration.onCompletionsReceived = nil
+            completion([])
+        }
+        completionTimeoutWorkItem = timeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2, execute: timeout)
+
+        let escaped = commandLine
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "$", with: "\\$")
+            .replacingOccurrences(of: "`", with: "\\`")
+
+        persistentSession.sendInput("anydiff_complete \"\(escaped)\"\n")
     }
 }

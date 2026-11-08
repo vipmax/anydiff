@@ -118,12 +118,6 @@ public final class TerminalProcess: @unchecked Sendable {
                 let cArg3 = strdup(cmd)
                 var argv: [UnsafeMutablePointer<CChar>?] = [cShell, cArg1, cArg2, cArg3, nil]
                 execv(shellPath, &argv)
-            } else if disableEcho {
-                let cShell = strdup(shellPath)
-                let cArg1 = strdup("-i")
-                let cArg2 = strdup("+Z")
-                var argv: [UnsafeMutablePointer<CChar>?] = [cShell, cArg1, cArg2, nil]
-                execv(shellPath, &argv)
             } else {
                 let cShell = strdup(shellPath)
                 let cArg1 = strdup("-i")

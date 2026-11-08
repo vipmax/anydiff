@@ -42,6 +42,22 @@ public final class TerminalNSView: NSView {
     // Tracking Area for mouse motion
     private var terminalTrackingArea: NSTrackingArea?
 
+    // Cached NSColors to prevent thousands of allocations per frame
+    private static var cachedColors: [TerminalColor: NSColor] = [:]
+
+    private static func nsColor(for color: TerminalColor, defaultColor: NSColor) -> NSColor {
+        if color == .default { return defaultColor }
+        if let cached = cachedColors[color] {
+            return cached
+        }
+        let rgb = color.rgb()
+        let ns = NSColor(calibratedRed: rgb.red, green: rgb.green, blue: rgb.blue, alpha: 1.0)
+        if cachedColors.count < 512 {
+            cachedColors[color] = ns
+        }
+        return ns
+    }
+
     public init(session: TerminalSession, theme: Theme) {
         self.session = session
         self.theme = theme
@@ -241,10 +257,10 @@ public final class TerminalNSView: NSView {
 
                 let isReverse = cell.attributes.contains(.reverse)
                 var cellFgColor: NSColor = (cell.fg != .default)
-                    ? NSColor(calibratedRed: cell.fg.rgb().red, green: cell.fg.rgb().green, blue: cell.fg.rgb().blue, alpha: 1.0)
+                    ? Self.nsColor(for: cell.fg, defaultColor: defaultFg)
                     : defaultFg
                 var cellBgColor: NSColor? = (cell.bg != .default)
-                    ? NSColor(calibratedRed: cell.bg.rgb().red, green: cell.bg.rgb().green, blue: cell.bg.rgb().blue, alpha: 1.0)
+                    ? Self.nsColor(for: cell.bg, defaultColor: bgColor)
                     : nil
 
                 if isReverse {
@@ -264,14 +280,17 @@ public final class TerminalNSView: NSView {
                     context.fill(cellRect)
                 }
 
-                // Foreground Text
-                var runString = ""
-                runString.reserveCapacity(runEnd - col)
+                // Foreground Text: fast check for non-whitespace characters without allocating String
+                var hasVisibleChars = false
                 for c in col..<runEnd {
-                    runString.append(line.cells[c].character)
+                    let cell = line.cells[c]
+                    if !cell.attributes.contains(.wideContinuation) && cell.character != " " {
+                        hasVisibleChars = true
+                        break
+                    }
                 }
 
-                if !runString.trimmingCharacters(in: .whitespaces).isEmpty {
+                if hasVisibleChars {
                     let fgColor = cellFgColor
 
                     let isBold = cell.attributes.contains(.bold)
@@ -295,12 +314,23 @@ public final class TerminalNSView: NSView {
                         textAttrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
                     }
 
-                    // Draw cells: if character is box drawing, draw vector; otherwise accumulate string
+                    // Draw cells: if character is box drawing or wide character, draw dedicated; otherwise accumulate string
                     var currentTextChunk = ""
                     var textChunkStartCol = col
 
                     for c in col..<runEnd {
-                        let char = line.cells[c].character
+                        let cell = line.cells[c]
+                        if cell.attributes.contains(.wideContinuation) {
+                            if !currentTextChunk.isEmpty {
+                                let textPoint = CGPoint(x: padding + CGFloat(textChunkStartCol) * charWidth, y: y + (lineHeight - fontAscender) / 2.0)
+                                (currentTextChunk as NSString).draw(at: textPoint, withAttributes: textAttrs)
+                                currentTextChunk = ""
+                            }
+                            textChunkStartCol = c + 1
+                            continue
+                        }
+
+                        let char = cell.character
                         if TerminalBoxDrawingRenderer.isBoxDrawingCharacter(char) {
                             if !currentTextChunk.isEmpty {
                                 let textPoint = CGPoint(x: padding + CGFloat(textChunkStartCol) * charWidth, y: y + (lineHeight - fontAscender) / 2.0)
@@ -309,6 +339,15 @@ public final class TerminalNSView: NSView {
                             }
                             let singleCellRect = CGRect(x: padding + CGFloat(c) * charWidth, y: y, width: charWidth, height: lineHeight)
                             TerminalBoxDrawingRenderer.draw(character: char, in: singleCellRect, context: context, color: fgColor)
+                            textChunkStartCol = c + 1
+                        } else if TerminalScreen.characterWidth(char) == 2 {
+                            if !currentTextChunk.isEmpty {
+                                let textPoint = CGPoint(x: padding + CGFloat(textChunkStartCol) * charWidth, y: y + (lineHeight - fontAscender) / 2.0)
+                                (currentTextChunk as NSString).draw(at: textPoint, withAttributes: textAttrs)
+                                currentTextChunk = ""
+                            }
+                            let textPoint = CGPoint(x: padding + CGFloat(c) * charWidth, y: y + (lineHeight - fontAscender) / 2.0)
+                            (String(char) as NSString).draw(at: textPoint, withAttributes: textAttrs)
                             textChunkStartCol = c + 1
                         } else {
                             if currentTextChunk.isEmpty {
@@ -332,9 +371,16 @@ public final class TerminalNSView: NSView {
         if screen.isCursorVisible && scrollOffset == 0 {
             let cursorRow = screen.cursorY
             let cursorCol = screen.cursorX
+            let cursorWidthMultiplier: CGFloat
+            if cursorRow < screen.lines.count && cursorCol < screen.lines[cursorRow].cells.count {
+                let cell = screen.lines[cursorRow].cells[cursorCol]
+                cursorWidthMultiplier = (TerminalScreen.characterWidth(cell.character) == 2) ? 2.0 : 1.0
+            } else {
+                cursorWidthMultiplier = 1.0
+            }
             let cursorX = padding + CGFloat(cursorCol) * charWidth
             let cursorY = padding + CGFloat(cursorRow) * lineHeight
-            let cursorRect = CGRect(x: cursorX, y: cursorY, width: charWidth, height: lineHeight)
+            let cursorRect = CGRect(x: cursorX, y: cursorY, width: charWidth * cursorWidthMultiplier, height: lineHeight)
 
             let isFocused = (window?.firstResponder == self)
             let cursorColor = theme.accentColor
@@ -974,6 +1020,9 @@ public final class TerminalNSView: NSView {
                 if left <= right && left < line.cells.count {
                     var lineStr = ""
                     for c in left...right {
+                        if line.cells[c].attributes.contains(.wideContinuation) {
+                            continue
+                        }
                         lineStr.append(line.cells[c].character)
                     }
                     // Trim trailing spaces if copying whole line or to end of line

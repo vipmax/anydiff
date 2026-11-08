@@ -75,4 +75,6 @@ public struct TerminalCellAttributes: OptionSet, Hashable, Sendable {
     public static let reverse       = TerminalCellAttributes(rawValue: 1 << 4)
     public static let hidden        = TerminalCellAttributes(rawValue: 1 << 5)
     public static let strikethrough = TerminalCellAttributes(rawValue: 1 << 6)
+    /// Second cell / placeholder for a 2-column wide character (e.g. emoji or CJK ideograph).
+    public static let wideContinuation = TerminalCellAttributes(rawValue: 1 << 7)
 }
