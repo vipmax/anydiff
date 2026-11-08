@@ -1773,10 +1773,15 @@ final class TerminalTests: XCTestCase {
         XCTAssertEqual(coordinator.activeTab(for: .left)?.id, tab1.id)
         XCTAssertEqual(coordinator.activeTab(for: .center)?.id, tab2.id)
 
-        // When user in Center selects tab1, Left and Center swap tabs!
+        // When user in Center selects tab1, Center switches to tab1, and Left is unaffected
         coordinator.selectTab(id: tab1.id, for: .center)
         XCTAssertEqual(coordinator.activeTab(for: .center)?.id, tab1.id)
-        XCTAssertEqual(coordinator.activeTab(for: .left)?.id, tab2.id)
+        XCTAssertEqual(coordinator.activeTab(for: .left)?.id, tab1.id, "Left panel must not be kicked out or changed when Center selects the same tab")
+
+        // Selecting tab2 in Center switches Center to tab2, while Left remains tab1
+        coordinator.selectTab(id: tab2.id, for: .center)
+        XCTAssertEqual(coordinator.activeTab(for: .center)?.id, tab2.id)
+        XCTAssertEqual(coordinator.activeTab(for: .left)?.id, tab1.id)
 
         // Clean up
         coordinator.terminateAll()

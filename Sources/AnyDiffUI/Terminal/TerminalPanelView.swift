@@ -70,7 +70,7 @@ public struct TerminalPanelView: View {
                     theme: theme,
                     fontSize: fontSize
                 )
-                .id(activeTab.id)
+                .id("\(slot.rawValue)-\(activeTab.id.uuidString)")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 emptyStateView

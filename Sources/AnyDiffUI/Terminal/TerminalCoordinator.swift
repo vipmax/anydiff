@@ -220,14 +220,9 @@ public final class TerminalCoordinator: ObservableObject {
         return activeTab
     }
 
-    /// Selects the specified tab for a given slot, swapping if another slot is already showing it.
+    /// Selects the specified tab for a given slot without modifying other slots.
     public func selectTab(id: UUID, for slot: PanelSlot) {
         guard tabs.contains(where: { $0.id == id }) else { return }
-        let prevId = slotTabs[slot]
-        // Swap if another slot was displaying this tab so two panels never mirror the exact same tab
-        for (otherSlot, otherId) in slotTabs where otherSlot != slot && otherId == id {
-            slotTabs[otherSlot] = prevId ?? tabs.first(where: { $0.id != id })?.id
-        }
         slotTabs[slot] = id
         activeTabId = id
         objectWillChange.send()
