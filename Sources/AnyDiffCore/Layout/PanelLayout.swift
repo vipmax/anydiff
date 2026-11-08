@@ -63,9 +63,9 @@ public enum PanelContent: String, CaseIterable, Codable, Hashable, Identifiable,
     /// Whether this content type can be opened in multiple panel slots concurrently.
     public var allowsMultipleInstances: Bool {
         switch self {
-        case .editor, .agent, .terminal:
+        case .agent, .terminal:
             return true
-        case .changes, .files, .history:
+        case .editor, .changes, .files, .history:
             return false
         }
     }
@@ -110,11 +110,31 @@ public final class PanelLayoutManager: ObservableObject {
                 self.rightContent = rightRaw.flatMap { $0.isEmpty ? nil : PanelContent(rawValue: $0) }
             }
             self.isRightPanelOpen = defaults.object(forKey: Self.isRightPanelOpenKey) as? Bool ?? true
+            sanitizeDuplicates()
         } else {
             self.leftContent = .changes
             self.centerContent = .editor
             self.rightContent = .agent
             self.isRightPanelOpen = true
+        }
+    }
+
+    private func sanitizeDuplicates() {
+        var seen = Set<PanelContent>()
+        let slots: [PanelSlot] = [.center, .left, .right]
+        for slot in slots {
+            guard let content = content(for: slot) else { continue }
+            if !content.allowsMultipleInstances {
+                if seen.contains(content) {
+                    switch slot {
+                    case .left: leftContent = nil
+                    case .center: centerContent = nil
+                    case .right: rightContent = nil
+                    }
+                } else {
+                    seen.insert(content)
+                }
+            }
         }
     }
 

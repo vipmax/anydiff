@@ -41,24 +41,42 @@ final class PanelLayoutTests: XCTestCase {
         XCTAssertEqual(manager.slot(for: .changes), .center)
     }
 
-    func testAssignAllowsMultipleInstancesForEditorAgentTerminal() {
+    func testAssignAllowsMultipleInstancesForAgentAndTerminalOnly() {
         let manager = PanelLayoutManager(defaults: testDefaults, loadPersisted: false)
         XCTAssertEqual(manager.slot(for: .editor), .center)
         XCTAssertEqual(manager.slot(for: .agent), .right)
 
-        // Assign editor to left slot without vacating center
+        // Assign editor to left slot: moves editor and vacates center (single instance only)
         manager.assign(.editor, to: .left)
         XCTAssertEqual(manager.leftContent, .editor)
-        XCTAssertEqual(manager.centerContent, .editor)
+        XCTAssertNil(manager.centerContent, "Previous editor slot must be vacated")
         XCTAssertEqual(manager.rightContent, .agent)
-        XCTAssertEqual(manager.allSlots(for: .editor), [.left, .center])
+        XCTAssertEqual(manager.allSlots(for: .editor), [.left])
 
-        // Assign agent to center slot without vacating right
+        // Assign agent to center slot without vacating right (multiple instances allowed)
         manager.assign(.agent, to: .center)
         XCTAssertEqual(manager.leftContent, .editor)
         XCTAssertEqual(manager.centerContent, .agent)
         XCTAssertEqual(manager.rightContent, .agent)
         XCTAssertEqual(manager.allSlots(for: .agent), [.center, .right])
+
+        // Assign terminal to multiple slots (multiple instances allowed)
+        manager.assign(.terminal, to: .left)
+        manager.assign(.terminal, to: .center)
+        XCTAssertEqual(manager.allSlots(for: .terminal), [.left, .center])
+    }
+
+    func testSanitizeDuplicatesForEditorOnPersistedLoad() {
+        // Persist duplicate editor entries in both center and right slots
+        testDefaults.set("editor", forKey: PanelLayoutManager.centerSlotKey)
+        testDefaults.set("editor", forKey: PanelLayoutManager.rightSlotKey)
+        testDefaults.set("changes", forKey: PanelLayoutManager.leftSlotKey)
+
+        let manager = PanelLayoutManager(defaults: testDefaults, loadPersisted: true)
+        XCTAssertEqual(manager.leftContent, .changes)
+        XCTAssertEqual(manager.centerContent, .editor)
+        XCTAssertNil(manager.rightContent, "Duplicate editor slot must be vacated on load")
+        XCTAssertEqual(manager.allSlots(for: .editor), [.center])
     }
 
     func testClearSlot() {

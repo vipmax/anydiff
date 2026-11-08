@@ -365,6 +365,9 @@ public struct MainWindowView: View {
                 onSelect: { content in
                     withAnimation(.easeInOut(duration: 0.18)) {
                         panelLayout.assign(content, to: slot)
+                        if content == .editor {
+                            repo.activeEditorSlot = slot
+                        }
                     }
                 }
             )
@@ -522,9 +525,10 @@ public struct MainWindowView: View {
         if activeMarkdownPreviewPath != nil {
             closeMarkdownPreview()
         }
-        let chosenSlot = targetSlot ?? repo.activeEditorSlot
+        let chosenSlot = panelLayout.slot(for: .editor) ?? targetSlot ?? repo.activeEditorSlot
         if panelLayout.slot(for: .editor) == nil {
             panelLayout.assign(.editor, to: chosenSlot)
+            repo.activeEditorSlot = chosenSlot
         }
         repo.setSelectedFilePath(filePath, for: chosenSlot)
         let post = {
@@ -881,9 +885,10 @@ public struct MainWindowView: View {
         if activeMarkdownPreviewPath != nil {
             closeMarkdownPreview()
         }
-        let chosenSlot = targetSlot ?? repo.activeEditorSlot
+        let chosenSlot = panelLayout.slot(for: .editor) ?? targetSlot ?? repo.activeEditorSlot
         if panelLayout.slot(for: .editor) == nil {
             panelLayout.assign(.editor, to: chosenSlot)
+            repo.activeEditorSlot = chosenSlot
         }
         let baseDir = effectiveWorkingDirectory
         let resolvedRelativePath: String
