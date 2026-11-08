@@ -5,6 +5,7 @@ import AnyDiffCore
 /// display mode switcher (MultiBuffer vs Interactive), background execution, and terminal views.
 public struct TerminalPanelView: View {
     @ObservedObject public var coordinator: TerminalCoordinator
+    public var slot: PanelSlot
     public var theme: Theme
     public var fontSize: CGFloat
     public var onBack: (() -> Void)?
@@ -12,11 +13,13 @@ public struct TerminalPanelView: View {
     /// Backward compatibility initializer for single session usage.
     public init(
         session: TerminalSession,
+        slot: PanelSlot = .right,
         theme: Theme,
         fontSize: CGFloat = 12,
         onBack: (() -> Void)? = nil
     ) {
         self.coordinator = TerminalCoordinator(singleSession: session)
+        self.slot = slot
         self.theme = theme
         self.fontSize = fontSize
         self.onBack = onBack
@@ -25,14 +28,20 @@ public struct TerminalPanelView: View {
     /// Primary initializer taking a shared TerminalCoordinator.
     public init(
         coordinator: TerminalCoordinator,
+        slot: PanelSlot = .right,
         theme: Theme,
         fontSize: CGFloat = 12,
         onBack: (() -> Void)? = nil
     ) {
         self.coordinator = coordinator
+        self.slot = slot
         self.theme = theme
         self.fontSize = fontSize
         self.onBack = onBack
+    }
+
+    private var currentTab: TerminalTab? {
+        coordinator.activeTab(for: slot)
     }
 
     public var body: some View {
@@ -50,17 +59,18 @@ public struct TerminalPanelView: View {
                 Color.clear
                     .contentShape(Rectangle())
                     .onTapGesture(count: 2) {
-                        _ = coordinator.createTab()
+                        _ = coordinator.createTab(for: slot)
                     }
             )
             .zIndex(2)
 
-            if let activeTab = coordinator.activeTab {
+            if let activeTab = currentTab {
                 TerminalTabContentView(
                     tab: activeTab,
                     theme: theme,
                     fontSize: fontSize
                 )
+                .id(activeTab.id)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 emptyStateView
@@ -79,11 +89,11 @@ public struct TerminalPanelView: View {
                     ForEach(coordinator.tabs) { tab in
                         TerminalTabItemView(
                             tab: tab,
-                            isActive: tab.id == coordinator.activeTab?.id,
+                            isActive: tab.id == currentTab?.id,
                             canClose: coordinator.tabs.count > 1,
                             theme: theme,
                             onSelect: {
-                                coordinator.selectTab(id: tab.id)
+                                coordinator.selectTab(id: tab.id, for: slot)
                             },
                             onClose: {
                                 coordinator.closeTab(id: tab.id)
@@ -92,7 +102,7 @@ public struct TerminalPanelView: View {
                                 coordinator.closeOtherTabs(except: tab.id)
                             },
                             onNewTab: {
-                                _ = coordinator.createTab()
+                                _ = coordinator.createTab(for: slot)
                             }
                         )
                     }
@@ -103,11 +113,11 @@ public struct TerminalPanelView: View {
                         .contentShape(Rectangle())
                         .frame(minWidth: 40, maxWidth: .infinity, maxHeight: .infinity)
                         .onTapGesture(count: 2) {
-                            _ = coordinator.createTab()
+                            _ = coordinator.createTab(for: slot)
                         }
                         .contextMenu {
                             Button("New Terminal") {
-                                _ = coordinator.createTab()
+                                _ = coordinator.createTab(for: slot)
                             }
                         }
                 }
@@ -123,7 +133,7 @@ public struct TerminalPanelView: View {
     @ViewBuilder
     private var headerTrailingActions: some View {
         HStack(spacing: 6) {
-            if let tab = coordinator.activeTab {
+            if let tab = currentTab {
                 // Switch between MultiBuffer and Interactive mode
                 if tab.isShowingInteractive {
                     Button(action: {
@@ -168,7 +178,7 @@ public struct TerminalPanelView: View {
 
             // New Tab "+" Button (rightmost, transparent without hover)
             Button(action: {
-                _ = coordinator.createTab()
+                _ = coordinator.createTab(for: slot)
             }) {
                 Image(systemName: "plus")
                     .font(.system(size: 11, weight: .medium))
@@ -190,7 +200,7 @@ public struct TerminalPanelView: View {
                 .font(.system(size: 13, weight: .medium))
                 .foregroundColor(Color(theme.foreground).opacity(0.7))
             Button("New Terminal") {
-                _ = coordinator.createTab()
+                _ = coordinator.createTab(for: slot)
             }
             .buttonStyle(.borderedProminent)
         }

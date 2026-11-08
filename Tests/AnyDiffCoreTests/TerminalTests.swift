@@ -1751,6 +1751,38 @@ final class TerminalTests: XCTestCase {
     }
 
     @MainActor
+    func testTerminalCoordinatorMultiPanelSlotTabs() {
+        let coordinator = TerminalCoordinator(workingDirectory: "/tmp")
+        XCTAssertEqual(coordinator.tabs.count, 1)
+        let tab1 = coordinator.tabs[0]
+
+        // Slot .left takes tab1
+        let leftTab = coordinator.activeTab(for: .left)
+        XCTAssertEqual(leftTab?.id, tab1.id)
+
+        // Slot .center opens: all existing tabs (tab1) are occupied by .left,
+        // so it creates a fresh Tab 2 for .center!
+        let centerTab = coordinator.activeTab(for: .center)
+        XCTAssertNotNil(centerTab)
+        XCTAssertNotEqual(centerTab?.id, tab1.id)
+        XCTAssertEqual(coordinator.tabs.count, 2)
+        let tab2 = coordinator.tabs[1]
+        XCTAssertEqual(centerTab?.id, tab2.id)
+
+        // Left still displays tab1, Center displays tab2 (no mirroring!)
+        XCTAssertEqual(coordinator.activeTab(for: .left)?.id, tab1.id)
+        XCTAssertEqual(coordinator.activeTab(for: .center)?.id, tab2.id)
+
+        // When user in Center selects tab1, Left and Center swap tabs!
+        coordinator.selectTab(id: tab1.id, for: .center)
+        XCTAssertEqual(coordinator.activeTab(for: .center)?.id, tab1.id)
+        XCTAssertEqual(coordinator.activeTab(for: .left)?.id, tab2.id)
+
+        // Clean up
+        coordinator.terminateAll()
+    }
+
+    @MainActor
     func testTerminalTabDisplayTitleAndRename() {
         let tab = TerminalTab(title: "Terminal 1", workingDirectory: "/tmp")
         XCTAssertEqual(tab.displayTitle, "tmp")

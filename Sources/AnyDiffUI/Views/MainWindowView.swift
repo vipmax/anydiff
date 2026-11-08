@@ -370,6 +370,7 @@ public struct MainWindowView: View {
     private func terminalPanelView(for slot: PanelSlot) -> some View {
         TerminalPanelView(
             coordinator: terminalCoordinator,
+            slot: slot,
             theme: activeTheme,
             fontSize: fontSize,
             onBack: {

@@ -168,6 +168,8 @@ public final class TerminalCoordinator: ObservableObject {
     @Published public private(set) var tabs: [TerminalTab] = []
     @Published public var activeTabId: UUID? = nil
     @Published public var defaultWorkingDirectory: String
+    /// Tracks which terminal tab is active in each panel slot (.left, .center, .right)
+    @Published public var slotTabs: [PanelSlot: UUID] = [:]
 
     private var nextTerminalNumber: Int = 1
     private var tabSubscriptions: [UUID: AnyCancellable] = [:]
@@ -199,6 +201,38 @@ public final class TerminalCoordinator: ObservableObject {
         return tabs.first
     }
 
+    /// The currently selected active terminal tab for a given panel slot.
+    public func activeTab(for slot: PanelSlot) -> TerminalTab? {
+        if let id = slotTabs[slot], let tab = tabs.first(where: { $0.id == id }) {
+            return tab
+        }
+        // Check which tabs are already assigned to other slots
+        let otherOccupied = Set(slotTabs.filter { $0.key != slot }.values)
+        if let freeTab = tabs.first(where: { !otherOccupied.contains($0.id) }) {
+            slotTabs[slot] = freeTab.id
+            return freeTab
+        }
+        // If all existing tabs are occupied by other slots, create a fresh tab for this slot
+        if !tabs.isEmpty {
+            let newTab = createTab(workingDirectory: defaultWorkingDirectory, for: slot)
+            return newTab
+        }
+        return activeTab
+    }
+
+    /// Selects the specified tab for a given slot, swapping if another slot is already showing it.
+    public func selectTab(id: UUID, for slot: PanelSlot) {
+        guard tabs.contains(where: { $0.id == id }) else { return }
+        let prevId = slotTabs[slot]
+        // Swap if another slot was displaying this tab so two panels never mirror the exact same tab
+        for (otherSlot, otherId) in slotTabs where otherSlot != slot && otherId == id {
+            slotTabs[otherSlot] = prevId ?? tabs.first(where: { $0.id != id })?.id
+        }
+        slotTabs[slot] = id
+        activeTabId = id
+        objectWillChange.send()
+    }
+
     /// Creates and switches to a new background terminal tab.
     @discardableResult
     public func createTab(workingDirectory: String? = nil, title: String? = nil) -> TerminalTab {
@@ -213,6 +247,16 @@ public final class TerminalCoordinator: ObservableObject {
         return tab
     }
 
+    /// Creates and switches to a new background terminal tab for a specific slot.
+    @discardableResult
+    public func createTab(workingDirectory: String? = nil, title: String? = nil, for slot: PanelSlot? = nil) -> TerminalTab {
+        let tab = createTab(workingDirectory: workingDirectory, title: title)
+        if let slot = slot {
+            slotTabs[slot] = tab.id
+        }
+        return tab
+    }
+
     /// Closes a terminal tab and terminates its background processes.
     public func closeTab(id: UUID) {
         guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
@@ -221,8 +265,15 @@ public final class TerminalCoordinator: ObservableObject {
         tabSubscriptions.removeValue(forKey: id)
         tabs.remove(at: index)
 
+        for (slot, tabId) in slotTabs where tabId == id {
+            let otherOccupied = Set(slotTabs.filter { $0.key != slot }.values)
+            let candidate = tabs.first(where: { !otherOccupied.contains($0.id) }) ?? tabs.last
+            slotTabs[slot] = candidate?.id
+        }
+
         if tabs.isEmpty {
             activeTabId = nil
+            slotTabs.removeAll()
         } else if activeTabId == id {
             let nextIndex = min(index, tabs.count - 1)
             activeTabId = tabs[nextIndex].id
@@ -266,6 +317,9 @@ public final class TerminalCoordinator: ObservableObject {
         }
         tabs.removeAll(where: { $0.id != id })
         activeTabId = id
+        for slot in slotTabs.keys {
+            slotTabs[slot] = id
+        }
     }
 
     /// Terminates all background terminal processes across all tabs.
