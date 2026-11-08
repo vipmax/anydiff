@@ -5,6 +5,37 @@ All notable changes to **AnyDiff** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.0] - 2026-11-08
+
+### 🪟 Multi-Panel Layout & Slot Isolation
+- **Multi-Instance Panels**: Run multiple Terminal or AI Agent panels simultaneously side-by-side in custom split arrangements.
+- **Slot-Aware Tab & Session Isolation**: Terminals and AI Agent chat sessions are strictly scoped to their panel slot, preventing mirroring or state collisions across layouts.
+- **Editor Singleton with Slot-Aware Navigation**: Keeps the MultiBuffer editor focused as a single instance across slots while supporting slot-aware search and navigation.
+- **Responsive Empty Panel Breakpoints**: Dynamic empty panel placeholders adapt smoothly across arbitrary widths with refined split-view holding priorities.
+
+### ⚡️ High-Performance History & Commit Diff Streaming
+- **Instant First Paint (<100ms)**: Local commit diffs now stream line-by-line asynchronously via pipes, displaying modified files immediately without blocking the UI.
+- **Throttled Sidebar Updates**: Smooth 250ms batching for sidebar file lists during high-throughput diff streaming.
+- **Accelerated Commit History & Search**: Eliminated topological ordering overhead and cached Git references for near-instant commit log navigation and filtering.
+- **Git Graph Controls**: Added visibility toggle for the commit graph and restriction of commit history to the current branch.
+- **Oversized Diff Fallback**: Detects GitHub 403/422 responses for oversized PR diffs and falls back gracefully to local repository diffs.
+
+### 🔒 Editor Enhancements & Read-Only Mode
+- **MultiBuffer Read-Only Toggle**: Quickly lock and unlock editing with the new toolbar lock button or application menu (`Cmd+Shift+L`).
+- **Low-Allocation Display Rebuilding**: Substantially reduced memory allocations during file folding, display map reconstruction, and on-demand LSP server activation.
+
+### 🤖 AI Agent Improvements
+- **Ergonomic Chat Workflow**: Auto-focused input, expanded code blocks by default, and styled session card avatars with formatted title previews.
+- **Anchored Avatar Customization**: Avatar customizer popover now anchors precisely to the avatar icon.
+- **Running Session Selection**: Instantly dismisses the start screen when selecting an existing session from the running sessions list.
+
+### 💻 Terminal & LSP Polish
+- **Explicit Tab Autocomplete**: Terminal autocomplete suggestions now trigger on explicit `Tab` keystrokes, eliminating intrusive suggestion popups while typing commands.
+- **Terminal Performance & Typography**: Added wide-character Unicode support, working directory path selector, and non-truncating tab bar titles.
+- **Automatic LSP Server Start Toggle**: Configure automatic language server startup per workspace from the status popover and menu bar.
+- **UI Visual Polish**: Seamless dark toolbar background in macOS fullscreen mode and eliminated background artifacts behind context menus.
+- **Syntax Highlighting Fix**: Fixed potential index out of bounds crashes on `$` and `@` prefixes.
+
 ## [1.8.0] - 2026-10-26
 
 ### 🔌 Language Server Protocol (LSP) Integration
