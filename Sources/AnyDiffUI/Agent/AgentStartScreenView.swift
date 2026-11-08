@@ -49,6 +49,7 @@ public struct AgentStartScreenView: View {
             AgentSavedSessionsView(
                 preset: preset,
                 coordinator: coordinator,
+                slot: slot,
                 workingDirectory: workingDirectory,
                 theme: theme,
                 onBack: {
@@ -194,12 +195,12 @@ public struct AgentStartScreenView: View {
                 ForEach(coordinator.sessions) { session in
                     AgentSessionRowView(
                         session: session,
-                        isActive: session.id == coordinator.activeSessionId,
+                        isActive: session.id == (coordinator.activeSession(for: slot)?.id ?? coordinator.activeSessionId),
                         canClose: true,
                         theme: theme,
                         onSelect: {
                             withAnimation(.easeInOut(duration: 0.18)) {
-                                coordinator.selectSession(id: session.id)
+                                coordinator.selectSession(id: session.id, for: slot)
                             }
                         },
                         onClose: {

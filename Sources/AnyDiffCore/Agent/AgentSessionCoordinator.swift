@@ -351,15 +351,27 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
         objectWillChange.send()
     }
 
-    public func selectSession(id: UUID, for slot: PanelSlot) {
-        slotSessions[slot] = id
-        slotShowStartScreen[slot] = false
-        if slot == .right {
-            activeSessionId = id
-            showStartScreen = false
-        }
+    public func selectSession(id: UUID, for slot: PanelSlot? = nil) {
+        guard let session = sessions.first(where: { $0.id == id }) else { return }
         for s in sessions {
             s.isCurrentlyActive = (s.id == id)
+        }
+        activeSessionId = id
+        showStartScreen = false
+        isMockAgent = session.isMock
+
+        if let slot = slot {
+            slotSessions[slot] = id
+            slotShowStartScreen[slot] = false
+        } else {
+            slotSessions[.right] = id
+            slotShowStartScreen[.right] = false
+            for s in PanelSlot.allCases {
+                if slotShowStartScreen[s] == true {
+                    slotSessions[s] = id
+                    slotShowStartScreen[s] = false
+                }
+            }
         }
         objectWillChange.send()
     }
@@ -649,14 +661,7 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
     }
 
     public func selectSession(id: UUID) {
-        guard let session = sessions.first(where: { $0.id == id }) else { return }
-        for s in sessions {
-            s.isCurrentlyActive = (s.id == id)
-        }
-        activeSessionId = id
-        showStartScreen = false
-        isMockAgent = session.isMock
-        objectWillChange.send()
+        selectSession(id: id, for: nil)
     }
 
     public func selectPreset(_ preset: AgentPreset, workingDirectory: String) {
@@ -797,7 +802,8 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
     public func resumeSavedSession(
         savedSession: ACPSavedSessionItem,
         preset: AgentPreset,
-        workingDirectory: String
+        workingDirectory: String,
+        for slot: PanelSlot? = nil
     ) -> AgentSessionItem {
         if let existing = sessions.first(where: {
             if let acp = $0.manager as? ACPAgentSessionManager,
@@ -812,8 +818,7 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
                     loadSessionId: savedSession.sessionId
                 )
             }
-            selectSession(id: existing.id)
-            showStartScreen = false
+            selectSession(id: existing.id, for: slot)
             return existing
         }
 
@@ -862,9 +867,7 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
         newSession.isCurrentlyActive = true
 
         sessions.append(newSession)
-        activeSessionId = newSession.id
-        showStartScreen = false
-        self.isMockAgent = isMock
+        selectSession(id: newSession.id, for: slot)
         self.selectedPresetId = preset.id
 
         newSession.objectWillChange

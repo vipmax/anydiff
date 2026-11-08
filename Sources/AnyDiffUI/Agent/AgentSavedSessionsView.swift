@@ -17,6 +17,7 @@ public struct AgentSavedSessionsView: View {
     @State private var isSearchVisible: Bool = false
     @State private var searchQuery: String = ""
     @FocusState private var isSearchFocused: Bool
+    public var slot: PanelSlot = .right
     @State private var loadingSessionId: String? = nil
     @State private var isBackHovered: Bool = false
     @State private var isStartNewHovered: Bool = false
@@ -27,6 +28,7 @@ public struct AgentSavedSessionsView: View {
     public init(
         preset: AgentPreset,
         coordinator: AgentSessionCoordinator,
+        slot: PanelSlot = .right,
         workingDirectory: String,
         theme: Theme,
         onBack: @escaping () -> Void,
@@ -34,6 +36,7 @@ public struct AgentSavedSessionsView: View {
     ) {
         self.preset = preset
         self.coordinator = coordinator
+        self.slot = slot
         self.workingDirectory = workingDirectory
         self.theme = theme
         self.onBack = onBack
@@ -454,7 +457,8 @@ public struct AgentSavedSessionsView: View {
     private func resumeSession(_ item: ACPSavedSessionItem) {
         loadingSessionId = item.sessionId
         withAnimation(.easeInOut(duration: 0.18)) {
-            _ = coordinator.resumeSavedSession(savedSession: item, preset: preset, workingDirectory: workingDirectory)
+            _ = coordinator.resumeSavedSession(savedSession: item, preset: preset, workingDirectory: workingDirectory, for: slot)
+            onBack()
         }
     }
 

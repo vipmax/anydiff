@@ -89,6 +89,7 @@ public struct AgentSessionRowView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .contentShape(Rectangle())
 
             Button(action: {
                 session.isNotificationsEnabled.toggle()

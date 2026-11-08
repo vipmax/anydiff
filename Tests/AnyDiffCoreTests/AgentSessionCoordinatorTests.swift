@@ -654,5 +654,41 @@ final class AgentSessionCoordinatorTests: XCTestCase {
         // Session 2 draft is untouched
         XCTAssertEqual(session2.draftPrompt, "Draft for agent 2")
     }
+
+    func testSelectSessionDismissesStartScreenForSlotAndAssignsActiveSession() {
+        let coordinator = AgentSessionCoordinator(isMockAgent: false, autoCreateSession: true)
+        guard let session1 = coordinator.activeSession else {
+            XCTFail("Expected initial active session")
+            return
+        }
+
+        let session2 = coordinator.createNewSession(workingDirectory: "/tmp")
+        XCTAssertEqual(coordinator.sessions.count, 2)
+
+        // Set start screen visible in .right slot
+        coordinator.setStartScreen(true, for: .right)
+        XCTAssertTrue(coordinator.isShowingStartScreen(for: .right))
+
+        // When user selects session 1 in the start screen for .right slot:
+        coordinator.selectSession(id: session1.id, for: .right)
+        XCTAssertFalse(coordinator.isShowingStartScreen(for: .right), "Start screen must be dismissed when session is selected")
+        XCTAssertEqual(coordinator.activeSession(for: .right)?.id, session1.id)
+
+        // Now set start screen visible in .center slot
+        coordinator.setStartScreen(true, for: .center)
+        XCTAssertTrue(coordinator.isShowingStartScreen(for: .center))
+
+        // Select session 2 for .center slot
+        coordinator.selectSession(id: session2.id, for: .center)
+        XCTAssertFalse(coordinator.isShowingStartScreen(for: .center), "Start screen must be dismissed for .center slot")
+        XCTAssertEqual(coordinator.activeSession(for: .center)?.id, session2.id)
+
+        // Test without explicit slot: dismisses start screen for any active slot
+        coordinator.setStartScreen(true, for: .right)
+        XCTAssertTrue(coordinator.isShowingStartScreen(for: .right))
+        coordinator.selectSession(id: session1.id)
+        XCTAssertFalse(coordinator.isShowingStartScreen(for: .right), "General selectSession must dismiss start screen")
+        XCTAssertEqual(coordinator.activeSession(for: .right)?.id, session1.id)
+    }
 }
 
