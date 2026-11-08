@@ -24,7 +24,32 @@ public final class RepoCoordinator: ObservableObject {
     @Published public var fileDiffs: [FileDiff] = []
     @Published public var selectedCommit: GitCommit? = nil
     @Published public var showCommitDetailPopover: Bool = false
-    @Published public var selectedFilePath: String? = nil
+    @Published public var selectedFilePath: String? = nil {
+        didSet {
+            if let path = selectedFilePath {
+                slotSelectedFilePath[activeEditorSlot] = path
+            }
+        }
+    }
+    @Published public var slotSelectedFilePath: [PanelSlot: String] = [:]
+    @Published public var activeEditorSlot: PanelSlot = .center {
+        didSet {
+            if let path = slotSelectedFilePath[activeEditorSlot] {
+                selectedFilePath = path
+            }
+        }
+    }
+
+    public func selectedFilePath(for slot: PanelSlot) -> String? {
+        slotSelectedFilePath[slot] ?? selectedFilePath
+    }
+
+    public func setSelectedFilePath(_ path: String?, for slot: PanelSlot) {
+        slotSelectedFilePath[slot] = path
+        if activeEditorSlot == slot || selectedFilePath == nil {
+            selectedFilePath = path
+        }
+    }
     @Published public var manuallyOpenedFilePaths: Set<String> = []
     @Published public var isWatchModeEnabled: Bool = true
     @Published public var isReloading: Bool = false
@@ -774,10 +799,11 @@ public final class RepoCoordinator: ObservableObject {
 
     // MARK: - Editor File Opening & Closing
 
-    public func openFile(path: String, line: Int? = nil, endLine: Int? = nil) {
+    public func openFile(path: String, line: Int? = nil, endLine: Int? = nil, targetSlot: PanelSlot? = nil) {
         let baseDir = effectiveWorkingDirectory
         let resolvedRelativePath: String
         let fullDiskPath: String
+        let chosenSlot = targetSlot ?? activeEditorSlot
 
         if (path as NSString).isAbsolutePath {
             fullDiskPath = path
@@ -794,10 +820,10 @@ public final class RepoCoordinator: ObservableObject {
 
         // 1. Check if already present in displayMap
         if let targetFile = displayMap.matchFilePath(resolvedRelativePath) ?? displayMap.matchFilePath(path) {
-            selectedFilePath = targetFile
+            setSelectedFilePath(targetFile, for: chosenSlot)
             NotificationCenter.default.post(
                 name: .focusFileInEditor,
-                object: FileNavigationRequest(filePath: targetFile, lineNumber: line, endLineNumber: endLine)
+                object: FileNavigationRequest(filePath: targetFile, lineNumber: line, endLineNumber: endLine, targetSlot: chosenSlot)
             )
             return
         }
@@ -817,7 +843,7 @@ public final class RepoCoordinator: ObservableObject {
         manuallyOpenedFilePaths.insert(resolvedRelativePath)
 
         displayMap.rebuild()
-        selectedFilePath = resolvedRelativePath
+        setSelectedFilePath(resolvedRelativePath, for: chosenSlot)
 
         let content = clean.buffer.text()
         let root = effectiveWorkingDirectory
@@ -827,7 +853,7 @@ public final class RepoCoordinator: ObservableObject {
 
         NotificationCenter.default.post(
             name: .focusFileInEditor,
-            object: FileNavigationRequest(filePath: resolvedRelativePath, lineNumber: line, endLineNumber: endLine)
+            object: FileNavigationRequest(filePath: resolvedRelativePath, lineNumber: line, endLineNumber: endLine, targetSlot: chosenSlot)
         )
     }
 
@@ -837,8 +863,12 @@ public final class RepoCoordinator: ObservableObject {
         manuallyOpenedFilePaths.remove(filePath)
         displayMap.rebuild()
         displayMap.markContentLoaded()
+        let fallback = fileDiffs.first?.displayPath
         if selectedFilePath == filePath {
-            selectedFilePath = fileDiffs.first?.displayPath
+            selectedFilePath = fallback
+        }
+        for (slot, sel) in slotSelectedFilePath where sel == filePath {
+            slotSelectedFilePath[slot] = fallback
         }
         let root = effectiveWorkingDirectory
         Task {

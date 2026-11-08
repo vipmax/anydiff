@@ -103,11 +103,13 @@ public struct FileNavigationRequest: Equatable, Sendable {
     public let filePath: String
     public let lineNumber: Int?
     public let endLineNumber: Int?
+    public let targetSlot: PanelSlot?
 
-    public init(filePath: String, lineNumber: Int? = nil, endLineNumber: Int? = nil) {
+    public init(filePath: String, lineNumber: Int? = nil, endLineNumber: Int? = nil, targetSlot: PanelSlot? = nil) {
         self.filePath = filePath
         self.lineNumber = lineNumber
         self.endLineNumber = endLineNumber
+        self.targetSlot = targetSlot
     }
 }
 

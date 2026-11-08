@@ -14,6 +14,7 @@ public protocol MultiBufferEditorDelegate: AnyObject {
     func editorDidRequestOpenExternalIDE(filePath: String, lineNumber: Int?)
     func editorDidRequestPreviewMarkdown(filePath: String)
     func editorDidRequestOpenDefinition(filePath: String, line: Int, column: Int)
+    func editorDidFocus()
 }
 
 public extension MultiBufferEditorDelegate {
@@ -23,11 +24,14 @@ public extension MultiBufferEditorDelegate {
     func editorDidRequestOpenExternalIDE(filePath: String, lineNumber: Int?) {}
     func editorDidRequestPreviewMarkdown(filePath: String) {}
     func editorDidRequestOpenDefinition(filePath: String, line: Int, column: Int) {}
+    func editorDidFocus() {}
 }
 
 /// A high-performance, virtualized MultiBuffer Code Reviewer & Editor View built with CoreText
 public final class MultiBufferEditorView: NSView, NSTextInputClient, NSUserInterfaceValidations {
     public weak var delegate: MultiBufferEditorDelegate?
+    public var slot: PanelSlot? = nil
+    public var isActiveSlot: Bool = true
     public var onContentEdited: (() -> Void)? = nil
     public var workspaceRootPath: String? = nil
     var displayMapCancellables = Set<AnyCancellable>()
@@ -436,6 +440,7 @@ public final class MultiBufferEditorView: NSView, NSTextInputClient, NSUserInter
         if result {
             resetCursorBlink()
             needsDisplay = true
+            delegate?.editorDidFocus()
         }
         return result
     }

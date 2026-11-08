@@ -18,10 +18,13 @@ public struct EditorHostView: NSViewRepresentable {
     public var fontSize: CGFloat
     public var isEditable: Bool
     public var selectedFilePath: String?
+    public var slot: PanelSlot?
+    public var activeEditorSlot: PanelSlot?
     public var viewStateResetToken: UInt64?
     public var searchMatches: [ProjectSearchMatch]
     public var activeMatchIndex: Int?
     public var searchMatchScrollRequest: SearchMatchScrollRequest?
+    public var onFocus: (() -> Void)?
     public var onCursorChange: (ExcerptLocation?, MultiBufferPoint) -> Void
     public var onAddCommentRequest: (String, Int) -> Void
     public var onContentEdited: (() -> Void)?
@@ -37,11 +40,14 @@ public struct EditorHostView: NSViewRepresentable {
         fontSize: CGFloat = 13,
         isEditable: Bool = true,
         selectedFilePath: String? = nil,
+        slot: PanelSlot? = nil,
+        activeEditorSlot: PanelSlot? = nil,
         viewStateResetToken: UInt64? = nil,
         searchMatches: [ProjectSearchMatch] = [],
         activeMatchIndex: Int? = nil,
         searchMatchScrollRequest: SearchMatchScrollRequest? = nil,
         workingDirectory: String? = nil,
+        onFocus: (() -> Void)? = nil,
         onCursorChange: @escaping (ExcerptLocation?, MultiBufferPoint) -> Void,
         onAddCommentRequest: @escaping (String, Int) -> Void,
         onContentEdited: (() -> Void)? = nil,
@@ -55,11 +61,14 @@ public struct EditorHostView: NSViewRepresentable {
         self.fontSize = fontSize
         self.isEditable = isEditable
         self.selectedFilePath = selectedFilePath
+        self.slot = slot
+        self.activeEditorSlot = activeEditorSlot
         self.viewStateResetToken = viewStateResetToken
         self.searchMatches = searchMatches
         self.activeMatchIndex = activeMatchIndex
         self.searchMatchScrollRequest = searchMatchScrollRequest
         self.workingDirectory = workingDirectory
+        self.onFocus = onFocus
         self.onCursorChange = onCursorChange
         self.onAddCommentRequest = onAddCommentRequest
         self.onContentEdited = onContentEdited
@@ -78,6 +87,8 @@ public struct EditorHostView: NSViewRepresentable {
         editorView.font = .monospacedSystemFont(ofSize: fontSize, weight: .regular)
         editorView.isEditable = isEditable
         editorView.workspaceRootPath = workingDirectory
+        editorView.slot = slot
+        editorView.isActiveSlot = (slot == nil || activeEditorSlot == nil || slot == activeEditorSlot)
         editorView.delegate = context.coordinator
         context.coordinator.editorView = editorView
         let displayMapID = ObjectIdentifier(displayMap)
@@ -108,6 +119,8 @@ public struct EditorHostView: NSViewRepresentable {
     public func updateView(_ editorView: MultiBufferEditorView, coordinator: Coordinator) {
         coordinator.parent = self
         editorView.workspaceRootPath = workingDirectory
+        editorView.slot = slot
+        editorView.isActiveSlot = (slot == nil || activeEditorSlot == nil || slot == activeEditorSlot)
 
         let displayMapID = ObjectIdentifier(displayMap)
         if let resetToken = viewStateResetToken,
@@ -203,7 +216,8 @@ public struct EditorHostView: NSViewRepresentable {
             if !mapChanged, !revisionChanged,
                path != coordinator.lastSelectedFilePaths[displayMapID] {
                 coordinator.lastSelectedFilePaths[displayMapID] = path
-                if editorView.window?.firstResponder !== editorView {
+                let isThisSlotActive = (slot == nil || activeEditorSlot == nil || slot == activeEditorSlot)
+                if editorView.window?.firstResponder !== editorView && isThisSlotActive {
                     DispatchQueue.main.async {
                         editorView.scrollToFilePath(path)
                         coordinator.saveCurrentViewState()
@@ -231,6 +245,10 @@ public struct EditorHostView: NSViewRepresentable {
 
         init(_ parent: EditorHostView) {
             self.parent = parent
+        }
+
+        public func editorDidFocus() {
+            parent.onFocus?()
         }
 
         public func editorDidChangeCursor(location: ExcerptLocation?, point: MultiBufferPoint) {

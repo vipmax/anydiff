@@ -5,6 +5,7 @@ import AnyDiffCore
 @MainActor
 public final class SearchCoordinator: ObservableObject {
     @Published public var isActive: Bool = false
+    @Published public var activeSlot: PanelSlot? = nil
     @Published public var query: ProjectSearchQuery = ProjectSearchQuery()
     @Published public var matches: [ProjectSearchMatch] = []
     @Published public var activeMatchIndex: Int? = nil
@@ -38,15 +39,18 @@ public final class SearchCoordinator: ObservableObject {
             .store(in: &cancellables)
     }
 
-    public func toggle(in directory: String, selectedText: String? = nil) {
-        if isActive {
+    public func toggle(in directory: String, selectedText: String? = nil, in slot: PanelSlot? = nil) {
+        if isActive && (slot == nil || activeSlot == nil || activeSlot == slot) {
             close()
         } else {
-            open(in: directory, selectedText: selectedText)
+            open(in: directory, selectedText: selectedText, in: slot)
         }
     }
 
-    public func open(in directory: String, selectedText: String? = nil) {
+    public func open(in directory: String, selectedText: String? = nil, in slot: PanelSlot? = nil) {
+        if let slot {
+            activeSlot = slot
+        }
         focusToken &+= 1
         let trimmed = selectedText?.trimmingCharacters(in: .whitespacesAndNewlines)
         if let trimmed, !trimmed.isEmpty {
@@ -60,6 +64,7 @@ public final class SearchCoordinator: ObservableObject {
 
     public func close(clearResults: Bool = false) {
         isActive = false
+        activeSlot = nil
         isSearching = false
         searchTask?.cancel()
         searchTask = nil
@@ -76,6 +81,14 @@ public final class SearchCoordinator: ObservableObject {
             hasExecutedSearch = false
             viewStateResetToken &+= 1
         }
+    }
+
+    public func isSearchActive(in slot: PanelSlot) -> Bool {
+        guard isActive else { return false }
+        if let activeSlot {
+            return activeSlot == slot
+        }
+        return slot == .center
     }
 
     public func reset() {

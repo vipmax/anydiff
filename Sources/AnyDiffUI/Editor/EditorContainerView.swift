@@ -5,6 +5,7 @@ public struct EditorContainerView: View {
     @ObservedObject public var repo: RepoCoordinator
     @ObservedObject public var review: ReviewCoordinator
     @ObservedObject public var search: SearchCoordinator
+    public let slot: PanelSlot
     public let theme: Theme
     public let fontSize: CGFloat
     public let activeMarkdownPreviewPath: String?
@@ -25,6 +26,7 @@ public struct EditorContainerView: View {
         repo: RepoCoordinator,
         review: ReviewCoordinator,
         search: SearchCoordinator,
+        slot: PanelSlot = .center,
         theme: Theme,
         fontSize: CGFloat,
         activeMarkdownPreviewPath: String?,
@@ -43,6 +45,7 @@ public struct EditorContainerView: View {
         self.repo = repo
         self.review = review
         self.search = search
+        self.slot = slot
         self.theme = theme
         self.fontSize = fontSize
         self.activeMarkdownPreviewPath = activeMarkdownPreviewPath
@@ -61,12 +64,16 @@ public struct EditorContainerView: View {
 
     // MARK: - Coordinated Properties
 
+    private var isSearchActiveInSlot: Bool {
+        search.isSearchActive(in: slot)
+    }
+
     private var isReadOnlyActive: Bool {
         isReviewActive || repo.comparisonTarget.isCommit || review.isActive
     }
 
     private var displayMap: DisplayMap {
-        if search.isActive {
+        if isSearchActiveInSlot {
             return search.displayMap
         } else if isReadOnlyActive {
             return review.displayMap
@@ -75,7 +82,7 @@ public struct EditorContainerView: View {
     }
 
     private var multiBuffer: MultiBuffer {
-        if search.isActive {
+        if isSearchActiveInSlot {
             return search.multiBuffer
         } else if isReadOnlyActive {
             return review.multiBuffer
@@ -95,7 +102,7 @@ public struct EditorContainerView: View {
     }
 
     private var viewStateResetToken: UInt64? {
-        isReadOnlyActive ? review.viewStateResetToken : (search.isActive ? search.viewStateResetToken : nil)
+        isReadOnlyActive ? review.viewStateResetToken : (isSearchActiveInSlot ? search.viewStateResetToken : nil)
     }
 
     public var body: some View {
@@ -113,7 +120,7 @@ public struct EditorContainerView: View {
             }
             .frame(height: 28)
 
-            if search.isActive {
+            if isSearchActiveInSlot {
                 ProjectSearchBarView(
                     query: $search.query,
                     totalMatchesCount: search.matches.count,
@@ -160,7 +167,7 @@ public struct EditorContainerView: View {
                 } else {
                     editorDetailView
 
-                    if fileDiffs.isEmpty && !isReadOnlyActive && !search.isActive {
+                    if fileDiffs.isEmpty && !isReadOnlyActive && !isSearchActiveInSlot {
                         EmptyDiffView(
                             theme: theme,
                             loadableWorkingDirectory: repo.loadableWorkingDirectory,
@@ -179,7 +186,7 @@ public struct EditorContainerView: View {
                             },
                             onOpenInBrowser: onOpenInBrowser
                         )
-                    } else if search.isActive && search.hasExecutedSearch && search.matches.isEmpty && !search.isSearching && !search.query.isEmpty {
+                    } else if isSearchActiveInSlot && search.hasExecutedSearch && search.matches.isEmpty && !search.isSearching && !search.query.isEmpty {
                         SearchEmptyStateView(
                             query: search.query.query,
                             folderName: repo.currentFolderName,
@@ -226,7 +233,7 @@ public struct EditorContainerView: View {
     private var titlePrefix: String {
         if activeMarkdownPreviewPath != nil {
             return "Preview"
-        } else if search.isActive {
+        } else if isSearchActiveInSlot {
             return "Search"
         } else if isReviewActive {
             return "Review"
@@ -254,7 +261,7 @@ public struct EditorContainerView: View {
         let iconName: String = {
             if activeMarkdownPreviewPath != nil {
                 return "doc.text"
-            } else if search.isActive {
+            } else if isSearchActiveInSlot {
                 return "magnifyingglass"
             } else if case .commit = repo.comparisonTarget {
                 return "clock.arrow.circlepath"
@@ -280,8 +287,8 @@ public struct EditorContainerView: View {
             MarkdownPreviewBadge(path: mdPath, theme: theme) {
                 withAnimation(.easeInOut(duration: 0.16)) { onCloseMarkdown() }
             }
-        } else if availableWidth >= 460 || (!search.isActive && repo.comparisonTarget == .workingTree) {
-            if search.isActive {
+        } else if availableWidth >= 460 || (!isSearchActiveInSlot && repo.comparisonTarget == .workingTree) {
+            if isSearchActiveInSlot {
                 GlobalSearchBadge(theme: theme) {
                     withAnimation(.easeInOut(duration: 0.16)) { search.close() }
                 }
@@ -305,18 +312,18 @@ public struct EditorContainerView: View {
             availableWidth: availableWidth,
             hasCollapsedFiles: hasAnyCollapsedFiles,
             diffLayoutMode: diffLayoutMode,
-            isSearchActive: search.isActive,
+            isSearchActive: isSearchActiveInSlot,
             totalAdds: totalAdds,
             totalDels: totalDels,
             disableHunkNavigation: fileDiffs.isEmpty,
             workingDirectory: repo.effectiveWorkingDirectory,
-            onPreviousHunk: { NotificationCenter.default.post(name: .goToPreviousHunk, object: nil) },
-            onNextHunk: { NotificationCenter.default.post(name: .goToNextHunk, object: nil) },
+            onPreviousHunk: { NotificationCenter.default.post(name: .goToPreviousHunk, object: slot) },
+            onNextHunk: { NotificationCenter.default.post(name: .goToNextHunk, object: slot) },
             onToggleCollapse: toggleCollapseAll,
             onToggleLayout: onToggleLayout,
             onToggleSearch: {
                 withAnimation(.easeInOut(duration: 0.16)) {
-                    search.toggle(in: repo.effectiveWorkingDirectory, selectedText: displayMap.getSelectionText())
+                    search.toggle(in: repo.effectiveWorkingDirectory, selectedText: displayMap.getSelectionText(), in: slot)
                 }
             }
         )
@@ -331,30 +338,36 @@ public struct EditorContainerView: View {
             theme: theme,
             fontSize: fontSize,
             isEditable: (!isReadOnlyActive && repo.comparisonTarget == .workingTree),
-            selectedFilePath: repo.selectedFilePath,
+            selectedFilePath: repo.selectedFilePath(for: slot),
+            slot: slot,
+            activeEditorSlot: repo.activeEditorSlot,
             viewStateResetToken: viewStateResetToken,
-            searchMatches: search.isActive ? search.matches : [],
-            activeMatchIndex: search.isActive ? search.activeMatchIndex : nil,
-            searchMatchScrollRequest: search.isActive ? search.scrollRequest : nil,
+            searchMatches: isSearchActiveInSlot ? search.matches : [],
+            activeMatchIndex: isSearchActiveInSlot ? search.activeMatchIndex : nil,
+            searchMatchScrollRequest: isSearchActiveInSlot ? search.scrollRequest : nil,
             workingDirectory: repo.effectiveWorkingDirectory,
+            onFocus: {
+                repo.activeEditorSlot = slot
+            },
             onCursorChange: { location, _ in
-                if let path = location?.filePath, repo.selectedFilePath != path {
-                    repo.selectedFilePath = path
+                repo.activeEditorSlot = slot
+                if let path = location?.filePath, repo.selectedFilePath(for: slot) != path {
+                    repo.setSelectedFilePath(path, for: slot)
                 }
             },
             onAddCommentRequest: { path, line in
                 onAddComment(path, line)
             },
             onContentEdited: {
-                if search.isActive {
+                if isSearchActiveInSlot {
                     search.handleContentEdited()
                 }
             },
             onCloseFileRequest: { path in
                 if isReadOnlyActive {
                     review.closeFile(filePath: path)
-                    if repo.selectedFilePath == path {
-                        repo.selectedFilePath = review.fileDiffs.first?.displayPath
+                    if repo.selectedFilePath(for: slot) == path {
+                        repo.setSelectedFilePath(review.fileDiffs.first?.displayPath, for: slot)
                     }
                 } else {
                     repo.closeFile(filePath: path)

@@ -522,6 +522,13 @@ extension MultiBufferEditorView {
 
     @objc func handleFocusFileNotification(_ notification: Notification) {
         if let request = notification.object as? FileNavigationRequest {
+            if let targetSlot = request.targetSlot {
+                if let mySlot = slot, targetSlot != mySlot {
+                    return
+                }
+            } else if !isActiveSlot {
+                return
+            }
             ensureFileOpenedInLSP(filePath: request.filePath)
             if !navigateTo(filePath: request.filePath, lineNumber: request.lineNumber, endLineNumber: request.endLineNumber, shouldFocus: true) {
                 // If not found yet (e.g. displayMap hasn't synced from coordinator yet), retry next runloop tick
@@ -530,6 +537,9 @@ extension MultiBufferEditorView {
                 }
             }
         } else if let path = notification.object as? String {
+            if !isActiveSlot {
+                return
+            }
             ensureFileOpenedInLSP(filePath: path)
             scrollToFilePath(path)
             focus()
@@ -559,10 +569,22 @@ extension MultiBufferEditorView {
     }
 
     @objc func handleGoToNextHunkNotification(_ notification: Notification) {
+        if let targetSlot = notification.object as? PanelSlot, let mySlot = slot, targetSlot != mySlot {
+            return
+        }
+        if notification.object == nil && !isActiveSlot {
+            return
+        }
         goToNextHunk()
     }
 
     @objc func handleGoToPreviousHunkNotification(_ notification: Notification) {
+        if let targetSlot = notification.object as? PanelSlot, let mySlot = slot, targetSlot != mySlot {
+            return
+        }
+        if notification.object == nil && !isActiveSlot {
+            return
+        }
         goToPreviousHunk()
     }
 

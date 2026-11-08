@@ -286,7 +286,7 @@ public struct MainWindowView: View {
             },
             onFindInProject: {
                 withAnimation(.easeInOut(duration: 0.16)) {
-                    search.open(in: effectiveWorkingDirectory, selectedText: activeDisplayMap.getSelectionText())
+                    search.open(in: effectiveWorkingDirectory, selectedText: activeDisplayMap.getSelectionText(), in: repo.activeEditorSlot)
                 }
             },
             onFindNext: { search.selectNextMatch() },
@@ -513,18 +513,19 @@ public struct MainWindowView: View {
         loadCommitDiff(hash: commit.hash, targetFilePath: targetFilePath)
     }
 
-    private func focusFileInMultiBuffer(_ filePath: String) {
+    private func focusFileInMultiBuffer(_ filePath: String, targetSlot: PanelSlot? = nil) {
         if activeMarkdownPreviewPath != nil {
             closeMarkdownPreview()
         }
+        let chosenSlot = targetSlot ?? repo.activeEditorSlot
         if panelLayout.slot(for: .editor) == nil {
-            panelLayout.assign(.editor, to: .center)
+            panelLayout.assign(.editor, to: chosenSlot)
         }
-        repo.selectedFilePath = filePath
+        repo.setSelectedFilePath(filePath, for: chosenSlot)
         let post = {
             NotificationCenter.default.post(
                 name: .focusFileInEditor,
-                object: FileNavigationRequest(filePath: filePath, lineNumber: nil, endLineNumber: nil)
+                object: FileNavigationRequest(filePath: filePath, lineNumber: nil, endLineNumber: nil, targetSlot: chosenSlot)
             )
         }
         post()
@@ -619,6 +620,7 @@ public struct MainWindowView: View {
             repo: repo,
             review: review,
             search: search,
+            slot: slot,
             theme: activeTheme,
             fontSize: fontSize,
             activeMarkdownPreviewPath: activeMarkdownPreviewPath,
@@ -626,6 +628,14 @@ public struct MainWindowView: View {
             onClosePanel: {
                 withAnimation(.easeInOut(duration: 0.18)) {
                     panelLayout.clear(slot)
+                    if search.activeSlot == slot {
+                        search.close()
+                    }
+                    if repo.activeEditorSlot == slot {
+                        if let remaining = panelLayout.allSlots(for: .editor).first {
+                            repo.activeEditorSlot = remaining
+                        }
+                    }
                 }
             },
             onToggleLayout: {
@@ -637,7 +647,7 @@ public struct MainWindowView: View {
                 closeMarkdownPreview()
             },
             onOpenFileInEditor: { path in
-                openFileInEditor(path: path)
+                openFileInEditor(path: path, targetSlot: slot)
             },
             onEndReadOnly: {
                 endReadOnlyDiff()
@@ -655,7 +665,7 @@ public struct MainWindowView: View {
                 openInBrowser()
             },
             onOpenDefinition: { path, line, col in
-                openFileInEditor(path: path, line: line, endLine: nil)
+                openFileInEditor(path: path, line: line, endLine: nil, targetSlot: slot)
             }
         )
     }
@@ -747,12 +757,12 @@ public struct MainWindowView: View {
             onOpenBrowser: { openInBrowser() },
             onToggleSearch: {
                 withAnimation(.easeInOut(duration: 0.16)) {
-                    search.toggle(in: effectiveWorkingDirectory, selectedText: activeDisplayMap.getSelectionText())
+                    search.toggle(in: effectiveWorkingDirectory, selectedText: activeDisplayMap.getSelectionText(), in: repo.activeEditorSlot)
                 }
             },
             onOpenSearch: {
                 withAnimation(.easeInOut(duration: 0.16)) {
-                    search.open(in: effectiveWorkingDirectory, selectedText: activeDisplayMap.getSelectionText())
+                    search.open(in: effectiveWorkingDirectory, selectedText: activeDisplayMap.getSelectionText(), in: repo.activeEditorSlot)
                 }
             },
             onNextSearchMatch: { search.selectNextMatch() },
@@ -862,12 +872,13 @@ public struct MainWindowView: View {
         }
     }
 
-    public func openFileInEditor(path: String, line: Int? = nil, endLine: Int? = nil) {
+    public func openFileInEditor(path: String, line: Int? = nil, endLine: Int? = nil, targetSlot: PanelSlot? = nil) {
         if activeMarkdownPreviewPath != nil {
             closeMarkdownPreview()
         }
+        let chosenSlot = targetSlot ?? repo.activeEditorSlot
         if panelLayout.slot(for: .editor) == nil {
-            panelLayout.assign(.editor, to: .center)
+            panelLayout.assign(.editor, to: chosenSlot)
         }
         let baseDir = effectiveWorkingDirectory
         let resolvedRelativePath: String
@@ -882,14 +893,14 @@ public struct MainWindowView: View {
             resolvedRelativePath = path
         }
         if let targetFile = activeDisplayMap.matchFilePath(resolvedRelativePath) ?? activeDisplayMap.matchFilePath(path) {
-            repo.selectedFilePath = targetFile
+            repo.setSelectedFilePath(targetFile, for: chosenSlot)
             NotificationCenter.default.post(
                 name: .focusFileInEditor,
-                object: FileNavigationRequest(filePath: targetFile, lineNumber: line, endLineNumber: endLine)
+                object: FileNavigationRequest(filePath: targetFile, lineNumber: line, endLineNumber: endLine, targetSlot: chosenSlot)
             )
             return
         }
-        repo.openFile(path: path, line: line, endLine: endLine)
+        repo.openFile(path: path, line: line, endLine: endLine, targetSlot: chosenSlot)
     }
 
     public func closeFileFromEditor(filePath: String) {

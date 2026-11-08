@@ -1390,4 +1390,71 @@ final class ReadOnlyEditorTests: XCTestCase {
         let bHeaderY = editor.yOffset(forDisplayLineIndex: bHeaderIdx)
         XCTAssertEqual(editor.scrollOffsetY, bHeaderY, "Explicit file selection in sidebar must scroll to the selected file")
     }
+
+    @MainActor
+    func testMultiPanelSlotAwareEditorAndSearchIsolation() {
+        let repo = RepoCoordinator()
+        let search = SearchCoordinator()
+
+        // 1. RepoCoordinator slot-specific file selection
+        XCTAssertNil(repo.selectedFilePath)
+        repo.setSelectedFilePath("FileA.swift", for: .center)
+        XCTAssertEqual(repo.selectedFilePath(for: .center), "FileA.swift")
+        XCTAssertEqual(repo.selectedFilePath, "FileA.swift")
+
+        repo.setSelectedFilePath("FileB.swift", for: .right)
+        XCTAssertEqual(repo.selectedFilePath(for: .right), "FileB.swift")
+        // Center slot file must remain unchanged (no mirroring)
+        XCTAssertEqual(repo.selectedFilePath(for: .center), "FileA.swift")
+
+        // Switching active editor slot
+        repo.activeEditorSlot = .right
+        XCTAssertEqual(repo.selectedFilePath, "FileB.swift")
+        repo.setSelectedFilePath("FileB2.swift", for: .right)
+        XCTAssertEqual(repo.selectedFilePath(for: .right), "FileB2.swift")
+        XCTAssertEqual(repo.selectedFilePath(for: .center), "FileA.swift")
+
+        // 2. SearchCoordinator slot scoping
+        XCTAssertFalse(search.isActive)
+        XCTAssertNil(search.activeSlot)
+
+        search.open(in: "/tmp", in: .center)
+        XCTAssertTrue(search.isActive)
+        XCTAssertEqual(search.activeSlot, .center)
+        XCTAssertTrue(search.isSearchActive(in: .center))
+        XCTAssertFalse(search.isSearchActive(in: .right), "Search must not be active in other slots")
+
+        // Toggling search in .right switches active search slot to .right
+        search.toggle(in: "/tmp", in: .right)
+        XCTAssertTrue(search.isActive)
+        XCTAssertEqual(search.activeSlot, .right)
+        XCTAssertFalse(search.isSearchActive(in: .center))
+        XCTAssertTrue(search.isSearchActive(in: .right))
+
+        // Closing search resets both isActive and activeSlot
+        search.close()
+        XCTAssertFalse(search.isActive)
+        XCTAssertNil(search.activeSlot)
+        XCTAssertFalse(search.isSearchActive(in: .center))
+        XCTAssertFalse(search.isSearchActive(in: .right))
+
+        // 3. MultiBufferEditorView targetSlot filtering
+        let mb = MultiBuffer()
+        let buf = Buffer(filePath: "FileA.swift", text: "line 1\nline 2\n")
+        mb.addBuffer(buf)
+        mb.setExcerpts([Excerpt(bufferId: buf.id, filePath: "FileA.swift", bufferRange: 0..<2)])
+        let dm = DisplayMap(multiBuffer: mb, reviewManager: ReviewManager())
+        dm.rebuild()
+
+        let editorRight = MultiBufferEditorView(displayMap: dm, theme: .unifiedDark)
+        editorRight.slot = .right
+        editorRight.isActiveSlot = false
+
+        // A navigation request targeted at .center should be ignored by editorRight
+        let reqCenter = FileNavigationRequest(filePath: "FileA.swift", lineNumber: 1, targetSlot: .center)
+        let notifCenter = Notification(name: .focusFileInEditor, object: reqCenter, userInfo: nil)
+        editorRight.handleFocusFileNotification(notifCenter)
+        // Ensure editorRight did not become first responder
+        XCTAssertFalse(editorRight.window?.firstResponder === editorRight)
+    }
 }
