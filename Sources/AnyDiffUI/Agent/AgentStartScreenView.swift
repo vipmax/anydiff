@@ -195,7 +195,7 @@ public struct AgentStartScreenView: View {
                 ForEach(coordinator.sessions) { session in
                     AgentSessionRowView(
                         session: session,
-                        isActive: session.id == (coordinator.activeSession(for: slot)?.id ?? coordinator.activeSessionId),
+                        isActive: session.id == coordinator.activeSession(for: slot)?.id,
                         canClose: true,
                         theme: theme,
                         onSelect: {

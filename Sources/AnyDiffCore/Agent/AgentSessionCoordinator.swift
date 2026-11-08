@@ -322,13 +322,14 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
         if let id = slotSessions[slot], let session = sessions.first(where: { $0.id == id }) {
             return session
         }
-        if slot == .right {
-            return sessions.first(where: { $0.id == activeSessionId }) ?? sessions.first
+        if slotShowStartScreen[slot] == true {
+            return nil
         }
-        // For other slots, if not explicitly assigned, find an unassigned session or return nil for start screen
-        let occupiedIds = Set(slotSessions.values)
-        if let freeSession = sessions.first(where: { !occupiedIds.contains($0.id) && $0.id != activeSessionId }) {
-            return freeSession
+        if slot == .right, slotSessions.isEmpty {
+            if let id = activeSessionId, let session = sessions.first(where: { $0.id == id }) {
+                return session
+            }
+            return sessions.first
         }
         return nil
     }
@@ -337,10 +338,13 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
         if let show = slotShowStartScreen[slot] {
             return show
         }
-        if slot == .right {
+        if activeSession(for: slot) == nil {
+            return true
+        }
+        if slot == .right, slotSessions.isEmpty {
             return showStartScreen || activeSession == nil
         }
-        return activeSession(for: slot) == nil
+        return false
     }
 
     public func setStartScreen(_ show: Bool, for slot: PanelSlot) {
@@ -356,14 +360,18 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
         for s in sessions {
             s.isCurrentlyActive = (s.id == id)
         }
-        activeSessionId = id
-        showStartScreen = false
         isMockAgent = session.isMock
 
         if let slot = slot {
             slotSessions[slot] = id
             slotShowStartScreen[slot] = false
+            if slot == .right || activeSessionId == nil {
+                activeSessionId = id
+                showStartScreen = false
+            }
         } else {
+            activeSessionId = id
+            showStartScreen = false
             slotSessions[.right] = id
             slotShowStartScreen[.right] = false
             for s in PanelSlot.allCases {
@@ -540,6 +548,8 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
             firstSession.isCurrentlyActive = true
             self.sessions = [firstSession]
             self.activeSessionId = firstSession.id
+            self.slotSessions[.right] = firstSession.id
+            self.slotShowStartScreen[.right] = false
 
             firstSession.objectWillChange
                 .sink { [weak self] _ in
@@ -634,11 +644,18 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
         newSession.isCurrentlyActive = true
 
         sessions.append(newSession)
-        activeSessionId = newSession.id
-        showStartScreen = false
         if let slot = slot {
             slotSessions[slot] = newSession.id
             slotShowStartScreen[slot] = false
+            if slot == .right || activeSessionId == nil {
+                activeSessionId = newSession.id
+                showStartScreen = false
+            }
+        } else {
+            activeSessionId = newSession.id
+            showStartScreen = false
+            slotSessions[.right] = newSession.id
+            slotShowStartScreen[.right] = false
         }
         self.isMockAgent = isMock
         self.selectedPresetId = chosenPreset.id
@@ -704,7 +721,12 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
     }
 
     public func cleanEmptySessions() {
-        let emptyNonActive = sessions.filter { $0.id != activeSessionId && $0.manager.messages.isEmpty }
+        let displayedIds = Set(slotSessions.values)
+        let emptyNonActive = sessions.filter {
+            $0.id != activeSessionId &&
+            !displayedIds.contains($0.id) &&
+            $0.manager.messages.isEmpty
+        }
         for session in emptyNonActive {
             if let idx = sessions.firstIndex(where: { $0.id == session.id }) {
                 session.manager.cancel()

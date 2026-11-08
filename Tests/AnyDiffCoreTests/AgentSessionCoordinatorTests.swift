@@ -690,5 +690,29 @@ final class AgentSessionCoordinatorTests: XCTestCase {
         XCTAssertFalse(coordinator.isShowingStartScreen(for: .right), "General selectSession must dismiss start screen")
         XCTAssertEqual(coordinator.activeSession(for: .right)?.id, session1.id)
     }
+
+    func testTwoEmptyAgentPanelsCreatingSessionInOnePanelDoesNotOpenInOther() {
+        let coordinator = AgentSessionCoordinator(isMockAgent: false, autoCreateSession: false)
+        XCTAssertEqual(coordinator.sessions.count, 0)
+
+        // Both .center and .right slots start empty, showing start screen
+        coordinator.setStartScreen(true, for: .center)
+        coordinator.setStartScreen(true, for: .right)
+        XCTAssertTrue(coordinator.isShowingStartScreen(for: .center))
+        XCTAssertTrue(coordinator.isShowingStartScreen(for: .right))
+        XCTAssertNil(coordinator.activeSession(for: .center))
+        XCTAssertNil(coordinator.activeSession(for: .right))
+
+        // User clicks on "Mock Agent" in the left panel (.center)
+        let mockSession = coordinator.createNewSession(workingDirectory: "/tmp", preset: .mock, for: .center)
+
+        // .center panel must now display the new session and NOT show start screen
+        XCTAssertEqual(coordinator.activeSession(for: .center)?.id, mockSession.id)
+        XCTAssertFalse(coordinator.isShowingStartScreen(for: .center), "Left panel (.center) must switch to chat")
+
+        // .right panel MUST remain empty on the start screen without mirroring!
+        XCTAssertNil(coordinator.activeSession(for: .right), "Right panel must not automatically adopt left panel session")
+        XCTAssertTrue(coordinator.isShowingStartScreen(for: .right), "Right panel must remain on Choose an Agent start screen")
+    }
 }
 
