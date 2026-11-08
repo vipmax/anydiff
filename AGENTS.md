@@ -25,10 +25,17 @@ just test                  # Run the fast AnyDiffCoreTests suite
 just test-all              # Run all tests, including benchmarks
 just bench                 # Run benchmarks in release configuration
 just check                 # Build debug and run fast unit tests
-just package               # Create dist/AnyDiff.app, ZIP, and DMG artifacts
+just package               # Create dist/AnyDiff.app, ZIP, and DMG artifacts (local testing only)
+just publish <version>     # Bump version, push tag to trigger GitHub Actions release, and update Homebrew tap
 ```
 
 Use `swift test --filter AnyDiffCoreTests.SomeTest` to target one test; `just clean` removes SwiftPM artifacts.
+
+## Release & Deployment Guidelines
+
+- **NEVER build or upload release binaries locally**: Do not compile release binaries or package DMGs/ZIPs locally for distribution. All public release artifacts (`AnyDiff.app`, DMG, and ZIP archives) must be built strictly by GitHub Actions (`.github/workflows/release.yml`) on clean CI macOS runners.
+- **Automated publish workflow**: Run `just publish <version>`. It validates the changelog, bumps the version in `package_app.sh` and `README.md`, pushes the git commit and tag, monitors the GitHub Actions build, and updates the Homebrew tap formula (`vipmax/homebrew-tap`) with the exact SHA-256 checksums produced by CI.
+- **Never upload release assets from local machine**: Never run `gh release upload` with locally built binaries. All release assets must originate exclusively from GitHub Actions.
 
 ## Coding Style & Naming Conventions
 
