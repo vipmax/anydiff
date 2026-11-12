@@ -161,29 +161,66 @@ public struct TerminalInputBarView: View {
                 .frame(height: 20)
                 .fixedSize()
 
-            TerminalCommandTextView(
-                text: $inputText,
-                calculatedHeight: $calculatedHeight,
-                session: session,
-                suggestionState: suggestionState,
-                textColor: theme.foreground,
-                isFocused: $isFieldFocused,
-                onCommit: submitCommand,
-                onCancel: {
-                    if suggestionState.isVisible {
-                        suggestionState.hide()
-                    } else if session.isProcessRunning {
-                        session.sendInterrupt()
-                    } else {
-                        inputText = ""
-                        calculatedHeight = 18
-                        suggestionState.hide()
-                    }
+            ZStack(alignment: .leading) {
+                if inputText.isEmpty && session.isProcessRunning {
+                    Text("Send input to running command (Ctrl+C to stop)…")
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundColor(Color(theme.gutterForeground).opacity(0.6))
+                        .lineLimit(1)
+                        .padding(.top, 1)
+                        .allowsHitTesting(false)
                 }
-            )
+
+                TerminalCommandTextView(
+                    text: $inputText,
+                    calculatedHeight: $calculatedHeight,
+                    session: session,
+                    suggestionState: suggestionState,
+                    textColor: theme.foreground,
+                    isFocused: $isFieldFocused,
+                    onCommit: submitCommand,
+                    onCancel: {
+                        if suggestionState.isVisible {
+                            suggestionState.hide()
+                        } else if session.isProcessRunning {
+                            session.sendInterrupt()
+                        } else {
+                            inputText = ""
+                            calculatedHeight = 18
+                            suggestionState.hide()
+                        }
+                    }
+                )
+            }
             .frame(maxWidth: .infinity, alignment: .leading)
             .frame(height: min(max(18, calculatedHeight), 120))
             .padding(.top, 1)
+
+            if session.isProcessRunning {
+                Button(action: {
+                    session.sendInterrupt()
+                }) {
+                    HStack(spacing: 3) {
+                        Image(systemName: "stop.fill")
+                            .font(.system(size: 7.5, weight: .bold))
+                        if !isCompact {
+                            Text("Stop")
+                                .font(.system(size: 10, weight: .semibold))
+                        }
+                    }
+                    .foregroundColor(.white)
+                    .padding(.horizontal, isCompact ? 4 : 6)
+                    .padding(.vertical, 2.5)
+                    .background(
+                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                            .fill(Color.red.opacity(0.85))
+                    )
+                }
+                .buttonStyle(.plain)
+                .help("Cancel running command (Ctrl+C)")
+                .frame(height: 20)
+                .fixedSize()
+            }
 
             if !isUltraCompact {
                 Menu {
@@ -345,11 +382,20 @@ public struct TerminalInputBarView: View {
 
     private func submitCommand() {
         let trimmed = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        if trimmed.isEmpty {
+            if session.isProcessRunning {
+                inputText = ""
+                calculatedHeight = 18
+                suggestionState.hide()
+                session.execute(command: "")
+            }
+            return
+        }
+        let payload = session.isProcessRunning ? inputText : trimmed
         inputText = ""
         calculatedHeight = 18
         suggestionState.hide()
-        session.execute(command: trimmed)
+        session.execute(command: payload)
     }
 
     // MARK: - Directory Switching & Selector

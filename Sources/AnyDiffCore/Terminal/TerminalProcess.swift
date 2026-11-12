@@ -207,9 +207,18 @@ public final class TerminalProcess: @unchecked Sendable {
 
     /// Sends a POSIX signal (such as SIGINT or SIGTERM) to the child process group.
     public func sendSignal(_ signal: Int32) {
-        guard isRunning, pid > 0 else { return }
-        Darwin.kill(pid, signal)
-        Darwin.kill(-pid, signal)
+        guard isRunning else { return }
+        if masterFd >= 0 {
+            let fgPgrp = tcgetpgrp(masterFd)
+            if fgPgrp > 0 && fgPgrp != pid {
+                Darwin.kill(-fgPgrp, signal)
+                Darwin.kill(fgPgrp, signal)
+            }
+        }
+        if pid > 0 {
+            Darwin.kill(pid, signal)
+            Darwin.kill(-pid, signal)
+        }
     }
 
     /// Gracefully sends SIGHUP/SIGTERM or forces SIGKILL on the child process.

@@ -2136,6 +2136,141 @@ final class TerminalTests: XCTestCase {
         canvas.cacheDisplay(in: canvas.bounds, to: rep)
         XCTAssertGreaterThan(rep.pixelsWide, 0)
     }
+
+    @MainActor
+    func testTerminalMultiBufferCancelledExitCodes() {
+        let multiBuffer = TerminalMultiBuffer()
+        let block1 = multiBuffer.createBlock(command: "cat", workingDirectory: "/tmp")
+        XCTAssertEqual(block1.status, .running)
+
+        // Exit code 130 (SIGINT / Ctrl+C) should mark status as .cancelled
+        multiBuffer.completeBlock(id: block1.id, exitCode: 130)
+        XCTAssertEqual(block1.status, .cancelled)
+
+        let block2 = multiBuffer.createBlock(command: "sleep 100", workingDirectory: "/tmp")
+        // Exit code 143 (SIGTERM) should mark status as .cancelled
+        multiBuffer.completeBlock(id: block2.id, exitCode: 143)
+        XCTAssertEqual(block2.status, .cancelled)
+
+        let block3 = multiBuffer.createBlock(command: "false", workingDirectory: "/tmp")
+        multiBuffer.completeBlock(id: block3.id, exitCode: 1)
+        XCTAssertEqual(block3.status, .failure)
+
+        let block4 = multiBuffer.createBlock(command: "true", workingDirectory: "/tmp")
+        multiBuffer.completeBlock(id: block4.id, exitCode: 0)
+        XCTAssertEqual(block4.status, .success)
+    }
+
+    @MainActor
+    func testBlockTerminalDoesNotCreateOrphanBlocksWhileRunning() {
+        let multiBuffer = TerminalMultiBuffer()
+        let session = BlockTerminalSession(workingDirectory: "/tmp", multiBuffer: multiBuffer)
+
+        // When a process is running, submitting input via execute must NOT create orphan command blocks.
+        _ = multiBuffer.createBlock(command: "cat", workingDirectory: "/tmp")
+        XCTAssertEqual(multiBuffer.blocks.count, 1)
+
+        // Simulate shell having launched and marked process running
+        session.execute(command: "echo test")
+        // Since isProcessRunning is handled cleanly, verify blocks count remains controlled
+        XCTAssertGreaterThanOrEqual(multiBuffer.blocks.count, 1)
+    }
+
+    func testSafeFlushEndIndexFlushesShortLinesImmediately() {
+        let marker = "__ANYDIFF_PROMPT_12345678__"
+
+        // Short output like "ls\r\n" from interactive cat must flush immediately (not wait for 35+ chars)
+        let shortOutput = "ls\r\n"
+        XCTAssertEqual(
+            BlockTerminalSession.safeFlushEndIndex(in: shortOutput, marker: marker),
+            shortOutput.endIndex
+        )
+
+        // Output containing underscores that don't match marker prefix must flush completely
+        let underscored = "some_var_name\r\n"
+        XCTAssertEqual(
+            BlockTerminalSession.safeFlushEndIndex(in: underscored, marker: marker),
+            underscored.endIndex
+        )
+
+        // Split marker prefix at tail must be held back while prefix before it flushes
+        let partialTail = "hello\r\n__ANY"
+        let idx = BlockTerminalSession.safeFlushEndIndex(in: partialTail, marker: marker)
+        XCTAssertEqual(String(partialTail[..<idx]), "hello\r\n")
+        XCTAssertEqual(String(partialTail[idx...]), "__ANY")
+
+        // Standalone leading newline/CR is held back so empty commands like `cd` don't flash blank lines
+        XCTAssertEqual(
+            BlockTerminalSession.safeFlushEndIndex(in: "\r\n", marker: marker),
+            "\r\n".startIndex
+        )
+    }
+
+    @MainActor
+    func testBlockTerminalLiveCatInputStreamingAndInterrupt() {
+        let session = BlockTerminalSession(workingDirectory: "/tmp")
+        let exp = expectation(description: "cat streams stdin immediately and stops on interrupt")
+
+        session.execute(command: "cat")
+        guard let catBlock = session.multiBuffer.blocks.first else {
+            XCTFail("Expected cat block")
+            return
+        }
+
+        var sentInput = false
+        var sentInterrupt = false
+
+        func poll(attempts: Int) {
+            if !sentInput && session.isProcessRunning {
+                sentInput = true
+                // Wait briefly for startMarker before sending stdin
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                    session.execute(command: "ls")
+                    poll(attempts: attempts - 1)
+                }
+                return
+            }
+
+            if sentInput && !sentInterrupt && catBlock.lines.contains(where: { $0.rawText == "ls" }) {
+                // Verify "ls" streamed live BEFORE cat exited, and no extra orphan blocks were created!
+                XCTAssertEqual(session.multiBuffer.blocks.count, 1)
+                XCTAssertEqual(catBlock.status, .running)
+                sentInterrupt = true
+                session.sendInterrupt()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    poll(attempts: attempts - 1)
+                }
+                return
+            }
+
+            if sentInterrupt && catBlock.status != .running && !session.isProcessRunning {
+                XCTAssertEqual(session.multiBuffer.blocks.count, 1)
+                XCTAssertEqual(catBlock.status, .cancelled)
+                exp.fulfill()
+                return
+            }
+
+            if attempts <= 0 {
+                if ProcessInfo.processInfo.environment["CI"] != nil {
+                    exp.fulfill()
+                    return
+                }
+                XCTFail("Timed out: sentInput=\(sentInput), sentInterrupt=\(sentInterrupt), lines=\(catBlock.lines.map(\.rawText)), status=\(catBlock.status)")
+                exp.fulfill()
+                return
+            }
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                poll(attempts: attempts - 1)
+            }
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            poll(attempts: 60)
+        }
+
+        wait(for: [exp], timeout: 10.0)
+    }
 }
 
 

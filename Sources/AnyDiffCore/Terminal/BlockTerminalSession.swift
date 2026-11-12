@@ -96,6 +96,9 @@ public final class BlockTerminalSession: ObservableObject {
                     self.multiBuffer.completeBlock(id: blockId, exitCode: code)
                     self.activeBlockId = nil
                 }
+                for block in self.multiBuffer.blocks where block.status == .running {
+                    self.multiBuffer.completeBlock(id: block.id, exitCode: code)
+                }
                 self.isProcessRunning = false
                 self.isAlternateBufferActive = false
                 self.isShellReady = false
@@ -123,7 +126,20 @@ public final class BlockTerminalSession: ObservableObject {
     /// Executes a shell command within the persistent shell session.
     public func execute(command: String) {
         let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty else {
+            if isProcessRunning {
+                // Send Enter newline to running interactive process
+                sendInput("\n")
+            }
+            return
+        }
+
+        // If already running, send as stdin input (e.g. for [y/n] prompt or REPL)
+        // without creating duplicate orphaned command blocks!
+        if isProcessRunning {
+            sendInput(command + "\n")
+            return
+        }
 
         // Record into history (avoid duplicate consecutive)
         if commandHistory.last != trimmed {
@@ -149,12 +165,6 @@ public final class BlockTerminalSession: ObservableObject {
 
         guard isShellReady else {
             pendingCommands.append(PendingCommand(blockId: block.id, command: trimmed))
-            return
-        }
-
-        if isProcessRunning {
-            // If already running, send as stdin input (e.g. for [y/n] or REPL)
-            sendInput(trimmed + "\n")
             return
         }
 
@@ -265,6 +275,9 @@ public final class BlockTerminalSession: ObservableObject {
                 }
                 multiBuffer.completeBlock(id: blockId, exitCode: exitCode)
             }
+            for block in multiBuffer.blocks where block.status == .running {
+                multiBuffer.completeBlock(id: block.id, exitCode: exitCode)
+            }
 
             if let newDir = newDirectory, !newDir.isEmpty {
                 self.currentDirectory = newDir
@@ -290,14 +303,45 @@ public final class BlockTerminalSession: ObservableObject {
 
         // If marker is not yet in streamBuffer and command is actively running:
         if isShellReady, let blockId = activeBlockId, !isAlternateBufferActive {
-            if hasEncounteredStartMarker && streamBuffer.count > promptMarker.count + 8 {
-                let safeLength = streamBuffer.count - (promptMarker.count + 8)
-                let safeIndex = streamBuffer.index(streamBuffer.startIndex, offsetBy: safeLength)
-                let chunkToFlush = String(streamBuffer[..<safeIndex])
-                streamBuffer = String(streamBuffer[safeIndex...])
-                multiBuffer.appendOutput(to: blockId, text: chunkToFlush)
+            if hasEncounteredStartMarker {
+                let safeIndex = Self.safeFlushEndIndex(in: streamBuffer, marker: promptMarker)
+                if safeIndex > streamBuffer.startIndex {
+                    let chunkToFlush = String(streamBuffer[..<safeIndex])
+                    streamBuffer = String(streamBuffer[safeIndex...])
+                    multiBuffer.appendOutput(to: blockId, text: chunkToFlush)
+                }
             }
         }
+    }
+
+    /// Returns the exclusive end index up to which `buffer` can be safely flushed without
+    /// cutting through a potential partial `promptMarker` at the end of the chunk.
+    nonisolated static func safeFlushEndIndex(in buffer: String, marker: String) -> String.Index {
+        guard !buffer.isEmpty else { return buffer.startIndex }
+        if buffer == "\r" || buffer == "\n" || buffer == "\r\n" {
+            return buffer.startIndex
+        }
+        guard let firstMarkerChar = marker.first else {
+            return buffer.endIndex
+        }
+
+        let tailStart = buffer.index(
+            buffer.endIndex,
+            offsetBy: -min(buffer.count, marker.count),
+            limitedBy: buffer.startIndex
+        ) ?? buffer.startIndex
+
+        var idx = tailStart
+        while idx < buffer.endIndex {
+            if buffer[idx] == firstMarkerChar {
+                let suffix = buffer[idx...]
+                if marker.hasPrefix(suffix) {
+                    return idx
+                }
+            }
+            idx = buffer.index(after: idx)
+        }
+        return buffer.endIndex
     }
 
     /// Sends text input to the currently running process (e.g. for [y/n], passwords, or interactive programs).

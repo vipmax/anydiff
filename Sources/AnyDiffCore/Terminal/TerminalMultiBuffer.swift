@@ -202,7 +202,11 @@ public final class TerminalMultiBuffer: ObservableObject, @unchecked Sendable {
 
         block.endTime = Date()
         block.exitCode = exitCode
-        block.status = (exitCode == 0) ? .success : .failure
+        if exitCode == 130 || exitCode == 143 {
+            block.status = .cancelled
+        } else {
+            block.status = (exitCode == 0) ? .success : .failure
+        }
 
         if activeBlockId == targetId {
             activeBlockId = nil

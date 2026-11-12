@@ -160,6 +160,7 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
     // MARK: - Hover State
     private var hoveredHeaderBlockIndex: Int? = nil
     private var hoveredCopyBlockIndex: Int? = nil
+    private var hoveredCancelBlockIndex: Int? = nil
     private var hoveredRerunBlockIndex: Int? = nil
 
     private var cancellables = Set<AnyCancellable>()
@@ -835,7 +836,11 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
         // Status indicator
         if let sRect = statusRect {
             if block.status == .running {
-                drawSpinner(in: sRect, context: context)
+                if hoveredCancelBlockIndex == blockIndex {
+                    drawStopButton(in: sRect, context: context)
+                } else {
+                    drawSpinner(in: sRect, context: context)
+                }
             } else if let stLine = statusCTLine, let bgColor = statusBgColor {
                 let pillPath = CGPath(roundedRect: sRect, cornerWidth: 3.5, cornerHeight: 3.5, transform: nil)
                 context.saveGState()
@@ -865,6 +870,27 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
 
         context.restoreGState() // Restore contentAlpha state
         context.restoreGState() // Restore outer header state
+    }
+
+    private func drawStopButton(in rect: CGRect, context: CGContext) {
+        context.saveGState()
+        let bgPath = CGPath(roundedRect: rect.insetBy(dx: -2.5, dy: -2.5), cornerWidth: 3.5, cornerHeight: 3.5, transform: nil)
+        context.setFillColor(NSColor.systemRed.withAlphaComponent(0.2).cgColor)
+        context.addPath(bgPath)
+        context.fillPath()
+
+        let stopSize: CGFloat = 6.0
+        let stopRect = CGRect(
+            x: round(rect.midX - stopSize / 2.0),
+            y: round(rect.midY - stopSize / 2.0),
+            width: stopSize,
+            height: stopSize
+        )
+        let stopPath = CGPath(roundedRect: stopRect, cornerWidth: 1.0, cornerHeight: 1.0, transform: nil)
+        context.setFillColor(NSColor.systemRed.cgColor)
+        context.addPath(stopPath)
+        context.fillPath()
+        context.restoreGState()
     }
 
     private func drawSpinner(in rect: CGRect, context: CGContext) {
@@ -1422,6 +1448,12 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
             return
         }
 
+        // Stop / Cancel button hit when block is running
+        if block.status == .running && relY < 28.0 && screenPoint.x >= bounds.width - 66.0 && screenPoint.x <= bounds.width - 38.0 {
+            session.sendInterrupt()
+            return
+        }
+
         // 2. Chevron & prompt click (clickX < cmdStartX on row 0) -> toggle collapse if on chevron
         let cmdStartX = commandStartX(for: blockIndex, block: block)
         if relY < 28.0 && clickX < headerCommandX {
@@ -1600,9 +1632,10 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
         super.mouseMoved(with: event)
         let screenPoint = convert(event.locationInWindow, from: nil)
 
-        // Check copy button hover
+        // Check copy and cancel button hover
         let copyBtnX = bounds.width - 36.0
         var newCopyBlock: Int? = nil
+        var newCancelBlock: Int? = nil
 
         for layout in blockLayouts {
             let isHeaderY: Bool
@@ -1613,16 +1646,50 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
                 isHeaderY = (screenPoint.y >= screenHeaderY && screenPoint.y <= screenHeaderY + layout.headerHeight)
             }
 
-            if isHeaderY && screenPoint.x >= copyBtnX && screenPoint.x <= bounds.width - 16.0 {
-                newCopyBlock = layout.blockIndex
-                break
+            if isHeaderY {
+                if screenPoint.x >= copyBtnX && screenPoint.x <= bounds.width - 16.0 {
+                    newCopyBlock = layout.blockIndex
+                    break
+                }
+                if layout.blockIndex < session.multiBuffer.blocks.count {
+                    let block = session.multiBuffer.blocks[layout.blockIndex]
+                    if block.status == .running && screenPoint.x >= bounds.width - 66.0 && screenPoint.x <= bounds.width - 38.0 {
+                        newCancelBlock = layout.blockIndex
+                        break
+                    }
+                }
             }
         }
 
+        var shouldRedraw = false
         if newCopyBlock != hoveredCopyBlockIndex {
             hoveredCopyBlockIndex = newCopyBlock
+            shouldRedraw = true
+        }
+        if newCancelBlock != hoveredCancelBlockIndex {
+            hoveredCancelBlockIndex = newCancelBlock
+            shouldRedraw = true
+        }
+        if shouldRedraw {
             needsDisplay = true
         }
+    }
+
+    // MARK: - Key Handling
+    public override func keyDown(with event: NSEvent) {
+        if event.modifierFlags.contains(.control) && event.charactersIgnoringModifiers == "c" {
+            if session.isProcessRunning {
+                session.sendInterrupt()
+                return
+            }
+        }
+        if event.keyCode == 53 { // Escape
+            if session.isProcessRunning {
+                session.sendInterrupt()
+                return
+            }
+        }
+        super.keyDown(with: event)
     }
 
     public override func resetCursorRects() {
@@ -1631,7 +1698,7 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
         // 1. Text selection I-Beam cursor across the document area
         addCursorRect(bounds, cursor: .iBeam)
 
-        // 2. Pointing hand cursor over chevrons and copy buttons
+        // 2. Pointing hand cursor over chevrons, copy buttons, and stop buttons
         for layout in blockLayouts {
             let screenHeaderY = layout.startY - scrollOffsetY
             if screenHeaderY + layout.headerHeight < 0 || screenHeaderY > bounds.height { continue }
@@ -1643,6 +1710,15 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
             // Copy button
             let copyBtnRect = CGRect(x: bounds.width - 38.0, y: screenHeaderY + 4, width: 22, height: 20)
             addCursorRect(copyBtnRect, cursor: .pointingHand)
+
+            // Stop / Cancel button on running block
+            if layout.blockIndex < session.multiBuffer.blocks.count {
+                let block = session.multiBuffer.blocks[layout.blockIndex]
+                if block.status == .running {
+                    let cancelBtnRect = CGRect(x: bounds.width - 64.0, y: screenHeaderY + 4, width: 22, height: 20)
+                    addCursorRect(cancelBtnRect, cursor: .pointingHand)
+                }
+            }
         }
 
         // 3. Arrow cursor over scrollbar tracks
@@ -1859,6 +1935,20 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
     // MARK: - Actions & Keyboard
     public override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+
+        // Ctrl + C (Interrupt running command)
+        if flags.contains(.control) && event.charactersIgnoringModifiers == "c" {
+            if session.isProcessRunning {
+                session.sendInterrupt()
+                return true
+            }
+        }
+
+        // Escape (Interrupt running command)
+        if event.keyCode == 53 && session.isProcessRunning {
+            session.sendInterrupt()
+            return true
+        }
 
         // Cmd + C
         if flags == .command && event.charactersIgnoringModifiers == "c" {
