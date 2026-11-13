@@ -38,9 +38,10 @@ public struct AgentHeaderControlsView: View {
     }
 
     public var body: some View {
-        HStack(alignment: .center, spacing: 6) {
+        HStack(alignment: .center, spacing: 2) {
             // Model selector / settings dropdown
             modelSelectorView
+                .padding(.trailing, 2)
 
             // Context usage ring
             if let pct = agentManager.contextUsagePercentage {
@@ -104,17 +105,18 @@ public struct AgentHeaderControlsView: View {
 
         return ZStack {
             Circle()
-                .stroke(Color(nsColor: .secondaryLabelColor).opacity(0.25), lineWidth: 1.5)
+                .stroke(Color(nsColor: .secondaryLabelColor).opacity(0.25), lineWidth: 1.4)
             Circle()
                 .trim(from: 0, to: progress)
                 .stroke(
                     Color(nsColor: .secondaryLabelColor).opacity(0.85),
-                    style: StrokeStyle(lineWidth: 1.5, lineCap: .round)
+                    style: StrokeStyle(lineWidth: 1.4, lineCap: .round)
                 )
                 .rotationEffect(.degrees(-90))
         }
-        .frame(width: 13, height: 13)
-        .frame(width: 16, height: 16)
+        .frame(width: 12, height: 12)
+        .frame(width: 24, height: 22)
+        .contentShape(Rectangle())
         .overlay(alignment: .top) {
             if isUsageHovered {
                 Text("\(percentage)%")
@@ -141,9 +143,10 @@ public struct AgentHeaderControlsView: View {
             if isBusy {
                 Button(action: { agentManager.cancel() }) {
                     Image(systemName: "stop.fill")
-                        .font(.system(size: 10, weight: .bold))
+                        .font(.system(size: 10.5, weight: .bold))
                         .foregroundColor(isStopHovered ? Color.red : Color.red.opacity(0.85))
-                        .frame(width: 16, height: 16)
+                        .frame(width: 24, height: 22)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .help("Stop Generation (Esc)")
@@ -153,9 +156,10 @@ public struct AgentHeaderControlsView: View {
             if !isBusy {
                 Button(action: handleTriggerSend) {
                     Image(systemName: "arrow.up.circle.fill")
-                        .font(.system(size: 13, weight: .bold))
+                        .font(.system(size: 13, weight: .semibold))
                         .foregroundColor(canSend ? accentColor : Color(theme.gutterForeground).opacity(0.35))
-                        .frame(width: 16, height: 16)
+                        .frame(width: 24, height: 22)
+                        .contentShape(Rectangle())
                         .scaleEffect(isSendHovered && canSend ? 1.08 : 1.0)
                         .animation(.easeOut(duration: 0.12), value: isSendHovered)
                 }

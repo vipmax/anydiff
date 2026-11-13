@@ -7,6 +7,8 @@ public struct AgentSessionRowView: View {
     public let isActive: Bool
     public let canClose: Bool
     public let theme: Theme
+    public let worktrees: [GitWorktree]
+    public let fallbackWorkingDirectory: String?
     public let onSelect: () -> Void
     public let onClose: () -> Void
 
@@ -19,6 +21,8 @@ public struct AgentSessionRowView: View {
         isActive: Bool,
         canClose: Bool = true,
         theme: Theme = .zedDark,
+        worktrees: [GitWorktree] = [],
+        fallbackWorkingDirectory: String? = nil,
         onSelect: @escaping () -> Void,
         onClose: @escaping () -> Void
     ) {
@@ -26,6 +30,8 @@ public struct AgentSessionRowView: View {
         self.isActive = isActive
         self.canClose = canClose
         self.theme = theme
+        self.worktrees = worktrees
+        self.fallbackWorkingDirectory = fallbackWorkingDirectory
         self.onSelect = onSelect
         self.onClose = onClose
     }
@@ -194,46 +200,34 @@ public struct AgentSessionRowView: View {
             Image(systemName: "hand.raised.fill")
                 .font(.system(size: 10))
                 .foregroundColor(.orange)
-                .frame(width: 10)
+                .frame(width: 12, height: 12)
         } else {
             switch session.manager.status {
             case .busy:
-                ZStack {
-                    Circle()
-                        .fill(accentColor.opacity(0.2))
-                        .frame(width: 12, height: 12)
-                    Circle()
-                        .stroke(accentColor, lineWidth: 1.5)
-                        .frame(width: 9, height: 9)
-                    Image(systemName: "sparkle")
-                        .font(.system(size: 6, weight: .bold))
-                        .foregroundColor(accentColor)
-                }
-                .frame(width: 10)
+                ProgressView()
+                    .controlSize(.mini)
+                    .scaleEffect(0.65)
+                    .frame(width: 12, height: 12)
             case .connecting:
                 Circle()
                     .fill(Color.yellow)
-                    .frame(width: 7, height: 7)
-                    .frame(width: 10)
+                    .frame(width: 6, height: 6)
+                    .frame(width: 12, height: 12)
             case .error:
                 Image(systemName: "exclamationmark.circle.fill")
                     .font(.system(size: 10))
                     .foregroundColor(.red)
-                    .frame(width: 10)
+                    .frame(width: 12, height: 12)
             case .idle:
                 Circle()
                     .fill(isActive ? accentColor : sessionColor)
-                    .frame(width: 7, height: 7)
-                    .overlay(
-                        Circle()
-                            .stroke(isActive ? Color.white.opacity(0.25) : Color.primary.opacity(0.18), lineWidth: 0.8)
-                    )
-                    .frame(width: 10)
+                    .frame(width: 6, height: 6)
+                    .frame(width: 12, height: 12)
             case .disconnected:
                 Circle()
-                    .fill(isActive ? accentColor.opacity(0.8) : Color.secondary.opacity(0.5))
-                    .frame(width: 7, height: 7)
-                    .frame(width: 10)
+                    .fill(isActive ? accentColor.opacity(0.8) : Color.secondary.opacity(0.45))
+                    .frame(width: 6, height: 6)
+                    .frame(width: 12, height: 12)
             }
         }
     }

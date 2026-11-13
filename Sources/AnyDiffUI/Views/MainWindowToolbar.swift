@@ -43,11 +43,26 @@ public struct MainWindowToolbarLeadingView: View {
                         currentBranch: repo.currentBranch,
                         localBranches: repo.localBranches,
                         remoteBranches: repo.remoteBranches,
+                        currentPath: repo.effectiveWorkingDirectory,
+                        worktrees: repo.worktrees,
                         theme: theme,
                         comparisonTarget: $repo.comparisonTarget,
                         onSelectTarget: { target in
                             repo.comparisonTarget = target
                             repo.loadCurrentDirectoryDiff()
+                        },
+                        onSelectWorktree: { wt in
+                            repo.switchToWorktree(wt)
+                        },
+                        onCreateWorktree: { branch, baseRef, createBranch in
+                            await repo.createWorktree(
+                                branch: branch,
+                                baseRef: baseRef,
+                                createBranch: createBranch
+                            )
+                        },
+                        onRemoveWorktree: { wt, force in
+                            await repo.removeWorktree(wt, force: force)
                         }
                     )
                 }

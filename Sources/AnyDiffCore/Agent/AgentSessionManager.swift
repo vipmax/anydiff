@@ -74,6 +74,9 @@ open class AgentSessionManager: ObservableObject, @unchecked Sendable {
     @Published public var isAuthenticating: Bool = false
     @Published public var authErrorMessage: String? = nil
     @Published public var authURL: URL? = nil
+    @Published public var pendingNewWorktree: Bool = false
+    @Published public var pendingNewWorktreeBaseBranch: String? = nil
+    @Published public var workingDirectory: String? = nil
 
     open func authenticate(methodId: String) async throws {
         // Subclasses override
@@ -367,6 +370,9 @@ open class AgentSessionManager: ObservableObject, @unchecked Sendable {
         status = .disconnected
         statusMessage = nil
         pendingPermission = nil
+        pendingNewWorktree = false
+        pendingNewWorktreeBaseBranch = nil
+        workingDirectory = nil
     }
 
     open func restartAgent(workingDirectory: String) {

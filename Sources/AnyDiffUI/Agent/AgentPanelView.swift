@@ -15,6 +15,7 @@ public struct AgentPanelView: View {
     public var toolcallColorMode: ToolcallColorMode
     public var onReview: ((AgentEditedFilesSummary) -> Void)?
     public var onPreviewImages: (([AgentImageAttachment], Int, Bool) -> Void)?
+    public var onCreateWorktreeForPrompt: ((_ prompt: String, _ baseBranch: String?) async -> Result<String, GitWorktreeError>)?
 
     @State private var isChatNearBottom: Bool = true
     public var externalFocusRequest: Int = 0
@@ -31,6 +32,8 @@ public struct AgentPanelView: View {
     @State private var isCustomizingTemplates: Bool = false
     @State private var isQuickActionsPresented: Bool = false
     @State private var isCustomizeHovered: Bool = false
+    @State private var isCreatingWorktreeForPrompt: Bool = false
+    @State private var worktreeCreationError: String? = nil
 
     public init(
         agentManager: AgentSessionManager,
@@ -45,7 +48,8 @@ public struct AgentPanelView: View {
         externalFocusRequest: Int = 0,
         onReview: ((AgentEditedFilesSummary) -> Void)? = nil,
         onPreviewImages: (([AgentImageAttachment], Int, Bool) -> Void)? = nil,
-        onOpenURL: ((URL) -> Void)? = nil
+        onOpenURL: ((URL) -> Void)? = nil,
+        onCreateWorktreeForPrompt: ((_ prompt: String, _ baseBranch: String?) async -> Result<String, GitWorktreeError>)? = nil
     ) {
         self.agentManager = agentManager
         self.theme = theme
@@ -60,6 +64,7 @@ public struct AgentPanelView: View {
         self.onReview = onReview
         self.onPreviewImages = onPreviewImages
         self.onOpenURL = onOpenURL
+        self.onCreateWorktreeForPrompt = onCreateWorktreeForPrompt
     }
 
     public var onOpenURL: ((URL) -> Void)? = nil
@@ -71,6 +76,10 @@ public struct AgentPanelView: View {
                     .frame(maxWidth: .infinity, alignment: .top)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, 8)
+
+                if isCreatingWorktreeForPrompt || worktreeCreationError != nil {
+                    worktreeStatusBar
+                }
             }
 
             if (!agentManager.authMethods.isEmpty || agentManager.isAuthenticating) && agentManager.hasVisibleMessages {
@@ -428,11 +437,91 @@ public struct AgentPanelView: View {
         }
     }
 
+    @ViewBuilder
+    private var worktreeStatusBar: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            if isCreatingWorktreeForPrompt {
+                HStack(spacing: 6) {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .scaleEffect(0.75)
+                    Text("Creating worktree…")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(Color(theme.gutterForeground))
+                }
+            }
+
+            if let worktreeCreationError {
+                HStack(spacing: 5) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 10))
+                    Text(worktreeCreationError)
+                        .font(.system(size: 10.5))
+                        .lineLimit(2)
+                    Spacer(minLength: 4)
+                    Button {
+                        self.worktreeCreationError = nil
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 9, weight: .bold))
+                    }
+                    .buttonStyle(.plain)
+                }
+                .foregroundColor(.red)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.red.opacity(0.1))
+                )
+            }
+        }
+        .padding(.leading, 18 + AgentMessageCell.maxAvatarWidth + 12)
+        .padding(.trailing, 18)
+        .padding(.top, 2)
+        .padding(.bottom, 4)
+    }
+
     private func handleSendPrompt(_ prompt: String, images: [AgentImageAttachment] = []) {
         var finalPrompt = prompt
         if finalPrompt.contains("@diff"), let summary = fileDiffsSummary {
             finalPrompt = finalPrompt.replacingOccurrences(of: "@diff", with: "\n\n[Diff Context]:\n\(summary)\n")
         }
+
+        if agentManager.pendingNewWorktree, !agentManager.hasVisibleMessages, let onCreateWorktreeForPrompt {
+            guard !isCreatingWorktreeForPrompt else { return }
+            isCreatingWorktreeForPrompt = true
+            worktreeCreationError = nil
+            let baseBranch = agentManager.pendingNewWorktreeBaseBranch
+
+            Task { @MainActor in
+                let result = await onCreateWorktreeForPrompt(prompt, baseBranch)
+                isCreatingWorktreeForPrompt = false
+
+                switch result {
+                case .success(let newWorktreePath):
+                    agentManager.pendingNewWorktree = false
+                    agentManager.pendingNewWorktreeBaseBranch = nil
+                    agentManager.workingDirectory = newWorktreePath
+                    let minH = max(AgentMessageCell.userAvatarSize + 8, 38)
+                    inputContentHeight = minH
+                    inputTotalHeight = minH
+                    scrollToBottomRequest &+= 1
+                    agentManager.sendPrompt(finalPrompt, images: images, workingDirectory: newWorktreePath)
+
+                case .failure(let error):
+                    if agentManager.draftPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        agentManager.draftPrompt = prompt
+                    }
+                    if agentManager.draftAttachments.isEmpty && !images.isEmpty {
+                        agentManager.draftAttachments = images
+                    }
+                    worktreeCreationError = error.localizedDescription
+                }
+            }
+            return
+        }
+
         // Synchronously reset input heights to 1-line height before triggering scroll / updates
         let minH = max(AgentMessageCell.userAvatarSize + 8, 38)
         inputContentHeight = minH
@@ -669,19 +758,7 @@ private struct AgentScrollToBottomButton: View {
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: "arrow.down")
-                .font(.system(size: 10, weight: .bold))
-                .foregroundColor(Color(theme.foreground).opacity(0.9))
-                .frame(width: 32, height: 32)
-                .background(
-                    Circle()
-                        .fill(.ultraThinMaterial)
-                )
-                .overlay(
-                    Circle()
-                        .stroke(Color(theme.excerptHeaderBorder).opacity(0.85), lineWidth: 1)
-                )
-                .opacity(isBreathing && pulseLow ? 0.45 : 1.0)
+            buttonLabel
         }
         .buttonStyle(.plain)
         .help("Scroll to bottom")
@@ -690,6 +767,38 @@ private struct AgentScrollToBottomButton: View {
         }
         .onChange(of: isBreathing) { newValue in
             updateAnimation(newValue)
+        }
+    }
+
+    @ViewBuilder
+    private var buttonLabel: some View {
+        let icon = Image(systemName: "arrow.down")
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundColor(Color(theme.foreground).opacity(isBreathing && pulseLow ? 0.45 : 0.92))
+            .frame(width: 32, height: 32)
+            .contentShape(Circle())
+
+        if #available(macOS 26.0, *) {
+            icon
+                .glassEffect(.regular.interactive(), in: .circle)
+        } else {
+            icon
+                .background(
+                    Circle()
+                        .fill(.ultraThinMaterial)
+                )
+                .overlay(
+                    Circle()
+                        .strokeBorder(
+                            LinearGradient(
+                                colors: [Color.white.opacity(0.28), Color.white.opacity(0.06)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            ),
+                            lineWidth: 0.75
+                        )
+                )
+                .shadow(color: Color.black.opacity(0.22), radius: 6, y: 2)
         }
     }
 

@@ -357,12 +357,14 @@ public final class BlockTerminalSession: ObservableObject {
     }
 
     public func updateGitBranch() {
-        let headPath = (currentDirectory as NSString).appendingPathComponent(".git/HEAD")
-        if let content = try? String(contentsOfFile: headPath, encoding: .utf8) {
-            let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.hasPrefix("ref: refs/heads/") {
-                self.gitBranch = String(trimmed.dropFirst("ref: refs/heads/".count))
-                return
+        if let gitPaths = GitService.shared.resolveGitPaths(at: currentDirectory) {
+            let headPath = (gitPaths.gitDir as NSString).appendingPathComponent("HEAD")
+            if let content = try? String(contentsOfFile: headPath, encoding: .utf8) {
+                let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmed.hasPrefix("ref: refs/heads/") {
+                    self.gitBranch = String(trimmed.dropFirst("ref: refs/heads/".count))
+                    return
+                }
             }
         }
         self.gitBranch = nil

@@ -6,27 +6,54 @@ public struct BranchPickerView: View {
     public var currentBranch: String
     public var localBranches: [String]
     public var remoteBranches: [String]
+    public var currentPath: String
+    public var worktrees: [GitWorktree]
     public var theme: Theme
     @Binding public var comparisonTarget: ComparisonTarget
     public var onSelectTarget: (ComparisonTarget) -> Void
+    public var onSelectWorktree: ((GitWorktree) -> Void)?
+    public var onCreateWorktree: ((_ branch: String, _ baseRef: String?, _ createBranch: Bool) async -> Result<String, GitWorktreeError>)?
+    public var onRemoveWorktree: ((_ worktree: GitWorktree, _ force: Bool) async -> Result<Void, GitWorktreeError>)?
 
     @State private var isPresented: Bool = false
     @State private var searchText: String = ""
+    @State private var isShowingNewWorktreeForm: Bool = false
+    @State private var newWorktreeBranch: String = ""
+    @State private var newWorktreeBase: String = ""
+    @State private var createNewBranch: Bool = true
+    @State private var isCreatingWorktree: Bool = false
+    @State private var worktreeError: String? = nil
 
     public init(
         currentBranch: String,
         localBranches: [String],
         remoteBranches: [String] = [],
+        currentPath: String = "",
+        worktrees: [GitWorktree] = [],
         theme: Theme = .zedDark,
         comparisonTarget: Binding<ComparisonTarget>,
-        onSelectTarget: @escaping (ComparisonTarget) -> Void
+        onSelectTarget: @escaping (ComparisonTarget) -> Void,
+        onSelectWorktree: ((GitWorktree) -> Void)? = nil,
+        onCreateWorktree: ((_ branch: String, _ baseRef: String?, _ createBranch: Bool) async -> Result<String, GitWorktreeError>)? = nil,
+        onRemoveWorktree: ((_ worktree: GitWorktree, _ force: Bool) async -> Result<Void, GitWorktreeError>)? = nil
     ) {
         self.currentBranch = currentBranch
         self.localBranches = localBranches
         self.remoteBranches = remoteBranches
+        self.currentPath = currentPath
+        self.worktrees = worktrees
         self.theme = theme
         self._comparisonTarget = comparisonTarget
         self.onSelectTarget = onSelectTarget
+        self.onSelectWorktree = onSelectWorktree
+        self.onCreateWorktree = onCreateWorktree
+        self.onRemoveWorktree = onRemoveWorktree
+    }
+
+    private var isInLinkedWorktree: Bool {
+        guard !currentPath.isEmpty else { return false }
+        let resolvedCurrent = URL(fileURLWithPath: currentPath).resolvingSymlinksInPath().path
+        return worktrees.contains { !$0.isMain && URL(fileURLWithPath: $0.path).resolvingSymlinksInPath().path == resolvedCurrent }
     }
 
     private var buttonLabelText: String {
@@ -48,7 +75,7 @@ public struct BranchPickerView: View {
     public var body: some View {
         Button(action: { isPresented.toggle() }) {
             HStack(spacing: 5) {
-                Image(systemName: "arrow.triangle.branch")
+                Image(systemName: isInLinkedWorktree ? "square.stack.3d.up" : "arrow.triangle.branch")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundColor(comparisonTarget == .workingTree ? .secondary : Color(theme.accentColor))
 
@@ -64,35 +91,243 @@ public struct BranchPickerView: View {
             }
         }
         .buttonStyle(ToolbarHoverButtonStyle())
-        .help("Select Git Branch / Comparison Target")
+        .help("Select Git Branch, Worktree, or Comparison Target")
         .popover(isPresented: $isPresented, arrowEdge: .bottom) {
             popoverContent
+        }
+        .onChange(of: isPresented) { presented in
+            if !presented {
+                isShowingNewWorktreeForm = false
+                worktreeError = nil
+            } else if newWorktreeBase.isEmpty {
+                newWorktreeBase = currentBranch
+            }
         }
     }
 
     @ViewBuilder
     private var popoverContent: some View {
         VStack(alignment: .leading, spacing: 6) {
-            searchField
-            Divider()
-            VirtualizedBranchTableView(
-                currentBranch: currentBranch,
-                localBranches: localBranches,
-                remoteBranches: remoteBranches,
-                theme: theme,
-                comparisonTarget: comparisonTarget,
-                searchText: searchText,
-                onSelectTarget: { target in
-                    comparisonTarget = target
-                    onSelectTarget(target)
-                    DispatchQueue.main.async {
-                        isPresented = false
+            if isShowingNewWorktreeForm {
+                newWorktreeForm
+            } else {
+                searchField
+                Divider()
+                VirtualizedBranchTableView(
+                    currentBranch: currentBranch,
+                    localBranches: localBranches,
+                    remoteBranches: remoteBranches,
+                    currentPath: currentPath,
+                    worktrees: worktrees,
+                    theme: theme,
+                    comparisonTarget: comparisonTarget,
+                    searchText: searchText,
+                    canCreateWorktree: onCreateWorktree != nil,
+                    onSelectTarget: { target in
+                        comparisonTarget = target
+                        onSelectTarget(target)
+                        DispatchQueue.main.async {
+                            isPresented = false
+                        }
+                    },
+                    onSelectWorktree: { wt in
+                        onSelectWorktree?(wt)
+                        DispatchQueue.main.async {
+                            isPresented = false
+                        }
+                    },
+                    onRemoveWorktree: { wt in
+                        handleRemoveWorktree(wt)
+                    },
+                    onRequestCreateWorktree: {
+                        worktreeError = nil
+                        newWorktreeBranch = ""
+                        newWorktreeBase = currentBranch
+                        createNewBranch = true
+                        isShowingNewWorktreeForm = true
                     }
+                )
+                .frame(width: 280, height: 300)
+
+                if let worktreeError {
+                    Text(worktreeError)
+                        .font(.system(size: 10))
+                        .foregroundColor(.red)
+                        .padding(.horizontal, 6)
                 }
-            )
-            .frame(width: 270, height: 280)
+            }
         }
         .padding(6)
+    }
+
+    @ViewBuilder
+    private var newWorktreeForm: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Button(action: {
+                    isShowingNewWorktreeForm = false
+                    worktreeError = nil
+                }) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 11, weight: .semibold))
+                }
+                .buttonStyle(.plain)
+                Text("New Worktree")
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer()
+            }
+            .padding(.horizontal, 4)
+            .padding(.top, 2)
+
+            Divider()
+
+            Toggle("Create new branch", isOn: $createNewBranch)
+                .toggleStyle(.checkbox)
+                .font(.system(size: 11))
+                .padding(.horizontal, 4)
+
+            if createNewBranch {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("BRANCH NAME")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(.secondary)
+                    TextField("e.g. feat/my-feature", text: $newWorktreeBranch)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 12))
+                        .onSubmit { submitCreateWorktree() }
+                }
+                .padding(.horizontal, 4)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("BASE BRANCH")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(.secondary)
+                    Picker("", selection: $newWorktreeBase) {
+                        ForEach(localBranches, id: \.self) { branch in
+                            Text(branch).tag(branch)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(.horizontal, 4)
+            } else {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("EXISTING BRANCH")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(.secondary)
+                    Picker("", selection: $newWorktreeBranch) {
+                        ForEach(availableExistingBranches, id: \.self) { branch in
+                            Text(branch).tag(branch)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .onAppear {
+                        if newWorktreeBranch.isEmpty, let first = availableExistingBranches.first {
+                            newWorktreeBranch = first
+                        }
+                    }
+                }
+                .padding(.horizontal, 4)
+            }
+
+            if let worktreeError {
+                Text(worktreeError)
+                    .font(.system(size: 10))
+                    .foregroundColor(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 4)
+            } else {
+                let previewSlug = newWorktreeBranch
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .replacingOccurrences(of: "/", with: "-")
+                    .replacingOccurrences(of: " ", with: "-")
+                let repoFolder = worktrees.first?.folderName ?? ((currentPath as NSString).lastPathComponent.isEmpty ? "repo" : (currentPath as NSString).lastPathComponent)
+                Text("Location: ~/.anydiff/worktrees/\(repoFolder)/\(previewSlug.isEmpty ? "<branch>" : previewSlug)")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .padding(.horizontal, 4)
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel") {
+                    isShowingNewWorktreeForm = false
+                    worktreeError = nil
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                Button(isCreatingWorktree ? "Creating..." : "Create") {
+                    submitCreateWorktree()
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(isCreatingWorktree || newWorktreeBranch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            .padding(.horizontal, 4)
+            .padding(.bottom, 2)
+        }
+        .frame(width: 280)
+    }
+
+    private var availableExistingBranches: [String] {
+        let checkedOut = Set(worktrees.compactMap(\.branch))
+        let candidates = localBranches.filter { !checkedOut.contains($0) }
+        return candidates.isEmpty ? localBranches : candidates
+    }
+
+    private func submitCreateWorktree() {
+        let trimmed = newWorktreeBranch.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let onCreateWorktree else { return }
+        isCreatingWorktree = true
+        worktreeError = nil
+        let base = createNewBranch ? (newWorktreeBase.isEmpty ? nil : newWorktreeBase) : nil
+        let create = createNewBranch
+        Task {
+            let result = await onCreateWorktree(trimmed, base, create)
+            await MainActor.run {
+                isCreatingWorktree = false
+                switch result {
+                case .success:
+                    isShowingNewWorktreeForm = false
+                    isPresented = false
+                case .failure(let err):
+                    worktreeError = err.localizedDescription
+                }
+            }
+        }
+    }
+
+    private func handleRemoveWorktree(_ worktree: GitWorktree) {
+        guard let onRemoveWorktree else { return }
+        worktreeError = nil
+        Task {
+            let result = await onRemoveWorktree(worktree, false)
+            if case .failure(let err) = result {
+                await MainActor.run {
+                    let alert = NSAlert()
+                    alert.messageText = "Remove Worktree “\(worktree.displayTitle)”?"
+                    alert.informativeText = "\(err.localizedDescription)\n\nDo you want to force remove it? Uncommitted changes in that worktree will be lost."
+                    alert.alertStyle = .warning
+                    alert.addButton(withTitle: "Force Remove")
+                    alert.addButton(withTitle: "Cancel")
+                    if alert.runModal() == .alertFirstButtonReturn {
+                        Task {
+                            let forceResult = await onRemoveWorktree(worktree, true)
+                            if case .failure(let forceErr) = forceResult {
+                                await MainActor.run {
+                                    self.worktreeError = forceErr.localizedDescription
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -127,14 +362,19 @@ public struct BranchPickerView: View {
 
 // MARK: - Row Data Model
 
+enum BranchPickerAction: Equatable {
+    case comparison(ComparisonTarget)
+    case worktree(GitWorktree)
+}
+
 enum BranchPickerRow: Equatable {
-    case header(title: String)
+    case header(title: String, showNewWorktreeButton: Bool = false)
     case item(
         title: String,
         subtitle: String,
         iconName: String,
         isSelected: Bool,
-        target: ComparisonTarget
+        action: BranchPickerAction
     )
 }
 
@@ -144,27 +384,45 @@ public struct VirtualizedBranchTableView: NSViewRepresentable {
     public var currentBranch: String
     public var localBranches: [String]
     public var remoteBranches: [String]
+    public var currentPath: String
+    public var worktrees: [GitWorktree]
     public var theme: Theme
     public var comparisonTarget: ComparisonTarget
     public var searchText: String
+    public var canCreateWorktree: Bool
     public var onSelectTarget: (ComparisonTarget) -> Void
+    public var onSelectWorktree: ((GitWorktree) -> Void)?
+    public var onRemoveWorktree: ((GitWorktree) -> Void)?
+    public var onRequestCreateWorktree: (() -> Void)?
 
     public init(
         currentBranch: String,
         localBranches: [String],
         remoteBranches: [String],
+        currentPath: String = "",
+        worktrees: [GitWorktree] = [],
         theme: Theme = .zedDark,
         comparisonTarget: ComparisonTarget,
         searchText: String,
-        onSelectTarget: @escaping (ComparisonTarget) -> Void
+        canCreateWorktree: Bool = false,
+        onSelectTarget: @escaping (ComparisonTarget) -> Void,
+        onSelectWorktree: ((GitWorktree) -> Void)? = nil,
+        onRemoveWorktree: ((GitWorktree) -> Void)? = nil,
+        onRequestCreateWorktree: (() -> Void)? = nil
     ) {
         self.currentBranch = currentBranch
         self.localBranches = localBranches
         self.remoteBranches = remoteBranches
+        self.currentPath = currentPath
+        self.worktrees = worktrees
         self.theme = theme
         self.comparisonTarget = comparisonTarget
         self.searchText = searchText
+        self.canCreateWorktree = canCreateWorktree
         self.onSelectTarget = onSelectTarget
+        self.onSelectWorktree = onSelectWorktree
+        self.onRemoveWorktree = onRemoveWorktree
+        self.onRequestCreateWorktree = onRequestCreateWorktree
     }
 
     func computeRows() -> [BranchPickerRow] {
@@ -172,13 +430,19 @@ public struct VirtualizedBranchTableView: NSViewRepresentable {
 
         let filteredLocal: [String]
         let filteredRemote: [String]
+        let filteredWorktrees: [GitWorktree]
 
         if searchText.isEmpty {
             filteredLocal = localBranches
             filteredRemote = remoteBranches
+            filteredWorktrees = worktrees
         } else {
             filteredLocal = localBranches.filter { $0.localizedCaseInsensitiveContains(searchText) }
             filteredRemote = remoteBranches.filter { $0.localizedCaseInsensitiveContains(searchText) }
+            filteredWorktrees = worktrees.filter {
+                $0.displayTitle.localizedCaseInsensitiveContains(searchText)
+                    || $0.path.localizedCaseInsensitiveContains(searchText)
+            }
         }
 
         let commonBases = ["main", "master", "develop"].filter { localBranches.contains($0) && $0 != currentBranch }
@@ -191,7 +455,7 @@ public struct VirtualizedBranchTableView: NSViewRepresentable {
                 subtitle: "staged + unstaged vs HEAD",
                 iconName: "clock.arrow.circlepath",
                 isSelected: comparisonTarget == .workingTree,
-                target: .workingTree
+                action: .comparison(.workingTree)
             ))
 
             for base in commonBases {
@@ -200,12 +464,36 @@ public struct VirtualizedBranchTableView: NSViewRepresentable {
                     subtitle: "\(base)...\(currentBranch)",
                     iconName: "arrow.triangle.branch",
                     isSelected: comparisonTarget == .baseBranch(base),
-                    target: .baseBranch(base)
+                    action: .comparison(.baseBranch(base))
                 ))
             }
         }
 
-        // 2. Local Branches Section
+        // 2. Worktrees Section
+        let showExistingWorktrees = worktrees.count > 1 || (!searchText.isEmpty && !filteredWorktrees.isEmpty)
+        let showHeaderOnlyForCreate = canCreateWorktree && searchText.isEmpty
+        if showExistingWorktrees || showHeaderOnlyForCreate {
+            let resolvedCurrent = currentPath.isEmpty ? "" : URL(fileURLWithPath: currentPath).resolvingSymlinksInPath().path
+            let headerTitle = showExistingWorktrees ? "WORKTREES (\(filteredWorktrees.count))" : "WORKTREES"
+            rows.append(.header(title: headerTitle, showNewWorktreeButton: canCreateWorktree))
+            if showExistingWorktrees {
+                for wt in filteredWorktrees {
+                    let resolvedWt = URL(fileURLWithPath: wt.path).resolvingSymlinksInPath().path
+                    let isCurrent = !resolvedCurrent.isEmpty && resolvedWt == resolvedCurrent
+                    let title = wt.isMain ? "\(wt.displayTitle) (main)" : wt.displayTitle
+                    let subtitle = (wt.path as NSString).abbreviatingWithTildeInPath
+                    rows.append(.item(
+                        title: title,
+                        subtitle: subtitle,
+                        iconName: wt.isMain ? "folder" : "square.stack.3d.up",
+                        isSelected: isCurrent,
+                        action: .worktree(wt)
+                    ))
+                }
+            }
+        }
+
+        // 3. Local Branches Section
         if !filteredLocal.isEmpty {
             rows.append(.header(title: "BRANCHES (\(filteredLocal.count))"))
             for branch in filteredLocal {
@@ -231,12 +519,12 @@ public struct VirtualizedBranchTableView: NSViewRepresentable {
                     subtitle: isCurrent ? "Active checkout" : "Compare against \(branch)",
                     iconName: "arrow.triangle.branch",
                     isSelected: isSelected,
-                    target: target
+                    action: .comparison(target)
                 ))
             }
         }
 
-        // 3. Remote Branches Section
+        // 4. Remote Branches Section
         if !filteredRemote.isEmpty {
             rows.append(.header(title: "REMOTE BRANCHES (\(filteredRemote.count))"))
             for branch in filteredRemote {
@@ -246,7 +534,7 @@ public struct VirtualizedBranchTableView: NSViewRepresentable {
                     subtitle: "Compare against \(branch)",
                     iconName: "cloud",
                     isSelected: isSelected,
-                    target: .baseBranch(branch)
+                    action: .comparison(.baseBranch(branch))
                 ))
             }
         }
@@ -282,6 +570,9 @@ public struct VirtualizedBranchTableView: NSViewRepresentable {
         tableView.dataSource = context.coordinator
         tableView.target = context.coordinator
         tableView.action = #selector(Coordinator.onRowClicked)
+        tableView.contextMenuProvider = { [weak coordinator = context.coordinator] row in
+            coordinator?.contextMenu(forRow: row)
+        }
 
         context.coordinator.tableView = tableView
         scrollView.documentView = tableView
@@ -321,9 +612,55 @@ public struct VirtualizedBranchTableView: NSViewRepresentable {
             guard let tableView = tableView else { return }
             let row = tableView.clickedRow >= 0 ? tableView.clickedRow : tableView.selectedRow
             guard row >= 0 && row < rows.count else { return }
-            if case .item(_, _, _, _, let target) = rows[row] {
-                parent.onSelectTarget(target)
+            if case .item(_, _, _, _, let action) = rows[row] {
+                switch action {
+                case .comparison(let target):
+                    parent.onSelectTarget(target)
+                case .worktree(let worktree):
+                    parent.onSelectWorktree?(worktree)
+                }
             }
+        }
+
+        func contextMenu(forRow row: Int) -> NSMenu? {
+            guard row >= 0 && row < rows.count,
+                  case .item(_, _, _, _, .worktree(let worktree)) = rows[row] else {
+                return nil
+            }
+            let menu = NSMenu()
+            let switchItem = NSMenuItem(title: "Switch to Worktree", action: #selector(onContextSwitchWorktree(_:)), keyEquivalent: "")
+            switchItem.target = self
+            switchItem.representedObject = worktree
+            menu.addItem(switchItem)
+
+            let revealItem = NSMenuItem(title: "Reveal in Finder", action: #selector(onContextRevealWorktree(_:)), keyEquivalent: "")
+            revealItem.target = self
+            revealItem.representedObject = worktree
+            menu.addItem(revealItem)
+
+            if !worktree.isMain, parent.onRemoveWorktree != nil {
+                menu.addItem(.separator())
+                let removeItem = NSMenuItem(title: "Remove Worktree...", action: #selector(onContextRemoveWorktree(_:)), keyEquivalent: "")
+                removeItem.target = self
+                removeItem.representedObject = worktree
+                menu.addItem(removeItem)
+            }
+            return menu
+        }
+
+        @objc private func onContextSwitchWorktree(_ sender: NSMenuItem) {
+            guard let wt = sender.representedObject as? GitWorktree else { return }
+            parent.onSelectWorktree?(wt)
+        }
+
+        @objc private func onContextRevealWorktree(_ sender: NSMenuItem) {
+            guard let wt = sender.representedObject as? GitWorktree else { return }
+            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: wt.path)])
+        }
+
+        @objc private func onContextRemoveWorktree(_ sender: NSMenuItem) {
+            guard let wt = sender.representedObject as? GitWorktree else { return }
+            parent.onRemoveWorktree?(wt)
         }
 
         public func numberOfRows(in tableView: NSTableView) -> Int {
@@ -372,14 +709,21 @@ public struct VirtualizedBranchTableView: NSViewRepresentable {
             let rowData = rows[row]
 
             switch rowData {
-            case .header(let title):
+            case .header(let title, let showNewWorktreeButton):
                 let identifier = NSUserInterfaceItemIdentifier("BranchHeaderCellView")
                 var cell = tableView.makeView(withIdentifier: identifier, owner: self) as? BranchHeaderCellView
                 if cell == nil {
                     cell = BranchHeaderCellView()
                     cell?.identifier = identifier
                 }
-                cell?.configure(title: title)
+                cell?.configure(
+                    title: title,
+                    actionTitle: showNewWorktreeButton ? "New" : nil,
+                    accentColor: parent.theme.accentColor,
+                    onAction: showNewWorktreeButton ? { [weak self] in
+                        self?.parent.onRequestCreateWorktree?()
+                    } : nil
+                )
                 return cell
 
             case .item(let title, let subtitle, let iconName, let isSelected, _):
@@ -405,6 +749,8 @@ public struct VirtualizedBranchTableView: NSViewRepresentable {
 // MARK: - Centralized Hover-Tracking Table View
 
 final class BranchTableView: NSTableView {
+    var contextMenuProvider: ((Int) -> NSMenu?)?
+
     var hoveredRow: Int? = nil {
         didSet {
             if oldValue != hoveredRow {
@@ -453,6 +799,13 @@ final class BranchTableView: NSTableView {
         super.resetCursorRects()
         addCursorRect(bounds, cursor: .pointingHand)
     }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let point = convert(event.locationInWindow, from: nil)
+        let r = row(at: point)
+        guard r >= 0 else { return nil }
+        return contextMenuProvider?(r)
+    }
 }
 
 // MARK: - Custom Table Row View with Centralized Hover & Selection Drawing
@@ -482,6 +835,8 @@ final class BranchTableRowView: NSTableRowView {
 
 final class BranchHeaderCellView: NSTableCellView {
     private let titleLabel = NSTextField(labelWithString: "")
+    private let actionButton = NSButton()
+    private var onAction: (() -> Void)?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -499,15 +854,54 @@ final class BranchHeaderCellView: NSTableCellView {
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         addSubview(titleLabel)
 
+        actionButton.translatesAutoresizingMaskIntoConstraints = false
+        actionButton.isBordered = false
+        actionButton.bezelStyle = .inline
+        actionButton.font = .systemFont(ofSize: 10, weight: .medium)
+        actionButton.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "New Worktree")
+        actionButton.imagePosition = .imageLeading
+        actionButton.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold)
+        actionButton.target = self
+        actionButton.action = #selector(onActionTapped)
+        actionButton.isHidden = true
+        addSubview(actionButton)
+
         NSLayoutConstraint.activate([
             titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
             titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
-            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -8)
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: actionButton.leadingAnchor, constant: -6),
+
+            actionButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            actionButton.centerYAnchor.constraint(equalTo: centerYAnchor)
         ])
     }
 
-    func configure(title: String) {
+    @objc private func onActionTapped() {
+        onAction?()
+    }
+
+    func configure(
+        title: String,
+        actionTitle: String? = nil,
+        accentColor: NSColor = .controlAccentColor,
+        onAction: (() -> Void)? = nil
+    ) {
         titleLabel.stringValue = title
+        self.onAction = onAction
+        if let actionTitle, !actionTitle.isEmpty, onAction != nil {
+            actionButton.title = actionTitle
+            actionButton.contentTintColor = accentColor
+            actionButton.attributedTitle = NSAttributedString(
+                string: actionTitle,
+                attributes: [
+                    .font: NSFont.systemFont(ofSize: 10, weight: .medium),
+                    .foregroundColor: accentColor
+                ]
+            )
+            actionButton.isHidden = false
+        } else {
+            actionButton.isHidden = true
+        }
     }
 }
 

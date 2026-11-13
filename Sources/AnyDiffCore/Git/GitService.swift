@@ -30,6 +30,26 @@ public final class GitService: Sendable {
         }
     }
 
+    public func runWithStatus(arguments: [String]) -> (exitCode: Int32, stdout: Data, stderr: String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = arguments
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        process.standardOutput = outPipe
+        process.standardError = errPipe
+        do {
+            try process.run()
+            let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+            let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            let errText = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return (process.terminationStatus, outData, errText)
+        } catch {
+            return (-1, Data(), error.localizedDescription)
+        }
+    }
+
     public func isRepository(at path: String) -> Bool {
         run(arguments: ["-C", path, "rev-parse", "--is-inside-work-tree"]) == "true"
     }

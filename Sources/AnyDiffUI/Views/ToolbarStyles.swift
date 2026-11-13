@@ -48,14 +48,13 @@ public struct AgentToolbarActionButtonStyle: ButtonStyle {
         let isHighlighted = isActive || isHovered || configuration.isPressed
 
         configuration.label
-            .padding(.horizontal, 4)
-            .padding(.vertical, 3)
-            .frame(minWidth: 26, minHeight: 24)
-            .background(Color.clear, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .frame(width: 24, height: 22)
+            .background(Color.clear, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .fill(accentColor.opacity(isHighlighted ? 0.08 : 0))
             )
+            .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             .scaleEffect(isHovered ? 1.02 : 1)
             .shadow(
                 color: isHighlighted ? accentColor.opacity(0.16) : Color.clear,

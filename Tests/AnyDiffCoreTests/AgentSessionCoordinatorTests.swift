@@ -714,5 +714,47 @@ final class AgentSessionCoordinatorTests: XCTestCase {
         XCTAssertNil(coordinator.activeSession(for: .right), "Right panel must not automatically adopt left panel session")
         XCTAssertTrue(coordinator.isShowingStartScreen(for: .right), "Right panel must remain on Choose an Agent start screen")
     }
+
+    func testCreateSessionStoresAndClearsPendingNewWorktree() {
+        let coordinator = AgentSessionCoordinator(isMockAgent: true, autoCreateSession: false)
+        let session = coordinator.createNewSession(
+            workingDirectory: "/tmp",
+            preset: .mock,
+            pendingNewWorktree: true,
+            pendingNewWorktreeBaseBranch: "main",
+            for: .right
+        )
+
+        XCTAssertTrue(session.manager.pendingNewWorktree)
+        XCTAssertEqual(session.manager.pendingNewWorktreeBaseBranch, "main")
+        XCTAssertEqual(
+            session.manager.workingDirectory,
+            URL(fileURLWithPath: "/tmp").standardizedFileURL.resolvingSymlinksInPath().path
+        )
+
+        session.manager.clearSession()
+        XCTAssertFalse(session.manager.pendingNewWorktree)
+        XCTAssertNil(session.manager.pendingNewWorktreeBaseBranch)
+        XCTAssertNil(session.manager.workingDirectory)
+    }
+
+    func testSessionsPreserveIndependentWorkingDirectories() {
+        let coordinator = AgentSessionCoordinator(isMockAgent: true, autoCreateSession: false)
+        let wtA = FileManager.default.temporaryDirectory.appendingPathComponent("wt-a-\(UUID().uuidString)")
+        let wtB = FileManager.default.temporaryDirectory.appendingPathComponent("wt-b-\(UUID().uuidString)")
+
+        let sessionA = coordinator.createNewSession(workingDirectory: wtA.path, preset: .mock, for: .right)
+        let sessionB = coordinator.createNewSession(workingDirectory: wtB.path, preset: .mock, for: .right)
+
+        XCTAssertEqual(
+            sessionA.manager.workingDirectory,
+            wtA.standardizedFileURL.resolvingSymlinksInPath().path
+        )
+        XCTAssertEqual(
+            sessionB.manager.workingDirectory,
+            wtB.standardizedFileURL.resolvingSymlinksInPath().path
+        )
+        XCTAssertNotEqual(sessionA.manager.workingDirectory, sessionB.manager.workingDirectory)
+    }
 }
 

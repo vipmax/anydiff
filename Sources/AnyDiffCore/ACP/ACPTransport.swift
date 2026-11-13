@@ -14,13 +14,17 @@ public final class ACPTransport: @unchecked Sendable {
     private var stdoutPipe: Pipe?
     private var stderrPipe: Pipe?
 
+    private let stateLock = NSLock()
     private let readQueue = DispatchQueue(label: "com.anydiff.acp.transport.read", qos: .userInitiated)
     private let writeQueue = DispatchQueue(label: "com.anydiff.acp.transport.write", qos: .userInitiated)
     private var stdoutBuffer = Data()
     private var isRunningInternal = false
 
     public var isRunning: Bool {
-        isRunningInternal && process?.isRunning == true
+        stateLock.lock()
+        let running = isRunningInternal && process?.isRunning == true
+        stateLock.unlock()
+        return running
     }
 
     public init() {}
@@ -114,18 +118,28 @@ public final class ACPTransport: @unchecked Sendable {
 
         proc.terminationHandler = { [weak self] p in
             guard let self = self else { return }
-            self.isRunningInternal = false
+            self.stateLock.lock()
+            let isCurrent = (self.process === p)
+            if isCurrent {
+                self.isRunningInternal = false
+            }
+            self.stateLock.unlock()
+            guard isCurrent else { return }
             self.delegate?.transport(self, didTerminateWith: p.terminationStatus)
         }
 
         try proc.run()
 
+        stateLock.lock()
         self.process = proc
         self.stdinPipe = inPipe
         self.stdoutPipe = outPipe
         self.stderrPipe = errPipe
         self.isRunningInternal = true
-        self.stdoutBuffer.removeAll()
+        stateLock.unlock()
+        readQueue.async { [weak self] in
+            self?.stdoutBuffer.removeAll()
+        }
 
         startReadingOutput(pipe: outPipe)
         startReadingStderr(pipe: errPipe)
@@ -133,7 +147,11 @@ public final class ACPTransport: @unchecked Sendable {
 
     public func sendLine(_ data: Data) {
         writeQueue.async { [weak self] in
-            guard let self = self, self.isRunning, let handle = self.stdinPipe?.fileHandleForWriting else { return }
+            guard let self = self else { return }
+            self.stateLock.lock()
+            let handle = (self.isRunningInternal && self.process?.isRunning == true) ? self.stdinPipe?.fileHandleForWriting : nil
+            self.stateLock.unlock()
+            guard let handle else { return }
             var lineData = data
             if lineData.last != UInt8(ascii: "\n") {
                 lineData.append(UInt8(ascii: "\n"))
@@ -147,20 +165,30 @@ public final class ACPTransport: @unchecked Sendable {
     }
 
     public func terminate() {
+        stateLock.lock()
         isRunningInternal = false
-        stdoutPipe?.fileHandleForReading.readabilityHandler = nil
-        stderrPipe?.fileHandleForReading.readabilityHandler = nil
-        if let inPipe = stdinPipe {
-            try? inPipe.fileHandleForWriting.close()
-        }
-        if let proc = process, proc.isRunning {
-            proc.terminate()
-        }
+        let oldProcess = process
+        let oldInPipe = stdinPipe
+        let oldOutPipe = stdoutPipe
+        let oldErrPipe = stderrPipe
         process = nil
         stdinPipe = nil
         stdoutPipe = nil
         stderrPipe = nil
-        stdoutBuffer.removeAll()
+        stateLock.unlock()
+
+        oldProcess?.terminationHandler = nil
+        oldOutPipe?.fileHandleForReading.readabilityHandler = nil
+        oldErrPipe?.fileHandleForReading.readabilityHandler = nil
+        if let oldInPipe {
+            try? oldInPipe.fileHandleForWriting.close()
+        }
+        if let oldProcess, oldProcess.isRunning {
+            oldProcess.terminate()
+        }
+        readQueue.async { [weak self] in
+            self?.stdoutBuffer.removeAll()
+        }
     }
 
     private func startReadingOutput(pipe: Pipe) {

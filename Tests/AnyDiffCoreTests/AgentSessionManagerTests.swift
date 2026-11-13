@@ -931,5 +931,236 @@ final class AgentSessionManagerTests: XCTestCase {
         let height = cell.layout(for: 600)
         XCTAssertGreaterThan(height, 30)
     }
+
+    func testACPTransportRelaunchDoesNotFireStaleTermination() throws {
+        final class Delegate: ACPTransportDelegate, @unchecked Sendable {
+            let lock = NSLock()
+            var terminateCount = 0
+            func transport(_ transport: ACPTransport, didReceiveLine data: Data) {}
+            func transport(_ transport: ACPTransport, didLogStderr text: String) {}
+            func transport(_ transport: ACPTransport, didTerminateWith exitCode: Int32) {
+                lock.lock()
+                terminateCount += 1
+                lock.unlock()
+            }
+        }
+
+        let transport = ACPTransport()
+        let delegate = Delegate()
+        transport.delegate = delegate
+
+        try transport.launch(command: "/bin/sleep 5", workingDirectory: "/tmp")
+        XCTAssertTrue(transport.isRunning)
+
+        // Immediately terminate and relaunch (mirrors worktree switch)
+        transport.terminate()
+        try transport.launch(command: "/bin/sleep 5", workingDirectory: "/tmp")
+
+        Thread.sleep(forTimeInterval: 0.15)
+        delegate.lock.lock()
+        let count = delegate.terminateCount
+        delegate.lock.unlock()
+
+        XCTAssertEqual(count, 0)
+        XCTAssertTrue(transport.isRunning)
+
+        transport.terminate()
+    }
+
+    @MainActor
+    func testSwitchWorkingDirectoryMidTurnDefersReconnectAndCompletesCleanly() async throws {
+        let savedCommand = UserDefaults.standard.string(forKey: "anydiff_acp_command")
+        defer {
+            if let savedCommand {
+                UserDefaults.standard.set(savedCommand, forKey: "anydiff_acp_command")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "anydiff_acp_command")
+            }
+        }
+
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("anydiff_acp_switch_test_\(UUID().uuidString)")
+        let dirA = tempRoot.appendingPathComponent("worktree-a")
+        let dirB = tempRoot.appendingPathComponent("worktree-b")
+        try FileManager.default.createDirectory(at: dirA, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: dirB, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        let scriptURL = tempRoot.appendingPathComponent("mock_acp.py")
+        let script = """
+        import json, os, sys, time
+
+        cwd_name = os.path.basename(os.getcwd())
+        session_id = f"sess-{cwd_name}"
+
+        for raw in sys.stdin:
+            raw = raw.strip()
+            if not raw:
+                continue
+            msg = json.loads(raw)
+            method = msg.get("method")
+            req_id = msg.get("id")
+            if method == "initialize":
+                resp = {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {
+                        "protocolVersion": 1,
+                        "agentInfo": {"name": "mock-acp", "title": "Mock ACP"}
+                    }
+                }
+                print(json.dumps(resp), flush=True)
+            elif method == "session/new":
+                resp = {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {"sessionId": session_id}
+                }
+                print(json.dumps(resp), flush=True)
+            elif method == "session/prompt":
+                time.sleep(0.25)
+                note = {
+                    "jsonrpc": "2.0",
+                    "method": "session/update",
+                    "params": {
+                        "sessionId": session_id,
+                        "update": {
+                            "sessionUpdate": "agent_message_chunk",
+                            "content": {"type": "text", "text": f"reply-from-{cwd_name}"}
+                        }
+                    }
+                }
+                print(json.dumps(note), flush=True)
+                resp = {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {"stopReason": "end_turn"}
+                }
+                print(json.dumps(resp), flush=True)
+        """
+        try script.write(to: scriptURL, atomically: true, encoding: .utf8)
+
+        let manager = ACPAgentSessionManager()
+        manager.agentCommand = "/usr/bin/python3 \(scriptURL.path)"
+        defer { manager.clearSession() }
+
+        // 1. Start turn 1 in dirA.
+        manager.sendPrompt("hello in A", workingDirectory: dirA.path)
+
+        let busyDeadline = Date().addingTimeInterval(5.0)
+        while manager.status != .busy && Date() < busyDeadline {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertEqual(manager.status, .busy)
+        XCTAssertEqual(manager.currentSessionId, "sess-worktree-a")
+
+        // 2. Switch worktree while turn 1 is actively running!
+        manager.prepareAgent(workingDirectory: dirB.path)
+
+        // 3. Turn 1 must finish cleanly without "Client stopped" AND then reconnect to dirB.
+        let switchDeadline = Date().addingTimeInterval(5.0)
+        while (manager.currentSessionId != "sess-worktree-b" || manager.initializationState != .ready) && Date() < switchDeadline {
+            try await Task.sleep(nanoseconds: 25_000_000)
+        }
+
+        XCTAssertEqual(manager.currentSessionId, "sess-worktree-b")
+        XCTAssertEqual(manager.initializationState, .ready)
+        XCTAssertFalse(manager.messages.contains { $0.content.contains("Client stopped") })
+        XCTAssertTrue(manager.messages.contains { $0.role == .assistant && $0.content.contains("reply-from-worktree-a") })
+
+        // 4. Turn 2 in dirB also completes cleanly.
+        manager.sendPrompt("hello in B", workingDirectory: dirB.path)
+        let turn2Deadline = Date().addingTimeInterval(5.0)
+        while (!manager.messages.contains { $0.role == .assistant && $0.content.contains("reply-from-worktree-b") } || manager.status != .idle) && Date() < turn2Deadline {
+            try await Task.sleep(nanoseconds: 25_000_000)
+        }
+
+        XCTAssertEqual(manager.status, .idle)
+        XCTAssertFalse(manager.messages.contains { $0.content.contains("Client stopped") })
+        XCTAssertTrue(manager.messages.contains { $0.role == .assistant && $0.content.contains("reply-from-worktree-b") })
+    }
+
+    @MainActor
+    func testRapidWorktreeSwitchDuringStartupDoesNotFailWithClientStopped() async throws {
+        let savedCommand = UserDefaults.standard.string(forKey: "anydiff_acp_command")
+        defer {
+            if let savedCommand {
+                UserDefaults.standard.set(savedCommand, forKey: "anydiff_acp_command")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "anydiff_acp_command")
+            }
+        }
+
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("anydiff_acp_rapid_switch_\(UUID().uuidString)")
+        let dirA = tempRoot.appendingPathComponent("worktree-a")
+        let dirB = tempRoot.appendingPathComponent("worktree-b")
+        try FileManager.default.createDirectory(at: dirA, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: dirB, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        let scriptURL = tempRoot.appendingPathComponent("mock_acp.py")
+        let script = """
+        import json, os, sys
+
+        cwd_name = os.path.basename(os.getcwd())
+        session_id = f"sess-{cwd_name}"
+
+        for raw in sys.stdin:
+            raw = raw.strip()
+            if not raw:
+                continue
+            msg = json.loads(raw)
+            method = msg.get("method")
+            req_id = msg.get("id")
+            if method == "initialize":
+                print(json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {"protocolVersion": 1, "agentInfo": {"name": "mock-acp"}}
+                }), flush=True)
+            elif method == "session/new":
+                print(json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {"sessionId": session_id}
+                }), flush=True)
+            elif method == "session/prompt":
+                print(json.dumps({
+                    "jsonrpc": "2.0",
+                    "method": "session/update",
+                    "params": {
+                        "sessionId": session_id,
+                        "update": {
+                            "sessionUpdate": "agent_message_chunk",
+                            "content": {"type": "text", "text": f"ok-{cwd_name}"}
+                        }
+                    }
+                }), flush=True)
+                print(json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {"stopReason": "end_turn"}
+                }), flush=True)
+        """
+        try script.write(to: scriptURL, atomically: true, encoding: .utf8)
+
+        let manager = ACPAgentSessionManager()
+        manager.agentCommand = "/usr/bin/python3 \(scriptURL.path)"
+        defer { manager.clearSession() }
+
+        manager.prepareAgent(workingDirectory: dirA.path)
+        manager.prepareAgent(workingDirectory: dirB.path)
+        manager.sendPrompt("hi", workingDirectory: dirB.path)
+
+        let deadline = Date().addingTimeInterval(5.0)
+        while (!manager.messages.contains { $0.role == .assistant && $0.content.contains("ok-worktree-b") } || manager.status != .idle) && Date() < deadline {
+            try await Task.sleep(nanoseconds: 25_000_000)
+        }
+
+        XCTAssertEqual(manager.currentSessionId, "sess-worktree-b")
+        XCTAssertEqual(manager.status, .idle)
+        XCTAssertFalse(manager.messages.contains { $0.content.contains("Client stopped") })
+    }
     #endif
 }

@@ -19,6 +19,8 @@ public final class RepoCoordinator: ObservableObject {
     @Published public var currentBranch: String = ""
     @Published public var localBranches: [String] = []
     @Published public var remoteBranches: [String] = []
+    @Published public var worktrees: [GitWorktree] = []
+    @Published public var currentGitPaths: GitRepositoryPaths? = nil
     @Published public var comparisonTarget: ComparisonTarget = .workingTree
     @Published public var repoStatus: RepoStatus = .clean
     @Published public var fileDiffs: [FileDiff] = []
@@ -344,16 +346,19 @@ public final class RepoCoordinator: ObservableObject {
             }
         }
         multiBuffer.baseDirectory = currentDir
-        let folderName = (currentDir as NSString).lastPathComponent
+        let resolvedGitPaths = GitService.shared.resolveGitPaths(at: currentDir)
+        self.currentGitPaths = resolvedGitPaths
+
+        let folderName = resolvedGitPaths?.repositoryName ?? (currentDir as NSString).lastPathComponent
         self.currentFolderName = folderName
         DispatchQueue.main.async {
             NSApplication.shared.windows.first?.title = "\(folderName)"
         }
 
         if isWatchModeEnabled {
-            let resolvedDir = URL(fileURLWithPath: currentDir).resolvingSymlinksInPath().path
-            if folderWatcher == nil || folderWatcher?.watchedURL.path != resolvedDir {
-                restartWatcher(for: currentDir)
+            let expectedURLs = Self.watchURLs(for: currentDir, gitPaths: resolvedGitPaths)
+            if folderWatcher == nil || folderWatcher?.watchedURLs != expectedURLs {
+                restartWatcher(for: currentDir, gitPaths: resolvedGitPaths)
             }
         }
 
@@ -362,6 +367,7 @@ public final class RepoCoordinator: ObservableObject {
             let isGit = GitService.shared.isRepository(at: currentDir)
             let branch = isGit ? GitService.shared.currentBranch(at: currentDir) : ""
             let branches = isGit ? GitService.shared.branches(at: currentDir) : (local: [], remote: [])
+            let worktrees = isGit ? GitService.shared.worktrees(at: currentDir) : []
             let (files, rawData) = isGit ? GitService.shared.diffFiles(at: currentDir, target: currentTarget) : (files: [], data: nil)
 
             DispatchQueue.main.async {
@@ -369,6 +375,7 @@ public final class RepoCoordinator: ObservableObject {
                 self.currentBranch = branch
                 self.localBranches = branches.local
                 self.remoteBranches = branches.remote
+                self.worktrees = worktrees
 
                 defer {
                     self.isReloading = false
@@ -414,6 +421,8 @@ public final class RepoCoordinator: ObservableObject {
         currentBranch = ""
         localBranches = []
         remoteBranches = []
+        worktrees = []
+        currentGitPaths = nil
         repoStatus = .notGitRepository
         selectedFilePath = nil
         selectedCommit = nil
@@ -454,14 +463,32 @@ public final class RepoCoordinator: ObservableObject {
         watchRefreshGeneration &+= 1
     }
 
-    public func restartWatcher(for directoryPath: String) {
+    private static func watchURLs(for directoryPath: String, gitPaths: GitRepositoryPaths?) -> [URL] {
+        var urls: [URL] = [URL(fileURLWithPath: directoryPath).resolvingSymlinksInPath()]
+        if let gitPaths, gitPaths.isLinkedWorktree {
+            urls.append(URL(fileURLWithPath: gitPaths.gitDir).resolvingSymlinksInPath())
+            urls.append(URL(fileURLWithPath: gitPaths.commonDir).resolvingSymlinksInPath())
+        }
+        var unique: [URL] = []
+        var seen = Set<String>()
+        for url in urls {
+            if seen.insert(url.path).inserted {
+                unique.append(url)
+            }
+        }
+        return unique
+    }
+
+    public func restartWatcher(for directoryPath: String, gitPaths: GitRepositoryPaths? = nil) {
         folderWatcher?.stop()
         folderWatcher = nil
 
         guard isWatchModeEnabled, !directoryPath.isEmpty else { return }
         guard loadableWorkingDirectory == URL(fileURLWithPath: directoryPath).standardizedFileURL.path else { return }
 
-        let watcher = FolderWatcher(url: URL(fileURLWithPath: directoryPath)) { [weak self] events in
+        let resolvedGitPaths = gitPaths ?? currentGitPaths ?? GitService.shared.resolveGitPaths(at: directoryPath)
+        let urls = Self.watchURLs(for: directoryPath, gitPaths: resolvedGitPaths)
+        let watcher = FolderWatcher(urls: urls) { [weak self] events in
             guard let self else { return }
             Task { @MainActor in
                 self.handleFolderWatcherEvents(events)
@@ -506,7 +533,15 @@ public final class RepoCoordinator: ObservableObject {
 
         // Check if any event was caused by git commit, checkout, branch switch, add/reset
         let hasGitStateChange = meaningful.contains { event in
-            event.path.contains("/.git/HEAD")
+            if let gitPaths = currentGitPaths {
+                let resolved = URL(fileURLWithPath: event.path).resolvingSymlinksInPath().path
+                return resolved == "\(gitPaths.gitDir)/HEAD"
+                    || resolved == "\(gitPaths.gitDir)/index"
+                    || resolved == "\(gitPaths.gitDir)/commondir"
+                    || resolved.hasPrefix("\(gitPaths.commonDir)/refs/")
+                    || resolved == "\(gitPaths.commonDir)/packed-refs"
+            }
+            return event.path.contains("/.git/HEAD")
                 || event.path.contains("/.git/refs/")
                 || event.path.hasSuffix("/.git/index")
                 || event.path.hasSuffix("/.git/packed-refs")
@@ -519,6 +554,17 @@ public final class RepoCoordinator: ObservableObject {
                 self.scheduleGitStateReload()
             }
             return
+        }
+
+        if let gitPaths = currentGitPaths {
+            let worktreesPrefix = "\(gitPaths.commonDir)/worktrees/"
+            let hasWorktreeChange = meaningful.contains { event in
+                let resolved = URL(fileURLWithPath: event.path).resolvingSymlinksInPath().path
+                return resolved.hasPrefix(worktreesPrefix) && resolved.hasSuffix("/gitdir")
+            }
+            if hasWorktreeChange {
+                refreshWorktrees()
+            }
         }
 
         let currentDir = effectiveWorkingDirectory
@@ -807,6 +853,105 @@ public final class RepoCoordinator: ObservableObject {
             self.currentPath = path
             loadCurrentDirectoryDiff()
         }
+    }
+
+    // MARK: - Git Worktrees
+
+    public func refreshWorktrees() {
+        let dir = effectiveWorkingDirectory
+        guard !dir.isEmpty else { return }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let list = GitService.shared.worktrees(at: dir)
+            DispatchQueue.main.async {
+                guard self.effectiveWorkingDirectory == dir else { return }
+                self.worktrees = list
+            }
+        }
+    }
+
+    public func switchToWorktree(_ worktree: GitWorktree) {
+        let currentResolved = URL(fileURLWithPath: effectiveWorkingDirectory).resolvingSymlinksInPath().path
+        let targetResolved = URL(fileURLWithPath: worktree.path).resolvingSymlinksInPath().path
+        guard currentResolved != targetResolved else { return }
+        comparisonTarget = .workingTree
+        currentPath = worktree.path
+        loadCurrentDirectoryDiff()
+    }
+
+    public func createWorktree(
+        branch: String,
+        baseRef: String? = nil,
+        destinationPath: String? = nil,
+        createBranch: Bool = true
+    ) async -> Result<String, GitWorktreeError> {
+        let dir = effectiveWorkingDirectory
+        let dest = destinationPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            ? destinationPath!
+            : GitService.shared.defaultWorktreePath(at: dir, branch: branch)
+
+        let result = await Task.detached(priority: .userInitiated) {
+            GitService.shared.addWorktree(
+                at: dir,
+                destinationPath: dest,
+                branch: branch,
+                baseRef: baseRef,
+                createBranch: createBranch
+            )
+        }.value
+
+        if case .success(let createdPath) = result {
+            comparisonTarget = .workingTree
+            currentPath = createdPath
+            loadCurrentDirectoryDiff()
+        }
+        return result
+    }
+
+    public func createWorktreeForPrompt(
+        prompt: String,
+        baseRef: String? = nil
+    ) async -> Result<String, GitWorktreeError> {
+        let dir = effectiveWorkingDirectory
+        let branches = localBranches
+        let result = await Task.detached(priority: .userInitiated) {
+            let suggested = GitService.shared.suggestedWorktreeBranchAndPath(
+                at: dir,
+                prompt: prompt,
+                existingBranches: branches
+            )
+            return GitService.shared.addWorktree(
+                at: dir,
+                destinationPath: suggested.path,
+                branch: suggested.branch,
+                baseRef: baseRef,
+                createBranch: true
+            )
+        }.value
+
+        if case .success = result {
+            refreshWorktrees()
+        }
+        return result
+    }
+
+    public func removeWorktree(_ worktree: GitWorktree, force: Bool = false) async -> Result<Void, GitWorktreeError> {
+        let dir = effectiveWorkingDirectory
+        let result = await Task.detached(priority: .userInitiated) {
+            GitService.shared.removeWorktree(at: dir, worktreePath: worktree.path, force: force)
+        }.value
+
+        if case .success = result {
+            let currentResolved = URL(fileURLWithPath: dir).resolvingSymlinksInPath().path
+            let removedResolved = URL(fileURLWithPath: worktree.path).resolvingSymlinksInPath().path
+            if currentResolved == removedResolved, let main = worktrees.first(where: { $0.path != worktree.path }) {
+                comparisonTarget = .workingTree
+                currentPath = main.path
+                loadCurrentDirectoryDiff()
+            } else {
+                refreshWorktrees()
+            }
+        }
+        return result
     }
 
     // MARK: - Editor File Opening & Closing

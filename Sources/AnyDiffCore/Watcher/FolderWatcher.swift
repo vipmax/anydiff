@@ -53,7 +53,8 @@ public struct FileSystemChangeEvent: Sendable, Equatable {
 /// High-performance recursive folder watcher using macOS native `FSEvents` (CoreServices).
 /// Provides zero-dependency, low-latency file system change monitoring with debouncing.
 public final class FolderWatcher: @unchecked Sendable {
-    public let watchedURL: URL
+    public let watchedURLs: [URL]
+    public var watchedURL: URL { watchedURLs[0] }
     public let latency: TimeInterval
 
     private var streamRef: FSEventStreamRef?
@@ -64,15 +65,32 @@ public final class FolderWatcher: @unchecked Sendable {
     public var onEvents: (@Sendable ([FileSystemChangeEvent]) -> Void)?
 
     public init(
+        urls: [URL],
+        latency: TimeInterval = 0.25,
+        queue: DispatchQueue = DispatchQueue(label: "com.anydiff.folderwatcher", qos: .utility),
+        onEvents: (@Sendable ([FileSystemChangeEvent]) -> Void)? = nil
+    ) {
+        var unique: [URL] = []
+        var seen = Set<String>()
+        for url in urls {
+            let resolved = url.resolvingSymlinksInPath()
+            if seen.insert(resolved.path).inserted {
+                unique.append(resolved)
+            }
+        }
+        self.watchedURLs = unique
+        self.latency = latency
+        self.queue = queue
+        self.onEvents = onEvents
+    }
+
+    public convenience init(
         url: URL,
         latency: TimeInterval = 0.25,
         queue: DispatchQueue = DispatchQueue(label: "com.anydiff.folderwatcher", qos: .utility),
         onEvents: (@Sendable ([FileSystemChangeEvent]) -> Void)? = nil
     ) {
-        self.watchedURL = url.resolvingSymlinksInPath()
-        self.latency = latency
-        self.queue = queue
-        self.onEvents = onEvents
+        self.init(urls: [url], latency: latency, queue: queue, onEvents: onEvents)
     }
 
     /// Convenience initializer using a string path.
@@ -94,7 +112,7 @@ public final class FolderWatcher: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
-        guard !isRunning else { return }
+        guard !isRunning, !watchedURLs.isEmpty else { return }
 
         var context = FSEventStreamContext(
             version: 0,
@@ -104,7 +122,7 @@ public final class FolderWatcher: @unchecked Sendable {
             copyDescription: nil
         )
 
-        let pathsToWatch = [watchedURL.path] as CFArray
+        let pathsToWatch = watchedURLs.map(\.path) as CFArray
         let flags = UInt32(
             kFSEventStreamCreateFlagUseCFTypes |
             kFSEventStreamCreateFlagFileEvents |
@@ -197,14 +215,18 @@ public final class FolderWatcher: @unchecked Sendable {
         }
 
         // MARK: - 2. Git Internals
-        // Ignore internal git objects/logs/pack/locks, but allow state changes:
-        // .git/HEAD, .git/refs/*, .git/index, .git/packed-refs, .git/commondir
+        // Ignore internal git objects/logs/pack/locks, but allow state changes
+        // (both regular `.git/...` and linked worktrees `.git/worktrees/<name>/...`):
         if path.contains("/.git/") || path.hasSuffix("/.git") {
-            if !path.hasSuffix("/.git/HEAD")
-                && !path.contains("/.git/refs/")
-                && !path.hasSuffix("/.git/index")
-                && !path.hasSuffix("/.git/packed-refs")
-                && !path.hasSuffix("/.git/commondir") {
+            if path.contains("/.git/logs/") || path.contains("/.git/objects/") {
+                return true
+            }
+            if !path.hasSuffix("/HEAD")
+                && !path.contains("/refs/")
+                && !path.hasSuffix("/index")
+                && !path.hasSuffix("/packed-refs")
+                && !path.hasSuffix("/commondir")
+                && !path.hasSuffix("/gitdir") {
                 return true
             }
         }

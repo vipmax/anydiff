@@ -218,7 +218,7 @@ public struct MainWindowView: View {
                     review.preparedReviewSummary = nil
                 } else {
                     review.displayMap.layoutMode = .unified
-                    review.loadReviewDiff(for: summary, workingDirectory: effectiveWorkingDirectory, baseDirectory: effectiveBaseDirectory)
+                    review.loadReviewDiff(for: summary, workingDirectory: activeAgentWorkingDirectory, baseDirectory: activeAgentWorkingDirectory)
                 }
             } else {
                 review.preparedReviewSummary = nil
@@ -689,14 +689,28 @@ public struct MainWindowView: View {
             selectedFilePath: repo.selectedFilePath,
             fileDiffsSummary: currentDiffSummary,
             toolcallColorMode: toolcallColorMode,
+            isGitRepository: repo.repoStatus != .notGitRepository,
+            currentBranch: repo.currentBranch,
+            worktrees: repo.worktrees,
+            repoName: repo.currentFolderName,
             onClose: {
                 withAnimation(.easeInOut(duration: 0.18)) {
                     panelLayout.clear(slot)
                 }
             },
             onReview: { summary in beginReview(summary: summary) },
-            onOpenURL: { url in handleOpenURL(url) }
+            onOpenURL: { url in handleOpenURL(url) },
+            onCreateWorktreeForPrompt: { prompt, baseBranch in
+                await repo.createWorktreeForPrompt(prompt: prompt, baseRef: baseBranch)
+            }
         )
+    }
+
+    private var activeAgentWorkingDirectory: String {
+        if let dir = agentCoordinator.activeManager?.workingDirectory, !dir.isEmpty {
+            return dir
+        }
+        return effectiveWorkingDirectory
     }
 
     @ViewBuilder
@@ -818,7 +832,7 @@ public struct MainWindowView: View {
         review.viewStateResetToken &+= 1
         review.clear()
         review.displayMap.layoutMode = .unified
-        review.loadReviewDiff(for: summary, workingDirectory: effectiveWorkingDirectory, baseDirectory: effectiveBaseDirectory)
+        review.loadReviewDiff(for: summary, workingDirectory: activeAgentWorkingDirectory, baseDirectory: activeAgentWorkingDirectory)
         if let firstFile = summary.files.first?.path {
             let matched = review.displayMap.matchFilePath(firstFile) ?? firstFile
             focusFileInMultiBuffer(matched)
@@ -864,7 +878,7 @@ public struct MainWindowView: View {
     }
 
     private func handleOpenURL(_ url: URL) {
-        let target = FileLinkParser.parse(url: url, workingDirectory: effectiveWorkingDirectory)
+        let target = FileLinkParser.parse(url: url, workingDirectory: activeAgentWorkingDirectory)
         switch target.targetType {
         case .web(let webURL):
             NSWorkspace.shared.open(webURL)
@@ -998,7 +1012,7 @@ public struct MainWindowView: View {
 
     public func reloadCurrentDiff() {
         if let reviewSummary = agentCoordinator.activeReviewSummary {
-            review.loadReviewDiff(for: reviewSummary, workingDirectory: effectiveWorkingDirectory, baseDirectory: effectiveBaseDirectory)
+            review.loadReviewDiff(for: reviewSummary, workingDirectory: activeAgentWorkingDirectory, baseDirectory: activeAgentWorkingDirectory)
             return
         }
         if case .commit(let hash, _) = repo.comparisonTarget {

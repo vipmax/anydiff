@@ -289,6 +289,7 @@ public final class ACPClient: ACPTransportDelegate, @unchecked Sendable {
 
         let req = JSONRPCRequest(id: id, method: method, params: params)
         let data = try encoder.encode(req)
+        ACPLogger.log(">>> SEND REQUEST: id=\(id), method=\(method)")
 
         return try await withCheckedThrowingContinuation { continuation in
             stateQueue.sync {

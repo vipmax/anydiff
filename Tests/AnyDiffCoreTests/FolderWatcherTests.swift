@@ -31,11 +31,16 @@ final class FolderWatcherTests: XCTestCase {
         XCTAssertTrue(FolderWatcher.shouldIgnore(path: "/path/to/main.swift.sbt-12345"))
         XCTAssertTrue(FolderWatcher.shouldIgnore(path: "/path/to/.#main.swift"))
 
-        // Git internals vs branch refs
+        // Git internals vs branch refs (regular repo and linked worktrees)
         XCTAssertTrue(FolderWatcher.shouldIgnore(path: "/project/.git/index.lock"))
         XCTAssertTrue(FolderWatcher.shouldIgnore(path: "/project/.git/objects/1a/2b3c"))
+        XCTAssertTrue(FolderWatcher.shouldIgnore(path: "/project/.git/logs/HEAD"))
         XCTAssertFalse(FolderWatcher.shouldIgnore(path: "/project/.git/HEAD"))
         XCTAssertFalse(FolderWatcher.shouldIgnore(path: "/project/.git/refs/heads/main"))
+        XCTAssertFalse(FolderWatcher.shouldIgnore(path: "/project/.git/worktrees/feat/HEAD"))
+        XCTAssertFalse(FolderWatcher.shouldIgnore(path: "/project/.git/worktrees/feat/index"))
+        XCTAssertFalse(FolderWatcher.shouldIgnore(path: "/project/.git/worktrees/feat/commondir"))
+        XCTAssertTrue(FolderWatcher.shouldIgnore(path: "/project/.git/worktrees/feat/index.lock"))
 
         // Rust / Cargo
         XCTAssertTrue(FolderWatcher.shouldIgnore(path: "/project/target/debug/app"))

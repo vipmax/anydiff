@@ -70,6 +70,20 @@ public final class AgentSessionItem: Identifiable, ObservableObject, @unchecked 
             }
             .store(in: &cancellables)
 
+        manager.$workingDirectory
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+            .store(in: &cancellables)
+
+        manager.$pendingNewWorktree
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+            .store(in: &cancellables)
+
         var previousStatus = manager.status
         manager.$status
             .receive(on: DispatchQueue.main)
@@ -171,6 +185,34 @@ public final class AgentSessionItem: Identifiable, ObservableObject, @unchecked 
             return String(id.prefix(8))
         }
         return id
+    }
+
+    public func worktreeDisplayTitle(
+        fallbackWorkingDirectory: String? = nil,
+        worktrees: [GitWorktree] = []
+    ) -> String? {
+        if manager.pendingNewWorktree {
+            return "New worktree"
+        }
+        let dir: String
+        if let d = manager.workingDirectory, !d.isEmpty {
+            dir = d
+        } else if let fallback = fallbackWorkingDirectory, !fallback.isEmpty {
+            dir = fallback
+        } else {
+            return nil
+        }
+        return GitService.shared.nonMainWorktreeDisplayTitle(
+            at: dir,
+            worktrees: worktrees
+        )
+    }
+
+    public func worktreePath(fallbackWorkingDirectory: String? = nil) -> String? {
+        if let d = manager.workingDirectory, !d.isEmpty {
+            return d
+        }
+        return fallbackWorkingDirectory
     }
 
     public var statusDescription: String {

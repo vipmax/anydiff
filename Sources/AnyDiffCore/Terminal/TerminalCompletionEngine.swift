@@ -407,8 +407,10 @@ public final class TerminalCompletionEngine: Sendable {
     private func completeGitBranches(prefix: String, currentDirectory: String) -> [TerminalCompletionItem] {
         var branches: [String] = []
 
-        // Read .git/refs/heads directly for speed without spawning subprocesses
-        let gitDir = (currentDirectory as NSString).appendingPathComponent(".git/refs/heads")
+        // Read refs/heads directly from resolved commonDir (supports linked worktrees and subdirs)
+        let commonDir = GitService.shared.resolveGitPaths(at: currentDirectory)?.commonDir
+            ?? (currentDirectory as NSString).appendingPathComponent(".git")
+        let gitDir = (commonDir as NSString).appendingPathComponent("refs/heads")
         let fm = FileManager.default
         if let enumerator = fm.enumerator(atPath: gitDir) {
             for case let file as String in enumerator {
@@ -420,8 +422,8 @@ public final class TerminalCompletionEngine: Sendable {
             }
         }
 
-        // Also check .git/packed-refs if heads is sparse
-        let packedRefs = (currentDirectory as NSString).appendingPathComponent(".git/packed-refs")
+        // Also check packed-refs if heads is sparse
+        let packedRefs = (commonDir as NSString).appendingPathComponent("packed-refs")
         if let content = try? String(contentsOfFile: packedRefs, encoding: .utf8) {
             for line in content.split(separator: "\n") {
                 if line.hasPrefix("#") || line.hasPrefix("^") { continue }

@@ -24,6 +24,9 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
     private var currentStreamMessageId: UUID? = nil
     private var initializationTask: Task<Void, Never>?
     private var initializationWorkingDirectory: String?
+    private var deferredPrepareWorkingDirectory: String?
+    private var activeInitializationId: UUID?
+    private var inFlightStartClient: (id: UUID, task: Task<Void, Error>)?
     private var promptTask: Task<Void, Never>?
     private var pendingPrompt: (text: String, images: [AgentImageAttachment], workingDirectory: String)?
     private var authTask: Task<Void, Error>?
@@ -84,7 +87,7 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
         messages.append(assistantMsg)
 
         pendingPrompt = (text: trimmed, images: images, workingDirectory: workingDirectory)
-        if isReadyForPrompt, currentSessionId != nil, currentWorkingDirectory == workingDirectory, client.isConnected {
+        if isReadyForPrompt, currentSessionId != nil, Self.pathsMatch(currentWorkingDirectory, workingDirectory), client.isConnected {
             startPendingPromptIfPossible()
         } else {
             prepareAgent(workingDirectory: workingDirectory)
@@ -106,10 +109,19 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
     public override func prepareAgent(workingDirectory: String) {
         guard !workingDirectory.isEmpty else { return }
 
+        // Never kill an active turn (`client.stop()`) just because the user switched
+        // worktrees/directories in the UI. Defer the reconnect until the turn finishes.
+        if promptTask != nil {
+            deferredPrepareWorkingDirectory = Self.pathsMatch(currentWorkingDirectory, workingDirectory) ? nil : workingDirectory
+            return
+        }
+
+        deferredPrepareWorkingDirectory = nil
+
         if initializationState == .ready,
            currentSessionId != nil,
            targetLoadSessionId == nil,
-           currentWorkingDirectory == workingDirectory,
+           Self.pathsMatch(currentWorkingDirectory, workingDirectory),
            client.isConnected {
             startPendingPromptIfPossible()
             return
@@ -119,16 +131,19 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
         // body. Only the first call for a directory is allowed to own the
         // startup handshake. A directory change invalidates the old attempt.
         if let initializationTask {
-            if initializationWorkingDirectory == workingDirectory {
+            if let initDir = initializationWorkingDirectory, Self.pathsMatch(initDir, workingDirectory) {
                 return
             }
             initializationTask.cancel()
             self.initializationTask = nil
             initializationWorkingDirectory = nil
+            activeInitializationId = nil
             client.stop()
             currentSessionId = nil
         }
 
+        let initId = UUID()
+        activeInitializationId = initId
         initializationWorkingDirectory = workingDirectory
         initializationState = .starting
         status = .connecting
@@ -138,6 +153,7 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
             guard let self = self else { return }
             do {
                 try await self.ensureConnectedAndSession(workingDirectory: workingDirectory)
+                guard !Task.isCancelled, self.activeInitializationId == initId else { return }
                 guard self.currentSessionId != nil else {
                     throw JSONRPCError(code: -1, message: "Failed to establish ACP session")
                 }
@@ -145,12 +161,15 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
                 self.initializationState = .ready
                 self.initializationTask = nil
                 self.initializationWorkingDirectory = nil
+                self.activeInitializationId = nil
                 self.status = .idle
                 self.statusMessage = nil
                 self.startPendingPromptIfPossible()
             } catch ACPClientError.authRequired(let methods) {
+                guard self.activeInitializationId == initId else { return }
                 self.initializationTask = nil
                 self.initializationWorkingDirectory = nil
+                self.activeInitializationId = nil
                 guard !Task.isCancelled else { return }
                 let authList = methods.isEmpty ? self.client.advertisedAuthMethods : methods
                 let finalMethods = authList.isEmpty ? [ACPAuthMethod(id: "default", name: "Authenticate")] : authList
@@ -159,8 +178,10 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
                 self.status = .idle
                 self.statusMessage = "Authentication required"
             } catch let error as JSONRPCError where error.isAuthRequired {
+                guard self.activeInitializationId == initId else { return }
                 self.initializationTask = nil
                 self.initializationWorkingDirectory = nil
+                self.activeInitializationId = nil
                 guard !Task.isCancelled else { return }
                 let authList = self.client.advertisedAuthMethods
                 let finalMethods = authList.isEmpty ? [ACPAuthMethod(id: "default", name: "Authenticate")] : authList
@@ -169,8 +190,10 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
                 self.status = .idle
                 self.statusMessage = "Authentication required"
             } catch {
+                guard self.activeInitializationId == initId else { return }
                 self.initializationTask = nil
                 self.initializationWorkingDirectory = nil
+                self.activeInitializationId = nil
                 guard !Task.isCancelled else { return }
                 self.initializationState = .failed(error.localizedDescription)
                 self.status = .error(error.localizedDescription)
@@ -194,7 +217,7 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
               let sessionId = currentSessionId,
               initializationState == .ready else { return }
 
-        guard pending.workingDirectory == currentWorkingDirectory else {
+        guard Self.pathsMatch(pending.workingDirectory, currentWorkingDirectory) else {
             prepareAgent(workingDirectory: pending.workingDirectory)
             return
         }
@@ -234,19 +257,43 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
                 self.preTurnSnapshot = nil
                 self.markCurrentStreamComplete()
                 self.promptTask = nil
-                self.drainQueueIfPossible(workingDirectory: workingDir)
+                if !self.promptQueue.isEmpty {
+                    self.drainQueueIfPossible(workingDirectory: workingDir)
+                } else if let deferredDir = self.deferredPrepareWorkingDirectory {
+                    self.deferredPrepareWorkingDirectory = nil
+                    if !Self.pathsMatch(self.currentWorkingDirectory, deferredDir) {
+                        self.prepareAgent(workingDirectory: deferredDir)
+                    }
+                }
             } catch {
                 guard !Task.isCancelled else { return }
                 self.liveGitDiffTask?.cancel()
                 self.liveGitDiffTask = nil
                 self.liveGitDiffPending = false
+                self.liveEditedSummary = nil
+                self.preTurnSnapshot = nil
+                self.promptTask = nil
+
+                if let rpcErr = error as? JSONRPCError, rpcErr.code == -1, rpcErr.message == "Client stopped",
+                   let deferredDir = self.deferredPrepareWorkingDirectory {
+                    self.deferredPrepareWorkingDirectory = nil
+                    self.status = .idle
+                    self.statusMessage = nil
+                    self.markCurrentStreamComplete()
+                    self.prepareAgent(workingDirectory: deferredDir)
+                    return
+                }
+
                 self.status = .error(error.localizedDescription)
                 self.statusMessage = "Error: \(error.localizedDescription)"
                 self.appendErrorMessage(error.localizedDescription)
-                self.liveEditedSummary = nil
-                self.preTurnSnapshot = nil
                 self.markCurrentStreamComplete()
-                self.promptTask = nil
+                if let deferredDir = self.deferredPrepareWorkingDirectory {
+                    self.deferredPrepareWorkingDirectory = nil
+                    if !Self.pathsMatch(self.currentWorkingDirectory, deferredDir) {
+                        self.prepareAgent(workingDirectory: deferredDir)
+                    }
+                }
             }
         }
     }
@@ -272,6 +319,8 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
             initializationTask?.cancel()
             initializationTask = nil
             initializationWorkingDirectory = nil
+            deferredPrepareWorkingDirectory = nil
+            activeInitializationId = nil
             authTask?.cancel()
             authTask = nil
             client.stop()
@@ -298,6 +347,12 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
             self.status = .idle
             self.statusMessage = "Stopped"
             self.markCurrentStreamComplete()
+            if let deferredDir = self.deferredPrepareWorkingDirectory {
+                self.deferredPrepareWorkingDirectory = nil
+                if !Self.pathsMatch(self.currentWorkingDirectory, deferredDir) {
+                    self.prepareAgent(workingDirectory: deferredDir)
+                }
+            }
         }
     }
 
@@ -311,6 +366,8 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
         authTask?.cancel()
         initializationTask = nil
         initializationWorkingDirectory = nil
+        deferredPrepareWorkingDirectory = nil
+        activeInitializationId = nil
         promptTask = nil
         authTask = nil
         pendingPrompt = nil
@@ -338,6 +395,8 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
         authTask?.cancel()
         initializationTask = nil
         initializationWorkingDirectory = nil
+        deferredPrepareWorkingDirectory = nil
+        activeInitializationId = nil
         promptTask = nil
         authTask = nil
         pendingPrompt = nil
@@ -396,27 +455,53 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
     }
 
     private func startClient(command: String, workingDirectory: String) async throws {
+        if let previous = inFlightStartClient?.task {
+            _ = try? await previous.value
+            try Task.checkCancellation()
+        }
         let client = self.client
         let env = self.preset?.resolvedEnvironment
-        try await Task.detached(priority: .userInitiated) {
+        let startId = UUID()
+        let task = Task.detached(priority: .userInitiated) {
             try client.start(command: command, workingDirectory: workingDirectory, environment: env)
-        }.value
+        }
+        inFlightStartClient = (id: startId, task: task)
+        defer {
+            if inFlightStartClient?.id == startId {
+                inFlightStartClient = nil
+            }
+        }
+        try await task.value
     }
 
     @MainActor
     private func ensureConnectedAndSession(workingDirectory: String) async throws {
-        let isReconnecting = !client.isConnected || currentWorkingDirectory != workingDirectory
+        try Task.checkCancellation()
+        if let previous = inFlightStartClient?.task {
+            _ = try? await previous.value
+            try Task.checkCancellation()
+        }
+
+        let isDirectoryChange = !currentWorkingDirectory.isEmpty && !Self.pathsMatch(currentWorkingDirectory, workingDirectory)
+        let isReconnecting = !client.isConnected || isDirectoryChange
         let resolvedTitle: String
 
         if isReconnecting {
             client.stop()
+            currentSessionId = nil
+            if isDirectoryChange {
+                lastSessionId = nil
+                targetLoadSessionId = nil
+            }
             currentWorkingDirectory = workingDirectory
             self.status = .connecting
             let targetTitle = !self.agentTitle.isEmpty ? self.agentTitle : self.agentCommand
             self.statusMessage = "Launching \(targetTitle)..."
             try await startClient(command: agentCommand, workingDirectory: workingDirectory)
+            try Task.checkCancellation()
 
             let initResult = try await client.initialize()
+            try Task.checkCancellation()
             if !self.agentTitle.isEmpty {
                 resolvedTitle = self.agentTitle
             } else if let title = initResult.agentInfo?.title, !title.isEmpty {
@@ -905,16 +990,26 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
 
     public func client(_ client: ACPClient, didDisconnectWith error: String?) {
         DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
+            guard let self = self, !client.isConnected else { return }
+            guard self.initializationTask == nil, self.activeInitializationId == nil else { return }
             self.status = .disconnected
             self.currentSessionId = nil
             self.pendingPermission = nil
             self.initializationState = .notStarted
             self.initializationTask = nil
+            self.initializationWorkingDirectory = nil
+            self.activeInitializationId = nil
             if let err = error {
                 self.statusMessage = err
             }
         }
+    }
+
+    private static func pathsMatch(_ a: String, _ b: String) -> Bool {
+        if a == b { return true }
+        guard !a.isEmpty, !b.isEmpty else { return false }
+        return URL(fileURLWithPath: a).standardizedFileURL.resolvingSymlinksInPath().path
+            == URL(fileURLWithPath: b).standardizedFileURL.resolvingSymlinksInPath().path
     }
 
     private static func extractFirstString(from dict: [String: AnyCodableSendable], keys: [String]) -> String? {

@@ -6,6 +6,11 @@ public struct AgentStartScreenView: View {
     public var slot: PanelSlot = .right
     public var theme: Theme
     public var workingDirectory: String
+    public var isGitRepository: Bool = false
+    public var currentBranch: String = ""
+    public var worktrees: [GitWorktree] = []
+    public var repoName: String = ""
+    public var onSelectWorktree: ((GitWorktree) -> Void)? = nil
 
     @State private var isAddingCustom: Bool = false
     @State private var customName: String = ""
@@ -18,6 +23,25 @@ public struct AgentStartScreenView: View {
     @State private var isViewingRegistry: Bool = false
     @State private var isRegistryHovered: Bool = false
     @State private var isAddCustomHovered: Bool = false
+    @State private var workInNewWorktree: Bool = false
+    @State private var selectedWorktreePath: String? = nil
+
+    private var targetWorkingDirectory: String {
+        if let selectedWorktreePath, !selectedWorktreePath.isEmpty {
+            return selectedWorktreePath
+        }
+        return workingDirectory
+    }
+
+    private var selectedWorktreeBranch: String? {
+        let resolvedTarget = URL(fileURLWithPath: targetWorkingDirectory).resolvingSymlinksInPath().path
+        if let match = worktrees.first(where: {
+            URL(fileURLWithPath: $0.path).resolvingSymlinksInPath().path == resolvedTarget
+        }), let branch = match.branch, !branch.isEmpty {
+            return branch
+        }
+        return currentBranch.isEmpty ? nil : currentBranch
+    }
 
     private let availableColors = ["white", "black", "gray", "green", "blue", "purple", "orange", "teal", "cyan", "pink", "red"]
 
@@ -25,51 +49,67 @@ public struct AgentStartScreenView: View {
         coordinator: AgentSessionCoordinator,
         slot: PanelSlot = .right,
         theme: Theme,
-        workingDirectory: String
+        workingDirectory: String,
+        isGitRepository: Bool = false,
+        currentBranch: String = "",
+        worktrees: [GitWorktree] = [],
+        repoName: String = "",
+        onSelectWorktree: ((GitWorktree) -> Void)? = nil
     ) {
         self.coordinator = coordinator
         self.slot = slot
         self.theme = theme
         self.workingDirectory = workingDirectory
+        self.isGitRepository = isGitRepository
+        self.currentBranch = currentBranch
+        self.worktrees = worktrees
+        self.repoName = repoName
+        self.onSelectWorktree = onSelectWorktree
     }
 
     public var body: some View {
-        if isViewingRegistry {
-            ACPRegistryView(
-                coordinator: coordinator,
-                theme: theme,
-                workingDirectory: workingDirectory,
-                onBack: {
-                    withAnimation(.easeInOut(duration: 0.18)) {
-                        isViewingRegistry = false
+        Group {
+            if isViewingRegistry {
+                ACPRegistryView(
+                    coordinator: coordinator,
+                    theme: theme,
+                    workingDirectory: targetWorkingDirectory,
+                    onBack: {
+                        withAnimation(.easeInOut(duration: 0.18)) {
+                            isViewingRegistry = false
+                        }
                     }
-                }
-            )
-        } else if let preset = viewingSessionsPreset {
-            AgentSavedSessionsView(
-                preset: preset,
-                coordinator: coordinator,
-                slot: slot,
-                workingDirectory: workingDirectory,
-                theme: theme,
-                onBack: {
-                    withAnimation(.easeInOut(duration: 0.18)) {
-                        viewingSessionsPreset = nil
+                )
+            } else if let preset = viewingSessionsPreset {
+                AgentSavedSessionsView(
+                    preset: preset,
+                    coordinator: coordinator,
+                    slot: slot,
+                    workingDirectory: targetWorkingDirectory,
+                    theme: theme,
+                    onBack: {
+                        withAnimation(.easeInOut(duration: 0.18)) {
+                            viewingSessionsPreset = nil
+                        }
+                    },
+                    onStartNew: {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            viewingSessionsPreset = nil
+                            _ = coordinator.createNewSession(
+                                workingDirectory: targetWorkingDirectory,
+                                preset: preset,
+                                for: slot
+                            )
+                        }
                     }
-                },
-                onStartNew: {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        viewingSessionsPreset = nil
-                        _ = coordinator.createNewSession(
-                            workingDirectory: workingDirectory,
-                            preset: preset,
-                            for: slot
-                        )
-                    }
-                }
-            )
-        } else {
-            mainStartScreenView
+                )
+            } else {
+                mainStartScreenView
+            }
+        }
+        .onChange(of: workingDirectory) { _ in
+            selectedWorktreePath = nil
+            workInNewWorktree = false
         }
     }
 
@@ -119,14 +159,35 @@ public struct AgentStartScreenView: View {
                                 AgentCardButton(
                                     group: group,
                                     theme: theme,
+                                    workingDirectory: targetWorkingDirectory,
+                                    isGitRepository: isGitRepository,
+                                    currentBranch: currentBranch,
+                                    worktrees: worktrees,
+                                    repoName: repoName,
+                                    workInNewWorktree: workInNewWorktree,
                                     onSelect: {
+                                        let shouldCreateNewWorktree = isGitRepository && workInNewWorktree
+                                        let baseBranch = selectedWorktreeBranch
+                                        let chosenWorkingDirectory = targetWorkingDirectory
                                         withAnimation(.easeInOut(duration: 0.2)) {
                                             _ = coordinator.createNewSession(
-                                                workingDirectory: workingDirectory,
+                                                workingDirectory: chosenWorkingDirectory,
                                                 preset: group.selectedPreset,
+                                                pendingNewWorktree: shouldCreateNewWorktree,
+                                                pendingNewWorktreeBaseBranch: shouldCreateNewWorktree ? baseBranch : nil,
                                                 for: slot
                                             )
+                                            workInNewWorktree = false
+                                            selectedWorktreePath = nil
                                         }
+                                    },
+                                    onSelectWorktree: { wt in
+                                        workInNewWorktree = false
+                                        selectedWorktreePath = wt.path
+                                        onSelectWorktree?(wt)
+                                    },
+                                    onToggleNewWorktree: {
+                                        workInNewWorktree.toggle()
                                     },
                                     onSelectProfile: { p in
                                         withAnimation(.easeInOut(duration: 0.15)) {
@@ -595,7 +656,15 @@ public struct AgentStartScreenView: View {
 private struct AgentCardButton: View {
     let group: AgentGroup
     let theme: Theme
+    let workingDirectory: String
+    let isGitRepository: Bool
+    let currentBranch: String
+    let worktrees: [GitWorktree]
+    let repoName: String
+    let workInNewWorktree: Bool
     let onSelect: () -> Void
+    let onSelectWorktree: (GitWorktree) -> Void
+    let onToggleNewWorktree: () -> Void
     let onSelectProfile: (AgentPreset) -> Void
     let onAddProfile: () -> Void
     let onDeleteProfile: (AgentPreset) -> Void
@@ -605,6 +674,9 @@ private struct AgentCardButton: View {
     @State private var isHovered: Bool = false
     @State private var isSessionsHovered: Bool = false
     @State private var isProfileHovered: Bool = false
+    @State private var isWorkInHovered: Bool = false
+    @State private var isWorkInPopoverPresented: Bool = false
+    @State private var worktreeSearch: String = ""
     @State private var avatarToken: UInt64 = 0
 
     private var customAvatar: NSImage? {
@@ -631,14 +703,6 @@ private struct AgentCardButton: View {
         group.basePreset.color
     }
 
-    private var badgeTitle: String {
-        group.basePreset.providerName
-    }
-
-    private var descriptionText: String {
-        group.basePreset.summary.isEmpty ? group.basePreset.effectiveCommand : group.basePreset.summary
-    }
-
     var body: some View {
         HStack(spacing: 12) {
             ZStack {
@@ -663,7 +727,7 @@ private struct AgentCardButton: View {
             }
             .frame(width: 44, height: 44)
 
-            VStack(alignment: .center, spacing: 3) {
+            VStack(alignment: .center, spacing: 5) {
                 Button(action: onSelect) {
                     VStack(alignment: .center, spacing: 3) {
                         Text(group.basePreset.name)
@@ -688,32 +752,14 @@ private struct AgentCardButton: View {
                                     .fill(Color.orange.opacity(0.12))
                             )
                             .help("Binary not found on disk. Open ACP Registry to re-download.")
-                        } else if !badgeTitle.isEmpty {
-                            Text(badgeTitle)
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundColor(presetColor)
-                                .fixedSize(horizontal: true, vertical: false)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(
-                                    Capsule()
-                                        .fill(presetColor.opacity(0.12))
-                                )
                         }
-
-                        Text(descriptionText)
-                            .font(.system(size: 11))
-                            .foregroundColor(Color(theme.gutterForeground).opacity(0.82))
-                            .lineLimit(2)
-                            .multilineTextAlignment(.center)
-                            .frame(maxWidth: .infinity)
                     }
                     .frame(maxWidth: .infinity, alignment: .center)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
 
-                HStack(spacing: 6) {
+                HStack(spacing: 8) {
                     profileSelectorMenu
 
                     Button(action: onOpenSessions) {
@@ -738,6 +784,10 @@ private struct AgentCardButton: View {
                     .help("View past sessions for this agent")
                 }
                 .frame(maxWidth: .infinity, alignment: .center)
+
+                if isGitRepository {
+                    workInSelectorButton
+                }
             }
             .frame(maxWidth: .infinity, alignment: .center)
 
@@ -779,6 +829,217 @@ private struct AgentCardButton: View {
         .onReceive(NotificationCenter.default.publisher(for: AgentAvatarProvider.avatarDidChangeNotification)) { _ in
             avatarToken &+= 1
         }
+    }
+
+    private func isCurrentWorktree(_ wt: GitWorktree) -> Bool {
+        let currentResolved = URL(fileURLWithPath: workingDirectory).resolvingSymlinksInPath().path
+        let targetResolved = URL(fileURLWithPath: wt.path).resolvingSymlinksInPath().path
+        return currentResolved == targetResolved
+    }
+
+    private var activeWorktree: GitWorktree? {
+        worktrees.first(where: { isCurrentWorktree($0) })
+    }
+
+    private var filteredWorktrees: [GitWorktree] {
+        let query = worktreeSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return worktrees }
+        return worktrees.filter {
+            $0.displayTitle.localizedCaseInsensitiveContains(query) ||
+            $0.folderName.localizedCaseInsensitiveContains(query) ||
+            $0.path.localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    @ViewBuilder
+    private var workInSelectorButton: some View {
+        let currentLabel = activeWorktree?.displayTitle ?? (currentBranch.isEmpty ? "HEAD" : currentBranch)
+        let labelText = workInNewWorktree ? "Work in: New worktree" : "Work in: \(currentLabel)"
+
+        Button {
+            worktreeSearch = ""
+            isWorkInPopoverPresented.toggle()
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: workInNewWorktree ? "square.stack.3d.up" : "arrow.triangle.branch")
+                    .font(.system(size: 9.5, weight: .medium))
+                Text(labelText)
+                    .font(.system(size: 10.5, weight: .medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 7.5, weight: .bold))
+            }
+            .foregroundColor(
+                workInNewWorktree
+                    ? presetColor
+                    : Color(theme.gutterForeground).opacity(isWorkInHovered || isWorkInPopoverPresented ? 1.0 : 0.78)
+            )
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2.5)
+            .background(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(
+                        workInNewWorktree
+                            ? presetColor.opacity(isWorkInHovered || isWorkInPopoverPresented ? 0.16 : 0.11)
+                            : Color(theme.foreground).opacity(isWorkInHovered || isWorkInPopoverPresented ? 0.09 : 0.045)
+                    )
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .lineLimit(1)
+        .onHover { isWorkInHovered = $0 }
+        .help(workInNewWorktree
+            ? "Runs agent in a new isolated git worktree under ~/.anydiff/worktrees (Click to change)"
+            : "Work in: \(currentLabel) (Click to switch worktree or create a new one)")
+        .popover(isPresented: $isWorkInPopoverPresented, arrowEdge: .bottom) {
+            workInPopoverView
+        }
+    }
+
+    @ViewBuilder
+    private var workInPopoverView: some View {
+        let folderDisplayName = repoName.isEmpty
+            ? URL(fileURLWithPath: workingDirectory).lastPathComponent
+            : repoName
+
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "folder")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.secondary)
+                Text(folderDisplayName)
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                Spacer()
+                Text("Work in")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.secondary.opacity(0.8))
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, 8)
+
+            if worktrees.count > 8 {
+                HStack(spacing: 5) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 10.5))
+                        .foregroundColor(.secondary)
+                    TextField("Filter worktrees...", text: $worktreeSearch)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 11.5))
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .padding(.horizontal, 8)
+            }
+
+            if !filteredWorktrees.isEmpty {
+                ScrollView(.vertical, showsIndicators: true) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(filteredWorktrees) { wt in
+                            let isSelected = !workInNewWorktree && isCurrentWorktree(wt)
+                            let shortPath = (wt.path as NSString).abbreviatingWithTildeInPath
+
+                            Button {
+                                onSelectWorktree(wt)
+                                isWorkInPopoverPresented = false
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Image(systemName: wt.isMain ? "folder" : "square.stack.3d.up")
+                                        .font(.system(size: 11, weight: .medium))
+                                        .foregroundColor(isSelected ? presetColor : .secondary)
+                                        .frame(width: 14)
+
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(wt.displayTitle)
+                                            .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
+                                            .foregroundColor(.primary)
+                                            .lineLimit(1)
+                                        Text(shortPath)
+                                            .font(.system(size: 10))
+                                            .foregroundColor(.secondary)
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                    }
+
+                                    Spacer(minLength: 8)
+
+                                    if isSelected {
+                                        Image(systemName: "checkmark")
+                                            .font(.system(size: 10.5, weight: .bold))
+                                            .foregroundColor(presetColor)
+                                    }
+                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 5)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                        .fill(isSelected ? Color.primary.opacity(0.08) : Color.clear)
+                                )
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, 6)
+                }
+                .frame(maxHeight: 210)
+            } else {
+                Text(worktreeSearch.isEmpty ? "No worktrees found" : "No matching worktrees")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+            }
+
+            Divider()
+                .padding(.horizontal, 8)
+
+            Button {
+                onToggleNewWorktree()
+                isWorkInPopoverPresented = false
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "square.stack.3d.up")
+                        .font(.system(size: 12.5, weight: .medium))
+                        .foregroundColor(workInNewWorktree ? presetColor : .secondary)
+                        .frame(width: 18)
+
+                    VStack(alignment: .leading, spacing: 1.5) {
+                        Text("Work in a New Worktree")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(.primary)
+                        Text("Keeps your checkout untouched")
+                            .font(.system(size: 10.5))
+                            .foregroundColor(.secondary)
+                    }
+
+                    Spacer(minLength: 8)
+
+                    if workInNewWorktree {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(presetColor)
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(workInNewWorktree ? presetColor.opacity(0.11) : Color.primary.opacity(0.04))
+                )
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 6)
+            .padding(.bottom, 8)
+        }
+        .frame(width: 276)
     }
 
     @ViewBuilder

@@ -598,7 +598,13 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
     }
 
     @discardableResult
-    public func createNewSession(workingDirectory: String, preset: AgentPreset? = nil, for slot: PanelSlot? = nil) -> AgentSessionItem {
+    public func createNewSession(
+        workingDirectory: String,
+        preset: AgentPreset? = nil,
+        pendingNewWorktree: Bool = false,
+        pendingNewWorktreeBaseBranch: String? = nil,
+        for slot: PanelSlot? = nil
+    ) -> AgentSessionItem {
         #if DEBUG
         let fallbackPreset = isMockAgent ? AgentPreset.mock : (allPresets.first(where: { !$0.isMock }) ?? AgentPreset(id: "live", name: "Agent", command: ""))
         #else
@@ -637,6 +643,10 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
             isMock: isMock,
             preset: chosenPreset
         )
+        let resolvedWorkingDirectory = workingDirectory.isEmpty ? "" : normalizedWorkingDirectory(workingDirectory)
+        manager.workingDirectory = resolvedWorkingDirectory.isEmpty ? nil : resolvedWorkingDirectory
+        manager.pendingNewWorktree = pendingNewWorktree
+        manager.pendingNewWorktreeBaseBranch = pendingNewWorktreeBaseBranch
 
         for s in sessions {
             s.isCurrentlyActive = false
@@ -882,6 +892,8 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
             isMock: isMock,
             preset: preset
         )
+        let resolvedWorkingDirectory = workingDirectory.isEmpty ? "" : normalizedWorkingDirectory(workingDirectory)
+        manager.workingDirectory = resolvedWorkingDirectory.isEmpty ? nil : resolvedWorkingDirectory
 
         for s in sessions {
             s.isCurrentlyActive = false
