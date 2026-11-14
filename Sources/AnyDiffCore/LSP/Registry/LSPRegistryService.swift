@@ -94,10 +94,60 @@ public actor LSPRegistryService {
 
     // MARK: - JSON Loading
 
-    private static let bundledServers: [LSPServerDefinition] = {
+    private static let resourceBundleName = "AnyDiff_AnyDiffCore.bundle"
+
+    /// Safely resolves the resource bundle containing `lsp-servers.json` without triggering
+    /// SwiftPM's `Bundle.module` `fatalError` when packaged inside a `.app` bundle.
+    static func resolveResourceBundle(
+        resourceURL: URL? = Bundle.main.resourceURL,
+        bundleURL: URL = Bundle.main.bundleURL,
+        executableURL: URL? = Bundle.main.executableURL,
+        mainBundle: Bundle = .main,
+        allBundles: [Bundle] = Bundle.allBundles
+    ) -> Bundle? {
+        // 1. Inside App Bundle Resources (Contents/Resources/AnyDiff_AnyDiffCore.bundle)
+        if let resourceURL,
+           let bundle = Bundle(url: resourceURL.appendingPathComponent(resourceBundleName)) {
+            return bundle
+        }
+        // 2. Main bundle root (AnyDiff.app/AnyDiff_AnyDiffCore.bundle)
+        if let bundle = Bundle(url: bundleURL.appendingPathComponent(resourceBundleName)) {
+            return bundle
+        }
+        // 3. Executable directory (for CLI or development binary)
+        if let execDir = executableURL?.deletingLastPathComponent(),
+           let bundle = Bundle(url: execDir.appendingPathComponent(resourceBundleName)) {
+            return bundle
+        }
+        // 4. Adjacent to any loaded bundle (e.g. xctest bundle in SwiftPM test environment)
+        for loadedBundle in allBundles {
+            let candidate = loadedBundle.bundleURL
+                .deletingLastPathComponent()
+                .appendingPathComponent(resourceBundleName)
+            if let bundle = Bundle(url: candidate) {
+                return bundle
+            }
+        }
+        // 5. Directly in main bundle resources (if resources were flattened into Resources/)
+        if mainBundle.path(forResource: "lsp-servers", ofType: "json") != nil {
+            return mainBundle
+        }
+        // 6. Try Bundle.module only outside `.app` bundles (SPM development & test environment)
+        #if SWIFT_PACKAGE
+        if bundleURL.pathExtension != "app" {
+            return Bundle.module
+        }
+        #endif
+        return nil
+    }
+
+    static func loadBundledServers(
+        from bundle: Bundle? = resolveResourceBundle(),
+        mainBundle: Bundle = .main
+    ) -> [LSPServerDefinition] {
         let candidatePaths = [
-            Bundle.main.path(forResource: "lsp-servers", ofType: "json"),
-            Bundle.module.path(forResource: "lsp-servers", ofType: "json")
+            bundle?.path(forResource: "lsp-servers", ofType: "json"),
+            mainBundle.path(forResource: "lsp-servers", ofType: "json")
         ].compactMap { $0 }
 
         for path in candidatePaths {
@@ -108,7 +158,9 @@ public actor LSPRegistryService {
             }
         }
         return []
-    }()
+    }
+
+    private static let bundledServers: [LSPServerDefinition] = loadBundledServers()
 
     public static func loadCachedPackagesFromDisk() -> [LSPServerDefinition] {
         loadDefaultServers()

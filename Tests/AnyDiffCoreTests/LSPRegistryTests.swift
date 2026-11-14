@@ -644,6 +644,81 @@ final class LSPRegistryTests: XCTestCase {
         _ = resolved
     }
 
+    func testResolveResourceBundleFindsCoreBundleInAppContentsResources() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("anydiff-app-bundle-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        let appURL = tempRoot.appendingPathComponent("AnyDiff.app", isDirectory: true)
+        let resourcesURL = appURL.appendingPathComponent("Contents/Resources", isDirectory: true)
+        let macOSURL = appURL.appendingPathComponent("Contents/MacOS/AnyDiff", isDirectory: false)
+        let coreBundleURL = resourcesURL.appendingPathComponent("AnyDiff_AnyDiffCore.bundle", isDirectory: true)
+
+        try FileManager.default.createDirectory(at: coreBundleURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: macOSURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+
+        let json = """
+        [
+          {
+            "id": "mock-lsp",
+            "name": "Mock LSP",
+            "language": "swift",
+            "fileExtensions": ["swift"],
+            "binary": "mock-lsp"
+          }
+        ]
+        """
+        try json.write(
+            to: coreBundleURL.appendingPathComponent("lsp-servers.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let resolved = LSPRegistryService.resolveResourceBundle(
+            resourceURL: resourcesURL,
+            bundleURL: appURL,
+            executableURL: macOSURL,
+            mainBundle: Bundle(for: Self.self),
+            allBundles: []
+        )
+
+        XCTAssertNotNil(resolved, "Expected resource bundle to be resolved from Contents/Resources")
+        XCTAssertEqual(resolved?.bundleURL.standardizedFileURL, coreBundleURL.standardizedFileURL)
+        XCTAssertNotNil(resolved?.path(forResource: "lsp-servers", ofType: "json"))
+
+        let servers = LSPRegistryService.loadBundledServers(
+            from: resolved,
+            mainBundle: Bundle(for: Self.self)
+        )
+        XCTAssertEqual(servers.map(\.id), ["mock-lsp"])
+    }
+
+    func testResolveResourceBundleDoesNotCrashWhenMissingInAppBundle() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("anydiff-missing-bundle-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        let appURL = tempRoot.appendingPathComponent("AnyDiff.app", isDirectory: true)
+        let resourcesURL = appURL.appendingPathComponent("Contents/Resources", isDirectory: true)
+        let macOSURL = appURL.appendingPathComponent("Contents/MacOS/AnyDiff", isDirectory: false)
+
+        try FileManager.default.createDirectory(at: resourcesURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: macOSURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+
+        let resolved = LSPRegistryService.resolveResourceBundle(
+            resourceURL: resourcesURL,
+            bundleURL: appURL,
+            executableURL: macOSURL,
+            mainBundle: Bundle(for: Self.self),
+            allBundles: []
+        )
+
+        XCTAssertNil(resolved, "Missing bundle inside .app should return nil instead of crashing via Bundle.module")
+        XCTAssertTrue(
+            LSPRegistryService.loadBundledServers(from: resolved, mainBundle: Bundle(for: Self.self)).isEmpty
+        )
+    }
+
     func testAllCatalogDownloadURLsAreValidAndReachable() async throws {
         let servers = LSPRegistryService.loadDefaultServers()
         var urlsToCheck: [(id: String, label: String, url: URL)] = []
