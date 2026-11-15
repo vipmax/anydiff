@@ -147,7 +147,7 @@ public struct BranchPickerView: View {
                         isShowingNewWorktreeForm = true
                     }
                 )
-                .frame(width: 280, height: 300)
+                .frame(width: 380, height: 340)
 
                 if let worktreeError {
                     Text(worktreeError)
@@ -271,7 +271,7 @@ public struct BranchPickerView: View {
             .padding(.horizontal, 4)
             .padding(.bottom, 2)
         }
-        .frame(width: 280)
+        .frame(width: 380)
     }
 
     private var availableExistingBranches: [String] {
@@ -938,7 +938,7 @@ final class BranchItemCellView: NSTableCellView {
         subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
         subtitleLabel.font = .systemFont(ofSize: 9.5, weight: .regular)
         subtitleLabel.textColor = .secondaryLabelColor
-        subtitleLabel.lineBreakMode = .byTruncatingTail
+        subtitleLabel.lineBreakMode = .byTruncatingMiddle
         addSubview(subtitleLabel)
 
         checkmarkView.translatesAutoresizingMaskIntoConstraints = false
