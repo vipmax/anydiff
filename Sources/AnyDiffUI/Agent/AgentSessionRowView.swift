@@ -446,8 +446,6 @@ public struct AgentSessionRowView: View {
 
     @ViewBuilder
     private var statusBadgeView: some View {
-        let accentColor = Color(theme.accentColor)
-
         if session.manager.pendingPermission != nil {
             Image(systemName: "hand.raised.fill")
                 .font(.system(size: 9))
@@ -471,12 +469,12 @@ public struct AgentSessionRowView: View {
                     .help(statusText)
             case .idle:
                 Circle()
-                    .fill(isActive ? accentColor : sessionColor)
+                    .fill(Color.green)
                     .frame(width: 6.5, height: 6.5)
                     .shadow(color: .black.opacity(0.35), radius: 1, x: 0, y: 0.5)
             case .disconnected:
                 Circle()
-                    .fill(isActive ? accentColor.opacity(0.8) : Color.secondary.opacity(0.45))
+                    .fill(Color.secondary.opacity(0.45))
                     .frame(width: 6.5, height: 6.5)
                     .shadow(color: .black.opacity(0.25), radius: 1, x: 0, y: 0.5)
             case .busy, .connecting:
