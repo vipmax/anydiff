@@ -125,6 +125,13 @@ extension AppDelegate {
         agentMenu.delegate = self
         let agentItem = NSMenuItem(title: "Toggle Right Panel", action: #selector(toggleRightPanelAction(_:)), keyEquivalent: "")
         agentMenu.addItem(agentItem)
+        let chooseAgentItem = NSMenuItem(
+            title: "Choose Agent / Empty Panel",
+            action: #selector(returnToAgentStartScreenAction(_:)),
+            keyEquivalent: "\u{1b}"
+        )
+        chooseAgentItem.keyEquivalentModifierMask = [.command]
+        agentMenu.addItem(chooseAgentItem)
         agentMenu.addItem(NSMenuItem.separator())
         let colorsMenuItem = NSMenuItem(title: "Toolcall Colors", action: nil, keyEquivalent: "")
         let colorsMenu = NSMenu(title: "Toolcall Colors")
@@ -140,6 +147,13 @@ extension AppDelegate {
         }
         colorsMenuItem.submenu = colorsMenu
         agentMenu.addItem(colorsMenuItem)
+        let compactModeItem = NSMenuItem(
+            title: "Compact Mode",
+            action: #selector(toggleCompactModeAction(_:)),
+            keyEquivalent: ""
+        )
+        compactModeItem.state = AgentDisplayPreferences.isCompactMode ? .on : .off
+        agentMenu.addItem(compactModeItem)
         agentMenuItem.submenu = agentMenu
         viewMenu.addItem(agentMenuItem)
         viewMenu.addItem(NSMenuItem.separator())
@@ -257,6 +271,11 @@ extension AppDelegate {
                 if let id = item.representedObject as? String {
                     item.state = (id == currentThemeId) ? .on : .off
                 }
+            }
+        } else if menu.title == "Agent" {
+            let isCompact = AgentDisplayPreferences.isCompactMode
+            for item in menu.items where item.action == #selector(toggleCompactModeAction(_:)) {
+                item.state = isCompact ? .on : .off
             }
         } else if menu.title == "Toolcall Colors" {
             let selectedMode = AgentDisplayPreferences.toolcallColorMode.rawValue
@@ -391,10 +410,20 @@ extension AppDelegate {
         toggleRightPanelAction(sender)
     }
 
+    @objc func returnToAgentStartScreenAction(_ sender: Any?) {
+        NotificationCenter.default.post(name: Notification.Name("anyDiffReturnToAgentStartScreen"), object: nil)
+    }
+
     @objc func selectToolcallColorModeAction(_ sender: NSMenuItem) {
         guard let rawValue = sender.representedObject as? String,
             let mode = ToolcallColorMode(rawValue: rawValue) else { return }
         UserDefaults.standard.set(mode.rawValue, forKey: AgentDisplayPreferences.toolcallColorModeKey)
+        NotificationCenter.default.post(name: AgentDisplayPreferences.didChangeNotification, object: nil)
+    }
+
+    @objc func toggleCompactModeAction(_ sender: NSMenuItem) {
+        let newValue = !AgentDisplayPreferences.isCompactMode
+        UserDefaults.standard.set(newValue, forKey: AgentDisplayPreferences.isCompactModeKey)
         NotificationCenter.default.post(name: AgentDisplayPreferences.didChangeNotification, object: nil)
     }
 

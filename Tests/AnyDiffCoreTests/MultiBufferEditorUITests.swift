@@ -1,5 +1,6 @@
 import XCTest
 import AppKit
+import SwiftUI
 @testable import AnyDiffCore
 @testable import AnyDiffUI
 
@@ -526,8 +527,8 @@ final class MultiBufferEditorUITests: XCTestCase {
         XCTAssertTrue(editor.hasSelection)
 
         let pastedText = "    let x = 10\n    let y = 20\n    let z = 30\n"
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(pastedText, forType: .string)
+        editor.pasteboard.clearContents()
+        editor.pasteboard.setString(pastedText, forType: .string)
 
         editor.paste(nil)
 
@@ -562,7 +563,7 @@ final class MultiBufferEditorUITests: XCTestCase {
 
         editor.cut(nil)
 
-        let cutContent = NSPasteboard.general.string(forType: .string)
+        let cutContent = editor.pasteboard.string(forType: .string)
         XCTAssertEqual(cutContent, "print(1)\n    print(2)\n    ")
         XCTAssertEqual(fixture.buffer.text(), "func test() {\n    print(3)\n}")
         XCTAssertFalse(editor.hasSelection)
@@ -587,6 +588,7 @@ final class MultiBufferEditorUITests: XCTestCase {
         ])
         let dm = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
         let editor = MultiBufferEditorView(displayMap: dm, theme: .unifiedDark)
+        editor.pasteboard = NSPasteboard.withUniqueName()
         editor.isEditable = true
         editor.invalidateLayout()
 
@@ -594,8 +596,8 @@ final class MultiBufferEditorUITests: XCTestCase {
         editor.cursorPoint = MultiBufferPoint(row: 1, column: 7)
 
         let insertedText = "\nline A2.1\nline A2.2"
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(insertedText, forType: .string)
+        editor.pasteboard.clearContents()
+        editor.pasteboard.setString(insertedText, forType: .string)
         editor.paste(nil)
 
         // Verify File A grew by 2 lines
@@ -650,7 +652,7 @@ final class MultiBufferEditorUITests: XCTestCase {
         editor.selectAll(nil)
         editor.copy(nil)
 
-        let copied = NSPasteboard.general.string(forType: .string)
+        let copied = editor.pasteboard.string(forType: .string)
         XCTAssertEqual(copied, indentedCode)
 
         // Move cursor to end and insert a newline, then paste
@@ -858,6 +860,7 @@ final class MultiBufferEditorUITests: XCTestCase {
 
         let displayMap = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
         let editor = MultiBufferEditorView(displayMap: displayMap, theme: theme)
+        editor.pasteboard = NSPasteboard.withUniqueName()
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 400, height: 240),
             styleMask: .borderless,
@@ -1075,6 +1078,36 @@ final class MultiBufferEditorUITests: XCTestCase {
     }
 
     private func nonBackgroundPixelCount(in image: NSBitmapImageRep, rect: NSRect, background: NSColor) -> Int {
+        if !image.isPlanar,
+           image.bitsPerSample == 8,
+           image.samplesPerPixel >= 3,
+           let data = image.bitmapData {
+            let bytesPerPixel = image.bitsPerPixel / 8
+            let bytesPerRow = image.bytesPerRow
+            let minX = max(0, Int(rect.minX))
+            let maxX = min(image.pixelsWide, Int(rect.maxX))
+            let minY = max(0, Int(rect.minY))
+            let maxY = min(image.pixelsHigh, Int(rect.maxY))
+            if bytesPerPixel >= 3, minX < maxX, minY < maxY {
+                let refOffset = min(2, maxY - 1) * bytesPerRow + min(2, maxX - 1) * bytesPerPixel
+                let r0 = Int(data[refOffset])
+                let g0 = Int(data[refOffset + 1])
+                let b0 = Int(data[refOffset + 2])
+                var count = 0
+                for y in stride(from: minY, to: maxY, by: 4) {
+                    let rowBase = y * bytesPerRow
+                    for x in stride(from: minX, to: maxX, by: 4) {
+                        let off = rowBase + x * bytesPerPixel
+                        if abs(Int(data[off]) - r0) >= 5 ||
+                           abs(Int(data[off + 1]) - g0) >= 5 ||
+                           abs(Int(data[off + 2]) - b0) >= 5 {
+                            count += 1
+                        }
+                    }
+                }
+                return count
+            }
+        }
         let background = background.usingColorSpace(.deviceRGB)
         return pixels(in: image, rect: rect).reduce(into: 0) { count, point in
             guard let color = image.colorAt(x: point.x, y: point.y)?.usingColorSpace(.deviceRGB),
@@ -1090,7 +1123,38 @@ final class MultiBufferEditorUITests: XCTestCase {
     }
 
     private func differingPixelCount(between lhs: NSBitmapImageRep, and rhs: NSBitmapImageRep, in rect: NSRect) -> Int {
-        pixels(in: lhs, rect: rect).reduce(into: 0) { count, point in
+        if !lhs.isPlanar, !rhs.isPlanar,
+           lhs.bitsPerSample == 8, rhs.bitsPerSample == 8,
+           lhs.bitsPerPixel == rhs.bitsPerPixel,
+           lhs.samplesPerPixel >= 3,
+           lhs.pixelsWide == rhs.pixelsWide,
+           lhs.pixelsHigh == rhs.pixelsHigh,
+           let lData = lhs.bitmapData,
+           let rData = rhs.bitmapData {
+            let bytesPerPixel = lhs.bitsPerPixel / 8
+            let lRowStride = lhs.bytesPerRow
+            let rRowStride = rhs.bytesPerRow
+            let minX = max(0, Int(rect.minX))
+            let maxX = min(lhs.pixelsWide, Int(rect.maxX))
+            let minY = max(0, Int(rect.minY))
+            let maxY = min(lhs.pixelsHigh, Int(rect.maxY))
+            var count = 0
+            for y in stride(from: minY, to: maxY, by: 4) {
+                let lRow = y * lRowStride
+                let rRow = y * rRowStride
+                for x in stride(from: minX, to: maxX, by: 4) {
+                    let lOff = lRow + x * bytesPerPixel
+                    let rOff = rRow + x * bytesPerPixel
+                    if abs(Int(lData[lOff]) - Int(rData[rOff])) >= 5 ||
+                       abs(Int(lData[lOff + 1]) - Int(rData[rOff + 1])) >= 5 ||
+                       abs(Int(lData[lOff + 2]) - Int(rData[rOff + 2])) >= 5 {
+                        count += 1
+                    }
+                }
+            }
+            return count
+        }
+        return pixels(in: lhs, rect: rect).reduce(into: 0) { count, point in
             guard let lhsColor = lhs.colorAt(x: point.x, y: point.y)?.usingColorSpace(.deviceRGB),
                   let rhsColor = rhs.colorAt(x: point.x, y: point.y)?.usingColorSpace(.deviceRGB) else { return }
             if !colorsAreEqual(lhsColor, rhsColor) {
@@ -1295,5 +1359,147 @@ final class MultiBufferEditorUITests: XCTestCase {
         XCTAssertFalse(editor.excerptLayouts[0].isCollapsed)
         XCTAssertEqual(editor.totalDocumentHeight, initialHeight)
         XCTAssertEqual(editor.excerptStartYs[1], initialFile2StartY)
+    }
+
+    private func makeEscapeEvent(
+        for window: NSWindow,
+        modifierFlags: NSEvent.ModifierFlags = []
+    ) throws -> NSEvent {
+        try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: modifierFlags,
+            timestamp: 0,
+            windowNumber: window.windowNumber,
+            context: nil,
+            characters: "\u{1b}",
+            charactersIgnoringModifiers: "\u{1b}",
+            isARepeat: false,
+            keyCode: 53
+        ))
+    }
+
+    func testEditorUIEscapeClearsSelectionAndRepaints() throws {
+        let fixture = makeEditor(text: "let alpha = 123\nlet beta = 456")
+        let editor = fixture.editor
+        fixture.window.makeFirstResponder(editor)
+
+        let row = fixture.displayMap.minCodeRow
+        editor.selectionAnchor = MultiBufferPoint(row: row, column: 0)
+        editor.cursorPoint = MultiBufferPoint(row: row, column: 9)
+        editor.checkAndPublishSelectionQuote()
+
+        XCTAssertTrue(editor.hasSelection)
+        XCTAssertNotNil(fixture.displayMap.selectionRange)
+        XCTAssertNotNil(SelectionQuoteStore.shared.currentQuote)
+        let selectedImage = try render(editor)
+
+        let escEvent = try makeEscapeEvent(for: fixture.window)
+        editor.keyDown(with: escEvent)
+
+        XCTAssertFalse(editor.hasSelection, "Pressing Escape must clear selection")
+        XCTAssertNil(editor.selectionAnchor)
+        XCTAssertEqual(editor.cursorPoint, MultiBufferPoint(row: row, column: 9))
+        XCTAssertNil(fixture.displayMap.selectionRange)
+        XCTAssertNil(SelectionQuoteStore.shared.currentQuote, "Clearing selection must also clear published quote")
+
+        let clearedImage = try render(editor)
+        XCTAssertGreaterThan(
+            differingPixelCount(between: selectedImage, and: clearedImage, in: wholeImageRect(clearedImage)),
+            0,
+            "Clearing selection with Escape must repaint the editor"
+        )
+    }
+
+    func testEditorUICancelOperationClearsSelectionInReadOnlyMode() throws {
+        let fixture = makeEditor(text: "let alpha = 123\nlet beta = 456")
+        let editor = fixture.editor
+        editor.isEditable = false
+        fixture.window.makeFirstResponder(editor)
+
+        let row = fixture.displayMap.minCodeRow
+        editor.selectionAnchor = MultiBufferPoint(row: row, column: 4)
+        editor.cursorPoint = MultiBufferPoint(row: row, column: 9)
+        XCTAssertTrue(editor.hasSelection)
+
+        editor.cancelOperation(nil)
+
+        XCTAssertFalse(editor.hasSelection, "cancelOperation must clear selection even in read-only mode")
+        XCTAssertNil(editor.selectionAnchor)
+        XCTAssertEqual(editor.cursorPoint, MultiBufferPoint(row: row, column: 9))
+    }
+
+    @MainActor
+    func testEditorUIEscapeWithMainWindowShortcutsClearsSelectionBeforeCancelAction() throws {
+        let fixture = makeEditor(text: "let alpha = 123\nlet beta = 456")
+        var cancelCount = 0
+
+        let rootView = EditorHostView(
+            displayMap: fixture.displayMap,
+            theme: .unifiedDark,
+            onCursorChange: { _, _ in },
+            onAddCommentRequest: { _, _ in }
+        )
+        .frame(width: 400, height: 240)
+        .background(
+            MainWindowShortcuts(
+                onSelectPanel: { _ in },
+                onToggleDiffLayout: {},
+                onReload: {},
+                onOpenShortcut: {},
+                onOpenFolder: {},
+                onOpenSourcePopover: {},
+                onOpenBrowser: {},
+                onToggleSearch: {},
+                onOpenSearch: {},
+                onNextSearchMatch: {},
+                onPreviousSearchMatch: {},
+                onZoomIn: {},
+                onZoomOut: {},
+                onZoomReset: {},
+                onToggleAgent: {},
+                onToggleMarkdown: {},
+                onCancel: { cancelCount += 1 }
+            )
+        )
+
+        let hostingView = NSHostingView(rootView: rootView)
+        hostingView.frame = NSRect(x: 0, y: 0, width: 400, height: 240)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 240),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = hostingView
+        window.makeKeyAndOrderFront(nil)
+        hostingView.layoutSubtreeIfNeeded()
+
+        func findEditor(in view: NSView) -> MultiBufferEditorView? {
+            if let ed = view as? MultiBufferEditorView { return ed }
+            for sub in view.subviews {
+                if let found = findEditor(in: sub) { return found }
+            }
+            return nil
+        }
+
+        let editor = try XCTUnwrap(findEditor(in: hostingView))
+        window.makeFirstResponder(editor)
+        XCTAssertTrue(window.firstResponder === editor)
+
+        let row = fixture.displayMap.minCodeRow
+        editor.selectionAnchor = MultiBufferPoint(row: row, column: 0)
+        editor.cursorPoint = MultiBufferPoint(row: row, column: 9)
+        XCTAssertTrue(editor.hasSelection)
+
+        let firstEsc = try makeEscapeEvent(for: window)
+        window.sendEvent(firstEsc)
+
+        XCTAssertFalse(editor.hasSelection, "First Escape via NSWindow.sendEvent must clear editor selection")
+        XCTAssertEqual(cancelCount, 0, "First Escape must clear selection rather than invoking MainWindowShortcuts onCancel")
+
+        let secondEsc = try makeEscapeEvent(for: window)
+        window.sendEvent(secondEsc)
+        XCTAssertEqual(cancelCount, 1, "Second Escape with no selection should propagate to MainWindowShortcuts onCancel")
     }
 }

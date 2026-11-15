@@ -409,16 +409,16 @@ final class TerminalTests: XCTestCase {
         session.start()
         XCTAssertTrue(session.isRunning)
 
-        // Give shell 300ms to initialize prompt
-        try await Task.sleep(nanoseconds: 300_000_000)
+        // Wait briefly for zsh prompt init (pty buffers stdin regardless)
+        try await Task.sleep(nanoseconds: 10_000_000)
 
         // 1. Query initial terminal size via tput
         session.sendInput("echo SZ1:$(tput cols)x$(tput lines)\r")
 
         // Wait until screen contains the output
         var foundSz1 = false
-        for _ in 0..<30 {
-            try await Task.sleep(nanoseconds: 100_000_000)
+        for _ in 0..<600 {
+            try await Task.sleep(nanoseconds: 5_000_000)
             let currentText = session.screen.fullText(includeScrollback: true)
             if currentText.contains("SZ1:80x24") {
                 foundSz1 = true
@@ -434,15 +434,15 @@ final class TerminalTests: XCTestCase {
         XCTAssertEqual(session.screen.lines.count, 12)
         XCTAssertEqual(session.screen.lines[0].cells.count, 50)
 
-        // Give process 200ms to process SIGWINCH
-        try await Task.sleep(nanoseconds: 200_000_000)
+        // Give process brief moment to process SIGWINCH
+        try await Task.sleep(nanoseconds: 10_000_000)
 
         // 3. Query new terminal size via tput
         session.sendInput("echo SZ2:$(tput cols)x$(tput lines)\r")
 
         var foundSz2 = false
-        for _ in 0..<30 {
-            try await Task.sleep(nanoseconds: 100_000_000)
+        for _ in 0..<600 {
+            try await Task.sleep(nanoseconds: 5_000_000)
             let currentText = session.screen.fullText(includeScrollback: true)
             if currentText.contains("SZ2:50x12") {
                 foundSz2 = true
@@ -460,15 +460,15 @@ final class TerminalTests: XCTestCase {
         session.start()
         XCTAssertTrue(session.isRunning)
 
-        try await Task.sleep(nanoseconds: 300_000_000)
+        try await Task.sleep(nanoseconds: 10_000_000)
 
         // Print a marked line of exactly 70 characters
         let line70 = String(repeating: "A", count: 70)
         session.sendInput("echo MARK1_\(line70)\r")
 
         var foundMark1 = false
-        for _ in 0..<30 {
-            try await Task.sleep(nanoseconds: 100_000_000)
+        for _ in 0..<600 {
+            try await Task.sleep(nanoseconds: 5_000_000)
             let text = session.screen.fullText(includeScrollback: true)
             if text.contains("MARK1_" + line70) {
                 foundMark1 = true
@@ -480,15 +480,15 @@ final class TerminalTests: XCTestCase {
         // Resize down to 35 cols
         session.resize(cols: 35, rows: 15)
         XCTAssertEqual(session.screen.cols, 35)
-        try await Task.sleep(nanoseconds: 200_000_000)
+        try await Task.sleep(nanoseconds: 10_000_000)
 
         // Print a line of 20 characters that fits in 35 cols (6 + 20 = 26 cols <= 35)
         let line20 = String(repeating: "B", count: 20)
         session.sendInput("echo MARK2_\(line20)\r")
 
         var foundMark2 = false
-        for _ in 0..<30 {
-            try await Task.sleep(nanoseconds: 100_000_000)
+        for _ in 0..<600 {
+            try await Task.sleep(nanoseconds: 5_000_000)
             let text = session.screen.fullText(includeScrollback: true)
             if text.contains("MARK2_" + line20) {
                 foundMark2 = true
@@ -678,29 +678,20 @@ final class TerminalTests: XCTestCase {
     @MainActor
     func testTerminalPanelViewRendering() {
         let session = TerminalSession(workingDirectory: "/tmp")
-        let view = TerminalPanelView(session: session, theme: .vesper, fontSize: 12, onBack: {})
+        let view = TerminalPanelView(session: session, theme: .vesper, fontSize: 12, startShell: false, onBack: {})
             .padding(.top, 52)
         let hosting = NSHostingView(rootView: view)
         hosting.frame = NSRect(x: 0, y: 0, width: 800, height: 600)
-        hosting.layoutSubtreeIfNeeded()
-
-        print("Dumping subviews of TerminalPanelView with padding:")
-        func printSubs(_ v: NSView, indent: String = "") {
-            let windowFrame = v.window?.contentView != nil ? v.convert(v.bounds, to: nil) : v.frame
-            print("\(indent)\(type(of: v)) isFlipped=\(v.isFlipped) frame=\(v.frame) inWindow=\(windowFrame)")
-            for s in v.subviews {
-                printSubs(s, indent: indent + "  ")
-            }
-        }
         let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600), styleMask: [.borderless], backing: .buffered, defer: false)
         win.contentView = hosting
         hosting.layoutSubtreeIfNeeded()
-        printSubs(hosting)
+        XCTAssertFalse(hosting.subviews.isEmpty)
+        XCTAssertGreaterThan(hosting.bounds.width, 0)
     }
 
     @MainActor
     func testTerminalInputBarViewNarrowLayout() {
-        let blockSession = BlockTerminalSession(workingDirectory: "/Users/test/very/long/nested/path/to/project")
+        let blockSession = BlockTerminalSession(workingDirectory: "/Users/test/very/long/nested/path/to/project", startShell: false)
         let view = TerminalInputBarView(session: blockSession, theme: .vesper, onSwitchToInteractive: {})
         let hosting = NSHostingView(rootView: view)
         hosting.frame = NSRect(x: 0, y: 0, width: 160, height: 100)
@@ -729,7 +720,7 @@ final class TerminalTests: XCTestCase {
 
     @MainActor
     func testTerminalInputBarMultilineExpansionAndKeyHandling() {
-        let blockSession = BlockTerminalSession(workingDirectory: "/Users/test/anydiff-swift")
+        let blockSession = BlockTerminalSession(workingDirectory: "/Users/test/anydiff-swift", startShell: false)
         let view = TerminalInputBarView(session: blockSession, theme: .vesper, onSwitchToInteractive: {})
         let hosting = NSHostingView(rootView: view)
         hosting.frame = NSRect(x: 0, y: 0, width: 400, height: 200)
@@ -770,7 +761,7 @@ final class TerminalTests: XCTestCase {
 
     @MainActor
     func testBlockTerminalMultilineExecutionAndDisplay() {
-        let blockSession = BlockTerminalSession(workingDirectory: "/Users/test/anydiff-swift")
+        let blockSession = BlockTerminalSession(workingDirectory: "/Users/test/anydiff-swift", startShell: false)
         let multiCmd = "for i in 1 2; do\n  echo $i\ndone"
         blockSession.execute(command: multiCmd)
 
@@ -802,7 +793,7 @@ final class TerminalTests: XCTestCase {
 
     @MainActor
     func testBlockTerminalNarrowHeaderLayout() {
-        let blockSession = BlockTerminalSession(workingDirectory: "/Users/test/anydiff-swift")
+        let blockSession = BlockTerminalSession(workingDirectory: "/Users/test/anydiff-swift", startShell: false)
         // Create a block that failed with exit code 127
         let block = blockSession.multiBuffer.createBlock(
             command: "дд",
@@ -838,6 +829,7 @@ final class TerminalTests: XCTestCase {
     func testTerminalDragSelectionAutoScroll() {
         let session = TerminalSession(workingDirectory: "/tmp")
         let termView = TerminalNSView(session: session, theme: .vesper)
+        termView.pasteboard = NSPasteboard.withUniqueName()
         termView.frame = NSRect(x: 0, y: 0, width: 400, height: 200)
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 400, height: 200),
@@ -912,6 +904,7 @@ final class TerminalTests: XCTestCase {
     func testSelectionSingleLineBackwardsCopy() {
         let session = TerminalSession(workingDirectory: "/tmp")
         let termView = TerminalNSView(session: session, theme: .vesper)
+        termView.pasteboard = NSPasteboard.withUniqueName()
         termView.frame = NSRect(x: 0, y: 0, width: 400, height: 200)
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 400, height: 200),
@@ -983,7 +976,7 @@ final class TerminalTests: XCTestCase {
         )!
         termView.keyDown(with: copyEvent)
 
-        let copied = NSPasteboard.general.string(forType: .string) ?? ""
+        let copied = termView.pasteboard.string(forType: .string) ?? ""
         XCTAssertFalse(copied.isEmpty, "Backwards selection copy should not be empty")
         XCTAssertTrue(copied.contains("HELLO") || copied.contains("WORLD"), "Should copy text from backwards drag, got: \(copied)")
     }
@@ -1010,6 +1003,7 @@ final class TerminalTests: XCTestCase {
     func testRussianLayoutShortcuts() {
         let session = TerminalSession(workingDirectory: "/tmp")
         let termView = TerminalNSView(session: session, theme: .vesper)
+        termView.pasteboard = NSPasteboard.withUniqueName()
         termView.frame = NSRect(x: 0, y: 0, width: 400, height: 200)
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 400, height: 200),
@@ -1025,8 +1019,8 @@ final class TerminalTests: XCTestCase {
         }
 
         // Test 1: Cmd+V with Russian layout (keyCode 9 = 'v', but characters = "м")
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString("PASTED_FROM_RU", forType: .string)
+        termView.pasteboard.clearContents()
+        termView.pasteboard.setString("PASTED_FROM_RU", forType: .string)
 
         let cmdVEvent = NSEvent.keyEvent(
             with: .keyDown,
@@ -1182,14 +1176,14 @@ final class TerminalTests: XCTestCase {
                 XCTAssertGreaterThan(block.lines.count, 5, "Expected more than 5 lines for ls -lah")
                 exp.fulfill()
             } else {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) {
                     checkOutput(attempts: attempts - 1)
                 }
             }
         }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            checkOutput(attempts: 40)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) {
+            checkOutput(attempts: 200)
         }
 
         wait(for: [exp], timeout: 8.0)
@@ -1203,6 +1197,20 @@ final class TerminalTests: XCTestCase {
 
         session.execute(command: "cd /tmp")
 
+        func checkCdBack(attempts: Int) {
+            if let block2 = session.multiBuffer.blocks.last, block2.status != .running || attempts <= 0 {
+                let lines2 = block2.lines.map(\.rawText)
+                XCTAssertFalse(lines2.contains("cd -"), "Block lines should NOT contain the echoed command 'cd -': \(lines2)")
+                XCTAssertTrue(lines2.joined(separator: "\n").contains(initialDir) || lines2.joined(separator: "\n").contains("~"),
+                              "Expected cd - output to contain previous directory path, got: \(lines2)")
+                exp.fulfill()
+            } else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) {
+                    checkCdBack(attempts: attempts - 1)
+                }
+            }
+        }
+
         func checkCd(attempts: Int) {
             guard let block = session.multiBuffer.blocks.first else {
                 XCTFail("No block created for cd")
@@ -1212,14 +1220,8 @@ final class TerminalTests: XCTestCase {
                 // cd /tmp produces no stdout/stderr output; command echo must be stripped
                 XCTAssertTrue(block.lines.isEmpty, "Expected cd /tmp to produce 0 output lines, got: \(block.lines.map(\.rawText))")
                 session.execute(command: "cd -")
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                    if let block2 = session.multiBuffer.blocks.last {
-                        let lines2 = block2.lines.map(\.rawText)
-                        XCTAssertFalse(lines2.contains("cd -"), "Block lines should NOT contain the echoed command 'cd -': \(lines2)")
-                        XCTAssertTrue(lines2.joined(separator: "\n").contains(initialDir) || lines2.joined(separator: "\n").contains("~"),
-                                      "Expected cd - output to contain previous directory path, got: \(lines2)")
-                    }
-                    exp.fulfill()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) {
+                    checkCdBack(attempts: 200)
                 }
             } else if attempts <= 0 {
                 if ProcessInfo.processInfo.environment["CI"] != nil {
@@ -1229,14 +1231,14 @@ final class TerminalTests: XCTestCase {
                 XCTAssertEqual(block.status, .success)
                 exp.fulfill()
             } else {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) {
                     checkCd(attempts: attempts - 1)
                 }
             }
         }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            checkCd(attempts: 40)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) {
+            checkCd(attempts: 200)
         }
 
         wait(for: [exp], timeout: 8.0)
@@ -1277,13 +1279,13 @@ final class TerminalTests: XCTestCase {
                 return
             }
 
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) {
                 checkEcho(attempts: attempts - 1)
             }
         }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            checkEcho(attempts: 40)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) {
+            checkEcho(attempts: 200)
         }
 
         wait(for: [exp], timeout: 8.0)
@@ -1300,8 +1302,9 @@ final class TerminalTests: XCTestCase {
         multiBuffer.appendOutput(to: block2.id, text: "file1.txt\nfile2.txt\nfile3.txt\n")
         multiBuffer.completeBlock(id: block2.id, exitCode: 0)
 
-        let session = BlockTerminalSession(workingDirectory: "/Users/test", multiBuffer: multiBuffer)
+        let session = BlockTerminalSession(workingDirectory: "/Users/test", multiBuffer: multiBuffer, startShell: false)
         let canvas = BlockTerminalNSView(session: session, theme: .vesper, fontSize: 12)
+        canvas.pasteboard = NSPasteboard.withUniqueName()
         canvas.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
         canvas.rebuildLayout()
 
@@ -1332,7 +1335,7 @@ final class TerminalTests: XCTestCase {
             multiBuffer.completeBlock(id: b.id, exitCode: 0)
         }
 
-        let session = BlockTerminalSession(workingDirectory: "/Users/test", multiBuffer: multiBuffer)
+        let session = BlockTerminalSession(workingDirectory: "/Users/test", multiBuffer: multiBuffer, startShell: false)
         let canvas = BlockTerminalNSView(session: session, theme: .vesper, fontSize: 12)
         canvas.frame = NSRect(x: 0, y: 0, width: 400, height: 200)
         canvas.rebuildLayout()
@@ -1377,8 +1380,9 @@ final class TerminalTests: XCTestCase {
         multiBuffer.appendOutput(to: block.id, text: "hello world\nsecond line\n")
         multiBuffer.completeBlock(id: block.id, exitCode: 0)
 
-        let session = BlockTerminalSession(workingDirectory: "/Users/test", multiBuffer: multiBuffer)
+        let session = BlockTerminalSession(workingDirectory: "/Users/test", multiBuffer: multiBuffer, startShell: false)
         let canvas = BlockTerminalNSView(session: session, theme: .vesper, fontSize: 12)
+        canvas.pasteboard = NSPasteboard.withUniqueName()
         canvas.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
         canvas.rebuildLayout()
 
@@ -1401,8 +1405,9 @@ final class TerminalTests: XCTestCase {
         multiBuffer.appendOutput(to: block.id, text: "Building target AnyDiff...\nBuild complete!\n")
         multiBuffer.completeBlock(id: block.id, exitCode: 0)
 
-        let session = BlockTerminalSession(workingDirectory: "/Users/test", multiBuffer: multiBuffer)
+        let session = BlockTerminalSession(workingDirectory: "/Users/test", multiBuffer: multiBuffer, startShell: false)
         let canvas = BlockTerminalNSView(session: session, theme: .vesper, fontSize: 12)
+        canvas.pasteboard = NSPasteboard.withUniqueName()
         canvas.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
         canvas.rebuildLayout()
 
@@ -1422,8 +1427,9 @@ final class TerminalTests: XCTestCase {
         multiBuffer.appendOutput(to: block.id, text: "[feat/terminal 123456] feat: terminal\n 1 file changed\n")
         multiBuffer.completeBlock(id: block.id, exitCode: 0)
 
-        let session = BlockTerminalSession(workingDirectory: "/Users/test", multiBuffer: multiBuffer)
+        let session = BlockTerminalSession(workingDirectory: "/Users/test", multiBuffer: multiBuffer, startShell: false)
         let canvas = BlockTerminalNSView(session: session, theme: .vesper, fontSize: 12)
+        canvas.pasteboard = NSPasteboard.withUniqueName()
         canvas.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
         canvas.rebuildLayout()
 
@@ -1441,7 +1447,7 @@ final class TerminalTests: XCTestCase {
 
         // 2. Perform copy
         canvas.copy(nil)
-        let clipboard = NSPasteboard.general.string(forType: .string)
+        let clipboard = canvas.pasteboard.string(forType: .string)
         XCTAssertEqual(clipboard, "commit")
 
         // 3. Select from command line into output
@@ -1470,8 +1476,9 @@ final class TerminalTests: XCTestCase {
         multiBuffer.appendOutput(to: block.id, text: "=== Branch & Last Commit ===\nmain\n")
         multiBuffer.completeBlock(id: block.id, exitCode: 0)
 
-        let session = BlockTerminalSession(workingDirectory: "/Users/test", multiBuffer: multiBuffer)
+        let session = BlockTerminalSession(workingDirectory: "/Users/test", multiBuffer: multiBuffer, startShell: false)
         let canvas = BlockTerminalNSView(session: session, theme: .vesper, fontSize: 12)
+        canvas.pasteboard = NSPasteboard.withUniqueName()
         canvas.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
         canvas.rebuildLayout()
 
@@ -1540,8 +1547,9 @@ final class TerminalTests: XCTestCase {
         multiBuffer.appendOutput(to: block2.id, text: "output 2\n")
         multiBuffer.completeBlock(id: block2.id, exitCode: 0)
 
-        let session = BlockTerminalSession(workingDirectory: "/Users/test", multiBuffer: multiBuffer)
+        let session = BlockTerminalSession(workingDirectory: "/Users/test", multiBuffer: multiBuffer, startShell: false)
         let canvas = BlockTerminalNSView(session: session, theme: .vesper, fontSize: 12)
+        canvas.pasteboard = NSPasteboard.withUniqueName()
         canvas.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
         canvas.rebuildLayout()
 
@@ -1570,8 +1578,9 @@ final class TerminalTests: XCTestCase {
         multiBuffer.appendOutput(to: block.id, text: "total 0\n")
         multiBuffer.completeBlock(id: block.id, exitCode: 0)
 
-        let session = BlockTerminalSession(workingDirectory: "/Users/test", multiBuffer: multiBuffer)
+        let session = BlockTerminalSession(workingDirectory: "/Users/test", multiBuffer: multiBuffer, startShell: false)
         let canvas = BlockTerminalNSView(session: session, theme: .vesper, fontSize: 12)
+        canvas.pasteboard = NSPasteboard.withUniqueName()
         canvas.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
         canvas.rebuildLayout()
 
@@ -1605,7 +1614,7 @@ final class TerminalTests: XCTestCase {
         multiBuffer.appendOutput(to: block.id, text: longLine + "\n")
         multiBuffer.completeBlock(id: block.id, exitCode: 0)
 
-        let session = BlockTerminalSession(workingDirectory: "/Users/test", multiBuffer: multiBuffer)
+        let session = BlockTerminalSession(workingDirectory: "/Users/test", multiBuffer: multiBuffer, startShell: false)
         let canvas = BlockTerminalNSView(session: session, theme: .vesper, fontSize: 12)
         canvas.frame = NSRect(x: 0, y: 0, width: 400, height: 300)
 
@@ -1644,7 +1653,7 @@ final class TerminalTests: XCTestCase {
         multiBuffer.appendOutput(to: block.id, text: longText + "\n")
         multiBuffer.completeBlock(id: block.id, exitCode: 0)
 
-        let session = BlockTerminalSession(workingDirectory: "/Users/test", multiBuffer: multiBuffer)
+        let session = BlockTerminalSession(workingDirectory: "/Users/test", multiBuffer: multiBuffer, startShell: false)
         let canvas = BlockTerminalNSView(session: session, theme: .vesper, fontSize: 12)
         canvas.frame = NSRect(x: 0, y: 0, width: 400, height: 300)
         canvas.rebuildLayout()
@@ -1663,8 +1672,8 @@ final class TerminalTests: XCTestCase {
         canvas.scrollOffsetX = 0
 
         // 2. Dominant horizontal scroll: wheel1 (Y) is -5, wheel2 (X) is -40
-        // Wait slightly or simulate fresh gesture so timeSinceLastEvent > 0.35
-        Thread.sleep(forTimeInterval: 0.4)
+        // Reset gesture state so the next scroll starts a fresh gesture without sleeping 0.4s
+        canvas.resetScrollAxisLockForTesting()
         if let cgEvent = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: -5, wheel2: -40, wheel3: 0),
            let nsEvent = NSEvent(cgEvent: cgEvent) {
             canvas.scrollWheel(with: nsEvent)
@@ -1685,7 +1694,7 @@ final class TerminalTests: XCTestCase {
         multiBuffer.appendOutput(to: block2.id, text: "output line\n")
         multiBuffer.completeBlock(id: block2.id, exitCode: 0)
 
-        let session = BlockTerminalSession(workingDirectory: "/Users/test", multiBuffer: multiBuffer)
+        let session = BlockTerminalSession(workingDirectory: "/Users/test", multiBuffer: multiBuffer, startShell: false)
         let canvas = BlockTerminalNSView(session: session, theme: .vesper, fontSize: 12)
         canvas.frame = NSRect(x: 0, y: 0, width: 400, height: 300)
         canvas.rebuildLayout()
@@ -1705,7 +1714,7 @@ final class TerminalTests: XCTestCase {
 
     @MainActor
     func testTerminalCoordinatorTabManagement() {
-        let coordinator = TerminalCoordinator(workingDirectory: "/tmp")
+        let coordinator = TerminalCoordinator(workingDirectory: "/tmp", startShell: false)
         XCTAssertEqual(coordinator.tabs.count, 1)
         XCTAssertEqual(coordinator.tabs[0].title, "Terminal 1")
         XCTAssertEqual(coordinator.activeTabId, coordinator.tabs[0].id)
@@ -1752,7 +1761,7 @@ final class TerminalTests: XCTestCase {
 
     @MainActor
     func testTerminalCoordinatorMultiPanelSlotTabs() {
-        let coordinator = TerminalCoordinator(workingDirectory: "/tmp")
+        let coordinator = TerminalCoordinator(workingDirectory: "/tmp", startShell: false)
         XCTAssertEqual(coordinator.tabs.count, 1)
         let tab1 = coordinator.tabs[0]
 
@@ -1789,7 +1798,7 @@ final class TerminalTests: XCTestCase {
 
     @MainActor
     func testTerminalTabDisplayTitleAndRename() {
-        let tab = TerminalTab(title: "Terminal 1", workingDirectory: "/tmp")
+        let tab = TerminalTab(title: "Terminal 1", workingDirectory: "/tmp", startShell: false)
         XCTAssertEqual(tab.displayTitle, "tmp")
 
         tab.rename(to: "Dev Server")
@@ -1803,7 +1812,7 @@ final class TerminalTests: XCTestCase {
 
     @MainActor
     func testMultipleTerminalsBackgroundExecution() {
-        let coordinator = TerminalCoordinator(workingDirectory: "/tmp")
+        let coordinator = TerminalCoordinator(workingDirectory: "/tmp", startShell: false)
         let tab1 = coordinator.tabs[0]
         let tab2 = coordinator.createTab(workingDirectory: "/tmp")
 
@@ -1826,7 +1835,7 @@ final class TerminalTests: XCTestCase {
 
     @MainActor
     func testTerminalTabRenameInlineView() {
-        let coordinator = TerminalCoordinator(workingDirectory: "/tmp")
+        let coordinator = TerminalCoordinator(workingDirectory: "/tmp", startShell: false)
         let view = TerminalPanelView(coordinator: coordinator, theme: .vesper, fontSize: 12)
         let hosting = NSHostingView(rootView: view)
         hosting.frame = NSRect(x: 0, y: 0, width: 800, height: 600)
@@ -1848,7 +1857,7 @@ final class TerminalTests: XCTestCase {
 
     @MainActor
     func testTerminalTabBarEmptySpaceDoubleClicksCreatesTab() {
-        let coordinator = TerminalCoordinator(workingDirectory: "/tmp")
+        let coordinator = TerminalCoordinator(workingDirectory: "/tmp", startShell: false)
         XCTAssertEqual(coordinator.tabs.count, 1)
 
         let view = TerminalPanelView(coordinator: coordinator, theme: .vesper, fontSize: 12)
@@ -1856,7 +1865,6 @@ final class TerminalTests: XCTestCase {
         hosting.frame = NSRect(x: 0, y: 0, width: 800, height: 600)
         let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600), styleMask: [.borderless], backing: .buffered, defer: false)
         win.contentView = hosting
-        win.makeKeyAndOrderFront(nil)
         hosting.layoutSubtreeIfNeeded()
 
         // Double click on empty space creates new tab
@@ -1912,13 +1920,12 @@ final class TerminalTests: XCTestCase {
     @MainActor
     func testTerminalInputBarTabCompletion() {
         let repoDir = FileManager.default.currentDirectoryPath
-        let session = BlockTerminalSession(workingDirectory: repoDir)
+        let session = BlockTerminalSession(workingDirectory: repoDir, startShell: false)
         let bar = TerminalInputBarView(session: session, theme: .vesper)
         let hosting = NSHostingView(rootView: bar)
         hosting.frame = NSRect(x: 0, y: 0, width: 600, height: 100)
         let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 100), styleMask: [.borderless], backing: .buffered, defer: false)
         win.contentView = hosting
-        win.makeKeyAndOrderFront(nil)
         hosting.layoutSubtreeIfNeeded()
 
         func findTextView(_ v: NSView) -> NSTextView? {
@@ -2031,13 +2038,12 @@ final class TerminalTests: XCTestCase {
     @MainActor
     func testTerminalInputBarTypingDoesNotAutoTriggerSuggestions() {
         let repoDir = FileManager.default.currentDirectoryPath
-        let session = BlockTerminalSession(workingDirectory: repoDir)
+        let session = BlockTerminalSession(workingDirectory: repoDir, startShell: false)
         let bar = TerminalInputBarView(session: session, theme: .vesper)
         let hosting = NSHostingView(rootView: bar)
         hosting.frame = NSRect(x: 0, y: 0, width: 600, height: 100)
         let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 100), styleMask: [.borderless], backing: .buffered, defer: false)
         win.contentView = hosting
-        win.makeKeyAndOrderFront(nil)
         hosting.layoutSubtreeIfNeeded()
 
         func findTextView(_ v: NSView) -> NSTextView? {
@@ -2078,7 +2084,7 @@ final class TerminalTests: XCTestCase {
 
     @MainActor
     func testTerminalInputBarViewRenderingWithFolderMenu() {
-        let session = BlockTerminalSession(workingDirectory: FileManager.default.currentDirectoryPath)
+        let session = BlockTerminalSession(workingDirectory: FileManager.default.currentDirectoryPath, startShell: false)
         let bar = TerminalInputBarView(session: session, theme: .vesper)
         let hosting = NSHostingView(rootView: bar)
         hosting.frame = NSRect(x: 0, y: 0, width: 400, height: 40)
@@ -2088,7 +2094,7 @@ final class TerminalTests: XCTestCase {
 
     @MainActor
     func testTerminalCoordinatorNewTabFollowsDefaultWorkingDirectoryWhenProjectSwitches() {
-        let coordinator = TerminalCoordinator(workingDirectory: "/Users/test/anydiff-swift")
+        let coordinator = TerminalCoordinator(workingDirectory: "/Users/test/anydiff-swift", startShell: false)
         XCTAssertEqual(coordinator.tabs.count, 1)
         XCTAssertEqual(coordinator.tabs[0].currentDirectory, "/Users/test/anydiff-swift")
 
@@ -2103,7 +2109,7 @@ final class TerminalTests: XCTestCase {
 
     @MainActor
     func testTerminalCoordinatorCloseLastTab() {
-        let coordinator = TerminalCoordinator(workingDirectory: "/tmp")
+        let coordinator = TerminalCoordinator(workingDirectory: "/tmp", startShell: false)
         XCTAssertEqual(coordinator.tabs.count, 1)
         guard let onlyTab = coordinator.tabs.first else {
             XCTFail("Expected 1 tab")
@@ -2125,7 +2131,7 @@ final class TerminalTests: XCTestCase {
     @MainActor
     func testBlockTerminalNSViewEmptyStateRenderingNarrowBounds() {
         let multiBuffer = TerminalMultiBuffer()
-        let session = BlockTerminalSession(workingDirectory: "/tmp", multiBuffer: multiBuffer)
+        let session = BlockTerminalSession(workingDirectory: "/tmp", multiBuffer: multiBuffer, startShell: false)
         let canvas = BlockTerminalNSView(session: session, theme: .vesper, fontSize: 12)
         canvas.frame = NSRect(x: 0, y: 0, width: 160, height: 250)
 
@@ -2164,7 +2170,7 @@ final class TerminalTests: XCTestCase {
     @MainActor
     func testBlockTerminalDoesNotCreateOrphanBlocksWhileRunning() {
         let multiBuffer = TerminalMultiBuffer()
-        let session = BlockTerminalSession(workingDirectory: "/tmp", multiBuffer: multiBuffer)
+        let session = BlockTerminalSession(workingDirectory: "/tmp", multiBuffer: multiBuffer, startShell: false)
 
         // When a process is running, submitting input via execute must NOT create orphan command blocks.
         _ = multiBuffer.createBlock(command: "cat", workingDirectory: "/tmp")
@@ -2224,7 +2230,7 @@ final class TerminalTests: XCTestCase {
             if !sentInput && session.isProcessRunning {
                 sentInput = true
                 // Wait briefly for startMarker before sending stdin
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.015) {
                     session.execute(command: "ls")
                     poll(attempts: attempts - 1)
                 }
@@ -2237,7 +2243,7 @@ final class TerminalTests: XCTestCase {
                 XCTAssertEqual(catBlock.status, .running)
                 sentInterrupt = true
                 session.sendInterrupt()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) {
                     poll(attempts: attempts - 1)
                 }
                 return
@@ -2260,16 +2266,166 @@ final class TerminalTests: XCTestCase {
                 return
             }
 
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.005) {
                 poll(attempts: attempts - 1)
             }
         }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            poll(attempts: 60)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.005) {
+            poll(attempts: 1200)
         }
 
         wait(for: [exp], timeout: 10.0)
+    }
+
+    private func makeEscapeEvent(for window: NSWindow) throws -> NSEvent {
+        try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: window.windowNumber,
+            context: nil,
+            characters: "\u{1b}",
+            charactersIgnoringModifiers: "\u{1b}",
+            isARepeat: false,
+            keyCode: 53
+        ))
+    }
+
+    @MainActor
+    func testBlockTerminalNSViewEscapeClearsSelection() throws {
+        let multiBuffer = TerminalMultiBuffer()
+        let block = multiBuffer.createBlock(command: "echo hello", workingDirectory: "/tmp")
+        multiBuffer.appendOutput(to: block.id, text: "hello world\nsecond line\n")
+        multiBuffer.completeBlock(id: block.id, exitCode: 0)
+
+        let session = BlockTerminalSession(workingDirectory: "/tmp", multiBuffer: multiBuffer, startShell: false)
+        var cancelCount = 0
+
+        let rootView = BlockTerminalView(session: session, theme: .vesper, fontSize: 12)
+            .frame(width: 500, height: 300)
+            .background(
+                MainWindowShortcuts(
+                    onSelectPanel: { _ in },
+                    onToggleDiffLayout: {},
+                    onReload: {},
+                    onOpenShortcut: {},
+                    onOpenFolder: {},
+                    onOpenSourcePopover: {},
+                    onOpenBrowser: {},
+                    onToggleSearch: {},
+                    onOpenSearch: {},
+                    onNextSearchMatch: {},
+                    onPreviousSearchMatch: {},
+                    onZoomIn: {},
+                    onZoomOut: {},
+                    onZoomReset: {},
+                    onToggleAgent: {},
+                    onToggleMarkdown: {},
+                    onCancel: { cancelCount += 1 }
+                )
+            )
+
+        let hostingView = NSHostingView(rootView: rootView)
+        hostingView.frame = NSRect(x: 0, y: 0, width: 500, height: 300)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 500, height: 300),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = hostingView
+        window.makeKeyAndOrderFront(nil)
+        hostingView.layoutSubtreeIfNeeded()
+
+        func findBlockTerminal(in view: NSView) -> BlockTerminalNSView? {
+            if let tv = view as? BlockTerminalNSView { return tv }
+            for sub in view.subviews {
+                if let found = findBlockTerminal(in: sub) { return found }
+            }
+            return nil
+        }
+
+        let canvas = try XCTUnwrap(findBlockTerminal(in: hostingView))
+        window.makeFirstResponder(canvas)
+        canvas.selectAll(nil)
+        XCTAssertTrue(canvas.hasSelection)
+
+        let firstEsc = try makeEscapeEvent(for: window)
+        window.sendEvent(firstEsc)
+
+        XCTAssertFalse(canvas.hasSelection, "First Escape must clear BlockTerminalNSView selection")
+        XCTAssertNil(canvas.selectionAnchor)
+        XCTAssertNil(canvas.cursorPoint)
+        XCTAssertEqual(cancelCount, 0, "First Escape must not fall through to MainWindowShortcuts onCancel")
+
+        let secondEsc = try makeEscapeEvent(for: window)
+        window.sendEvent(secondEsc)
+        XCTAssertEqual(cancelCount, 1, "Second Escape with no selection should propagate to MainWindowShortcuts onCancel")
+    }
+
+    @MainActor
+    func testTerminalNSViewEscapeClearsSelection() throws {
+        let session = TerminalSession(workingDirectory: "/tmp")
+        let parser = TerminalEscapeParser(screen: session.screen)
+        parser.feed("hello terminal world\r\n".data(using: .utf8)!)
+
+        var cancelCount = 0
+        let rootView = TerminalView(session: session, theme: .vesper, fontSize: 12)
+            .frame(width: 400, height: 200)
+            .background(
+                MainWindowShortcuts(
+                    onSelectPanel: { _ in },
+                    onToggleDiffLayout: {},
+                    onReload: {},
+                    onOpenShortcut: {},
+                    onOpenFolder: {},
+                    onOpenSourcePopover: {},
+                    onOpenBrowser: {},
+                    onToggleSearch: {},
+                    onOpenSearch: {},
+                    onNextSearchMatch: {},
+                    onPreviousSearchMatch: {},
+                    onZoomIn: {},
+                    onZoomOut: {},
+                    onZoomReset: {},
+                    onToggleAgent: {},
+                    onToggleMarkdown: {},
+                    onCancel: { cancelCount += 1 }
+                )
+            )
+
+        let hostingView = NSHostingView(rootView: rootView)
+        hostingView.frame = NSRect(x: 0, y: 0, width: 400, height: 200)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 200),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = hostingView
+        window.makeKeyAndOrderFront(nil)
+        hostingView.layoutSubtreeIfNeeded()
+
+        func findTerminal(in view: NSView) -> TerminalNSView? {
+            if let tv = view as? TerminalNSView { return tv }
+            for sub in view.subviews {
+                if let found = findTerminal(in: sub) { return found }
+            }
+            return nil
+        }
+
+        let termView = try XCTUnwrap(findTerminal(in: hostingView))
+        window.makeFirstResponder(termView)
+        termView.selectAll(nil)
+        XCTAssertTrue(termView.hasSelection)
+
+        let esc = try makeEscapeEvent(for: window)
+        window.sendEvent(esc)
+
+        XCTAssertFalse(termView.hasSelection, "Escape must clear TerminalNSView selection")
+        XCTAssertEqual(cancelCount, 0, "Clearing selection must consume Escape before MainWindowShortcuts onCancel")
     }
 }
 

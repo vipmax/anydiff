@@ -71,12 +71,30 @@ final class AgentSessionCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(session.title, "Session 1")
 
-        // User sends a message
+        // User sends a message longer than 32 chars; UI handles visual truncation
         session.manager.sendPrompt("Review these changes carefully for bugs", workingDirectory: "/tmp")
 
         let exp = expectation(description: "Title updates on main queue")
         DispatchQueue.main.async {
-            XCTAssertEqual(session.title, "Review these changes carefully f…")
+            XCTAssertEqual(session.title, "Review these changes carefully for bugs")
+            exp.fulfill()
+        }
+        wait(for: [exp], timeout: 1.0)
+    }
+
+    func testAutoTitleCapsExtremelyLongFirstUserMessage() {
+        let coordinator = AgentSessionCoordinator(isMockAgent: false, autoCreateSession: true)
+        let session = coordinator.activeSession!
+
+        let longPrompt = String(repeating: "a", count: AgentSessionItem.maxAutoTitleLength + 25)
+        session.manager.sendPrompt("\n  \(longPrompt)\nsecond line", workingDirectory: "/tmp")
+
+        let exp = expectation(description: "Long title is capped on main queue")
+        DispatchQueue.main.async {
+            XCTAssertEqual(
+                session.title,
+                String(repeating: "a", count: AgentSessionItem.maxAutoTitleLength) + "…"
+            )
             exp.fulfill()
         }
         wait(for: [exp], timeout: 1.0)
@@ -314,36 +332,79 @@ final class AgentSessionCoordinatorTests: XCTestCase {
         XCTAssertNil(turnSum)
     }
 
+    private static var templateGitRepos: [String: URL] = [:]
+
+    override class func tearDown() {
+        for url in templateGitRepos.values {
+            try? FileManager.default.removeItem(at: url)
+        }
+        templateGitRepos.removeAll()
+        super.tearDown()
+    }
+
+    private func cloneTemplateGitRepo(
+        to destinationDir: URL,
+        initialFile: String,
+        content: String
+    ) throws {
+        let key = "\(initialFile)\0\(content)"
+        let templateURL: URL
+        if let existing = Self.templateGitRepos[key], FileManager.default.fileExists(atPath: existing.path) {
+            templateURL = existing
+        } else {
+            let tpl = FileManager.default.temporaryDirectory
+                .appendingPathComponent("anydiff-git-tpl-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(at: tpl, withIntermediateDirectories: true)
+            try content.write(to: tpl.appendingPathComponent(initialFile), atomically: true, encoding: .utf8)
+
+            let initProc = Process()
+            initProc.executableURL = URL(fileURLWithPath: "/bin/sh")
+            initProc.arguments = [
+                "-c",
+                "git -C \"$1\" init && git -C \"$1\" add \"$2\" && git -C \"$1\" -c user.name=Test -c user.email=test@example.com commit -m 'Initial commit'",
+                "sh",
+                tpl.path,
+                initialFile
+            ]
+            initProc.standardOutput = FileHandle.nullDevice
+            initProc.standardError = FileHandle.nullDevice
+            try initProc.run()
+            initProc.waitUntilExit()
+            Self.templateGitRepos[key] = tpl
+            templateURL = tpl
+        }
+
+        if FileManager.default.fileExists(atPath: destinationDir.path) {
+            try FileManager.default.removeItem(at: destinationDir)
+        }
+        try FileManager.default.copyItem(at: templateURL, to: destinationDir)
+    }
+
     func testPreExistingDirtyWorkingTreeDoesNotAttributeToTurn() throws {
         let tempDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("anydiff-git-test-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
+        try cloneTemplateGitRepo(to: tempDir, initialFile: "existing_file.txt", content: "initial content\n")
 
         func runProcess(_ args: [String]) {
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-            p.arguments = ["-C", tempDir.path] + args
+            p.arguments = ["-C", tempDir.path, "-c", "user.name=Test", "-c", "user.email=test@example.com"] + args
             p.standardOutput = FileHandle.nullDevice
             p.standardError = FileHandle.nullDevice
             try? p.run()
             p.waitUntilExit()
         }
 
-        runProcess(["init"])
-        runProcess(["config", "user.name", "Test"])
-        runProcess(["config", "user.email", "test@example.com"])
-
-        let file1URL = tempDir.appendingPathComponent("existing_file.txt")
-        try "initial content\n".write(to: file1URL, atomically: true, encoding: .utf8)
-        runProcess(["add", "existing_file.txt"])
-        runProcess(["commit", "-m", "Initial commit"])
-
         // Simulate 10 pre-existing modified files in the working directory before turn starts
+        var dirtyPaths: [String] = []
+        dirtyPaths.reserveCapacity(10)
         for i in 1...10 {
-            let fileURL = tempDir.appendingPathComponent("dirty_\(i).txt")
+            let filename = "dirty_\(i).txt"
+            let fileURL = tempDir.appendingPathComponent(filename)
             try "staged content \(i)\n".write(to: fileURL, atomically: true, encoding: .utf8)
-            runProcess(["add", "dirty_\(i).txt"])
+            dirtyPaths.append(filename)
         }
+        runProcess(["add"] + dirtyPaths)
 
         // 1. Capture snapshot before turn
         let snapshot = AgentGitChangesDetector.capturePreTurnSnapshot(workingDirectory: tempDir.path)
@@ -369,27 +430,20 @@ final class AgentSessionCoordinatorTests: XCTestCase {
 
     func testPreExistingUntrackedFileCommittedDuringTurnDoesNotAttributeToTurn() throws {
         let tempDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("anydiff-git-untracked-test-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
+        try cloneTemplateGitRepo(to: tempDir, initialFile: "existing_file.txt", content: "initial content\n")
 
         func runProcess(_ args: [String]) {
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-            p.arguments = ["-C", tempDir.path] + args
+            p.arguments = ["-C", tempDir.path, "-c", "user.name=Test", "-c", "user.email=test@example.com"] + args
             p.standardOutput = FileHandle.nullDevice
             p.standardError = FileHandle.nullDevice
             try? p.run()
             p.waitUntilExit()
         }
 
-        runProcess(["init"])
-        runProcess(["config", "user.name", "Test"])
-        runProcess(["config", "user.email", "test@example.com"])
-
         let file1URL = tempDir.appendingPathComponent("existing_file.txt")
-        try "initial content\n".write(to: file1URL, atomically: true, encoding: .utf8)
-        runProcess(["add", "existing_file.txt"])
-        runProcess(["commit", "-m", "Initial commit"])
 
         // 1. Simulate pre-existing dirty tracked file and pre-existing untracked file
         try "modified existing content\n".write(to: file1URL, atomically: true, encoding: .utf8)
@@ -425,23 +479,8 @@ final class AgentSessionCoordinatorTests: XCTestCase {
 
     func testPreExistingUntrackedFileModifiedDuringTurnProducesExactDiffAndRevertsCleanly() throws {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("anydiff_untracked_turn_test_\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
-
-        func runProcess(_ args: [String]) {
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-            p.currentDirectoryURL = tempDir
-            p.arguments = ["-c", "user.name=Test", "-c", "user.email=test@test.com"] + args
-            try? p.run()
-            p.waitUntilExit()
-        }
-
-        runProcess(["init"])
-        let trackedURL = tempDir.appendingPathComponent("tracked.txt")
-        try "initial tracked\n".write(to: trackedURL, atomically: true, encoding: .utf8)
-        runProcess(["add", "tracked.txt"])
-        runProcess(["commit", "-m", "Initial commit"])
+        try cloneTemplateGitRepo(to: tempDir, initialFile: "tracked.txt", content: "initial tracked\n")
 
         // 1. Create a 100-line pre-existing untracked file
         let untrackedURL = tempDir.appendingPathComponent("untracked.txt")
@@ -459,13 +498,16 @@ final class AgentSessionCoordinatorTests: XCTestCase {
         XCTAssertNotNil(snapshot.untrackedBlobHashes["untracked.txt"])
 
         // 3. During turn: Agent modifies line 50 and adds 2 lines (3 additions, 1 deletion)
-        Thread.sleep(forTimeInterval: 0.6)
         var modifiedLines = originalLines
         modifiedLines[49] = "Modified Line 50 by Agent"
         modifiedLines.insert("New Line A", at: 50)
         modifiedLines.insert("New Line B", at: 51)
         let modifiedContent = modifiedLines.joined(separator: "\n") + "\n"
         try modifiedContent.write(to: untrackedURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(2.0)],
+            ofItemAtPath: untrackedURL.path
+        )
 
         // 4. Compute turn summary
         let (turnSummary, rawDiffData) = AgentGitChangesDetector.computeTurnSummary(workingDirectory: tempDir.path, snapshot: snapshot)
@@ -499,23 +541,8 @@ final class AgentSessionCoordinatorTests: XCTestCase {
 
     func testMultiTurnUntrackedFileModificationsUndoRedoSequence() throws {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("anydiff_multiturn_untracked_test_\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
-
-        func runProcess(_ args: [String]) {
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-            p.currentDirectoryURL = tempDir
-            p.arguments = ["-c", "user.name=Test", "-c", "user.email=test@test.com"] + args
-            try? p.run()
-            p.waitUntilExit()
-        }
-
-        runProcess(["init"])
-        let trackedURL = tempDir.appendingPathComponent("tracked.txt")
-        try "initial\n".write(to: trackedURL, atomically: true, encoding: .utf8)
-        runProcess(["add", "tracked.txt"])
-        runProcess(["commit", "-m", "Initial commit"])
+        try cloneTemplateGitRepo(to: tempDir, initialFile: "tracked.txt", content: "initial\n")
 
         let untrackedURL = tempDir.appendingPathComponent("untracked.swift")
         let v0Content = "// Version 0: original untracked content\nlet initial = true\n"
@@ -525,9 +552,12 @@ final class AgentSessionCoordinatorTests: XCTestCase {
         let snap1 = AgentGitChangesDetector.capturePreTurnSnapshot(workingDirectory: tempDir.path)
         XCTAssertEqual(snap1.untrackedFiles, ["untracked.swift"])
 
-        Thread.sleep(forTimeInterval: 0.6)
         let v1Content = "// Version 1: after Turn 1\nlet initial = true\nfunc turnOneFeature() {}\n"
         try v1Content.write(to: untrackedURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(2.0)],
+            ofItemAtPath: untrackedURL.path
+        )
 
         let (t1Sum, _) = AgentGitChangesDetector.computeTurnSummary(workingDirectory: tempDir.path, snapshot: snap1)
         XCTAssertNotNil(t1Sum)
@@ -538,9 +568,12 @@ final class AgentSessionCoordinatorTests: XCTestCase {
         let snap2 = AgentGitChangesDetector.capturePreTurnSnapshot(workingDirectory: tempDir.path)
         XCTAssertEqual(snap2.untrackedFiles, ["untracked.swift"])
 
-        Thread.sleep(forTimeInterval: 0.6)
         let v2Content = "// Version 2: after Turn 2\nlet initial = true\nfunc turnOneFeature() {}\nfunc turnTwoFeature() {}\n"
         try v2Content.write(to: untrackedURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(4.0)],
+            ofItemAtPath: untrackedURL.path
+        )
 
         let (t2Sum, _) = AgentGitChangesDetector.computeTurnSummary(workingDirectory: tempDir.path, snapshot: snap2)
         XCTAssertNotNil(t2Sum)

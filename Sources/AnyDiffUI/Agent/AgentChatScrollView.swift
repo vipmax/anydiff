@@ -10,6 +10,7 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
     public var agentIcon: String
     public var agentId: String
     public var toolcallColorMode: ToolcallColorMode
+    public var isCompactMode: Bool
     public var scrollToBottomTrigger: Int
     public var onNearBottomChanged: (Bool) -> Void
     public var onReview: ((AgentEditedFilesSummary) -> Void)?
@@ -31,6 +32,7 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
         agentIcon: String = "sparkles",
         agentId: String = "default",
         toolcallColorMode: ToolcallColorMode = .full,
+        isCompactMode: Bool = false,
         scrollToBottomTrigger: Int,
         onNearBottomChanged: @escaping (Bool) -> Void = { _ in },
         onReview: ((AgentEditedFilesSummary) -> Void)? = nil,
@@ -51,6 +53,7 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
         self.agentIcon = agentIcon
         self.agentId = agentId
         self.toolcallColorMode = toolcallColorMode
+        self.isCompactMode = isCompactMode
         self.scrollToBottomTrigger = scrollToBottomTrigger
         self.onNearBottomChanged = onNearBottomChanged
         self.onReview = onReview
@@ -90,6 +93,7 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
         var lastAgentIcon: String = "sparkles"
         var lastAgentId: String = "default"
         var lastToolcallColorMode: ToolcallColorMode = .full
+        var lastIsCompactMode: Bool = false
         var lastScrollToBottomTrigger: Int = -1
 
         func needsUpdate(
@@ -99,10 +103,11 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
             agentIcon: String,
             agentId: String = "default",
             toolcallColorMode: ToolcallColorMode,
+            isCompactMode: Bool,
             trigger: Int
         ) -> Bool {
-            if theme.id != lastThemeId || accentColor != lastAccentColor || agentIcon != lastAgentIcon || agentId != lastAgentId || toolcallColorMode != lastToolcallColorMode || trigger != lastScrollToBottomTrigger {
-                record(messages: messages, theme: theme, accentColor: accentColor, agentIcon: agentIcon, agentId: agentId, toolcallColorMode: toolcallColorMode, trigger: trigger)
+            if theme.id != lastThemeId || accentColor != lastAccentColor || agentIcon != lastAgentIcon || agentId != lastAgentId || toolcallColorMode != lastToolcallColorMode || isCompactMode != lastIsCompactMode || trigger != lastScrollToBottomTrigger {
+                record(messages: messages, theme: theme, accentColor: accentColor, agentIcon: agentIcon, agentId: agentId, toolcallColorMode: toolcallColorMode, isCompactMode: isCompactMode, trigger: trigger)
                 return true
             }
             let currentItemKeys = messages.map {
@@ -116,7 +121,7 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
                 )
             }
             if currentItemKeys != lastItemKeys {
-                record(messages: messages, theme: theme, accentColor: accentColor, agentIcon: agentIcon, agentId: agentId, toolcallColorMode: toolcallColorMode, trigger: trigger)
+                record(messages: messages, theme: theme, accentColor: accentColor, agentIcon: agentIcon, agentId: agentId, toolcallColorMode: toolcallColorMode, isCompactMode: isCompactMode, trigger: trigger)
                 return true
             }
             return false
@@ -129,6 +134,7 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
             agentIcon: String,
             agentId: String = "default",
             toolcallColorMode: ToolcallColorMode,
+            isCompactMode: Bool,
             trigger: Int
         ) {
             lastItemKeys = messages.map {
@@ -151,6 +157,7 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
             lastAccentColor = accentColor
             lastAgentIcon = agentIcon
             lastToolcallColorMode = toolcallColorMode
+            lastIsCompactMode = isCompactMode
             lastScrollToBottomTrigger = trigger
         }
     }
@@ -176,6 +183,7 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
             agentIcon: agentIcon,
             agentId: agentId,
             toolcallColorMode: toolcallColorMode,
+            isCompactMode: isCompactMode,
             trigger: scrollToBottomTrigger
         )
         scrollView.update(
@@ -185,6 +193,7 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
             agentIcon: agentIcon,
             agentId: agentId,
             toolcallColorMode: toolcallColorMode,
+            isCompactMode: isCompactMode,
             animated: false,
             scrollToBottomTrigger: scrollToBottomTrigger
         )
@@ -219,6 +228,7 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
             agentIcon: agentIcon,
             agentId: agentId,
             toolcallColorMode: toolcallColorMode,
+            isCompactMode: isCompactMode,
             trigger: scrollToBottomTrigger
         ) else {
             if scrollView.needsInputHeightUpdate(inputContentHeight) {
@@ -236,6 +246,7 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
             agentIcon: agentIcon,
             agentId: agentId,
             toolcallColorMode: toolcallColorMode,
+            isCompactMode: isCompactMode,
             animated: true,
             scrollToBottomTrigger: scrollToBottomTrigger
         )
@@ -253,6 +264,7 @@ public final class AgentChatScrollView: NSScrollView {
     private var pendingAgentIcon: String = "sparkles"
     private var pendingAgentId: String = "default"
     private var pendingToolcallColorMode: ToolcallColorMode = .full
+    private var pendingIsCompactMode: Bool = false
     private var pendingAnimated = false
     private var pendingScrollToBottomTrigger = 0
     private var pendingBottomInset: CGFloat = 0
@@ -401,6 +413,7 @@ public final class AgentChatScrollView: NSScrollView {
         agentIcon: String = "sparkles",
         agentId: String = "default",
         toolcallColorMode: ToolcallColorMode = .full,
+        isCompactMode: Bool = false,
         animated: Bool,
         scrollToBottomTrigger: Int = 0,
         bottomInset: CGFloat = 0
@@ -411,6 +424,7 @@ public final class AgentChatScrollView: NSScrollView {
         pendingAgentIcon = agentIcon
         pendingAgentId = agentId
         pendingToolcallColorMode = toolcallColorMode
+        pendingIsCompactMode = isCompactMode
         pendingAnimated = animated
         pendingScrollToBottomTrigger = scrollToBottomTrigger
         pendingBottomInset = bottomInset
@@ -457,6 +471,7 @@ public final class AgentChatScrollView: NSScrollView {
             agentIcon: pendingAgentIcon,
             agentId: pendingAgentId,
             toolcallColorMode: pendingToolcallColorMode,
+            isCompactMode: pendingIsCompactMode,
             in: self,
             animated: pendingAnimated
         )
@@ -579,6 +594,11 @@ public final class AgentChatScrollView: NSScrollView {
         contentView.layer?.removeAllAnimations()
     }
 
+    @discardableResult
+    public func clearAllTextSelections() -> Bool {
+        documentViewCustom.clearAllTextSelections()
+    }
+
     public var isNearBottom: Bool {
         let clipBounds = contentView.bounds
         let docHeight = documentViewCustom.bounds.height
@@ -625,6 +645,7 @@ public final class AgentChatDocumentView: NSView {
     private var agentIcon: String = "sparkles"
     private var agentId: String = "default"
     private var toolcallColorMode: ToolcallColorMode = .full
+    private var isCompactMode: Bool = false
     private var bottomInset: CGFloat = 0
     fileprivate private(set) var lastLayoutWidth: CGFloat = 0
     private var lastCulledOriginY: CGFloat = -.greatestFiniteMagnitude
@@ -724,6 +745,45 @@ public final class AgentChatDocumentView: NSView {
         layoutContent(for: max(100, lastLayoutWidth))
     }
 
+    @discardableResult
+    public func clearAllTextSelections() -> Bool {
+        var didClear = false
+        for (_, cell) in cells {
+            for tv in cell.allSelectableTextViews() {
+                if tv.selectedRange().length > 0 {
+                    tv.setSelectedRange(NSRange(location: 0, length: 0))
+                    didClear = true
+                }
+            }
+            if clearSelectionsRecursively(in: cell) {
+                didClear = true
+            }
+        }
+        return didClear
+    }
+
+    private func clearSelectionsRecursively(in root: NSView) -> Bool {
+        var didClear = false
+        for subview in root.subviews {
+            if let tv = subview as? AgentSelectableTextView {
+                if tv.selectedRange().length > 0 {
+                    tv.setSelectedRange(NSRange(location: 0, length: 0))
+                    didClear = true
+                }
+            } else if let editor = subview as? MultiBufferEditorView {
+                if editor.clearSelection() {
+                    didClear = true
+                }
+            }
+            if !subview.subviews.isEmpty {
+                if clearSelectionsRecursively(in: subview) {
+                    didClear = true
+                }
+            }
+        }
+        return didClear
+    }
+
     fileprivate func setBottomInset(_ inset: CGFloat) {
         let newInset = ceil(max(0, inset))
         guard abs(newInset - bottomInset) >= 1.0 else { return }
@@ -739,6 +799,7 @@ public final class AgentChatDocumentView: NSView {
         agentIcon: String = "sparkles",
         agentId: String = "default",
         toolcallColorMode: ToolcallColorMode,
+        isCompactMode: Bool,
         in scrollView: AgentChatScrollView,
         animated: Bool
     ) {
@@ -749,7 +810,7 @@ public final class AgentChatDocumentView: NSView {
         let accentChanged = accentColor != self.accentColor
         let iconChanged = agentIcon != self.agentIcon
         let agentIdChanged = agentId != self.agentId
-        let displayModeChanged = toolcallColorMode != self.toolcallColorMode
+        let displayModeChanged = toolcallColorMode != self.toolcallColorMode || isCompactMode != self.isCompactMode
         let messagesChanged = newIds != oldIds || newMessages.contains { message in
             messagesByID[message.id] != message
         }
@@ -766,6 +827,7 @@ public final class AgentChatDocumentView: NSView {
         self.agentIcon = agentIcon
         self.agentId = agentId
         self.toolcallColorMode = toolcallColorMode
+        self.isCompactMode = isCompactMode
 
         let newIDSet = Set(newIds)
         for (id, cell) in cells where !newIDSet.contains(id) {
@@ -798,6 +860,7 @@ public final class AgentChatDocumentView: NSView {
                         theme: theme,
                         accentColor: accentColor,
                         toolcallColorMode: toolcallColorMode,
+                        isCompactMode: isCompactMode,
                         agentIconName: agentIcon,
                         agentId: agentId
                     )
@@ -808,6 +871,7 @@ public final class AgentChatDocumentView: NSView {
                     theme: theme,
                     accentColor: accentColor,
                     toolcallColorMode: toolcallColorMode,
+                    isCompactMode: isCompactMode,
                     nativeTextSelectionEnabled: true,
                     agentIconName: agentIcon,
                     agentId: agentId
@@ -865,7 +929,7 @@ public final class AgentChatDocumentView: NSView {
         let contentWidth = max(100, width)
         lastLayoutWidth = contentWidth
 
-        var currentY: CGFloat = 8
+        var currentY: CGFloat = 10
 
         for i in 0..<orderedCells.count {
             let cell = orderedCells[i].cell

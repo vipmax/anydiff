@@ -399,6 +399,15 @@ public final class AgentSelectableTextView: NSTextView, NSTextStorageDelegate {
         NotificationCenter.default.post(name: Notification.Name("anyDiffAgentAddCurrentQuote"), object: nil)
     }
 
+    public override func cancelOperation(_ sender: Any?) {
+        if selectedRange().length > 0 {
+            setSelectedRange(NSRange(location: 0, length: 0))
+            checkAndPublishQuote(for: NSRange(location: 0, length: 0))
+        } else {
+            nextResponder?.cancelOperation(sender)
+        }
+    }
+
     public override func resetCursorRects() {
         // Do not register legacy cursor rects: registering cursor rects inside a scroll view
         // causes AppKit to invalidate the window's structural regions and recursively traverse
@@ -448,6 +457,7 @@ public final class AgentHoverButton: NSButton {
     }
 
     private func setup() {
+        title = ""
         isBordered = false
         setButtonType(.momentaryPushIn)
         imagePosition = .imageLeading

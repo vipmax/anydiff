@@ -323,14 +323,12 @@ final class ImageAttachmentHelpersTests: XCTestCase {
         tv.layoutManager?.enumerateLineFragments(forGlyphRange: NSRange(location: 0, length: (tv.string as NSString).length)) { _, _, _, _, _ in
             lines0 += 1
         }
-        print("AFTER MAKE: lines=\(lines0), tv.frame=\(tv.frame)")
 
         scrollView.setFrameSize(NSSize(width: 400, height: 600))
         var lines1 = 0
         tv.layoutManager?.enumerateLineFragments(forGlyphRange: NSRange(location: 0, length: (tv.string as NSString).length)) { _, _, _, _, _ in
             lines1 += 1
         }
-        print("AFTER setFrameSize(400) SYNCHRONOUSLY: lines=\(lines1), tv.frame=\(tv.frame)")
         XCTAssertEqual(lines0, 1, "Must be 1 line immediately upon update even before frame is set")
         XCTAssertEqual(lines1, 1, "Must be 1 line immediately upon setFrameSize without waiting for async debounce")
 

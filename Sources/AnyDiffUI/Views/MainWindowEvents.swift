@@ -21,8 +21,10 @@ public struct MainWindowEventsModifier: ViewModifier {
     public let onResetZoom: () -> Void
     public let onResetPanelsLayout: () -> Void
     public let onToolcallColorModeChanged: (ToolcallColorMode) -> Void
+    public let onCompactModeChanged: ((Bool) -> Void)?
     public let onToggleTerminal: (() -> Void)?
     public let onToggleEditingLock: (() -> Void)?
+    public let onReturnToAgentStartScreen: (() -> Void)?
 
     public init(
         onUpdateAppearance: @escaping () -> Void,
@@ -43,8 +45,10 @@ public struct MainWindowEventsModifier: ViewModifier {
         onResetZoom: @escaping () -> Void,
         onResetPanelsLayout: @escaping () -> Void,
         onToolcallColorModeChanged: @escaping (ToolcallColorMode) -> Void,
+        onCompactModeChanged: ((Bool) -> Void)? = nil,
         onToggleTerminal: (() -> Void)? = nil,
-        onToggleEditingLock: (() -> Void)? = nil
+        onToggleEditingLock: (() -> Void)? = nil,
+        onReturnToAgentStartScreen: (() -> Void)? = nil
     ) {
         self.onUpdateAppearance = onUpdateAppearance
         self.onFocusEditor = onFocusEditor
@@ -64,8 +68,10 @@ public struct MainWindowEventsModifier: ViewModifier {
         self.onResetZoom = onResetZoom
         self.onResetPanelsLayout = onResetPanelsLayout
         self.onToolcallColorModeChanged = onToolcallColorModeChanged
+        self.onCompactModeChanged = onCompactModeChanged
         self.onToggleTerminal = onToggleTerminal
         self.onToggleEditingLock = onToggleEditingLock
+        self.onReturnToAgentStartScreen = onReturnToAgentStartScreen
     }
 
     public func body(content: Content) -> some View {
@@ -107,6 +113,7 @@ public struct MainWindowEventsModifier: ViewModifier {
             }
             .onReceive(NotificationCenter.default.publisher(for: AgentDisplayPreferences.didChangeNotification)) { _ in
                 onToolcallColorModeChanged(AgentDisplayPreferences.toolcallColorMode)
+                onCompactModeChanged?(AgentDisplayPreferences.isCompactMode)
             }
             .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffAgentPermissionRequested"))) { notification in
                 guard let session = notification.object as? AgentSessionItem else { return }
@@ -169,6 +176,9 @@ public struct MainWindowEventsModifier: ViewModifier {
             }
             .onReceive(NotificationCenter.default.publisher(for: .toggleEditingLock)) { _ in
                 onToggleEditingLock?()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffReturnToAgentStartScreen"))) { _ in
+                onReturnToAgentStartScreen?()
             }
     }
 }

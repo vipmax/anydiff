@@ -68,6 +68,7 @@ open class AgentSessionManager: ObservableObject, @unchecked Sendable {
     @Published public var liveEditedSummary: AgentEditedFilesSummary? = nil
     @Published public var isNotificationsEnabled: Bool = false
     @Published public var draftPrompt: String = ""
+    @Published public var draftBlocks: [PromptBlock] = []
     @Published public var draftAttachments: [AgentImageAttachment] = []
     @Published public var promptQueue: [AgentQueuedMessage] = []
     @Published public var authMethods: [ACPAuthMethod] = []
@@ -87,6 +88,22 @@ open class AgentSessionManager: ObservableObject, @unchecked Sendable {
     open var canAcceptPrompt: Bool { pendingPermission == nil && authMethods.isEmpty }
     open var isBusyOrStreaming: Bool { status == .busy || messages.last?.isStreaming == true }
     open var hasVisibleMessages: Bool { messages.contains { $0.hasVisibleContent } || !promptQueue.isEmpty }
+    open var hasDraftContent: Bool {
+        if !draftPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return true
+        }
+        if draftBlocks.contains(where: { block in
+            switch block {
+            case .text(let text):
+                return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            case .quote(let quote):
+                return !quote.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+        }) {
+            return true
+        }
+        return !draftAttachments.isEmpty
+    }
 
     public init() {}
 
@@ -365,6 +382,7 @@ open class AgentSessionManager: ObservableObject, @unchecked Sendable {
         messages.removeAll()
         promptQueue.removeAll()
         draftPrompt = ""
+        draftBlocks.removeAll()
         draftAttachments.removeAll()
         initializationState = .notStarted
         status = .disconnected

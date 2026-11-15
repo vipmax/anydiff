@@ -19,6 +19,118 @@ extension AgentMessageCell {
         return min(maxContentWidth, available)
     }
 
+    private static let defaultBodyFirstLineHeight: CGFloat = ceil(
+        NSLayoutManager().defaultLineHeight(for: NSFont.systemFont(ofSize: 13, weight: .regular))
+    )
+
+    func firstLineHeight(for textView: NSTextView, width: CGFloat) -> CGFloat {
+        guard let layoutManager = textView.layoutManager,
+              let textContainer = textView.textContainer else {
+            return Self.defaultBodyFirstLineHeight
+        }
+        textContainer.containerSize = NSSize(width: max(1, width), height: .greatestFiniteMagnitude)
+        layoutManager.ensureLayout(for: textContainer)
+        if layoutManager.numberOfGlyphs > 0 {
+            var lineGlyphRange = NSRange(location: 0, length: 0)
+            let usedRect = layoutManager.lineFragmentUsedRect(forGlyphAt: 0, effectiveRange: &lineGlyphRange)
+            if usedRect.height > 0 {
+                // TextKit includes paragraphStyle.lineSpacing in line 0's usedRect
+                // whenever another line follows, which would shift multi-line text
+                // upward relative to single-line text and the composer input.
+                let hasTrailingLine = NSMaxRange(lineGlyphRange) < layoutManager.numberOfGlyphs ||
+                    layoutManager.extraLineFragmentTextContainer != nil
+                var lineHeight = usedRect.height
+                if hasTrailingLine, let textStorage = textView.textStorage, textStorage.length > 0 {
+                    let charIndex = min(layoutManager.characterIndexForGlyph(at: 0), textStorage.length - 1)
+                    if let paragraphStyle = textStorage.attribute(.paragraphStyle, at: charIndex, effectiveRange: nil) as? NSParagraphStyle,
+                       paragraphStyle.lineSpacing > 0 {
+                        lineHeight = max(1, lineHeight - paragraphStyle.lineSpacing)
+                    }
+                }
+                return lineHeight
+            }
+        }
+        let font = textView.font ?? NSFont.systemFont(ofSize: 13, weight: .regular)
+        return ceil(layoutManager.defaultLineHeight(for: font))
+    }
+
+    private func verticalAlignmentOffsets(
+        avatarSize: CGFloat,
+        firstRowCenterOffset: CGFloat,
+        minContentTop: CGFloat
+    ) -> (avatarY: CGFloat, contentTop: CGFloat) {
+        let baseAvatarTop: CGFloat = 2
+        let avatarCenter = baseAvatarTop + avatarSize / 2
+        let centeredContentTop = avatarCenter - firstRowCenterOffset
+        if centeredContentTop >= minContentTop {
+            return (baseAvatarTop, centeredContentTop)
+        }
+        let avatarY = minContentTop + firstRowCenterOffset - avatarSize / 2
+        return (avatarY, minContentTop)
+    }
+
+    private func userFirstRowCenterOffset(contentWidth: CGFloat) -> CGFloat {
+        if message.isQueued {
+            return 12
+        }
+        if !userImageViews.isEmpty {
+            return 12
+        }
+        if let firstView = userContentViews.first {
+            if let tv = firstView as? AgentSelectableTextView {
+                let wrapWidth = max(50, contentWidth - 6)
+                return tv.textContainerInset.height + firstLineHeight(for: tv, width: wrapWidth) / 2
+            }
+            if firstView is AgentUserCodeBlockView {
+                return 13
+            }
+            if let quoteBlock = firstView as? AgentUserQuoteBlockView {
+                let textWidth = max(20, contentWidth - 22)
+                return 7 + firstLineHeight(for: quoteBlock.tv, width: textWidth) / 2
+            }
+        }
+        return Self.defaultBodyFirstLineHeight / 2
+    }
+
+    private func assistantFirstRowCenterOffset(contentWidth: CGFloat) -> CGFloat {
+        if !thoughtHeaderButton.isHidden {
+            return 10
+        }
+        if hasCompactTopThought {
+            let thoughtWrapWidth = max(50, contentWidth - 6)
+            return thoughtTextView.textContainerInset.height + firstLineHeight(for: thoughtTextView, width: thoughtWrapWidth) / 2
+        }
+        if let firstView = firstVisibleAssistantView() {
+            if let tv = firstView as? AgentSelectableTextView {
+                let wrapWidth = max(50, contentWidth - 6)
+                return tv.textContainerInset.height + firstLineHeight(for: tv, width: wrapWidth) / 2
+            }
+            if firstView is AgentThoughtBlockView {
+                return 10
+            }
+            if firstView is AgentToolGroupView {
+                return isCompactMode ? 10 : 11
+            }
+            if firstView is AgentToolCardView {
+                return isCompactMode ? 12 : 17
+            }
+            if firstView is AgentSimpleToolCallView {
+                return 10
+            }
+            if firstView is AgentCodeBlockView {
+                return 13
+            }
+            if firstView is AgentDividerView {
+                return 8
+            }
+            if firstView.subviews.count >= 2,
+               let quoteTV = firstView.subviews[1] as? AgentSelectableTextView {
+                return 6 + firstLineHeight(for: quoteTV, width: max(50, contentWidth - 24)) / 2
+            }
+        }
+        return Self.defaultBodyFirstLineHeight / 2
+    }
+
     func invalidateLayoutCache() {
         cachedLayoutWidth = -1
         cachedLayoutHeight = 0
@@ -41,7 +153,7 @@ extension AgentMessageCell {
             // appended chunk.
             textContainer.containerSize = NSSize(width: max(1, width), height: .greatestFiniteMagnitude)
             layoutManager.ensureLayout(for: textContainer)
-            measured = max(18, ceil(layoutManager.usedRect(for: textContainer).height + textView.textContainerInset.height * 2) + 2)
+            measured = max(18, ceil(layoutManager.usedRect(for: textContainer).height + textView.textContainerInset.height * 2))
         } else {
             measured = measureAttributedTextHeight(attributedString, maxWidth: width)
         }
@@ -82,6 +194,9 @@ extension AgentMessageCell {
             )
             let visibleCodeHeight = min(maxCodeBlockHeight, codeHeight)
             return 26 + 6 + visibleCodeHeight + 10
+        }
+        if let mermaid = view as? MermaidBlockView {
+            return mermaid.measuredHeight(for: contentWidth)
         }
         if view.subviews.count >= 2 {
             let quoteTV = view.subviews[1] as? AgentSelectableTextView
@@ -163,6 +278,10 @@ extension AgentMessageCell {
                 codeBlock.codeScrollView.frame = codeScrollFrame
                 codeBlock.tv.frame = codeDocumentFrame
             }
+        } else if let mermaid = view as? MermaidBlockView {
+            let blockFrame = NSRect(x: contentLeft, y: currentY, width: contentWidth, height: height)
+            if animated { mermaid.animator().frame = blockFrame } else { mermaid.frame = blockFrame }
+            mermaid.applyLayout(width: contentWidth)
         } else if view.subviews.count >= 2 {
             let bar = view.subviews[0]
             let quoteTV = view.subviews[1] as? AgentSelectableTextView
@@ -227,9 +346,21 @@ extension AgentMessageCell {
                 contentH = queuedHeaderHeight + queuedHeaderSpacing + imagesHeight + (hasImages && hasContent ? 8 : 0) + displayedTextHeight + (isCollapsible ? (buttonSpacing + buttonHeight) : 0)
             }
             let userSize = AgentMessageCell.userAvatarSize
-            height = max(userSize + 2, 4 + contentH) + 6
+            let (avatarY, contentTop) = verticalAlignmentOffsets(
+                avatarSize: userSize,
+                firstRowCenterOffset: userFirstRowCenterOffset(contentWidth: contentWidth),
+                minContentTop: 2
+            )
+            height = max(avatarY + userSize, contentTop + contentH) + 6
         } else {
-            var currentY: CGFloat = (!thoughtHeaderButton.isHidden || hasCompactTopThought) ? 3 : 5
+            let agentSize = AgentAvatarProvider.currentAgentAvatarSize(for: agentId)
+            let minContentTop: CGFloat = (!thoughtHeaderButton.isHidden || hasCompactTopThought) ? 3 : 5
+            let (avatarY, contentTop) = verticalAlignmentOffsets(
+                avatarSize: agentSize,
+                firstRowCenterOffset: assistantFirstRowCenterOffset(contentWidth: contentWidth),
+                minContentTop: minContentTop
+            )
+            var currentY = contentTop
 
             let firstViewIsTool = isToolCallView(firstVisibleAssistantView() ?? NSView())
             if !thoughtHeaderButton.isHidden {
@@ -240,9 +371,9 @@ extension AgentMessageCell {
                         attributedString: thoughtTextView.attributedString(),
                         width: contentWidth - 10
                     )
-                    currentY += h + (firstViewIsTool ? 14 : 8)
+                    currentY += h + (firstViewIsTool ? (isCompactMode ? 10 : 14) : 8)
                 } else if firstViewIsTool {
-                    currentY += 8
+                    currentY += isCompactMode ? 5 : 8
                 }
             } else if hasCompactTopThought {
                 let h = measuredTextHeight(
@@ -250,20 +381,19 @@ extension AgentMessageCell {
                     attributedString: thoughtTextView.attributedString(),
                     width: contentWidth
                 )
-                currentY += h + (firstViewIsTool ? 14 : 8)
+                currentY += h + (firstViewIsTool ? (isCompactMode ? 10 : 14) : 8)
             }
 
             for (index, view) in orderedAssistantViews.enumerated() {
                 guard !view.isHidden, view.alphaValue > 0.01 else { continue }
                 if isEditedFilesCardView(view) {
-                    currentY += 8
+                    currentY += isCompactMode ? 6 : 8
                 }
                 let spacing = spacingAfterAssistantView(at: index)
                 currentY += assistantViewHeight(view, contentWidth: contentWidth) + spacing
             }
 
-            let agentSize = AgentAvatarProvider.currentAgentAvatarSize(for: agentId)
-            height = max(agentSize + 2 + 6, currentY)
+            height = max(avatarY + agentSize + 6, currentY)
         }
 
         cachedLayoutWidth = width
@@ -275,6 +405,7 @@ extension AgentMessageCell {
         guard message.hasVisibleContent else {
             frame = NSRect(x: 0, y: frame.origin.y, width: width, height: 0)
             roleIconView.isHidden = true
+            avatarAuraView.stopAnimating(animated: false)
             return
         }
         let contentLeft = AgentMessageCell.contentLeft
@@ -284,8 +415,14 @@ extension AgentMessageCell {
             let userSize = AgentMessageCell.userAvatarSize
             let maxW = AgentMessageCell.maxAvatarWidth
             let iconX = AgentMessageCell.iconLeft + (maxW - userSize) / 2
-            let roleFrame = NSRect(x: iconX, y: 2, width: userSize, height: userSize)
+            let (avatarY, contentTop) = verticalAlignmentOffsets(
+                avatarSize: userSize,
+                firstRowCenterOffset: userFirstRowCenterOffset(contentWidth: contentWidth),
+                minContentTop: 2
+            )
+            let roleFrame = NSRect(x: iconX, y: avatarY, width: userSize, height: userSize)
             if animated { roleIconView.animator().frame = roleFrame } else { roleIconView.frame = roleFrame }
+            avatarAuraView.frame = AgentAvatarAuraView.frame(around: roleFrame)
             stickyAvatarBaseY = roleFrame.origin.y
             if !animated { applyStickyAvatar() }
 
@@ -314,7 +451,7 @@ extension AgentMessageCell {
 
             let bubbleFrame = NSRect(
                 x: contentLeft,
-                y: 4,
+                y: contentTop,
                 width: contentWidth,
                 height: contentH
             )
@@ -432,12 +569,25 @@ extension AgentMessageCell {
             let agentSize = AgentAvatarProvider.currentAgentAvatarSize(for: agentId)
             let maxW = AgentMessageCell.maxAvatarWidth
             let iconX = AgentMessageCell.iconLeft + (maxW - agentSize) / 2
-            let roleFrame = NSRect(x: iconX, y: 2, width: agentSize, height: agentSize)
-            if animated { roleIconView.animator().frame = roleFrame } else { roleIconView.frame = roleFrame }
+            let minContentTop: CGFloat = (!thoughtHeaderButton.isHidden || hasCompactTopThought) ? 3 : 5
+            let (avatarY, contentTop) = verticalAlignmentOffsets(
+                avatarSize: agentSize,
+                firstRowCenterOffset: assistantFirstRowCenterOffset(contentWidth: contentWidth),
+                minContentTop: minContentTop
+            )
+            let roleFrame = NSRect(x: iconX, y: avatarY, width: agentSize, height: agentSize)
+            let auraFrame = AgentAvatarAuraView.frame(around: roleFrame)
+            if animated {
+                roleIconView.animator().frame = roleFrame
+                avatarAuraView.animator().frame = auraFrame
+            } else {
+                roleIconView.frame = roleFrame
+                avatarAuraView.frame = auraFrame
+            }
             stickyAvatarBaseY = roleFrame.origin.y
             if !animated { applyStickyAvatar() }
 
-            var currentY: CGFloat = (!thoughtHeaderButton.isHidden || hasCompactTopThought) ? 3 : 5
+            var currentY = contentTop
 
             let firstViewIsTool = isToolCallView(firstVisibleAssistantView() ?? NSView())
             if !thoughtHeaderButton.isHidden {
@@ -463,9 +613,9 @@ extension AgentMessageCell {
                         thoughtTextView.frame = tvFrame
                     }
                     thoughtTextView.layer?.masksToBounds = true
-                    currentY += h + (firstViewIsTool ? 14 : 8)
+                    currentY += h + (firstViewIsTool ? (isCompactMode ? 10 : 14) : 8)
                 } else if firstViewIsTool {
-                    currentY += 8
+                    currentY += isCompactMode ? 5 : 8
                 }
             } else if hasCompactTopThought {
                 let thoughtWrapWidth = max(50, contentWidth - 6)
@@ -483,13 +633,13 @@ extension AgentMessageCell {
                     thoughtTextView.frame = tvFrame
                 }
                 thoughtTextView.layer?.masksToBounds = true
-                currentY += h + (firstViewIsTool ? 14 : 8)
+                currentY += h + (firstViewIsTool ? (isCompactMode ? 10 : 14) : 8)
             }
 
             for (index, view) in orderedAssistantViews.enumerated() {
                 guard !view.isHidden, view.alphaValue > 0.01 else { continue }
                 if isEditedFilesCardView(view) {
-                    currentY += 8
+                    currentY += isCompactMode ? 6 : 8
                 }
                 let spacing = spacingAfterAssistantView(at: index)
                 currentY += applyAssistantViewLayout(
@@ -541,19 +691,19 @@ extension AgentMessageCell {
             if let nextView = nextVisibleAssistantView(after: index) {
                 if !isToolCallView(nextView) {
                     if isEditedFilesCardView(nextView) {
-                        return 6
+                        return isCompactMode ? 4 : 6
                     }
-                    return 14
+                    return isCompactMode ? 10 : 14
                 }
             }
-            return 6
+            return isCompactMode ? 2 : 6
         }
 
         // view is NOT a tool call view
         if let nextView = nextVisibleAssistantView(after: index) {
             if isToolCallView(nextView) {
                 // Next view is the first tool call in a sequence: add extra space before it
-                return 14
+                return isCompactMode ? 10 : 14
             }
         }
 
@@ -620,6 +770,8 @@ extension AgentMessageCell {
                 views.append(codeBlock.tv)
             } else if let quoteBlock = item as? AgentUserQuoteBlockView {
                 views.append(quoteBlock.tv)
+            } else if item is MermaidBlockView {
+                // Mermaid blocks manage their own code selection internally when switched to Code mode.
             } else if let tv = item.subviews.first(where: { $0 is AgentSelectableTextView }) as? AgentSelectableTextView {
                 views.append(tv)
             } else if item.subviews.count > 1, let tv = item.subviews[1] as? AgentSelectableTextView {
@@ -629,4 +781,3 @@ extension AgentMessageCell {
         return views
     }
 }
-

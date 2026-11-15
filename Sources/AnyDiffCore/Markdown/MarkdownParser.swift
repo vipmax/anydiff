@@ -201,6 +201,18 @@ public enum MarkdownParser {
         return blocks
     }
 
+    /// Returns `true` when `markdown` ends inside an unclosed fenced code block (` ``` ` or `~~~`).
+    public static func hasUnclosedTrailingCodeBlock(_ markdown: String) -> Bool {
+        var inCodeBlock = false
+        for line in markdown.split(separator: "\n", omittingEmptySubsequences: false) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
+                inCodeBlock.toggle()
+            }
+        }
+        return inCodeBlock
+    }
+
     private static func isDivider(_ trimmed: String) -> Bool {
         guard trimmed.count >= 3 else { return false }
         let nonSpace = trimmed.filter { !$0.isWhitespace }

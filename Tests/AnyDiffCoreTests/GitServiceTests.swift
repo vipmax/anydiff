@@ -55,6 +55,49 @@ final class GitServiceTests: XCTestCase {
         XCTAssertEqual(streamedFiles.first?.displayPath, "test.txt")
     }
 
+    func testStreamDiffFilesHandlesCommittedChangesAndEarlyCancellation() async throws {
+        let path = tempDirectory.path
+        let fileA = tempDirectory.appendingPathComponent("a.txt")
+        let fileB = tempDirectory.appendingPathComponent("b.txt")
+        try "line1\n\nline3\n".write(to: fileA, atomically: true, encoding: .utf8)
+        try "alpha\nbeta\n".write(to: fileB, atomically: true, encoding: .utf8)
+
+        let setup = Process()
+        setup.executableURL = URL(fileURLWithPath: "/bin/sh")
+        setup.arguments = [
+            "-c",
+            "git -C \"$1\" init -b main && git -C \"$1\" add a.txt b.txt && git -C \"$1\" -c user.email=test@example.com -c user.name='Test User' commit -m initial",
+            "sh",
+            path
+        ]
+        setup.standardOutput = FileHandle.nullDevice
+        setup.standardError = FileHandle.nullDevice
+        try setup.run()
+        setup.waitUntilExit()
+        XCTAssertEqual(setup.terminationStatus, 0)
+
+        // Modify both tracked files (preserving blank context line) and add an untracked file.
+        try "line1\n\nline3-edited\n".write(to: fileA, atomically: true, encoding: .utf8)
+        try "alpha\nbeta-edited\n".write(to: fileB, atomically: true, encoding: .utf8)
+        let fileC = tempDirectory.appendingPathComponent("c.txt")
+        try "untracked\n".write(to: fileC, atomically: true, encoding: .utf8)
+
+        var allStreamed: [FileDiff] = []
+        for try await f in GitService.shared.streamDiffFiles(at: path, target: .workingTree) {
+            allStreamed.append(f)
+        }
+        XCTAssertEqual(allStreamed.map(\.displayPath), ["a.txt", "b.txt", "c.txt"])
+        XCTAssertEqual(allStreamed.first?.hunks.first?.lines.count, 4)
+
+        // Early cancellation should terminate cleanly without hanging.
+        var firstOnly: [FileDiff] = []
+        for try await f in GitService.shared.streamDiffFiles(at: path, target: .workingTree) {
+            firstOnly.append(f)
+            break
+        }
+        XCTAssertEqual(firstOnly.count, 1)
+    }
+
     func testParseWorktreesPorcelainZ() {
         let records = [
             "worktree /Users/dev/repo",

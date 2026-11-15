@@ -13,9 +13,13 @@ public struct AgentPanelView: View {
     public var agentIcon: String
     public var agentId: String
     public var toolcallColorMode: ToolcallColorMode
+    public var isCompactMode: Bool
+    public var isWindowModalActive: Bool = false
     public var onReview: ((AgentEditedFilesSummary) -> Void)?
     public var onPreviewImages: (([AgentImageAttachment], Int, Bool) -> Void)?
     public var onCreateWorktreeForPrompt: ((_ prompt: String, _ baseBranch: String?) async -> Result<String, GitWorktreeError>)?
+    public var onReturnToStartScreen: (() -> Void)?
+    public var onStopAgent: (() -> Void)?
 
     @State private var isChatNearBottom: Bool = true
     public var externalFocusRequest: Int = 0
@@ -45,11 +49,15 @@ public struct AgentPanelView: View {
         agentIcon: String = "sparkles",
         agentId: String = "default",
         toolcallColorMode: ToolcallColorMode = AgentDisplayPreferences.toolcallColorMode,
+        isCompactMode: Bool = AgentDisplayPreferences.isCompactMode,
         externalFocusRequest: Int = 0,
+        isWindowModalActive: Bool = false,
         onReview: ((AgentEditedFilesSummary) -> Void)? = nil,
         onPreviewImages: (([AgentImageAttachment], Int, Bool) -> Void)? = nil,
         onOpenURL: ((URL) -> Void)? = nil,
-        onCreateWorktreeForPrompt: ((_ prompt: String, _ baseBranch: String?) async -> Result<String, GitWorktreeError>)? = nil
+        onCreateWorktreeForPrompt: ((_ prompt: String, _ baseBranch: String?) async -> Result<String, GitWorktreeError>)? = nil,
+        onReturnToStartScreen: (() -> Void)? = nil,
+        onStopAgent: (() -> Void)? = nil
     ) {
         self.agentManager = agentManager
         self.theme = theme
@@ -60,11 +68,15 @@ public struct AgentPanelView: View {
         self.agentIcon = agentIcon
         self.agentId = agentId
         self.toolcallColorMode = toolcallColorMode
+        self.isCompactMode = isCompactMode
         self.externalFocusRequest = externalFocusRequest
+        self.isWindowModalActive = isWindowModalActive
         self.onReview = onReview
         self.onPreviewImages = onPreviewImages
         self.onOpenURL = onOpenURL
         self.onCreateWorktreeForPrompt = onCreateWorktreeForPrompt
+        self.onReturnToStartScreen = onReturnToStartScreen
+        self.onStopAgent = onStopAgent
     }
 
     public var onOpenURL: ((URL) -> Void)? = nil
@@ -75,7 +87,7 @@ public struct AgentPanelView: View {
                 agentInputView
                     .frame(maxWidth: .infinity, alignment: .top)
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 8)
+                    .padding(.top, 10)
 
                 if isCreatingWorktreeForPrompt || worktreeCreationError != nil {
                     worktreeStatusBar
@@ -105,7 +117,30 @@ public struct AgentPanelView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .background(Color(theme.background))
+        .background(
+            ZStack {
+                Color(theme.background)
+                AgentPanelEscapeBridge(
+                    isModalPresented: isWindowModalActive || (previewImages != nil && previewImageIndex != nil) || isQuickActionsPresented,
+                    onReturnToStartScreen: onReturnToStartScreen,
+                    onStopAgent: {
+                        if let onStopAgent {
+                            onStopAgent()
+                        } else {
+                            let isBusy = agentManager.status == .busy ||
+                                agentManager.status == .connecting ||
+                                agentManager.initializationState == .starting ||
+                                agentManager.pendingPermission != nil ||
+                                agentManager.isAuthenticating ||
+                                agentManager.messages.last?.isStreaming == true
+                            if isBusy {
+                                agentManager.cancel()
+                            }
+                        }
+                    }
+                )
+            }
+        )
         .onDrop(of: [UTType.image, UTType.fileURL, UTType.png, UTType.jpeg, UTType.tiff, UTType.webP, UTType.heic, UTType.url, UTType.data, UTType.item], isTargeted: $isPanelDropTargeted) { providers in
             ImageAttachmentHelpers.extractImages(from: providers) { droppedImages in
                 guard !droppedImages.isEmpty else { return }
@@ -245,6 +280,7 @@ public struct AgentPanelView: View {
                     agentIcon: agentIcon,
                     agentId: agentId,
                     toolcallColorMode: toolcallColorMode,
+                    isCompactMode: isCompactMode,
                     scrollToBottomTrigger: scrollToBottomRequest,
                     onNearBottomChanged: { nearBottom in
                         DispatchQueue.main.async {
@@ -299,9 +335,17 @@ public struct AgentPanelView: View {
         let maxW = AgentMessageCell.maxAvatarWidth
         VStack(spacing: 0) {
             HStack(alignment: .center, spacing: 12) {
-                AgentIconView(icon: agentIcon, agentId: agentId, tintColor: agentAccentColor, size: avatarSize)
-                    .frame(width: maxW, alignment: .center)
-                    .modifier(AgentWelcomePulse(isActive: isLaunching))
+                ZStack {
+                    if isLaunching {
+                        let auraSize = avatarSize + AgentAvatarAuraView.auraPadding(forAvatarSize: avatarSize) * 2
+                        AgentAvatarAuraRepresentable(theme: theme, isAnimating: true)
+                            .frame(width: auraSize, height: auraSize)
+                            .allowsHitTesting(false)
+                            .transition(.opacity)
+                    }
+                    AgentIconView(icon: agentIcon, agentId: agentId, tintColor: agentAccentColor, size: avatarSize)
+                }
+                .frame(width: maxW, height: avatarSize, alignment: .center)
 
                 HStack(alignment: .center, spacing: 6) {
                     ZStack(alignment: .leading) {
@@ -328,7 +372,7 @@ public struct AgentPanelView: View {
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 18)
-            .padding(.top, 14)
+            .padding(.top, 16)
             .frame(maxWidth: .infinity, alignment: .leading)
             .animation(.easeInOut(duration: 0.25), value: isLaunching)
 
@@ -443,8 +487,7 @@ public struct AgentPanelView: View {
             if isCreatingWorktreeForPrompt {
                 HStack(spacing: 6) {
                     ProgressView()
-                        .controlSize(.mini)
-                        .scaleEffect(0.75)
+                        .controlSize(.small)
                     Text("Creating worktree…")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundColor(Color(theme.gutterForeground))
@@ -829,6 +872,249 @@ private struct AgentWelcomePulse: ViewModifier {
             )
             .onAppear { if isActive { dimmed = true } }
             .onChange(of: isActive) { active in dimmed = active }
+    }
+}
+
+
+// MARK: - Panel Escape & Double-Escape Handler
+
+public struct AgentPanelEscapeBridge: NSViewRepresentable {
+    public let isModalPresented: Bool
+    public let onReturnToStartScreen: (() -> Void)?
+    public let onStopAgent: (() -> Void)?
+
+    public init(
+        isModalPresented: Bool = false,
+        onReturnToStartScreen: (() -> Void)? = nil,
+        onStopAgent: (() -> Void)? = nil
+    ) {
+        self.isModalPresented = isModalPresented
+        self.onReturnToStartScreen = onReturnToStartScreen
+        self.onStopAgent = onStopAgent
+    }
+
+    public func makeNSView(context: Context) -> AgentPanelEscapeHostView {
+        let view = AgentPanelEscapeHostView()
+        view.isModalPresented = isModalPresented
+        view.onReturnToStartScreen = onReturnToStartScreen
+        view.onStopAgent = onStopAgent
+        return view
+    }
+
+    public func updateNSView(_ nsView: AgentPanelEscapeHostView, context: Context) {
+        nsView.isModalPresented = isModalPresented
+        nsView.onReturnToStartScreen = onReturnToStartScreen
+        nsView.onStopAgent = onStopAgent
+        if isModalPresented {
+            nsView.resetEscapeChain()
+        }
+    }
+
+    public static func dismantleNSView(_ nsView: AgentPanelEscapeHostView, coordinator: ()) {
+        nsView.removeMonitors()
+    }
+}
+
+public final class AgentPanelEscapeHostView: NSView {
+    public var isModalPresented: Bool = false
+    public var onReturnToStartScreen: (() -> Void)?
+    public var onStopAgent: (() -> Void)?
+
+    private var keyMonitor: Any?
+    private var mouseMonitor: Any?
+    public var lastEscapeUptime: TimeInterval?
+    public static let doubleEscapeThreshold: TimeInterval = 0.38
+
+    public override var acceptsFirstResponder: Bool { true }
+    public override var focusRingType: NSFocusRingType {
+        get { .none }
+        set {}
+    }
+
+    public override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+
+    public override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil {
+            installMonitors()
+        } else {
+            removeMonitors()
+        }
+    }
+
+    deinit {
+        if let monitor = keyMonitor {
+            NSEvent.removeMonitor(monitor)
+        }
+        if let monitor = mouseMonitor {
+            NSEvent.removeMonitor(monitor)
+        }
+    }
+
+    public func resetEscapeChain() {
+        lastEscapeUptime = nil
+    }
+
+    public func removeMonitors() {
+        if let monitor = keyMonitor {
+            NSEvent.removeMonitor(monitor)
+            keyMonitor = nil
+        }
+        if let monitor = mouseMonitor {
+            NSEvent.removeMonitor(monitor)
+            mouseMonitor = nil
+        }
+    }
+
+    private func installMonitors() {
+        guard keyMonitor == nil && mouseMonitor == nil else { return }
+
+        mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+            guard let self, let window = self.window, event.window === window else {
+                self?.lastEscapeUptime = nil
+                return event
+            }
+            self.lastEscapeUptime = nil
+            let panelRectInWindow = self.convert(self.bounds, to: nil)
+            guard !panelRectInWindow.isEmpty, panelRectInWindow.contains(event.locationInWindow) else {
+                return event
+            }
+
+            let responderBefore = window.firstResponder
+            DispatchQueue.main.async { [weak self, weak window] in
+                guard let self, let window, self.window === window else { return }
+                let responderAfter = window.firstResponder
+                if !self.isResponderInsidePanel(responderAfter, in: window) {
+                    if responderAfter === responderBefore || responderAfter == nil || responderAfter === window {
+                        window.makeFirstResponder(self)
+                    }
+                }
+            }
+            return event
+        }
+
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else { return event }
+            guard let window = self.window, window.isKeyWindow else { return event }
+            return self.handleKeyEvent(event)
+        }
+    }
+
+    @discardableResult
+    public func handleKeyEvent(_ event: NSEvent) -> NSEvent? {
+        if event.keyCode != 53 {
+            lastEscapeUptime = nil
+            return event
+        }
+
+        guard let window = self.window ?? event.window,
+              event.window == nil || event.window === window,
+              window.attachedSheet == nil,
+              !isModalPresented else {
+            return event
+        }
+
+        if let textView = window.firstResponder as? NSTextView, textView.hasMarkedText() {
+            return event
+        }
+
+        if event.isARepeat {
+            return nil
+        }
+
+        let modifierFlags = event.modifierFlags.intersection([.command, .option, .control, .shift])
+
+        // 1. Command + Escape -> return to start screen (empty agent panel)
+        if modifierFlags == .command || (modifierFlags.contains(.command) && !modifierFlags.contains(.option) && !modifierFlags.contains(.control)) {
+            let isInsideOrWindow = isResponderInsidePanel(window.firstResponder, in: window)
+                || window.firstResponder === window
+                || window.firstResponder == nil
+                || window.firstResponder === window.contentView
+            if isInsideOrWindow {
+                lastEscapeUptime = nil
+                onReturnToStartScreen?()
+                return nil
+            }
+        }
+
+        guard isResponderInsidePanel(window.firstResponder, in: window) else {
+            return event
+        }
+
+        // Plain Escape only beyond this point
+        guard modifierFlags.isEmpty else {
+            return event
+        }
+
+        if window.firstResponder is QueuedInlineEditorTextView {
+            return event
+        }
+
+        // Clear chat text selections in this panel & hide pending quote button
+        clearChatSelectionsInPanel(in: window)
+        if SelectionQuoteStore.shared.currentQuote != nil {
+            SelectionQuoteStore.shared.clearQuote()
+        }
+
+        // 2. Fast double Escape -> stop agent
+        let now = ProcessInfo.processInfo.systemUptime
+        if let lastTime = lastEscapeUptime,
+           (now - lastTime) <= Self.doubleEscapeThreshold {
+            lastEscapeUptime = nil
+            onStopAgent?()
+            return nil
+        }
+
+        lastEscapeUptime = now
+        return nil
+    }
+
+    public func isResponderInsidePanel(_ responder: NSResponder?, in window: NSWindow) -> Bool {
+        guard let view = responder as? NSView else { return false }
+        if view === self { return true }
+        if view === window.contentView { return false }
+
+        var rootScrollOrView = view
+        while let sv = rootScrollOrView.enclosingScrollView {
+            rootScrollOrView = sv
+        }
+
+        let panelRect = self.convert(self.bounds, to: nil)
+        let viewRect = rootScrollOrView.convert(rootScrollOrView.bounds, to: nil)
+        guard !panelRect.isEmpty, !viewRect.isEmpty else { return false }
+        let toleranceRect = panelRect.insetBy(dx: -2, dy: -2)
+        return toleranceRect.contains(viewRect)
+    }
+
+    public func clearChatSelectionsInPanel(in window: NSWindow) {
+        guard let contentView = window.contentView else { return }
+        let panelRect = self.convert(self.bounds, to: nil)
+        guard !panelRect.isEmpty else { return }
+
+        for chatScroll in findAgentChatScrollViews(in: contentView, panelRect: panelRect) {
+            chatScroll.clearAllTextSelections()
+        }
+    }
+
+    private func findAgentChatScrollViews(in root: NSView, panelRect: NSRect) -> [AgentChatScrollView] {
+        var result: [AgentChatScrollView] = []
+        func visit(_ view: NSView) {
+            guard !view.isHidden, !view.bounds.isEmpty else { return }
+            let rect = view.convert(view.bounds, to: nil)
+            guard rect.intersects(panelRect) else { return }
+
+            if let chatScroll = view as? AgentChatScrollView {
+                result.append(chatScroll)
+                return
+            }
+            for subview in view.subviews {
+                visit(subview)
+            }
+        }
+        visit(root)
+        return result
     }
 }
 

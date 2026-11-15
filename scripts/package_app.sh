@@ -12,9 +12,14 @@ package_single_arch() {
     echo "\n🔨 [1/5] Building Release binary for ${ARCH} (${TRIPLE}) with extreme size optimizations..."
     swift build -c release --triple "${TRIPLE}" \
         -Xswiftc -Osize \
+        -Xswiftc -package-cmo \
+        -Xswiftc -Xfrontend -Xswiftc -internalize-at-link \
+        -Xswiftc -Xfrontend -Xswiftc -conditional-runtime-records \
+        -Xswiftc -Xfrontend -Xswiftc -disable-reflection-metadata \
+        -Xswiftc -Xfrontend -Xswiftc -disable-cond-fail-message-annotation \
         -Xlinker -dead_strip \
-        -Xlinker -exported_symbol -Xlinker _main \
-        -Xswiftc -Xfrontend -Xswiftc -disable-reflection-names
+        -Xlinker -dead_strip_dylibs \
+        -Xlinker -exported_symbol -Xlinker _main
 
     local ARCH_DIST="${DIST_DIR}/${ARCH}"
     local ARCH_APP_BUNDLE="${ARCH_DIST}/AnyDiff.app"

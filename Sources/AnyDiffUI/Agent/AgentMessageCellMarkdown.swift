@@ -10,14 +10,17 @@ extension AgentMessageCell {
         case richText(NSAttributedString)
         case quote(NSAttributedString)
         case codeBlock(language: String?, code: String)
+        case mermaidDiagram(code: String)
         case divider
     }
 
     func compileSections(
         from content: String,
-        splitRichText: Bool = true
+        splitRichText: Bool = true,
+        allowUnclosedTrailingMermaid: Bool = true
     ) -> [AssistantContentSection] {
         let blocks = AgentMarkdownParser.parse(content)
+        let hasUnclosedTrailing = !allowUnclosedTrailingMermaid && AgentMarkdownParser.hasUnclosedTrailingCodeBlock(content)
         var sections: [AssistantContentSection] = []
         let currentRichText = NSMutableAttributedString()
         var currentRichTextBlockCount = 0
@@ -51,7 +54,7 @@ extension AgentMessageCell {
             }
         }
 
-        for block in blocks {
+        for (blockIdx, block) in blocks.enumerated() {
             switch block {
             case .header(let level, let text):
                 let fontSize: CGFloat
@@ -157,7 +160,11 @@ extension AgentMessageCell {
                 }
 
             case .codeBlock(let lang, let code):
-                if Self.showsCodeBlocks {
+                let isLastBlock = (blockIdx == blocks.count - 1)
+                if MermaidEngine.isMermaidLanguage(lang) && !(hasUnclosedTrailing && isLastBlock) {
+                    flushRichText()
+                    sections.append(.mermaidDiagram(code: code))
+                } else if Self.showsCodeBlocks {
                     flushRichText()
                     sections.append(.codeBlock(language: lang, code: code))
                 }
@@ -339,6 +346,28 @@ extension AgentMessageCell {
             container.addSubview(codeScrollView)
 
             return container
+
+        case .mermaidDiagram(let code):
+            let mermaidView = MermaidBlockView(
+                code: code,
+                theme: theme,
+                maxDiagramHeight: 460,
+                maxCodeHeight: maxCodeBlockHeight,
+                allowsCodeScrolling: true
+            )
+            mermaidView.onNeedsLayout = { [weak self] in
+                guard let self else { return }
+                self.invalidateLayoutCache()
+                self.onRequestLayout?()
+            }
+            mermaidView.onZoomDiagram = { [weak self] sourceCode in
+                guard let self,
+                      let attachment = MermaidRenderCache.makeZoomAttachment(code: sourceCode, theme: self.theme) else {
+                    return
+                }
+                self.onPreviewImages?([attachment], 0)
+            }
+            return mermaidView
 
         case .divider:
             return AgentDividerView(theme: theme)

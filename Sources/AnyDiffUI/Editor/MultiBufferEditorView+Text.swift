@@ -644,8 +644,8 @@ extension MultiBufferEditorView {
             text = dm.getSelectionText()
         }
         guard let text, !text.isEmpty else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
     }
 
     @objc @IBAction public func cut(_ sender: Any?) {
@@ -658,7 +658,7 @@ extension MultiBufferEditorView {
     }
 
     @objc @IBAction public func paste(_ sender: Any?) {
-        guard let text = NSPasteboard.general.string(forType: .string) else { return }
+        guard let text = pasteboard.string(forType: .string) else { return }
         insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0), coalesceTyping: false)
     }
 

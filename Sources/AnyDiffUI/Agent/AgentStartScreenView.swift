@@ -25,6 +25,8 @@ public struct AgentStartScreenView: View {
     @State private var isAddCustomHovered: Bool = false
     @State private var workInNewWorktree: Bool = false
     @State private var selectedWorktreePath: String? = nil
+    @State private var selectedNavItem: AgentStartScreenNavItem? = nil
+    @State private var keyboardFocusRequest: Int = 0
 
     private var targetWorkingDirectory: String {
         if let selectedWorktreePath, !selectedWorktreePath.isEmpty {
@@ -123,6 +125,7 @@ public struct AgentStartScreenView: View {
             let isOverflowing = (availableWidth - horizontalPadding * 2) < minContentWidth
             let contentWidth = isOverflowing ? minContentWidth : min(availableWidth - horizontalPadding * 2, maxContentWidth)
 
+            ScrollViewReader { scrollProxy in
             ScrollView(.vertical, showsIndicators: false) {
                 HStack(spacing: 0) {
                     if !isOverflowing {
@@ -156,6 +159,7 @@ public struct AgentStartScreenView: View {
                         // Agent Cards
                         VStack(spacing: 10) {
                             ForEach(coordinator.agentGroups) { group in
+                                let cardNavItem = AgentStartScreenNavItem.agent(group.id)
                                 AgentCardButton(
                                     group: group,
                                     theme: theme,
@@ -165,21 +169,9 @@ public struct AgentStartScreenView: View {
                                     worktrees: worktrees,
                                     repoName: repoName,
                                     workInNewWorktree: workInNewWorktree,
+                                    isKeyboardSelected: selectedNavItem == cardNavItem,
                                     onSelect: {
-                                        let shouldCreateNewWorktree = isGitRepository && workInNewWorktree
-                                        let baseBranch = selectedWorktreeBranch
-                                        let chosenWorkingDirectory = targetWorkingDirectory
-                                        withAnimation(.easeInOut(duration: 0.2)) {
-                                            _ = coordinator.createNewSession(
-                                                workingDirectory: chosenWorkingDirectory,
-                                                preset: group.selectedPreset,
-                                                pendingNewWorktree: shouldCreateNewWorktree,
-                                                pendingNewWorktreeBaseBranch: shouldCreateNewWorktree ? baseBranch : nil,
-                                                for: slot
-                                            )
-                                            workInNewWorktree = false
-                                            selectedWorktreePath = nil
-                                        }
+                                        selectAgentGroup(group)
                                     },
                                     onSelectWorktree: { wt in
                                         workInNewWorktree = false
@@ -211,16 +203,19 @@ public struct AgentStartScreenView: View {
                                         }
                                     } : nil
                                 )
+                                .id(cardNavItem)
                             }
 
                             // Browse ACP Registry Button
                             browseRegistryButton
+                                .id(AgentStartScreenNavItem.browseRegistry)
 
                             // Add Custom Agent Form / Button
                             if isAddingCustom {
                                 customAgentFormView
                             } else {
                                 addCustomAgentButton
+                                    .id(AgentStartScreenNavItem.addCustom)
                             }
                         }
 
@@ -237,8 +232,46 @@ public struct AgentStartScreenView: View {
                 .padding(.vertical, 16)
             }
             .clipped()
+            .onChange(of: selectedNavItem) { item in
+                if let item {
+                    withAnimation(.easeOut(duration: 0.12)) {
+                        scrollProxy.scrollTo(item)
+                    }
+                }
+            }
+            }
         }
-        .background(Color(theme.background))
+        .background(
+            ZStack {
+                Color(theme.background)
+                AgentStartScreenKeyBridge(
+                    isAddingCustom: isAddingCustom,
+                    focusRequestToken: keyboardFocusRequest,
+                    onMoveSelection: { delta in
+                        moveNavSelection(by: delta)
+                    },
+                    onActivateSelection: {
+                        activateNavSelection()
+                    },
+                    onEscape: {
+                        handleStartScreenEscape()
+                    }
+                )
+            }
+        )
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffAgentStartScreenKeyboardFocus"))) { notif in
+            if let targetSlot = notif.object as? PanelSlot, targetSlot != slot {
+                return
+            }
+            selectInitialNavItemForKeyboard()
+            keyboardFocusRequest &+= 1
+        }
+        .onChange(of: coordinator.sessions.map(\.id)) { _ in
+            validateNavSelection()
+        }
+        .onChange(of: coordinator.agentGroups.map(\.id)) { _ in
+            validateNavSelection()
+        }
     }
 
     @ViewBuilder
@@ -254,11 +287,15 @@ public struct AgentStartScreenView: View {
 
             VStack(spacing: 2) {
                 ForEach(coordinator.sessions) { session in
+                    let sessionNavItem = AgentStartScreenNavItem.session(session.id)
                     AgentSessionRowView(
                         session: session,
                         isActive: session.id == coordinator.activeSession(for: slot)?.id,
+                        isKeyboardSelected: selectedNavItem == sessionNavItem,
                         canClose: true,
                         theme: theme,
+                        worktrees: worktrees,
+                        fallbackWorkingDirectory: workingDirectory,
                         onSelect: {
                             withAnimation(.easeInOut(duration: 0.18)) {
                                 coordinator.selectSession(id: session.id, for: slot)
@@ -270,6 +307,7 @@ public struct AgentStartScreenView: View {
                             }
                         }
                     )
+                    .id(sessionNavItem)
                 }
             }
             .padding(4)
@@ -330,7 +368,11 @@ public struct AgentStartScreenView: View {
             .padding(.vertical, 10)
             .background(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(Color(theme.foreground).opacity(isAddCustomHovered ? 0.07 : 0.035))
+                    .fill(Color(theme.foreground).opacity((isAddCustomHovered || selectedNavItem == .addCustom) ? 0.07 : 0.035))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(selectedNavItem == .addCustom ? Color(theme.accentColor).opacity(0.75) : Color.clear, lineWidth: 1.5)
             )
             .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             .animation(.easeOut(duration: 0.14), value: isAddCustomHovered)
@@ -349,13 +391,11 @@ public struct AgentStartScreenView: View {
             HStack(spacing: 12) {
                 let boxSize: CGFloat = 44
                 ZStack {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color(theme.accentColor).opacity(isRegistryHovered ? 0.18 : 0.10))
-                        .frame(width: boxSize, height: boxSize)
                     Image(systemName: "globe")
-                        .font(.system(size: 20, weight: .medium))
+                        .font(.system(size: 22, weight: .medium))
                         .foregroundColor(Color(theme.accentColor))
                 }
+                .frame(width: boxSize, height: boxSize)
 
                 // Centered text stack matching AgentCardButton
                 VStack(alignment: .center, spacing: 3) {
@@ -378,18 +418,23 @@ public struct AgentStartScreenView: View {
                 Spacer(minLength: 4)
 
                 // Right arrow matching AgentCardButton
+                let isRegistrySelected = isRegistryHovered || selectedNavItem == .browseRegistry
                 Image(systemName: "chevron.right")
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(Color(theme.gutterForeground).opacity(isRegistryHovered ? 1.0 : 0.45))
-                    .offset(x: isRegistryHovered ? 2 : 0)
-                    .animation(.easeOut(duration: 0.15), value: isRegistryHovered)
+                    .foregroundColor(Color(theme.gutterForeground).opacity(isRegistrySelected ? 1.0 : 0.45))
+                    .offset(x: isRegistrySelected ? 2 : 0)
+                    .animation(.easeOut(duration: 0.15), value: isRegistrySelected)
                     .frame(width: 20, height: 20)
             }
             .padding(.horizontal, 11)
             .padding(.vertical, 10)
             .background(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(Color(theme.foreground).opacity(isRegistryHovered ? 0.07 : 0.035))
+                    .fill(Color(theme.foreground).opacity((isRegistryHovered || selectedNavItem == .browseRegistry) ? 0.07 : 0.035))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(selectedNavItem == .browseRegistry ? Color(theme.accentColor).opacity(0.75) : Color.clear, lineWidth: 1.5)
             )
             .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             .animation(.easeOut(duration: 0.14), value: isRegistryHovered)
@@ -635,6 +680,105 @@ public struct AgentStartScreenView: View {
         }
     }
 
+    private var navItems: [AgentStartScreenNavItem] {
+        var items: [AgentStartScreenNavItem] = coordinator.sessions.map { .session($0.id) }
+        items.append(contentsOf: coordinator.agentGroups.map { .agent($0.id) })
+        items.append(.browseRegistry)
+        if !isAddingCustom {
+            items.append(.addCustom)
+        }
+        return items
+    }
+
+    private func selectInitialNavItemForKeyboard() {
+        let items = navItems
+        guard !items.isEmpty else {
+            selectedNavItem = nil
+            return
+        }
+        if let active = coordinator.activeSession(for: slot),
+           items.contains(.session(active.id)) {
+            selectedNavItem = .session(active.id)
+        } else if let firstAgent = coordinator.agentGroups.first {
+            selectedNavItem = .agent(firstAgent.id)
+        } else {
+            selectedNavItem = items.first
+        }
+    }
+
+    private func validateNavSelection() {
+        if let current = selectedNavItem, !navItems.contains(current) {
+            selectedNavItem = navItems.first
+        }
+    }
+
+    private func moveNavSelection(by delta: Int) {
+        let items = navItems
+        guard !items.isEmpty else {
+            selectedNavItem = nil
+            return
+        }
+        guard let current = selectedNavItem, let idx = items.firstIndex(of: current) else {
+            selectedNavItem = delta >= 0 ? items.first : items.last
+            return
+        }
+        let nextIdx = (idx + delta + items.count) % items.count
+        selectedNavItem = items[nextIdx]
+    }
+
+    private func activateNavSelection() {
+        let target = selectedNavItem ?? navItems.first
+        guard let target else { return }
+        selectedNavItem = target
+
+        switch target {
+        case .session(let id):
+            withAnimation(.easeInOut(duration: 0.18)) {
+                coordinator.selectSession(id: id, for: slot)
+            }
+        case .agent(let groupId):
+            if let group = coordinator.agentGroups.first(where: { $0.id == groupId }) {
+                selectAgentGroup(group)
+            }
+        case .browseRegistry:
+            withAnimation(.easeInOut(duration: 0.18)) {
+                isViewingRegistry = true
+            }
+        case .addCustom:
+            withAnimation(.easeInOut(duration: 0.18)) {
+                isAddingCustom = true
+            }
+        }
+    }
+
+    private func handleStartScreenEscape() {
+        if isAddingCustom {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                isAddingCustom = false
+            }
+            keyboardFocusRequest &+= 1
+        } else if selectedNavItem != nil {
+            selectedNavItem = nil
+        }
+    }
+
+    private func selectAgentGroup(_ group: AgentGroup) {
+        let shouldCreateNewWorktree = isGitRepository && workInNewWorktree
+        let baseBranch = selectedWorktreeBranch
+        let chosenWorkingDirectory = targetWorkingDirectory
+        withAnimation(.easeInOut(duration: 0.2)) {
+            _ = coordinator.createNewSession(
+                workingDirectory: chosenWorkingDirectory,
+                preset: group.selectedPreset,
+                pendingNewWorktree: shouldCreateNewWorktree,
+                pendingNewWorktreeBaseBranch: shouldCreateNewWorktree ? baseBranch : nil,
+                for: slot
+            )
+            workInNewWorktree = false
+            selectedWorktreePath = nil
+        }
+    }
+
     private func color(for name: String) -> Color {
         switch name {
         case "white": return Color(nsColor: .labelColor)
@@ -662,6 +806,7 @@ private struct AgentCardButton: View {
     let worktrees: [GitWorktree]
     let repoName: String
     let workInNewWorktree: Bool
+    var isKeyboardSelected: Bool = false
     let onSelect: () -> Void
     let onSelectWorktree: (GitWorktree) -> Void
     let onToggleNewWorktree: () -> Void
@@ -706,24 +851,12 @@ private struct AgentCardButton: View {
     var body: some View {
         HStack(spacing: 12) {
             ZStack {
-                if customAvatar == nil {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(presetColor.opacity(isHovered ? 0.16 : 0.09))
-                        .frame(width: 44, height: 44)
-                    AgentIconView(
-                        icon: group.basePreset.iconName,
-                        agentId: group.selectedPreset.id,
-                        tintColor: presetColor,
-                        size: 22
-                    )
-                } else {
-                    AgentIconView(
-                        icon: group.basePreset.iconName,
-                        agentId: group.selectedPreset.id,
-                        tintColor: presetColor,
-                        size: 44
-                    )
-                }
+                AgentIconView(
+                    icon: group.basePreset.iconName,
+                    agentId: group.selectedPreset.id,
+                    tintColor: presetColor,
+                    size: customAvatar == nil ? 26 : 44
+                )
             }
             .frame(width: 44, height: 44)
 
@@ -795,11 +928,12 @@ private struct AgentCardButton: View {
 
             // Right arrow
             Button(action: onSelect) {
+                let isCardActive = isHovered || isKeyboardSelected
                 Image(systemName: "chevron.right")
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(Color(theme.gutterForeground).opacity(isHovered ? 1.0 : 0.45))
-                    .offset(x: isHovered ? 2 : 0)
-                    .animation(.easeOut(duration: 0.15), value: isHovered)
+                    .foregroundColor(Color(theme.gutterForeground).opacity(isCardActive ? 1.0 : 0.45))
+                    .offset(x: isCardActive ? 2 : 0)
+                    .animation(.easeOut(duration: 0.15), value: isCardActive)
                     .frame(width: 20, height: 20)
                     .contentShape(Rectangle())
             }
@@ -809,7 +943,11 @@ private struct AgentCardButton: View {
         .padding(.vertical, 10)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color(theme.foreground).opacity(isHovered ? 0.07 : 0.035))
+                .fill(Color(theme.foreground).opacity((isHovered || isKeyboardSelected) ? 0.07 : 0.035))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(isKeyboardSelected ? presetColor.opacity(0.75) : Color.clear, lineWidth: 1.5)
         )
         .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .onTapGesture {
@@ -873,16 +1011,16 @@ private struct AgentCardButton: View {
             .foregroundColor(
                 workInNewWorktree
                     ? presetColor
-                    : Color(theme.gutterForeground).opacity(isWorkInHovered || isWorkInPopoverPresented ? 1.0 : 0.78)
+                    : Color(theme.gutterForeground).opacity(isWorkInHovered || isWorkInPopoverPresented ? 1.0 : 0.72)
             )
-            .padding(.horizontal, 7)
-            .padding(.vertical, 2.5)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
             .background(
                 RoundedRectangle(cornerRadius: 5, style: .continuous)
                     .fill(
-                        workInNewWorktree
-                            ? presetColor.opacity(isWorkInHovered || isWorkInPopoverPresented ? 0.16 : 0.11)
-                            : Color(theme.foreground).opacity(isWorkInHovered || isWorkInPopoverPresented ? 0.09 : 0.045)
+                        (isWorkInHovered || isWorkInPopoverPresented)
+                            ? (workInNewWorktree ? presetColor.opacity(0.12) : Color(theme.foreground).opacity(0.08))
+                            : Color.clear
                     )
             )
             .contentShape(Rectangle())
@@ -1143,5 +1281,239 @@ private final class ProfileMenuActionTarget: NSObject {
 
     @objc func invoke(_ sender: NSMenuItem) {
         action()
+    }
+}
+
+
+// MARK: - Start Screen Keyboard Navigation
+
+private enum AgentStartScreenNavItem: Hashable {
+    case session(UUID)
+    case agent(String)
+    case browseRegistry
+    case addCustom
+}
+
+private struct AgentStartScreenKeyBridge: NSViewRepresentable {
+    let isAddingCustom: Bool
+    let focusRequestToken: Int
+    let onMoveSelection: (Int) -> Void
+    let onActivateSelection: () -> Void
+    let onEscape: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> AgentStartScreenKeyHostView {
+        let view = AgentStartScreenKeyHostView()
+        view.isAddingCustom = isAddingCustom
+        view.onMoveSelection = onMoveSelection
+        view.onActivateSelection = onActivateSelection
+        view.onEscape = onEscape
+        context.coordinator.lastFocusToken = focusRequestToken
+        return view
+    }
+
+    func updateNSView(_ nsView: AgentStartScreenKeyHostView, context: Context) {
+        nsView.isAddingCustom = isAddingCustom
+        nsView.onMoveSelection = onMoveSelection
+        nsView.onActivateSelection = onActivateSelection
+        nsView.onEscape = onEscape
+        if context.coordinator.lastFocusToken != focusRequestToken {
+            context.coordinator.lastFocusToken = focusRequestToken
+            nsView.requestPanelFocus()
+        }
+    }
+
+    static func dismantleNSView(_ nsView: AgentStartScreenKeyHostView, coordinator: Coordinator) {
+        nsView.removeMonitors()
+    }
+
+    final class Coordinator {
+        var lastFocusToken: Int = 0
+    }
+}
+
+private final class AgentStartScreenKeyHostView: NSView {
+    var isAddingCustom: Bool = false
+    var onMoveSelection: ((Int) -> Void)?
+    var onActivateSelection: (() -> Void)?
+    var onEscape: (() -> Void)?
+
+    private var keyMonitor: Any?
+    private var mouseMonitor: Any?
+
+    override var acceptsFirstResponder: Bool { true }
+    override var focusRingType: NSFocusRingType {
+        get { .none }
+        set {}
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+
+    override func keyDown(with event: NSEvent) {
+        // Prevent NSBeep when this view is firstResponder
+        switch event.keyCode {
+        case 123, 124, 125, 126, 36, 76, 49, 53:
+            return
+        default:
+            super.keyDown(with: event)
+        }
+    }
+
+    override func cancelOperation(_ sender: Any?) {
+        onEscape?()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let window {
+            installMonitors()
+            DispatchQueue.main.async { [weak self, weak window] in
+                guard let self, let window, self.window === window else { return }
+                if self.shouldClaimInitialFocus(in: window) {
+                    window.makeFirstResponder(self)
+                }
+            }
+        } else {
+            removeMonitors()
+        }
+    }
+
+    deinit {
+        if let monitor = keyMonitor {
+            NSEvent.removeMonitor(monitor)
+        }
+        if let monitor = mouseMonitor {
+            NSEvent.removeMonitor(monitor)
+        }
+    }
+
+    func requestPanelFocus() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let window = self.window, window.isKeyWindow else { return }
+            if !self.isAddingCustom {
+                window.makeFirstResponder(self)
+            }
+        }
+    }
+
+    func removeMonitors() {
+        if let monitor = keyMonitor {
+            NSEvent.removeMonitor(monitor)
+            keyMonitor = nil
+        }
+        if let monitor = mouseMonitor {
+            NSEvent.removeMonitor(monitor)
+            mouseMonitor = nil
+        }
+    }
+
+    private func shouldClaimInitialFocus(in window: NSWindow) -> Bool {
+        guard window.isKeyWindow, window.attachedSheet == nil, !isAddingCustom else { return false }
+        guard let responder = window.firstResponder else { return true }
+        if responder === window || responder === window.contentView {
+            return true
+        }
+        if let view = responder as? NSView, view.window == nil {
+            return true
+        }
+        return false
+    }
+
+    private func installMonitors() {
+        guard keyMonitor == nil && mouseMonitor == nil else { return }
+
+        mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+            guard let self, let window = self.window, event.window === window else { return event }
+            let panelRect = self.convert(self.bounds, to: nil)
+            guard !panelRect.isEmpty, panelRect.contains(event.locationInWindow) else {
+                return event
+            }
+            let responderBefore = window.firstResponder
+            DispatchQueue.main.async { [weak self, weak window] in
+                guard let self, let window, self.window === window else { return }
+                let responderAfter = window.firstResponder
+                if !self.isResponderInsideStartScreen(responderAfter, in: window) {
+                    if responderAfter === responderBefore || responderAfter == nil || responderAfter === window {
+                        window.makeFirstResponder(self)
+                    }
+                }
+            }
+            return event
+        }
+
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self,
+                  let window = self.window,
+                  event.window === window,
+                  window.isKeyWindow,
+                  window.attachedSheet == nil else {
+                return event
+            }
+
+            // Skip when user is typing in another panel or modal
+            guard self.isResponderInsideStartScreen(window.firstResponder, in: window) || self.shouldClaimInitialFocus(in: window) else {
+                return event
+            }
+
+            // If user is typing inside custom agent form text fields, only allow Esc to close the form
+            if let textView = window.firstResponder as? NSTextView {
+                if event.keyCode == 53 && !textView.hasMarkedText() && self.isAddingCustom {
+                    self.onEscape?()
+                    return nil
+                }
+                return event
+            }
+            if window.firstResponder is NSTextField {
+                if event.keyCode == 53 && self.isAddingCustom {
+                    self.onEscape?()
+                    return nil
+                }
+                return event
+            }
+
+            let mods = event.modifierFlags.intersection([.command, .option, .control, .shift])
+            guard mods.isEmpty else { return event }
+
+            switch event.keyCode {
+            case 126: // Up arrow
+                self.onMoveSelection?(-1)
+                return nil
+            case 125: // Down arrow
+                self.onMoveSelection?(1)
+                return nil
+            case 123, 124: // Left / Right arrows
+                return nil
+            case 36, 76, 49: // Return, Numpad Enter, Space
+                self.onActivateSelection?()
+                return nil
+            case 53: // Escape
+                self.onEscape?()
+                return nil
+            default:
+                return event
+            }
+        }
+    }
+
+    private func isResponderInsideStartScreen(_ responder: NSResponder?, in window: NSWindow) -> Bool {
+        guard let view = responder as? NSView else { return false }
+        if view === self { return true }
+        if view === window.contentView { return false }
+
+        var rootScrollOrView = view
+        while let sv = rootScrollOrView.enclosingScrollView {
+            rootScrollOrView = sv
+        }
+
+        let panelRect = self.convert(self.bounds, to: nil)
+        let viewRect = rootScrollOrView.convert(rootScrollOrView.bounds, to: nil)
+        guard !panelRect.isEmpty, !viewRect.isEmpty else { return false }
+        let toleranceRect = panelRect.insetBy(dx: -2, dy: -2)
+        return toleranceRect.contains(viewRect)
     }
 }

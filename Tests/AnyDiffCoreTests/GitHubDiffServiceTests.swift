@@ -77,6 +77,27 @@ final class GitHubDiffServiceTests: XCTestCase {
         XCTAssertEqual(ref.displayTitle, "torvalds/linux: v6.0...v7.0")
     }
 
+    func testIsRemoteReference() {
+        let service = GitHubDiffService.shared
+
+        XCTAssertTrue(service.isRemoteReference("https://github.com/oven-sh/bun/pull/30412"))
+        XCTAssertTrue(service.isRemoteReference("http://example.com/changes.diff"))
+        XCTAssertTrue(service.isRemoteReference("github.com/oven-sh/bun/pull/30412"))
+        XCTAssertTrue(service.isRemoteReference("diffshub.com/oven-sh/bun/pull/30412"))
+        XCTAssertTrue(service.isRemoteReference("oven-sh/bun#30412"))
+
+        XCTAssertFalse(service.isRemoteReference(""))
+        XCTAssertFalse(service.isRemoteReference("   "))
+        XCTAssertFalse(service.isRemoteReference("/Users/max/dev/anydiff-swift"))
+        XCTAssertFalse(service.isRemoteReference("/Users/max/go/src/github.com/oven-sh/bun"))
+        XCTAssertFalse(service.isRemoteReference("/Users/max/C#Projects/app#1"))
+        XCTAssertFalse(service.isRemoteReference("~/dev/github.com/repo"))
+        XCTAssertFalse(service.isRemoteReference("./repo#1"))
+        XCTAssertFalse(service.isRemoteReference("../repo#1"))
+        XCTAssertFalse(service.isRemoteReference("file:///Users/max/dev/repo"))
+        XCTAssertFalse(service.isRemoteReference("C#Projects/app"))
+    }
+
     func testComparisonTargetRemoteEnum() {
         let ref = GitHubDiffReference(
             owner: "oven-sh",

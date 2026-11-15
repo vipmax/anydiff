@@ -123,7 +123,8 @@ public final class RepoCoordinator: ObservableObject {
         let candidate: String?
         if let currentPath, !currentPath.isEmpty {
             candidate = currentPath
-        } else if let initialPath, !initialPath.isEmpty {
+        } else if let initialPath, !initialPath.isEmpty,
+                  !GitHubDiffService.shared.isRemoteReference(initialPath) {
             candidate = initialPath
         } else {
             candidate = nil
@@ -307,6 +308,14 @@ public final class RepoCoordinator: ObservableObject {
     }
 
     // MARK: - Current Directory Diff Loading
+
+    public func loadInitialSource() {
+        if let initialPath, GitHubDiffService.shared.isRemoteReference(initialPath) {
+            loadRemoteDiff(from: initialPath)
+        } else {
+            loadCurrentDirectoryDiff()
+        }
+    }
 
     public func loadCurrentDirectoryDiff() {
         if case .remote = comparisonTarget {

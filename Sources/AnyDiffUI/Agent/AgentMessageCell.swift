@@ -36,6 +36,7 @@ public final class AgentMessageCell: NSView {
     var theme: Theme
     var accentColor: Color
     var toolcallColorMode: ToolcallColorMode
+    var isCompactMode: Bool
     let nativeTextSelectionEnabled: Bool
     var isThoughtExpanded: Bool = false
     var isUserTextExpanded: Bool = false
@@ -100,6 +101,7 @@ public final class AgentMessageCell: NSView {
     }
 
     // Subviews
+    public let avatarAuraView = AgentAvatarAuraView()
     public let roleIconView = AgentAvatarImageView()
     /// Unstuck (layout) Y of the avatar inside the cell.
     var stickyAvatarBaseY: CGFloat = 1
@@ -119,6 +121,7 @@ public final class AgentMessageCell: NSView {
     var userImageViews: [NSButton] = []
     var userContentViews: [NSView] = []
     var renderedUserContent: String? = nil
+    var renderedUserThemeId: String? = nil
     public var onPreviewImages: (([AgentImageAttachment], Int) -> Void)?
     public var onDeleteQueuedMessage: ((UUID) -> Void)?
     public var onEditQueuedMessage: ((UUID) -> Void)?
@@ -169,6 +172,7 @@ public final class AgentMessageCell: NSView {
         theme: Theme,
         accentColor: Color = .accentColor,
         toolcallColorMode: ToolcallColorMode = .full,
+        isCompactMode: Bool = false,
         nativeTextSelectionEnabled: Bool = false,
         agentIconName: String = "sparkles",
         agentId: String = "default"
@@ -177,12 +181,13 @@ public final class AgentMessageCell: NSView {
         self.theme = theme
         self.accentColor = accentColor
         self.toolcallColorMode = toolcallColorMode
+        self.isCompactMode = isCompactMode
         self.nativeTextSelectionEnabled = nativeTextSelectionEnabled
         self.agentIconName = agentIconName
         self.agentId = agentId
         super.init(frame: .zero)
         setup()
-        configure(message: message, theme: theme, accentColor: accentColor, toolcallColorMode: toolcallColorMode, agentIconName: agentIconName, agentId: agentId)
+        configure(message: message, theme: theme, accentColor: accentColor, toolcallColorMode: toolcallColorMode, isCompactMode: isCompactMode, agentIconName: agentIconName, agentId: agentId)
     }
 
     public required init?(coder: NSCoder) {
@@ -192,6 +197,9 @@ public final class AgentMessageCell: NSView {
     func setup() {
         wantsLayer = true
         layerContentsRedrawPolicy = .onSetNeedsDisplay
+
+        avatarAuraView.isHidden = true
+        addSubview(avatarAuraView)
 
         roleIconView.wantsLayer = true
         roleIconView.layerContentsRedrawPolicy = .onSetNeedsDisplay
@@ -283,6 +291,7 @@ public final class AgentMessageCell: NSView {
         theme: Theme,
         accentColor: Color = .accentColor,
         toolcallColorMode: ToolcallColorMode = .full,
+        isCompactMode: Bool = false,
         agentIconName: String = "sparkles",
         agentId: String = "default"
     ) {
@@ -296,7 +305,7 @@ public final class AgentMessageCell: NSView {
 
         let themeChanged = theme.id != self.theme.id
         let accentChanged = accentColor != self.accentColor
-        let displayModeChanged = toolcallColorMode != self.toolcallColorMode
+        let displayModeChanged = toolcallColorMode != self.toolcallColorMode || isCompactMode != self.isCompactMode
         let thoughtChanged = previousMessage.thought != message.thought
         let toolCallsChanged = message.toolCalls != previousMessage.toolCalls
         let partsChanged = message.orderedParts != previousMessage.orderedParts
@@ -311,11 +320,15 @@ public final class AgentMessageCell: NSView {
         self.theme = theme
         self.accentColor = accentColor
         self.toolcallColorMode = toolcallColorMode
+        self.isCompactMode = isCompactMode
         self.agentIconName = agentIconName
         self.agentId = agentId
         invalidateLayoutCache()
 
         if message.role == .user {
+            avatarAuraView.stopAnimating(animated: false)
+            roleIconView.layer?.removeAnimation(forKey: "agentRolePulse")
+            roleIconView.layer?.opacity = 1.0
             let userSize = AgentMessageCell.userAvatarSize
             roleIconView.isUserRole = true
             roleIconView.image = AgentAvatarProvider.userAvatarImage
@@ -371,7 +384,7 @@ public final class AgentMessageCell: NSView {
                 }
             }
 
-            rebuildUserContentViews(content: message.content)
+            rebuildUserContentViews(content: message.content, forceRebuild: themeChanged || accentChanged)
             updateUserExpandButtonAppearance()
 
             if message.isQueued {
@@ -439,6 +452,7 @@ public final class AgentMessageCell: NSView {
             clearAssistantViews()
         } else {
             clearUserViews()
+            roleIconView.alphaValue = 1.0
             let agentSize = AgentAvatarProvider.currentAgentAvatarSize(for: agentId)
             let showCircle = AgentAvatarProvider.shouldShowAgentCircle(for: agentId)
             roleIconView.isUserRole = true
@@ -568,7 +582,7 @@ public final class AgentMessageCell: NSView {
             }
 
             // 4. Edited files card
-            if let summary = message.editedFilesSummary {
+            if let summary = message.editedFilesSummary, !message.toolCalls.isEmpty {
                 if let card = editedFilesCardView as? AgentEditedFilesCardView {
                     card.configure(
                         summary: summary,
@@ -612,20 +626,14 @@ public final class AgentMessageCell: NSView {
 
             typingIndicatorView.stopAnimating()
             typingIndicatorView.isHidden = true
-            if message.role == .assistant && message.isStreaming {
-                if roleIconView.layer?.animation(forKey: "agentRolePulse") == nil {
-                    let pulse = CABasicAnimation(keyPath: "opacity")
-                    pulse.fromValue = 0.45
-                    pulse.toValue = 1.0
-                    pulse.duration = 0.95
-                    pulse.autoreverses = true
-                    pulse.repeatCount = .infinity
-                    pulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                    roleIconView.layer?.add(pulse, forKey: "agentRolePulse")
-                }
+            roleIconView.layer?.removeAnimation(forKey: "agentRolePulse")
+            roleIconView.layer?.opacity = 1.0
+            if message.role == .assistant && message.isStreaming && message.hasVisibleContent {
+                avatarAuraView.configure(colors: theme.agentAuraColors, isDark: theme.isDark)
+                avatarAuraView.startAnimating()
             } else {
-                roleIconView.layer?.removeAnimation(forKey: "agentRolePulse")
-                roleIconView.layer?.opacity = 1.0
+                let justFinishedStreaming = previousMessage.id == message.id && previousMessage.isStreaming
+                avatarAuraView.stopAnimating(animated: justFinishedStreaming)
             }
         }
 
@@ -898,6 +906,7 @@ public final class AgentMessageCell: NSView {
         cachedParsedDiffDataCount = -1
         typingIndicatorView.stopAnimating()
         typingIndicatorView.isHidden = true
+        avatarAuraView.stopAnimating(animated: false)
         roleIconView.layer?.removeAnimation(forKey: "agentRolePulse")
         roleIconView.layer?.opacity = 1.0
     }
@@ -974,13 +983,15 @@ public final class AgentMessageCell: NSView {
         userImageViews.forEach { $0.removeFromSuperview() }
         userImageViews.removeAll()
         renderedUserContent = nil
+        renderedUserThemeId = nil
     }
 
-    func rebuildUserContentViews(content: String) {
-        if renderedUserContent == content && !userContentViews.isEmpty {
+    func rebuildUserContentViews(content: String, forceRebuild: Bool = false) {
+        if !forceRebuild && renderedUserThemeId == theme.id && renderedUserContent == content && !userContentViews.isEmpty {
             return
         }
         renderedUserContent = content
+        renderedUserThemeId = theme.id
 
         for v in userContentViews {
             v.removeFromSuperview()
@@ -1250,7 +1261,11 @@ public final class AgentMessageCell: NSView {
         var sectionIndex = 0
         for part in message.orderedParts {
             guard case .text(let text) = part else { continue }
-            let sections = compileSections(from: text, splitRichText: !nativeTextSelectionEnabled)
+            let sections = compileSections(
+                from: text,
+                splitRichText: !nativeTextSelectionEnabled,
+                allowUnclosedTrailingMermaid: !message.isStreaming
+            )
             var partViews: [NSView] = []
             for section in sections {
                 let view = createSectionView(
@@ -1284,7 +1299,7 @@ public final class AgentMessageCell: NSView {
                 let groupView: AgentToolGroupView
                 if let existing = toolGroupViewsByKey[groupKey] {
                     groupView = existing
-                    groupView.update(toolViews: viewsInGroup, theme: theme, isExpanded: isExp)
+                    groupView.update(toolViews: viewsInGroup, theme: theme, isExpanded: isExp, isCompactMode: isCompactMode)
                     if groupView.superview !== self {
                         addSubview(groupView)
                     }
@@ -1293,7 +1308,8 @@ public final class AgentMessageCell: NSView {
                         groupKey: groupKey,
                         toolViews: viewsInGroup,
                         theme: theme,
-                        isExpanded: isExp
+                        isExpanded: isExp,
+                        isCompactMode: isCompactMode
                     )
                     groupView.onToggle = { [weak self, weak groupView] in
                         guard let self, let groupView else { return }
@@ -1404,7 +1420,7 @@ public final class AgentMessageCell: NSView {
                 ]))
                 quoteMutable.append(attr)
                 mutable.append(quoteMutable)
-            case .codeBlock(_, let code):
+            case .codeBlock(_, let code), .mermaidDiagram(let code):
                 if i > 0 && mutable.length > 0 {
                     mutable.append(NSAttributedString(string: "\n", attributes: [.font: NSFont.systemFont(ofSize: 13)]))
                 }
@@ -1571,6 +1587,7 @@ public final class AgentMessageCell: NSView {
             index: index,
             parentCell: self,
             toolcallColorMode: toolcallColorMode,
+            isCompactMode: isCompactMode,
             initiallyExpanded: isExp
         )
         card.onReview = { [weak self] summary in
@@ -1695,14 +1712,23 @@ extension AgentMessageCell {
             if roleIconView.frame.origin.y != stickyAvatarBaseY {
                 roleIconView.frame.origin.y = stickyAvatarBaseY
             }
+            syncAvatarAuraFrame()
             return
         }
         let size = roleIconView.frame.height
         let maxY = max(stickyAvatarBaseY, bounds.height - size - 2)
-        let y = min(maxY, max(stickyAvatarBaseY, stickyViewportTop + Self.stickyAvatarInset))
+        let topInset = max(Self.stickyAvatarInset, ceil(AgentAvatarAuraView.maxAuraOutset(forAvatarSize: size)))
+        let y = min(maxY, max(stickyAvatarBaseY, stickyViewportTop + topInset))
         if abs(roleIconView.frame.origin.y - y) > 0.01 {
             roleIconView.frame.origin.y = y
         }
+        syncAvatarAuraFrame()
+    }
+
+    func syncAvatarAuraFrame() {
+        let targetFrame = AgentAvatarAuraView.frame(around: roleIconView.frame)
+        if avatarAuraView.frame != targetFrame {
+            avatarAuraView.frame = targetFrame
+        }
     }
 }
-

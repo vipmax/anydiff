@@ -4,6 +4,7 @@ import AnyDiffCore
 /// Native AppKit terminal view rendering cells, cursor, scrollback, mouse reporting, trackpad gestures, selection, and key events.
 public final class TerminalNSView: NSView {
     public unowned let session: TerminalSession
+    internal var pasteboard: NSPasteboard = .general
     public var theme: Theme {
         didSet {
             needsDisplay = true
@@ -542,14 +543,38 @@ public final class TerminalNSView: NSView {
 
     // MARK: - Key Events
 
+    override public func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if event.type == .keyDown,
+           event.keyCode == 53,
+           flags.intersection([.command, .option, .control, .shift]).isEmpty,
+           window?.firstResponder === self,
+           clearSelection() {
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
+    @objc public override func cancelOperation(_ sender: Any?) {
+        if clearSelection() {
+            return
+        }
+        nextResponder?.tryToPerform(#selector(NSResponder.cancelOperation(_:)), with: sender)
+    }
+
     override public func keyDown(with event: NSEvent) {
+        let flags = event.modifierFlags
+        if event.keyCode == 53 && flags.intersection([.command, .option, .control, .shift]).isEmpty {
+            if clearSelection() {
+                return
+            }
+        }
+
         // Any keystroke jumps scroll back to the active bottom screen
         if scrollOffset != 0 {
             scrollOffset = 0
             needsDisplay = true
         }
-
-        let flags = event.modifierFlags
 
         // Handle Cmd shortcuts:
         // 1. Give Main Menu first priority (standard AppKit pattern, matching SwiftTerm)
@@ -975,6 +1000,22 @@ public final class TerminalNSView: NSView {
 
     // MARK: - Clipboard & Selection
 
+    public var hasSelection: Bool {
+        selectionStart != nil && selectionEnd != nil
+    }
+
+    @discardableResult
+    public func clearSelection() -> Bool {
+        guard hasSelection else { return false }
+        selectionStart = nil
+        selectionEnd = nil
+        stopSelectionAutoScrollTimer()
+        autoScrollDelta = 0
+        lastSelectionDragPoint = nil
+        needsDisplay = true
+        return true
+    }
+
     private func isCellSelected(col: Int, lineIndex: Int) -> Bool {
         guard let start = selectionStart, let end = selectionEnd else { return false }
         let isForward = start.lineIndex < end.lineIndex || (start.lineIndex == end.lineIndex && start.col <= end.col)
@@ -1038,20 +1079,20 @@ public final class TerminalNSView: NSView {
                 }
             }
 
-            let pboard = NSPasteboard.general
+            let pboard = pasteboard
             pboard.clearContents()
             pboard.setString(copied, forType: .string)
         } else {
             // Copy visible text
             let text = session.screen.fullText(includeScrollback: false)
-            let pboard = NSPasteboard.general
+            let pboard = pasteboard
             pboard.clearContents()
             pboard.setString(text, forType: .string)
         }
     }
 
     private func pasteFromClipboard() {
-        guard let string = NSPasteboard.general.string(forType: .string), !string.isEmpty else { return }
+        guard let string = pasteboard.string(forType: .string), !string.isEmpty else { return }
         if session.screen.bracketedPasteMode {
             session.sendInput("\u{1B}[200~" + string + "\u{1B}[201~")
         } else {

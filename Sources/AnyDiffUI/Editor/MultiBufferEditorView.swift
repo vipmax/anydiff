@@ -34,6 +34,7 @@ public final class MultiBufferEditorView: NSView, NSTextInputClient, NSUserInter
     public var isActiveSlot: Bool = true
     public var onContentEdited: (() -> Void)? = nil
     public var workspaceRootPath: String? = nil
+    internal var pasteboard: NSPasteboard = .general
     var displayMapCancellables = Set<AnyCancellable>()
 
     public var displayMap: DisplayMap? {
@@ -244,6 +245,21 @@ public final class MultiBufferEditorView: NSView, NSTextInputClient, NSUserInter
     public var hasSelection: Bool {
         guard let anchor = selectionAnchor else { return false }
         return anchor != cursorPoint
+    }
+
+    @discardableResult
+    public func clearSelection() -> Bool {
+        let hadSelection = hasSelection
+        guard hadSelection || selectionAnchor != nil else { return false }
+        selectionAnchor = nil
+        isDraggingSelection = false
+        activeSelectionGranularity = .character
+        checkAndPublishSelectionQuote()
+        if hadSelection {
+            notifyCursorChange()
+        }
+        needsDisplay = true
+        return hadSelection
     }
 
     // Search Matches & Highlighting (Project Search)
@@ -1168,8 +1184,8 @@ public final class MultiBufferEditorView: NSView, NSTextInputClient, NSUserInter
 
     @objc func copyDiagnosticToClipboard(_ sender: NSMenuItem) {
         guard let text = sender.representedObject as? String else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
     }
 
     @objc func contextMenuGoToDefinition(_ sender: Any?) {

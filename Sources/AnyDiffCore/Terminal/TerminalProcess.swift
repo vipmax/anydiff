@@ -47,6 +47,10 @@ public final class TerminalProcess: @unchecked Sendable {
         let targetDir = fm.fileExists(atPath: workingDirectory) ? workingDirectory : NSHomeDirectory()
         let envShell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
         let shellPath = fm.isExecutableFile(atPath: envShell) ? envShell : "/bin/zsh"
+        let isXCTest = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+            || ProcessInfo.processInfo.environment["XCTestBundlePath"] != nil
+            || NSClassFromString("XCTestCase") != nil
+        let useNoRCS = isXCTest && (shellPath.hasSuffix("/zsh") || shellPath == "zsh")
 
         let childPid = forkpty(&master, nil, nil, &win)
         guard childPid >= 0 else {
@@ -116,12 +120,16 @@ public final class TerminalProcess: @unchecked Sendable {
                 let cArg1 = strdup("-i")
                 let cArg2 = strdup("-c")
                 let cArg3 = strdup(cmd)
-                var argv: [UnsafeMutablePointer<CChar>?] = [cShell, cArg1, cArg2, cArg3, nil]
+                var argv: [UnsafeMutablePointer<CChar>?] = useNoRCS
+                    ? [cShell, strdup("-f"), cArg1, cArg2, cArg3, nil]
+                    : [cShell, cArg1, cArg2, cArg3, nil]
                 execv(shellPath, &argv)
             } else {
                 let cShell = strdup(shellPath)
                 let cArg1 = strdup("-i")
-                var argv: [UnsafeMutablePointer<CChar>?] = [cShell, cArg1, nil]
+                var argv: [UnsafeMutablePointer<CChar>?] = useNoRCS
+                    ? [cShell, strdup("-f"), cArg1, nil]
+                    : [cShell, cArg1, nil]
                 execv(shellPath, &argv)
             }
             _exit(127)
@@ -233,9 +241,14 @@ public final class TerminalProcess: @unchecked Sendable {
 
         Darwin.kill(pid, SIGHUP)
         var status: Int32 = 0
-        // Short poll wait, then fallback to SIGKILL if necessary
-        usleep(50_000)
-        if waitpid(pid, &status, WNOHANG) == 0 {
+        var exited = waitpid(pid, &status, WNOHANG) != 0
+        var remainingChecks = 50
+        while !exited && remainingChecks > 0 {
+            usleep(1_000)
+            remainingChecks -= 1
+            exited = waitpid(pid, &status, WNOHANG) != 0
+        }
+        if !exited {
             Darwin.kill(pid, SIGKILL)
             waitpid(pid, &status, 0)
         }

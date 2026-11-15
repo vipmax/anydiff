@@ -17,6 +17,7 @@ public struct MainWindowView: View {
     @StateObject private var terminalCoordinator: TerminalCoordinator
 
     @State private var toolcallColorMode = AgentDisplayPreferences.toolcallColorMode
+    @State private var isAgentCompactMode = AgentDisplayPreferences.isCompactMode
     @State private var activeMarkdownPreviewPath: String? = nil
 
     private var isReadOnlyActive: Bool {
@@ -47,8 +48,20 @@ public struct MainWindowView: View {
 
     public typealias RepoStatus = RepoCoordinator.RepoStatus
 
-    @State private var selectedTheme: Theme = .vesper
-    @State private var followsSystemAppearance: Bool = true
+    private static func initialThemePreference() -> (theme: Theme, followsSystem: Bool) {
+        if let storedThemeId = UserDefaults.standard.string(forKey: "selectedThemeId") {
+            if storedThemeId == "system" {
+                return (.vesper, true)
+            }
+            if let t = Theme.allThemes.first(where: { $0.id == storedThemeId }) {
+                return (t, false)
+            }
+        }
+        return (.vesper, true)
+    }
+
+    @State private var selectedTheme: Theme = initialThemePreference().theme
+    @State private var followsSystemAppearance: Bool = initialThemePreference().followsSystem
     @AppStorage("preferredDiffLayoutMode") private var preferredDiffLayoutMode: String = DiffLayoutMode.unified.rawValue
     @State private var fontSize: CGFloat = 13
 
@@ -83,7 +96,12 @@ public struct MainWindowView: View {
         self._reviewManager = StateObject(wrappedValue: rm)
         self._review = StateObject(wrappedValue: review)
         self._search = StateObject(wrappedValue: search)
-        self._terminalCoordinator = StateObject(wrappedValue: TerminalCoordinator(workingDirectory: repo.effectiveWorkingDirectory))
+        self._terminalCoordinator = StateObject(
+            wrappedValue: TerminalCoordinator(
+                workingDirectory: repo.effectiveWorkingDirectory,
+                createInitialTab: false
+            )
+        )
     }
 
     private var diffLayoutMode: DiffLayoutMode {
@@ -144,45 +162,32 @@ public struct MainWindowView: View {
     }
 
     public var body: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility) {
-            panelView(for: .left)
-                .navigationSplitViewColumnWidth(min: panelLayout.minWidth(for: .left), ideal: panelLayout.idealWidth(for: .left), max: panelLayout.maxWidth(for: .left))
-                .toolbarBackground(.hidden, for: .windowToolbar)
-                .toolbarColorScheme(activeTheme.isDark ? .dark : .light, for: .windowToolbar)
-        } content: {
-            panelView(for: .center)
-                .navigationSplitViewColumnWidth(min: panelLayout.minWidth(for: .center), ideal: panelLayout.idealWidth(for: .center), max: panelLayout.maxWidth(for: .center))
-                .toolbarBackground(.hidden, for: .windowToolbar)
-                .toolbarColorScheme(activeTheme.isDark ? .dark : .light, for: .windowToolbar)
-                .toolbar {
-                    ToolbarItem(id: "mainWindowToolbarNav", placement: .navigation) {
-                        toolbarNavigationItems
-                    }
-                    ToolbarItem(id: "mainWindowToolbarSpacer", placement: .automatic) {
-                        Spacer()
-                    }
-                    ToolbarItem(id: "mainWindowToolbarTrailing", placement: .primaryAction) {
-                        windowToolbarTrailingItems
-                    }
-                }
-                .background(hiddenKeyboardShortcuts)
-        } detail: {
-            panelView(for: .right)
-                .navigationSplitViewColumnWidth(min: panelLayout.minWidth(for: .right), ideal: panelLayout.idealWidth(for: .right), max: panelLayout.maxWidth(for: .right))
-                .toolbarBackground(.hidden, for: .windowToolbar)
-                .toolbarColorScheme(activeTheme.isDark ? .dark : .light, for: .windowToolbar)
-        }
+        MainWindowSplitShell(
+            columnVisibility: $columnVisibility,
+            panelLayout: panelLayout,
+            theme: activeTheme,
+            left: {
+                panelView(for: .left)
+            },
+            center: {
+                panelView(for: .center)
+                    .background(hiddenKeyboardShortcuts)
+            },
+            right: {
+                panelView(for: .right)
+            },
+            navItems: {
+                toolbarNavigationItems
+            },
+            trailingItems: {
+                windowToolbarTrailingItems
+            }
+        )
         .onChange(of: columnVisibility) { newVisibility in
             let isOpen = (newVisibility == .all)
             UserDefaults.standard.set(isOpen, forKey: Self.isLeftPanelOpenKey)
             updateWindowAppearance()
         }
-        .preferredColorScheme(activeTheme.isDark ? .dark : .light)
-        .environment(\.colorScheme, activeTheme.isDark ? .dark : .light)
-        .toolbarBackground(.hidden, for: .windowToolbar)
-        .toolbarColorScheme(activeTheme.isDark ? .dark : .light, for: .windowToolbar)
-        .background(Color(activeTheme.background).ignoresSafeArea())
-        .background(WindowAppearanceConfigurator(theme: activeTheme))
         .modifier(WindowDropModifier(
             isTargeted: $isWindowDropTargeted,
             theme: activeTheme,
@@ -302,6 +307,9 @@ public struct MainWindowView: View {
             onToolcallColorModeChanged: { mode in
                 toolcallColorMode = mode
             },
+            onCompactModeChanged: { compact in
+                isAgentCompactMode = compact
+            },
             onToggleTerminal: {
                 toggleTerminalPanel()
             },
@@ -309,6 +317,9 @@ public struct MainWindowView: View {
                 withAnimation(.easeInOut(duration: 0.15)) {
                     repo.toggleEditingLock()
                 }
+            },
+            onReturnToAgentStartScreen: {
+                handleReturnToAgentStartScreen()
             }
         ))
     }
@@ -689,6 +700,7 @@ public struct MainWindowView: View {
             selectedFilePath: repo.selectedFilePath,
             fileDiffsSummary: currentDiffSummary,
             toolcallColorMode: toolcallColorMode,
+            isCompactMode: isAgentCompactMode,
             isGitRepository: repo.repoStatus != .notGitRepository,
             currentBranch: repo.currentBranch,
             worktrees: repo.worktrees,
@@ -805,6 +817,9 @@ public struct MainWindowView: View {
                     openMarkdownPreview(path: selectedPath)
                 }
             },
+            onReturnToAgentStartScreen: {
+                handleReturnToAgentStartScreen()
+            },
             onCancel: {
                 if search.isActive {
                     withAnimation(.easeInOut(duration: 0.16)) {
@@ -817,6 +832,19 @@ public struct MainWindowView: View {
                 }
             }
         )
+    }
+
+    private func handleReturnToAgentStartScreen() {
+        let slot = panelLayout.slot(for: .agent) ?? .right
+        withAnimation(.easeInOut(duration: 0.18)) {
+            agentCoordinator.setStartScreen(true, for: slot)
+        }
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(
+                name: Notification.Name("anyDiffAgentStartScreenKeyboardFocus"),
+                object: slot
+            )
+        }
     }
 
 
@@ -984,21 +1012,13 @@ public struct MainWindowView: View {
     }
 
     private func handleOnAppear() {
-        agentCoordinator.isPanelOpen = panelLayout.isRightPanelOpen
-        if let storedThemeId = UserDefaults.standard.string(forKey: "selectedThemeId") {
-            if storedThemeId == "system" {
-                followsSystemAppearance = true
-            } else if let t = Theme.allThemes.first(where: { $0.id == storedThemeId }) {
-                selectedTheme = t
-                followsSystemAppearance = false
-            }
-        }
-        if let initial = initialPath, (initial.hasPrefix("http://") || initial.hasPrefix("https://") || initial.contains("github.com") || initial.contains("diffshub.com") || initial.contains("#")) {
-            repo.loadRemoteDiff(from: initial)
-        } else {
-            repo.loadCurrentDirectoryDiff()
+        if agentCoordinator.isPanelOpen != panelLayout.isRightPanelOpen {
+            agentCoordinator.isPanelOpen = panelLayout.isRightPanelOpen
         }
         updateWindowAppearance()
+        DispatchQueue.main.async { [repo] in
+            repo.loadInitialSource()
+        }
     }
 
 
@@ -1038,4 +1058,3 @@ public struct MainWindowView: View {
         configureFullScreenToolbars(theme: activeTheme)
     }
 }
-

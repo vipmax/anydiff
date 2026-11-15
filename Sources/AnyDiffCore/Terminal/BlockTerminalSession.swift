@@ -34,7 +34,8 @@ public final class BlockTerminalSession: ObservableObject {
 
     public init(
         workingDirectory: String = FileManager.default.currentDirectoryPath,
-        multiBuffer: TerminalMultiBuffer = TerminalMultiBuffer()
+        multiBuffer: TerminalMultiBuffer = TerminalMultiBuffer(),
+        startShell: Bool = true
     ) {
         self.currentDirectory = workingDirectory
         self.multiBuffer = multiBuffer
@@ -47,7 +48,9 @@ public final class BlockTerminalSession: ObservableObject {
             rows: 24
         )
         updateGitBranch()
-        setupPersistentShell()
+        if startShell {
+            setupPersistentShell()
+        }
     }
 
     isolated deinit {

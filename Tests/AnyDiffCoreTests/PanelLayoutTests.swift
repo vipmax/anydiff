@@ -133,6 +133,7 @@ final class PanelLayoutTests: XCTestCase {
         XCTAssertTrue(manager.isRightPanelOpen)
     }
 
+    @MainActor
     func testSplitViewDividersAndToolbarAlignment() {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
@@ -146,12 +147,24 @@ final class PanelLayoutTests: XCTestCase {
         windowToolbar.autosavesConfiguration = false
         window.toolbar = windowToolbar
 
-        let hosting = NSHostingView(rootView: MainWindowView(initialPath: nil))
+        let manager = PanelLayoutManager(defaults: testDefaults, loadPersisted: false)
+        let shell = MainWindowSplitShell(
+            columnVisibility: .constant(.all),
+            panelLayout: manager,
+            theme: .vesper,
+            left: { Color.clear },
+            center: { Color.clear },
+            right: { Color.clear },
+            navItems: { Color.clear.frame(width: 12, height: 12) },
+            trailingItems: { Color.clear.frame(width: 12, height: 12) }
+        )
+
+        let hosting = NSHostingView(rootView: shell)
         window.contentView = hosting
         hosting.layoutSubtreeIfNeeded()
         window.layoutIfNeeded()
 
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.2))
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
 
         updateSplitViewDividers(in: window)
 
@@ -187,9 +200,15 @@ final class PanelLayoutTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(dividerCount, 2, "Both left and right split dividers must be present")
     }
 
+    @MainActor
     func testTerminalPanelHeaderPositionInMainWindowView() {
-        let testDefaults = UserDefaults(suiteName: "testTerminalPosition_\(UUID().uuidString)")!
-        testDefaults.set("terminal", forKey: PanelLayoutManager.centerSlotKey)
+        let manager = PanelLayoutManager(defaults: testDefaults, loadPersisted: false)
+        manager.assign(.terminal, to: .center)
+
+        let coordinator = TerminalCoordinator(workingDirectory: NSTemporaryDirectory(), createInitialTab: false, startShell: false)
+        let tab = coordinator.createTab(workingDirectory: NSTemporaryDirectory(), for: .center)
+        tab.displayMode = .interactive
+        defer { tab.terminate() }
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700),
@@ -201,11 +220,30 @@ final class PanelLayoutTests: XCTestCase {
         let windowToolbar = NSToolbar(identifier: "AnyDiffWindowToolbar")
         window.toolbar = windowToolbar
 
-        let hosting = NSHostingView(rootView: MainWindowView(initialPath: nil))
+        let shell = MainWindowSplitShell(
+            columnVisibility: .constant(.all),
+            panelLayout: manager,
+            theme: .vesper,
+            left: { Color.clear },
+            center: {
+                TerminalPanelView(
+                    coordinator: coordinator,
+                    slot: .center,
+                    theme: .vesper,
+                    fontSize: 13
+                )
+            },
+            right: { Color.clear },
+            navItems: { Color.clear.frame(width: 12, height: 12) },
+            trailingItems: { Color.clear.frame(width: 12, height: 12) }
+        )
+
+        let hosting = NSHostingView(rootView: shell)
         window.contentView = hosting
+        hosting.layoutSubtreeIfNeeded()
         window.layoutIfNeeded()
 
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.3))
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
 
         // Find TerminalNSView inside window content
         func findTerminalView(in view: NSView) -> NSView? {
@@ -218,17 +256,14 @@ final class PanelLayoutTests: XCTestCase {
             return nil
         }
 
-        // Print window hierarchy
-        print("Looking for TerminalNSView...")
-        if let termView = findTerminalView(in: hosting) {
-            let pt = termView.convert(NSPoint.zero, to: nil)
-            print("TerminalNSView window point:", pt, "height:", termView.frame.height)
-            // In AppKit, y=0 is bottom, so top of terminal is pt.y + frame.height.
-            // Window is 700 tall. If top padding 52 + header 28 is present,
-            // top of terminal is 700 - 52 - 28 = 620.
-            let topOfTerminal = pt.y + termView.frame.height
-            print("Top of Terminal in window:", topOfTerminal)
-            XCTAssertLessThanOrEqual(topOfTerminal, 630.0, "Terminal view must start below window toolbar and panel header")
+        let termView = findTerminalView(in: hosting)
+        XCTAssertNotNil(termView, "TerminalNSView must be present in center terminal panel")
+        if let termView {
+            let windowRect = termView.convert(termView.bounds, to: nil)
+            XCTAssertGreaterThan(windowRect.height, 100.0, "Terminal view must have non-zero height")
+            // In AppKit window coordinates, y=0 is bottom, so maxY is the top edge of the terminal.
+            // Window is 700 tall. With toolbar (~52) + panel header (28), top of terminal is ~620.
+            XCTAssertLessThanOrEqual(windowRect.maxY, 630.0, "Terminal view must start below window toolbar and panel header")
         }
     }
 

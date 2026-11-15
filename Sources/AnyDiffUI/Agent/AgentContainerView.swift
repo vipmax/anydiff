@@ -9,6 +9,7 @@ public struct AgentContainerView: View {
     public let selectedFilePath: String?
     public let fileDiffsSummary: String
     public let toolcallColorMode: ToolcallColorMode
+    public let isCompactMode: Bool
     public let isGitRepository: Bool
     public let currentBranch: String
     public let worktrees: [GitWorktree]
@@ -31,6 +32,7 @@ public struct AgentContainerView: View {
         selectedFilePath: String?,
         fileDiffsSummary: String,
         toolcallColorMode: ToolcallColorMode,
+        isCompactMode: Bool = AgentDisplayPreferences.isCompactMode,
         isGitRepository: Bool = false,
         currentBranch: String = "",
         worktrees: [GitWorktree] = [],
@@ -48,6 +50,7 @@ public struct AgentContainerView: View {
         self.selectedFilePath = selectedFilePath
         self.fileDiffsSummary = fileDiffsSummary
         self.toolcallColorMode = toolcallColorMode
+        self.isCompactMode = isCompactMode
         self.isGitRepository = isGitRepository
         self.currentBranch = currentBranch
         self.worktrees = worktrees
@@ -105,13 +108,26 @@ public struct AgentContainerView: View {
                         agentIcon: currentSession.preset.iconName,
                         agentId: currentSession.preset.id,
                         toolcallColorMode: toolcallColorMode,
+                        isCompactMode: isCompactMode,
                         externalFocusRequest: inputFocusTrigger,
+                        isWindowModalActive: coordinator.activeImagePreview != nil || isSessionsPresented,
                         onReview: onReview,
                         onPreviewImages: { imgs, idx, isDraft in
                             coordinator.showImagePreview(images: imgs, selectedIndex: idx, isDraft: isDraft)
                         },
                         onOpenURL: onOpenURL,
-                        onCreateWorktreeForPrompt: onCreateWorktreeForPrompt
+                        onCreateWorktreeForPrompt: onCreateWorktreeForPrompt,
+                        onReturnToStartScreen: {
+                            withAnimation(.easeInOut(duration: 0.18)) {
+                                coordinator.setStartScreen(true, for: slot)
+                            }
+                            DispatchQueue.main.async {
+                                NotificationCenter.default.post(
+                                    name: Notification.Name("anyDiffAgentStartScreenKeyboardFocus"),
+                                    object: slot
+                                )
+                            }
+                        }
                     )
                     .id(currentSession.id)
                 } else {
@@ -182,6 +198,7 @@ public struct AgentContainerView: View {
                         theme: theme,
                         workingDirectory: sessionWorkingDirectory(for: currentSession),
                         activeSessionId: currentSession.id,
+                        worktrees: worktrees,
                         onClose: { isSessionsPresented = false },
                         onSelectSession: { id in
                             coordinator.selectSession(id: id, for: slot)
@@ -248,7 +265,7 @@ public struct AgentContainerView: View {
                         .foregroundColor(Color(nsColor: .secondaryLabelColor))
                 }
                 .buttonStyle(AgentToolbarActionButtonStyle(accentColor: accentColor))
-                .help("Choose Agent / All Agents")
+                .help("Choose Agent / All Agents (Cmd+Esc)")
             }
         }
     }

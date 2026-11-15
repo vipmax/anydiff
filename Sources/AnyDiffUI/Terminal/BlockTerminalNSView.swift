@@ -118,6 +118,7 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
     }
 
     private var userScrolledAwayFromBottom: Bool = false
+    internal var pasteboard: NSPasteboard = .general
     private var lastBlockCount: Int = 0
     private var lastScrollEventTime = Date.distantPast
 
@@ -145,6 +146,18 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
     public var normalizedSelection: (start: TerminalDocumentPoint, end: TerminalDocumentPoint)? {
         guard let anchor = selectionAnchor, let cursor = cursorPoint, anchor != cursor else { return nil }
         return anchor < cursor ? (anchor, cursor) : (cursor, anchor)
+    }
+
+    @discardableResult
+    public func clearSelection() -> Bool {
+        let hadSelection = hasSelection
+        guard hadSelection || selectionAnchor != nil || cursorPoint != nil else { return false }
+        selectionAnchor = nil
+        cursorPoint = nil
+        isDraggingSelection = false
+        selectionGranularity = .character
+        needsDisplay = true
+        return hadSelection
     }
 
     // MARK: - Scrollbar & Gesture Locking State
@@ -1683,13 +1696,31 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
                 return
             }
         }
-        if event.keyCode == 53 { // Escape
-            if session.isProcessRunning {
-                session.sendInterrupt()
+        if event.keyCode == 53 && event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty { // Escape
+            if handleEscapeKey() {
                 return
             }
         }
         super.keyDown(with: event)
+    }
+
+    @discardableResult
+    private func handleEscapeKey() -> Bool {
+        if clearSelection() {
+            return true
+        }
+        if session.isProcessRunning {
+            session.sendInterrupt()
+            return true
+        }
+        return false
+    }
+
+    @objc public override func cancelOperation(_ sender: Any?) {
+        if handleEscapeKey() {
+            return
+        }
+        nextResponder?.tryToPerform(#selector(NSResponder.cancelOperation(_:)), with: sender)
     }
 
     public override func resetCursorRects() {
@@ -1748,6 +1779,11 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
     }
 
     // MARK: - Precise Scroll Wheel Engine
+    internal func resetScrollAxisLockForTesting() {
+        lastScrollEventTime = .distantPast
+        scrollLockAxis = nil
+    }
+
     public override func scrollWheel(with event: NSEvent) {
         let mult: CGFloat = event.hasPreciseScrollingDeltas ? 1.0 : 24.0
         var dy = event.scrollingDeltaY * mult
@@ -1944,9 +1980,12 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
             }
         }
 
-        // Escape (Interrupt running command)
-        if event.keyCode == 53 && session.isProcessRunning {
-            session.sendInterrupt()
+        // Escape (Clear selection first, then interrupt running command)
+        if event.type == .keyDown,
+           event.keyCode == 53,
+           flags.intersection([.command, .option, .control, .shift]).isEmpty,
+           window?.firstResponder === self,
+           handleEscapeKey() {
             return true
         }
 
@@ -1969,7 +2008,6 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
         if let sel = normalizedSelection {
             let text = extractText(in: sel)
             if !text.isEmpty {
-                let pasteboard = NSPasteboard.general
                 pasteboard.clearContents()
                 pasteboard.setString(text, forType: .string)
                 return
@@ -2059,7 +2097,6 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
     public func copyBlockOutput(block: TerminalBlock) {
         let lines = block.lines.map(\.rawText).joined(separator: "\n")
         let full = lines.isEmpty ? block.command : "\(block.command)\n\(lines)"
-        let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(full, forType: .string)
     }
@@ -2120,7 +2157,6 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
 
     @objc private func contextCopyCommand(_ sender: NSMenuItem) {
         guard let cmd = sender.representedObject as? String else { return }
-        let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(cmd, forType: .string)
     }
@@ -2128,7 +2164,6 @@ public final class BlockTerminalNSView: NSView, NSUserInterfaceValidations {
     @objc private func contextCopyOutput(_ sender: NSMenuItem) {
         guard let block = sender.representedObject as? TerminalBlock else { return }
         let text = block.lines.map(\.rawText).joined(separator: "\n")
-        let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
     }

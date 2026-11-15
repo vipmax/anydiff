@@ -17,6 +17,7 @@ public final class TerminalTab: ObservableObject, Identifiable {
     @Published public var customTitle: String? = nil
     @Published public var displayMode: TerminalDisplayMode = .multiBuffer
     public let createdAt: Date
+    public let startShell: Bool
 
     /// Modern block/multibuffer session backed by an asynchronous persistent shell process.
     public let blockSession: BlockTerminalSession
@@ -30,12 +31,14 @@ public final class TerminalTab: ObservableObject, Identifiable {
         id: UUID = UUID(),
         title: String? = nil,
         workingDirectory: String = FileManager.default.currentDirectoryPath,
-        customInteractiveSession: TerminalSession? = nil
+        customInteractiveSession: TerminalSession? = nil,
+        startShell: Bool = true
     ) {
         self.id = id
         self.title = title ?? "Terminal"
         self.createdAt = Date()
-        self.blockSession = BlockTerminalSession(workingDirectory: workingDirectory)
+        self.startShell = startShell
+        self.blockSession = BlockTerminalSession(workingDirectory: workingDirectory, startShell: startShell)
         self.interactiveSession = customInteractiveSession ?? TerminalSession(workingDirectory: workingDirectory)
 
         // Forward high-level lifecycle state changes so UI updates reactively without re-rendering on every stream chunk
@@ -173,19 +176,29 @@ public final class TerminalCoordinator: ObservableObject {
 
     private var nextTerminalNumber: Int = 1
     private var tabSubscriptions: [UUID: AnyCancellable] = [:]
+    private let startShell: Bool
 
-    public init(workingDirectory: String = FileManager.default.currentDirectoryPath) {
+    public init(
+        workingDirectory: String = FileManager.default.currentDirectoryPath,
+        createInitialTab: Bool = true,
+        startShell: Bool = true
+    ) {
         self.defaultWorkingDirectory = workingDirectory
-        _ = createTab(workingDirectory: workingDirectory)
+        self.startShell = startShell
+        if createInitialTab {
+            _ = createTab(workingDirectory: workingDirectory)
+        }
     }
 
     /// Backward-compatibility initializer wrapping an existing TerminalSession.
-    public init(singleSession: TerminalSession) {
+    public init(singleSession: TerminalSession, startShell: Bool = true) {
         self.defaultWorkingDirectory = singleSession.currentDirectory
+        self.startShell = startShell
         let tab = TerminalTab(
             title: "Terminal 1",
             workingDirectory: singleSession.currentDirectory,
-            customInteractiveSession: singleSession
+            customInteractiveSession: singleSession,
+            startShell: startShell
         )
         self.tabs = [tab]
         self.activeTabId = tab.id
@@ -199,6 +212,15 @@ public final class TerminalCoordinator: ObservableObject {
             return tab
         }
         return tabs.first
+    }
+
+    /// Pure read-only lookup of the tab displayed by a panel slot without mutating published state during SwiftUI view evaluation.
+    public func peekTab(for slot: PanelSlot) -> TerminalTab? {
+        if let id = slotTabs[slot], let tab = tabs.first(where: { $0.id == id }) {
+            return tab
+        }
+        let otherOccupied = Set(slotTabs.filter { $0.key != slot }.values)
+        return tabs.first(where: { !otherOccupied.contains($0.id) }) ?? activeTab
     }
 
     /// The currently selected active terminal tab for a given panel slot.
@@ -220,6 +242,15 @@ public final class TerminalCoordinator: ObservableObject {
         return activeTab
     }
 
+    /// Ensures at least one terminal tab exists (and is assigned to `slot` if specified) when a terminal panel is first shown.
+    public func ensureInitialTabIfNeeded(for slot: PanelSlot? = nil) {
+        if tabs.isEmpty {
+            _ = createTab(workingDirectory: defaultWorkingDirectory, for: slot)
+        } else if let slot, slotTabs[slot] == nil {
+            _ = activeTab(for: slot)
+        }
+    }
+
     /// Selects the specified tab for a given slot without modifying other slots.
     public func selectTab(id: UUID, for slot: PanelSlot) {
         guard tabs.contains(where: { $0.id == id }) else { return }
@@ -235,7 +266,7 @@ public final class TerminalCoordinator: ObservableObject {
         let num = nextTerminalNumber
         nextTerminalNumber += 1
         let tabTitle = title ?? "Terminal \(num)"
-        let tab = TerminalTab(title: tabTitle, workingDirectory: dir)
+        let tab = TerminalTab(title: tabTitle, workingDirectory: dir, startShell: startShell)
         tabs.append(tab)
         activeTabId = tab.id
         bindTab(tab)

@@ -155,36 +155,40 @@ public enum AgentGitChangesDetector {
             return PreTurnGitSnapshot(isGitRepository: false)
         }
 
-        guard let isInside = runGit(arguments: ["-C", workingDirectory, "rev-parse", "--is-inside-work-tree"]),
-              isInside == "true" else {
+        // Fast single-process probe: verifies git repo, retrieves HEAD OID, detects tracked dirtiness,
+        // and enumerates all non-ignored untracked files at once.
+        guard let statusData = runGitData(arguments: ["-C", workingDirectory, "status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all"]) else {
             return PreTurnGitSnapshot(baseCommitHash: nil, isGitRepository: false)
         }
 
-        let stashResult = runGit(arguments: ["-C", workingDirectory, "stash", "create"])
-        var baseRef: String? = nil
-
-        if let stashOutput = stashResult {
-            if !stashOutput.isEmpty {
-                // Working tree had dirty changes; stash commit captured them perfectly.
-                baseRef = stashOutput
-            } else {
-                // Working tree was clean vs HEAD; base reference is HEAD commit hash.
-                let headSha = runGit(arguments: ["-C", workingDirectory, "rev-parse", "HEAD"])
-                baseRef = (headSha?.isEmpty == false) ? headSha : "HEAD"
-            }
-        } else {
-            // git stash create failed. Do NOT guess "HEAD" to avoid attributing existing diffs.
-            baseRef = nil
-        }
-
+        var headOid: String? = nil
+        var hasTrackedDirty = false
         var untracked = Set<String>()
         var untrackedList: [String] = []
         var modTimes: [String: TimeInterval] = [:]
         var blobHashes: [String: String] = [:]
 
-        if let output = runGit(arguments: ["-C", workingDirectory, "ls-files", "--others", "--exclude-standard"]) {
-            for line in output.components(separatedBy: "\n") {
-                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        let statusRecords = statusData.split(separator: 0, omittingEmptySubsequences: true)
+        var recordIdx = 0
+        while recordIdx < statusRecords.count {
+            let recordBytes = statusRecords[recordIdx]
+            recordIdx += 1
+            guard let record = String(data: recordBytes, encoding: .utf8) else { continue }
+            if record.hasPrefix("# branch.oid ") {
+                let oid = String(record.dropFirst("# branch.oid ".count))
+                if !oid.isEmpty, oid != "(initial)" {
+                    headOid = oid
+                }
+            } else if record.hasPrefix("2 ") {
+                hasTrackedDirty = true
+                // Rename/copy v2 -z records are followed by an extra NUL-terminated origPath token.
+                if recordIdx < statusRecords.count {
+                    recordIdx += 1
+                }
+            } else if record.hasPrefix("1 ") || record.hasPrefix("u ") {
+                hasTrackedDirty = true
+            } else if record.hasPrefix("? ") {
+                let trimmed = String(record.dropFirst(2))
                 guard !trimmed.isEmpty else { continue }
                 untracked.insert(trimmed)
                 untrackedList.append(trimmed)
@@ -194,17 +198,30 @@ public enum AgentGitChangesDetector {
                     modTimes[trimmed] = modDate.timeIntervalSince1970
                 }
             }
-            if !untrackedList.isEmpty {
-                var hashArgs = ["-C", workingDirectory, "hash-object", "-w", "--"]
-                hashArgs.append(contentsOf: untrackedList)
-                if let shasOutput = runGit(arguments: hashArgs) {
-                    let shas = shasOutput.components(separatedBy: "\n")
-                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                        .filter { !$0.isEmpty }
-                    if shas.count == untrackedList.count {
-                        for (idx, sha) in shas.enumerated() {
-                            blobHashes[untrackedList[idx]] = sha
-                        }
+        }
+
+        var baseRef: String? = nil
+        if hasTrackedDirty {
+            if let stashOutput = runGit(arguments: ["-C", workingDirectory, "stash", "create"]) {
+                baseRef = !stashOutput.isEmpty ? stashOutput : (headOid ?? "HEAD")
+            } else {
+                // git stash create failed. Do NOT guess "HEAD" to avoid attributing existing diffs.
+                baseRef = nil
+            }
+        } else {
+            baseRef = headOid ?? "HEAD"
+        }
+
+        if !untrackedList.isEmpty {
+            var hashArgs = ["-C", workingDirectory, "hash-object", "-w", "--"]
+            hashArgs.append(contentsOf: untrackedList)
+            if let shasOutput = runGit(arguments: hashArgs) {
+                let shas = shasOutput.components(separatedBy: "\n")
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                if shas.count == untrackedList.count {
+                    for (idx, sha) in shas.enumerated() {
+                        blobHashes[untrackedList[idx]] = sha
                     }
                 }
             }
@@ -254,12 +271,30 @@ public enum AgentGitChangesDetector {
         var modifiedList: [String] = []
         var deletedList: [String] = []
 
-        // 1. Get numstat and status for tracked files against base snapshot ref
+        // 1. Get raw status and numstat for tracked files against base snapshot ref in a single git invocation
         var numstatItems: [String: (adds: Int, dels: Int)] = [:]
-        if let baseRef = snapshot.baseCommitHash {
-            if let numstat = runGit(arguments: ["-C", workingDirectory, "diff", "--numstat", baseRef]) {
-                for line in numstat.components(separatedBy: "\n") {
-                    let parts = line.components(separatedBy: "\t")
+        var rawEntries: [(statusLetter: Substring, path: String)] = []
+        if let baseRef = snapshot.baseCommitHash,
+           let combinedDiff = runGit(arguments: ["-C", workingDirectory, "diff", "--raw", "--numstat", baseRef]) {
+            for line in combinedDiff.split(separator: "\n", omittingEmptySubsequences: true) {
+                if line.hasPrefix(":") {
+                    let parts = line.split(separator: "\t", omittingEmptySubsequences: false)
+                    guard !parts.isEmpty else { continue }
+                    let statusField = parts[0].split(separator: " ").last ?? ""
+                    let statusLetter = statusField.prefix(1)
+                    let pathSubstring: Substring = if (statusLetter == "R" || statusLetter == "C") && parts.count >= 3 {
+                        parts[2]
+                    } else if parts.count >= 2 {
+                        parts[1]
+                    } else {
+                        ""
+                    }
+                    let path = pathSubstring.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !path.isEmpty {
+                        rawEntries.append((statusLetter: statusLetter, path: path))
+                    }
+                } else {
+                    let parts = line.split(separator: "\t", omittingEmptySubsequences: false)
                     if parts.count >= 3 {
                         let adds = Int(parts[0]) ?? 0
                         let dels = Int(parts[1]) ?? 0
@@ -271,51 +306,45 @@ public enum AgentGitChangesDetector {
                 }
             }
 
-            if let nameStatus = runGit(arguments: ["-C", workingDirectory, "diff", "--name-status", baseRef]) {
-                for line in nameStatus.components(separatedBy: "\n") {
-                    let parts = line.components(separatedBy: "\t")
-                    guard !parts.isEmpty else { continue }
-                    let statusLetter = parts[0].prefix(1)
-                    let path = (statusLetter == "R" && parts.count >= 3)
-                        ? parts[2].trimmingCharacters(in: .whitespacesAndNewlines)
-                        : (parts.count >= 2 ? parts[1].trimmingCharacters(in: .whitespacesAndNewlines) : "")
-                    guard !path.isEmpty else { continue }
+            for entry in rawEntries {
+                let statusLetter = entry.statusLetter
+                let path = entry.path
 
-                    // If git diff reports this file as Added ("A"), check if it was already
-                    // present as an untracked file before this turn started.
-                    // Because `git stash create` does not capture untracked files, any pre-existing
-                    // untracked file that was merely staged/committed during this turn will appear
-                    // in `git diff baseRef` as Added ("A").
-                    if statusLetter == "A" && snapshot.untrackedFiles.contains(path) {
-                        let fullPath = URL(fileURLWithPath: workingDirectory).appendingPathComponent(path).path
-                        let currentMtime = (try? FileManager.default.attributesOfItem(atPath: fullPath))?[.modificationDate] as? Date
-                        let wasModified = (currentMtime?.timeIntervalSince1970 ?? 0) > (snapshot.untrackedModTimes[path] ?? 0) + 0.5
-                        if wasModified {
-                            modifiedList.append(path)
-                            let (adds, dels) = numstatItems[path] ?? (0, 0)
-                            items.append(AgentEditedFileItem(path: path, additions: adds, deletions: dels))
-                        }
-                        // If not modified, it was just staged/committed without changes during this turn — ignore!
-                        continue
-                    }
-
-                    let (adds, dels) = numstatItems[path] ?? (0, 0)
-                    if statusLetter == "A" {
-                        createdList.append(path)
-                        items.append(AgentEditedFileItem(path: path, additions: adds, deletions: dels))
-                    } else if statusLetter == "D" {
-                        deletedList.append(path)
-                        items.append(AgentEditedFileItem(path: path, additions: adds, deletions: dels))
-                    } else {
+                // If git diff reports this file as Added ("A"), check if it was already
+                // present as an untracked file before this turn started.
+                // Because `git stash create` does not capture untracked files, any pre-existing
+                // untracked file that was merely staged/committed during this turn will appear
+                // in `git diff baseRef` as Added ("A").
+                if statusLetter == "A" && snapshot.untrackedFiles.contains(path) {
+                    let fullPath = URL(fileURLWithPath: workingDirectory).appendingPathComponent(path).path
+                    let currentMtime = (try? FileManager.default.attributesOfItem(atPath: fullPath))?[.modificationDate] as? Date
+                    let wasModified = (currentMtime?.timeIntervalSince1970 ?? 0) > (snapshot.untrackedModTimes[path] ?? 0) + 0.5
+                    if wasModified {
                         modifiedList.append(path)
+                        let (adds, dels) = numstatItems[path] ?? (0, 0)
                         items.append(AgentEditedFileItem(path: path, additions: adds, deletions: dels))
                     }
+                    // If not modified, it was just staged/committed without changes during this turn — ignore!
+                    continue
+                }
+
+                let (adds, dels) = numstatItems[path] ?? (0, 0)
+                if statusLetter == "A" {
+                    createdList.append(path)
+                    items.append(AgentEditedFileItem(path: path, additions: adds, deletions: dels))
+                } else if statusLetter == "D" {
+                    deletedList.append(path)
+                    items.append(AgentEditedFileItem(path: path, additions: adds, deletions: dels))
+                } else {
+                    modifiedList.append(path)
+                    items.append(AgentEditedFileItem(path: path, additions: adds, deletions: dels))
                 }
             }
         }
 
         // 2. Untracked files created or modified during THIS turn
         var preTurnBlobsForSummary: [String: String] = [:]
+        var cachedUntrackedDiffs: [String: Data] = [:]
         if snapshot.isGitRepository,
            let untrackedOutput = runGit(arguments: ["-C", workingDirectory, "ls-files", "--others", "--exclude-standard"]) {
             let existingTrackedPaths = Set(items.map(\.path))
@@ -341,12 +370,12 @@ public enum AgentGitChangesDetector {
                     var adds = 0
                     var dels = 0
                     if let oldBlobSha = snapshot.untrackedBlobHashes[trimmed],
-                       let numstat = runGit(arguments: ["-C", workingDirectory, "diff", "--numstat", oldBlobSha, "--", trimmed]) {
+                       let combined = runGitData(arguments: ["-C", workingDirectory, "diff", "--numstat", "-p", "-U3", oldBlobSha, "--", trimmed]) {
                         preTurnBlobsForSummary[trimmed] = oldBlobSha
-                        let parts = numstat.trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: "\t")
-                        if parts.count >= 2 {
-                            adds = Int(parts[0]) ?? 0
-                            dels = Int(parts[1]) ?? 0
+                        if let parsed = splitNumstatAndPatch(combined) {
+                            adds = parsed.adds
+                            dels = parsed.dels
+                            cachedUntrackedDiffs[trimmed] = parsed.patchData
                         }
                     } else if let contents = try? String(contentsOfFile: fullPath, encoding: .utf8) {
                         adds = contents.components(separatedBy: "\n").count
@@ -373,11 +402,13 @@ public enum AgentGitChangesDetector {
             }
         }
 
-        // Include diffs for untracked files
+        // Include diffs for untracked files (reusing precomputed diffs from step 2)
         for item in items {
             if snapshot.untrackedFiles.contains(item.path) {
-                if let oldBlobSha = snapshot.untrackedBlobHashes[item.path],
-                   let fileDiffData = runGitData(arguments: ["-C", workingDirectory, "diff", "-U3", oldBlobSha, "--", item.path]) {
+                if let cached = cachedUntrackedDiffs[item.path] {
+                    diffChunks.append(cached)
+                } else if let oldBlobSha = snapshot.untrackedBlobHashes[item.path],
+                          let fileDiffData = runGitData(arguments: ["-C", workingDirectory, "diff", "-U3", oldBlobSha, "--", item.path]) {
                     diffChunks.append(fileDiffData)
                 }
             } else if createdList.contains(item.path) {
@@ -423,6 +454,25 @@ public enum AgentGitChangesDetector {
             args.append(contentsOf: filter.sorted())
         }
         return runGitData(arguments: args)
+    }
+
+    private static let diffGitMarker = Data("\ndiff --git ".utf8)
+
+    private static func splitNumstatAndPatch(_ data: Data) -> (adds: Int, dels: Int, patchData: Data)? {
+        guard let markerRange = data.range(of: diffGitMarker) else { return nil }
+        let headerData = data[data.startIndex..<markerRange.lowerBound]
+        var adds = 0
+        var dels = 0
+        if let headerText = String(data: headerData, encoding: .utf8) {
+            let parts = headerText.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "\t")
+            if parts.count >= 2 {
+                adds = Int(parts[0]) ?? 0
+                dels = Int(parts[1]) ?? 0
+            }
+        }
+        // Skip the leading '\n' so patchData starts directly at "diff --git ".
+        let patchStart = data.index(after: markerRange.lowerBound)
+        return (adds, dels, Data(data[patchStart..<data.endIndex]))
     }
 
     private static func runGit(arguments: [String]) -> String? {

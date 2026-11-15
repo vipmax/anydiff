@@ -141,6 +141,12 @@ extension MultiBufferEditorView {
             hideHover()
         }
 
+        if event.keyCode == 53 && event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty {
+            if handleEscapeKey() {
+                return
+            }
+        }
+
         // Shortcut: Cmd+Shift+I or F1 to show Hover at cursor
         if (event.keyCode == 34 && event.modifierFlags.contains([.command, .shift])) || event.keyCode == 122 {
             showHoverAtCursor()
@@ -207,6 +213,29 @@ extension MultiBufferEditorView {
         interpretKeyEvents([event])
     }
 
+    @discardableResult
+    func handleEscapeKey() -> Bool {
+        if isCompletionMenuVisible {
+            hideCompletionMenu()
+            return true
+        }
+        if isHoverVisible {
+            hideHover()
+            return true
+        }
+        if clearSelection() {
+            return true
+        }
+        return false
+    }
+
+    @objc public override func cancelOperation(_ sender: Any?) {
+        if handleEscapeKey() {
+            return
+        }
+        nextResponder?.tryToPerform(#selector(NSResponder.cancelOperation(_:)), with: sender)
+    }
+
     public override func doCommand(by selector: Selector) {
         if responds(to: selector) {
             perform(selector, with: nil)
@@ -216,6 +245,13 @@ extension MultiBufferEditorView {
     }
 
     public override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if event.type == .keyDown,
+           event.keyCode == 53,
+           event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty,
+           window?.firstResponder === self,
+           handleEscapeKey() {
+            return true
+        }
         // Ctrl+Space: Show Code Completions (Zed / VS Code standard)
         if event.keyCode == 49 && event.modifierFlags.contains(.control) && !event.modifierFlags.contains(.command) {
             showCompletions()

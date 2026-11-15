@@ -163,8 +163,7 @@ public struct LSPStatusPopoverView: View {
 
             if isLoading {
                 ProgressView()
-                    .progressViewStyle(.circular)
-                    .scaleEffect(0.6)
+                    .controlSize(.small)
                     .frame(width: 14, height: 14)
             }
 

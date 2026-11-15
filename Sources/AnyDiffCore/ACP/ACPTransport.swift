@@ -114,7 +114,10 @@ public final class ACPTransport: @unchecked Sendable {
             finalCmd = trimmedCmd
         }
         proc.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        proc.arguments = ["-l", "-c", finalCmd]
+        let skipShellStartupFiles = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+            || ProcessInfo.processInfo.environment["XCTestBundlePath"] != nil
+            || NSClassFromString("XCTestCase") != nil
+        proc.arguments = [skipShellStartupFiles ? "-f" : "-l", "-c", finalCmd]
 
         proc.terminationHandler = { [weak self] p in
             guard let self = self else { return }

@@ -19,14 +19,6 @@ public enum AgentTurnRollbackService {
 
         let resolvedWorkingDir = URL(fileURLWithPath: workingDirectory).resolvingSymlinksInPath().path
 
-        // 1. Capture post-turn state for tracked files before reverting so we can Redo/Restore later
-        if summary.postTurnCommitHash == nil {
-            let postHash = runGit(arguments: ["-C", resolvedWorkingDir, "stash", "create"])
-            if let postHash, !postHash.isEmpty {
-                summary.postTurnCommitHash = postHash
-            }
-        }
-
         var allSucceeded = true
         let baseRef = summary.baseCommitHash ?? "HEAD"
 
@@ -41,6 +33,17 @@ public enum AgentTurnRollbackService {
                 } else {
                     toDelete.insert(item.path)
                 }
+            }
+        }
+
+        let untrackedBlobs = Set(summary.preTurnUntrackedBlobs?.keys ?? [:].keys)
+        let hasTrackedToRestore = !toRestore.subtracting(untrackedBlobs).isEmpty
+
+        // 1. Capture post-turn state for tracked files before reverting so we can Redo/Restore later
+        if hasTrackedToRestore && summary.postTurnCommitHash == nil {
+            let postHash = runGit(arguments: ["-C", resolvedWorkingDir, "stash", "create"])
+            if let postHash, !postHash.isEmpty {
+                summary.postTurnCommitHash = postHash
             }
         }
 

@@ -158,8 +158,8 @@ public struct AgentSavedSessionsView: View {
 
                         if isStreamingMore {
                             ProgressView()
-                                .scaleEffect(0.45)
-                                .frame(width: 10, height: 10)
+                                .controlSize(.small)
+                                .frame(width: 14, height: 14)
                         }
                     }
                     .padding(.horizontal, 6)
@@ -225,7 +225,6 @@ public struct AgentSavedSessionsView: View {
                         if isLoading && sessions.isEmpty {
                             ProgressView()
                                 .controlSize(.small)
-                                .scaleEffect(0.68)
                         } else {
                             Image(systemName: "arrow.clockwise")
                                 .font(.system(size: 11, weight: .medium))
@@ -302,7 +301,7 @@ public struct AgentSavedSessionsView: View {
     private var loadingView: some View {
         VStack(spacing: 12) {
             ProgressView()
-                .scaleEffect(0.9)
+                .controlSize(.regular)
 
             Text("Querying agent for saved sessions...")
                 .font(.system(size: 12))
@@ -474,4 +473,3 @@ public struct AgentSavedSessionsView: View {
         return path
     }
 }
-

@@ -195,6 +195,7 @@ public final class AgentToolCardView: AgentFlippedView {
     public private(set) var item: ToolCallItem
     private var theme: Theme
     private var toolcallColorMode: ToolcallColorMode
+    private var isCompactMode: Bool
     public var isExpanded: Bool = false
     public var onToggle: (() -> Void)?
     public var onReview: ((AgentEditedFilesSummary) -> Void)?
@@ -206,8 +207,7 @@ public final class AgentToolCardView: AgentFlippedView {
     private let actionIconView = AgentStaticImageView()
     private let actionTextLabel = AgentStaticTextField(labelWithString: "")
     private let titleLabel = AgentStaticTextField(labelWithString: "")
-    private let progressIndicator = NSProgressIndicator()
-    private let errorLabel = AgentStaticTextField(labelWithString: "")
+    private let errorIconView = AgentStaticImageView()
     private let chevronImageView = AgentStaticImageView()
     private let descriptionLabel = AgentStaticTextField(wrappingLabelWithString: "")
     public let detailContainer = AgentFlippedView()
@@ -222,18 +222,42 @@ public final class AgentToolCardView: AgentFlippedView {
     private var cachedTitleText: String?
     private var cachedTitleWidth: CGFloat = 0
 
+    private var cardCornerRadius: CGFloat { isCompactMode ? 8 : 12 }
+    private var cardPaddingH: CGFloat { isCompactMode ? 6 : 8 }
+    private var headerTopY: CGFloat { isCompactMode ? 3 : 6 }
+    private var headerHeight: CGFloat { isCompactMode ? 18 : 22 }
+    private var contentStartY: CGFloat { isCompactMode ? 22 : 32 }
+    private var pillCornerRadius: CGFloat { isCompactMode ? 5 : 6 }
+    private var pillHeight: CGFloat { isCompactMode ? 16 : 20 }
+    private var pillPaddingH: CGFloat { isCompactMode ? 5 : 6 }
+    private var pillSpacing: CGFloat { isCompactMode ? 3 : 4 }
+    private var actionIconSize: CGFloat { isCompactMode ? 10 : 12 }
+    private var actionIconPointSize: CGFloat { isCompactMode ? 9.0 : 10.5 }
+    private var actionTextFontSize: CGFloat { isCompactMode ? 9.5 : 10.5 }
+    private var titleFontSize: CGFloat { isCompactMode ? 11.0 : 11.5 }
+    private var diffStatsFontSize: CGFloat { isCompactMode ? 9.5 : 10.0 }
+    private var chevronPointSize: CGFloat { isCompactMode ? 7.5 : 8.5 }
+    private var chevronSize: CGFloat { isCompactMode ? 9 : 10 }
+    private var errorIconPointSize: CGFloat { isCompactMode ? 7.5 : 8.5 }
+    private var errorIconSize: CGFloat { isCompactMode ? 9 : 10 }
+    private var openInEditorPointSize: CGFloat { isCompactMode ? 9.0 : 10.0 }
+    private var openInEditorSize: CGFloat { isCompactMode ? 14 : 16 }
+    private var metadataSpacing: CGFloat { isCompactMode ? 5 : 6 }
+
     public init(
         item: ToolCallItem,
         theme: Theme,
         index: Int,
         parentCell: AgentMessageCell,
         toolcallColorMode: ToolcallColorMode = .full,
+        isCompactMode: Bool = false,
         initiallyExpanded: Bool = false
     ) {
         self.item = item
         self.theme = theme
         self.parentCell = parentCell
         self.toolcallColorMode = toolcallColorMode
+        self.isCompactMode = isCompactMode
         self.isExpanded = initiallyExpanded
         super.init(frame: .zero)
         setup(index: index, parentCell: parentCell)
@@ -345,34 +369,21 @@ public final class AgentToolCardView: AgentFlippedView {
 
         // Action badge update
         applyActionAppearance(background: bgCol, foreground: fgCol)
-        let config = NSImage.SymbolConfiguration(pointSize: 10.5, weight: .semibold)
+        let config = NSImage.SymbolConfiguration(pointSize: actionIconPointSize, weight: .semibold)
         actionIconView.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)?.withSymbolConfiguration(config)
         actionTextLabel.stringValue = newItem.shortToolName
 
         titleLabel.stringValue = newItem.displayTitle
         titleLabel.textColor = NSColor(cgColor: newTheme.foreground.cgColor) ?? .textColor
 
-        let descText = newItem.descriptionText?.isEmpty == false ? newItem.descriptionText : ((!hasExpandableContent(for: newItem)) ? (newItem.summary ?? newItem.output) : nil)
-        if let description = descText, !description.isEmpty {
-            descriptionLabel.stringValue = description
-            descriptionLabel.font = (newItem.descriptionText?.isEmpty == false) ? NSFont.systemFont(ofSize: 11) : NSFont.monospacedSystemFont(ofSize: 10.5, weight: .regular)
-            descriptionLabel.textColor = (newItem.descriptionText?.isEmpty == false)
-                ? (NSColor(cgColor: newTheme.foreground.cgColor)?.withAlphaComponent(0.85) ?? .textColor)
-                : (NSColor(cgColor: newTheme.gutterForeground.cgColor) ?? .secondaryLabelColor)
-            if descriptionLabel.superview == nil {
-                addSubview(descriptionLabel)
-            }
-        } else {
-            descriptionLabel.stringValue = ""
-            descriptionLabel.removeFromSuperview()
-        }
+        updateDescriptionLabel(for: newItem, theme: newTheme)
 
         // Diff stats (+ / -)
         let adds = effectiveAdditionsCount
         let dels = effectiveDeletionsCount
         if adds != nil || dels != nil {
             let statsAttr = NSMutableAttributedString()
-            let font = NSFont.monospacedSystemFont(ofSize: 10, weight: .bold)
+            let font = NSFont.monospacedSystemFont(ofSize: diffStatsFontSize, weight: .bold)
 
             if let adds = adds, adds > 0 {
                 statsAttr.append(NSAttributedString(string: "+\(adds)", attributes: [
@@ -405,26 +416,10 @@ public final class AgentToolCardView: AgentFlippedView {
             diffStatsButton.removeFromSuperview()
         }
 
-        if let progressIndicator = headerContainer.subviews.compactMap({ $0 as? NSProgressIndicator }).first {
-            progressIndicator.isHidden = newItem.status != .running
-            if newItem.status == .running {
-                progressIndicator.startAnimation(nil)
-            } else {
-                progressIndicator.stopAnimation(nil)
-            }
-        }
-        if newItem.status == .failed {
-            errorLabel.stringValue = "✕"
-            if errorLabel.superview == nil {
-                headerContainer.addSubview(errorLabel)
-            }
-            errorLabel.isHidden = false
-        } else {
-            errorLabel.isHidden = true
-        }
+        updateErrorIndicator()
 
         if hasExpandableContent {
-            let chevConfig = NSImage.SymbolConfiguration(pointSize: 8.5, weight: .bold)
+            let chevConfig = NSImage.SymbolConfiguration(pointSize: chevronPointSize, weight: .bold)
             chevronImageView.image = NSImage(
                 systemSymbolName: isExpanded ? "chevron.down" : "chevron.right",
                 accessibilityDescription: nil
@@ -434,16 +429,7 @@ public final class AgentToolCardView: AgentFlippedView {
             if chevronImageView.superview == nil {
                 headerContainer.addSubview(chevronImageView)
             }
-            if shouldShowOpenInEditorButton {
-                openInEditorButton.alphaValue = 0.65
-                openInEditorButton.isHidden = false
-                if openInEditorButton.superview == nil {
-                    headerContainer.addSubview(openInEditorButton)
-                }
-            } else {
-                openInEditorButton.isHidden = true
-                openInEditorButton.removeFromSuperview()
-            }
+            updateOpenInEditorButton()
         } else {
             chevronImageView.removeFromSuperview()
             openInEditorButton.removeFromSuperview()
@@ -458,7 +444,7 @@ public final class AgentToolCardView: AgentFlippedView {
 
         wantsLayer = true
         layerContentsRedrawPolicy = .onSetNeedsDisplay
-        layer?.cornerRadius = 12
+        layer?.cornerRadius = cardCornerRadius
         layer?.masksToBounds = true
         layer?.borderWidth = 1
 
@@ -475,9 +461,9 @@ public final class AgentToolCardView: AgentFlippedView {
         actionPillView.wantsLayer = true
         actionPillView.layerContentsRedrawPolicy = .onSetNeedsDisplay
         applyActionAppearance(background: bgCol, foreground: fgCol)
-        actionPillView.layer?.cornerRadius = 6
+        actionPillView.layer?.cornerRadius = pillCornerRadius
 
-        let config = NSImage.SymbolConfiguration(pointSize: 10.5, weight: .semibold)
+        let config = NSImage.SymbolConfiguration(pointSize: actionIconPointSize, weight: .semibold)
         actionIconView.wantsLayer = true
         actionIconView.layerContentsRedrawPolicy = .onSetNeedsDisplay
         actionIconView.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)?.withSymbolConfiguration(config)
@@ -485,7 +471,7 @@ public final class AgentToolCardView: AgentFlippedView {
         actionPillView.addSubview(actionIconView)
 
         actionTextLabel.stringValue = item.shortToolName
-        actionTextLabel.font = NSFont.systemFont(ofSize: 10.5, weight: .bold)
+        actionTextLabel.font = NSFont.systemFont(ofSize: actionTextFontSize, weight: .bold)
         actionTextLabel.usesSingleLineMode = true
         actionTextLabel.lineBreakMode = .byClipping
         actionTextLabel.isBezeled = false
@@ -498,7 +484,7 @@ public final class AgentToolCardView: AgentFlippedView {
 
         // Title
         titleLabel.stringValue = item.displayTitle
-        titleLabel.font = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .medium)
+        titleLabel.font = NSFont.monospacedSystemFont(ofSize: titleFontSize, weight: .medium)
         titleLabel.textColor = NSColor(cgColor: theme.foreground.cgColor) ?? .textColor
         titleLabel.usesSingleLineMode = true
         titleLabel.lineBreakMode = .byTruncatingMiddle
@@ -510,7 +496,7 @@ public final class AgentToolCardView: AgentFlippedView {
         let dels = effectiveDeletionsCount
         if adds != nil || dels != nil {
             let statsAttr = NSMutableAttributedString()
-            let font = NSFont.monospacedSystemFont(ofSize: 10, weight: .bold)
+            let font = NSFont.monospacedSystemFont(ofSize: diffStatsFontSize, weight: .bold)
 
             if let adds = adds, adds > 0 {
                 statsAttr.append(NSAttributedString(string: "+\(adds)", attributes: [
@@ -538,29 +524,12 @@ public final class AgentToolCardView: AgentFlippedView {
             }
         }
 
-        // Status indicator: spinner when running, ✕ when failed, none when completed
-        switch item.status {
-        case .running:
-            progressIndicator.style = .spinning
-            progressIndicator.controlSize = .small
-            progressIndicator.startAnimation(nil)
-            headerContainer.addSubview(progressIndicator)
-        case .failed:
-            errorLabel.stringValue = "✕"
-            errorLabel.font = NSFont.systemFont(ofSize: 11, weight: .bold)
-            errorLabel.textColor = isFullColorMode ? .systemRed : neutralToolColor
-            errorLabel.isBezeled = false
-            errorLabel.drawsBackground = false
-            errorLabel.isEditable = false
-            errorLabel.isSelectable = false
-            headerContainer.addSubview(errorLabel)
-        case .completed:
-            break
-        }
+        // Status indicator: compact xmark when failed, none when completed or running
+        updateErrorIndicator()
 
         // Chevron
         if hasExpandableContent {
-            let chevConfig = NSImage.SymbolConfiguration(pointSize: 8.5, weight: .bold)
+            let chevConfig = NSImage.SymbolConfiguration(pointSize: chevronPointSize, weight: .bold)
             chevronImageView.wantsLayer = true
             chevronImageView.layerContentsRedrawPolicy = .onSetNeedsDisplay
             chevronImageView.image = NSImage(systemSymbolName: isExpanded ? "chevron.down" : "chevron.right", accessibilityDescription: nil)?.withSymbolConfiguration(chevConfig)
@@ -570,34 +539,10 @@ public final class AgentToolCardView: AgentFlippedView {
         }
 
         // Open the complete tool buffer in the main Review editor.
-        if shouldShowOpenInEditorButton {
-            openInEditorButton.isBordered = false
-            openInEditorButton.title = ""
-            openInEditorButton.imagePosition = .imageOnly
-            openInEditorButton.image = NSImage(
-                systemSymbolName: "arrow.left",
-                accessibilityDescription: "Open in editor"
-            )?.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 10, weight: .regular))
-            openInEditorButton.contentTintColor = (NSColor(cgColor: theme.gutterForeground.cgColor) ?? .secondaryLabelColor)
-                .withAlphaComponent(0.7)
-            openInEditorButton.imageScaling = .scaleProportionallyDown
-            openInEditorButton.target = self
-            openInEditorButton.action = #selector(openInEditorClicked)
-            openInEditorButton.alphaValue = 0.65
-            openInEditorButton.isHidden = false
-            headerContainer.addSubview(openInEditorButton)
-        }
+        updateOpenInEditorButton()
 
         // Description
-        let descText = item.descriptionText?.isEmpty == false ? item.descriptionText : ((!hasExpandableContent) ? (item.summary ?? item.output) : nil)
-        if let desc = descText, !desc.isEmpty {
-            descriptionLabel.stringValue = desc
-            descriptionLabel.font = (item.descriptionText?.isEmpty == false) ? NSFont.systemFont(ofSize: 11) : NSFont.monospacedSystemFont(ofSize: 10.5, weight: .regular)
-            descriptionLabel.textColor = (item.descriptionText?.isEmpty == false)
-                ? (NSColor(cgColor: theme.foreground.cgColor)?.withAlphaComponent(0.85) ?? .textColor)
-                : (NSColor(cgColor: theme.gutterForeground.cgColor) ?? .secondaryLabelColor)
-            addSubview(descriptionLabel)
-        }
+        updateDescriptionLabel(for: item, theme: theme)
 
         // Detail Container
         if hasExpandableContent {
@@ -631,7 +576,7 @@ public final class AgentToolCardView: AgentFlippedView {
         } else {
             detailContainer.removeFromSuperview()
         }
-        let chevConfig = NSImage.SymbolConfiguration(pointSize: 8.5, weight: .bold)
+        let chevConfig = NSImage.SymbolConfiguration(pointSize: chevronPointSize, weight: .bold)
         chevronImageView.image = NSImage(systemSymbolName: isExpanded ? "chevron.down" : "chevron.right", accessibilityDescription: nil)?.withSymbolConfiguration(chevConfig)
         onToggle?()
     }
@@ -655,6 +600,103 @@ public final class AgentToolCardView: AgentFlippedView {
         }
         guard let finalSummary = summary else { return }
         onReview?(finalSummary)
+    }
+
+    private func updateDescriptionLabel(for item: ToolCallItem, theme: Theme) {
+        let explicitDescription = item.descriptionText?.isEmpty == false ? item.descriptionText : nil
+        let fallbackOutput: String?
+        if explicitDescription == nil, !hasExpandableContent(for: item) {
+            let isFileEdit = item.shortToolName == "Edit" || item.shortToolName == "Create"
+            let rawFallback = item.summary ?? item.output
+            if isFileEdit && item.status != .failed {
+                fallbackOutput = nil
+            } else if let text = rawFallback, Self.isNoisyByteCountSummary(text) {
+                fallbackOutput = nil
+            } else {
+                fallbackOutput = rawFallback
+            }
+        } else {
+            fallbackOutput = nil
+        }
+
+        let descText = explicitDescription ?? fallbackOutput
+        if let desc = descText, !desc.isEmpty {
+            let isExplicit = explicitDescription != nil
+            descriptionLabel.stringValue = desc
+            descriptionLabel.font = isExplicit
+                ? NSFont.systemFont(ofSize: isCompactMode ? 10.5 : 11)
+                : NSFont.monospacedSystemFont(ofSize: isCompactMode ? 10 : 10.5, weight: .regular)
+            descriptionLabel.textColor = isExplicit
+                ? (NSColor(cgColor: theme.foreground.cgColor)?.withAlphaComponent(0.85) ?? .textColor)
+                : (NSColor(cgColor: theme.gutterForeground.cgColor) ?? .secondaryLabelColor)
+            if descriptionLabel.superview == nil {
+                addSubview(descriptionLabel)
+            }
+        } else {
+            descriptionLabel.stringValue = ""
+            descriptionLabel.removeFromSuperview()
+        }
+    }
+
+    private static func isNoisyByteCountSummary(_ text: String) -> Bool {
+        var slice = text[...]
+        while let first = slice.first, first.isWhitespace || first.isNewline {
+            slice = slice.dropFirst()
+        }
+        while let last = slice.last, last.isWhitespace || last.isNewline {
+            slice = slice.dropLast()
+        }
+        guard slice.hasPrefix("Wrote "), slice.hasSuffix(" bytes") else { return false }
+        let digits = slice.dropFirst(6).dropLast(6)
+        return !digits.isEmpty && digits.allSatisfy(\.isASCII) && digits.allSatisfy(\.isNumber)
+    }
+
+    private func updateErrorIndicator() {
+        if item.status == .failed {
+            let errConfig = NSImage.SymbolConfiguration(pointSize: errorIconPointSize, weight: .bold)
+            errorIconView.image = NSImage(
+                systemSymbolName: "xmark",
+                accessibilityDescription: "Failed"
+            )?.withSymbolConfiguration(errConfig)
+            errorIconView.contentTintColor = toolcallColorMode != .none
+                ? NSColor.systemRed.withAlphaComponent(0.88)
+                : neutralToolColor
+            errorIconView.imageScaling = .scaleProportionallyDown
+            errorIconView.toolTip = "Failed"
+            errorIconView.isHidden = false
+            if errorIconView.superview == nil {
+                headerContainer.addSubview(errorIconView)
+            }
+        } else {
+            errorIconView.isHidden = true
+            errorIconView.removeFromSuperview()
+        }
+    }
+
+    private func updateOpenInEditorButton() {
+        if shouldShowOpenInEditorButton {
+            openInEditorButton.isBordered = false
+            openInEditorButton.title = ""
+            openInEditorButton.imagePosition = .imageOnly
+            openInEditorButton.image = NSImage(
+                systemSymbolName: "eye",
+                accessibilityDescription: "Open in editor"
+            )?.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: openInEditorPointSize, weight: .regular))
+            openInEditorButton.contentTintColor = (NSColor(cgColor: theme.gutterForeground.cgColor) ?? .secondaryLabelColor)
+                .withAlphaComponent(0.7)
+            openInEditorButton.imageScaling = .scaleProportionallyDown
+            openInEditorButton.target = self
+            openInEditorButton.action = #selector(openInEditorClicked)
+            openInEditorButton.toolTip = "Open in editor"
+            openInEditorButton.alphaValue = 0.65
+            openInEditorButton.isHidden = false
+            if openInEditorButton.superview == nil {
+                headerContainer.addSubview(openInEditorButton)
+            }
+        } else {
+            openInEditorButton.isHidden = true
+            openInEditorButton.removeFromSuperview()
+        }
     }
 
     @objc private func openInEditorClicked() {
@@ -943,31 +985,8 @@ public final class AgentToolCardView: AgentFlippedView {
 
         // Temporarily keep toolcall cards borderless in every color mode.
         layer?.borderWidth = 0
-        if isRunning {
-            layer?.backgroundColor = foreground.withAlphaComponent(0.08).cgColor
-            layer?.borderColor = foreground.withAlphaComponent(0.26).cgColor
-
-            let pulseBg = CABasicAnimation(keyPath: "backgroundColor")
-            pulseBg.fromValue = foreground.withAlphaComponent(0.07).cgColor
-            pulseBg.toValue = foreground.withAlphaComponent(0.22).cgColor
-            pulseBg.duration = 0.95
-            pulseBg.autoreverses = true
-            pulseBg.repeatCount = .infinity
-            pulseBg.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            layer?.add(pulseBg, forKey: "pulseBg")
-
-            let pulseBorder = CABasicAnimation(keyPath: "borderColor")
-            pulseBorder.fromValue = foreground.withAlphaComponent(0.24).cgColor
-            pulseBorder.toValue = foreground.withAlphaComponent(0.60).cgColor
-            pulseBorder.duration = 0.95
-            pulseBorder.autoreverses = true
-            pulseBorder.repeatCount = .infinity
-            pulseBorder.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            layer?.add(pulseBorder, forKey: "pulseBorder")
-        } else {
-            layer?.backgroundColor = foreground.withAlphaComponent(0.12).cgColor
-            layer?.borderColor = foreground.withAlphaComponent(0.32).cgColor
-        }
+        layer?.backgroundColor = foreground.withAlphaComponent(isRunning ? 0.08 : 0.12).cgColor
+        layer?.borderColor = foreground.withAlphaComponent(isRunning ? 0.26 : 0.32).cgColor
     }
 
     private func detailAttributedString() -> NSAttributedString {
@@ -1112,13 +1131,13 @@ public final class AgentToolCardView: AgentFlippedView {
             return cachedLayoutHeight
         }
 
-        let padding: CGFloat = 8
+        let padding = cardPaddingH
         let innerWidth = max(50, width - (padding * 2))
-        var currentY: CGFloat = 32
+        var currentY: CGFloat = contentStartY
 
         if !descriptionLabel.stringValue.isEmpty {
             let descHeight = descriptionHeight(width: innerWidth)
-            currentY += descHeight + 6
+            currentY += descHeight + (isCompactMode ? 4 : 6)
         }
 
         if hasExpandableContent && isExpanded {
@@ -1129,7 +1148,7 @@ public final class AgentToolCardView: AgentFlippedView {
             let maxDetailHeight: CGFloat = 320
             let rawHeight = detailContentHeight(width: detailTVWidth)
             let containerHeight = min(maxDetailHeight, rawHeight + 12)
-            currentY += containerHeight + 8
+            currentY += containerHeight + (isCompactMode ? 6 : 8)
         } else {
             currentY += 2
         }
@@ -1150,41 +1169,53 @@ public final class AgentToolCardView: AgentFlippedView {
     }
 
     public func applyLayout(width: CGFloat, animated: Bool) {
-        let padding: CGFloat = 8
+        let padding = cardPaddingH
         let innerWidth = max(50, width - (padding * 2))
 
-        // 1. Header Layout (Unified coordinate system with height 22 and center line at y = 11.0)
-        headerContainer.frame = NSRect(x: padding, y: 6, width: innerWidth, height: 22)
+        // 1. Header Layout
+        headerContainer.frame = NSRect(x: padding, y: headerTopY, width: innerWidth, height: headerHeight)
 
-        // Action badge size with icon + text (height 20, y: 1.0 -> center = 11.0)
+        // Action badge size with icon + text
         let textSize = actionTextLabel.intrinsicContentSize
-        let iconWidth: CGFloat = 12
-        let pillPaddingH: CGFloat = 6
-        let pillSpacing: CGFloat = 4
+        let iconWidth = actionIconSize
         // Keep the action badge intact when the command title or right-side
         // metadata gets tight. The title is the expendable part of the row.
-        let actionTextWidth = max(ceil(textSize.width) + 2, 28)
-        let pillWidth = max(58, pillPaddingH + iconWidth + pillSpacing + actionTextWidth + pillPaddingH)
-        let pillHeight: CGFloat = 20
+        let actionTextWidth = max(ceil(textSize.width) + 2, isCompactMode ? 22 : 28)
+        let pillWidth = max(isCompactMode ? 48 : 58, pillPaddingH + iconWidth + pillSpacing + actionTextWidth + pillPaddingH)
         actionPillView.frame = NSRect(x: 0, y: 1.0, width: pillWidth, height: pillHeight)
-        actionIconView.frame = NSRect(x: pillPaddingH, y: 4.0, width: iconWidth, height: 12)
-        actionTextLabel.frame = NSRect(x: pillPaddingH + iconWidth + pillSpacing, y: 4.0, width: actionTextWidth + 2, height: 14)
+        actionIconView.frame = NSRect(x: pillPaddingH, y: isCompactMode ? 3.0 : 4.0, width: iconWidth, height: iconWidth)
+        actionTextLabel.frame = NSRect(
+            x: pillPaddingH + iconWidth + pillSpacing,
+            y: isCompactMode ? 2.0 : 4.0,
+            width: actionTextWidth + 2,
+            height: isCompactMode ? 12 : 14
+        )
 
-        let leftX = pillWidth + 8
+        let leftX = pillWidth + (isCompactMode ? 6 : 8)
 
         // Right side metadata items (right-to-left layout to guarantee zero overlaps)
         var rightX = innerWidth
         if hasExpandableContent {
-            rightX -= 10
-            chevronImageView.frame = NSRect(x: rightX, y: 6.0, width: 10, height: 10)
-            rightX -= 6
+            rightX -= chevronSize
+            chevronImageView.frame = NSRect(
+                x: rightX,
+                y: isCompactMode ? 4.5 : 6.0,
+                width: chevronSize,
+                height: chevronSize
+            )
+            rightX -= metadataSpacing
 
             if shouldShowOpenInEditorButton {
-                rightX -= 18
-                openInEditorButton.frame = NSRect(x: rightX, y: 3.0, width: 16, height: 16)
+                rightX -= (isCompactMode ? 16 : 18)
+                openInEditorButton.frame = NSRect(
+                    x: rightX,
+                    y: isCompactMode ? 2.0 : 3.0,
+                    width: openInEditorSize,
+                    height: openInEditorSize
+                )
                 openInEditorButton.alphaValue = 0.65
                 openInEditorButton.isHidden = false
-                rightX -= 6
+                rightX -= metadataSpacing
             } else {
                 openInEditorButton.alphaValue = 0.0
                 openInEditorButton.isHidden = true
@@ -1194,32 +1225,38 @@ public final class AgentToolCardView: AgentFlippedView {
             openInEditorButton.isHidden = true
         }
 
-        if item.status == .running {
-            rightX -= 14
-            progressIndicator.frame = NSRect(x: rightX, y: 4.0, width: 14, height: 14)
-            rightX -= 6
-        } else if item.status == .failed {
-            rightX -= 14
-            errorLabel.frame = NSRect(x: rightX, y: 3.5, width: 14, height: 15)
-            rightX -= 6
+        if item.status == .failed {
+            rightX -= errorIconSize
+            errorIconView.frame = NSRect(
+                x: rightX,
+                y: (headerHeight - errorIconSize) / 2.0,
+                width: errorIconSize,
+                height: errorIconSize
+            )
+            rightX -= metadataSpacing
         }
 
-        // Diff stats (+ / -) (height 18, y: 2.0 -> center = 11.0)
+        // Diff stats (+ / -)
         if diffStatsButton.badgeLabel.attributedStringValue.length > 0 {
             let dsSize = diffStatsButton.badgeLabel.attributedStringValue.size()
-            let dsWidth = ceil(dsSize.width) + 12
+            let dsWidth = ceil(dsSize.width) + (isCompactMode ? 10 : 12)
             rightX -= dsWidth
-            diffStatsButton.frame = NSRect(x: rightX, y: 2.0, width: dsWidth, height: 18)
+            diffStatsButton.frame = NSRect(
+                x: rightX,
+                y: isCompactMode ? 1.0 : 2.0,
+                width: dsWidth,
+                height: isCompactMode ? 16 : 18
+            )
             diffStatsButton.isHidden = false
             if diffStatsButton.superview == nil {
                 headerContainer.addSubview(diffStatsButton)
             }
-            rightX -= 6
+            rightX -= metadataSpacing
         } else {
             diffStatsButton.isHidden = true
         }
 
-        // Title (takes remaining space between leftX and rightX, height 14, y: 4.0 -> center = 11.0)
+        // Title (takes remaining space between leftX and rightX)
         let availableTitleWidth = max(20, rightX - leftX)
         let titleText = titleLabel.attributedStringValue.string
         let measuredTitleWidth: CGFloat
@@ -1231,9 +1268,14 @@ public final class AgentToolCardView: AgentFlippedView {
             cachedTitleWidth = measuredTitleWidth
         }
         let titleWidth = min(measuredTitleWidth + 4, availableTitleWidth)
-        titleLabel.frame = NSRect(x: leftX, y: 4.0, width: titleWidth, height: 14)
+        titleLabel.frame = NSRect(
+            x: leftX,
+            y: isCompactMode ? 2.5 : 4.0,
+            width: titleWidth,
+            height: isCompactMode ? 13 : 14
+        )
 
-        var currentY: CGFloat = 32
+        var currentY: CGFloat = contentStartY
 
         // 2. Description
         if !descriptionLabel.stringValue.isEmpty {
@@ -1244,7 +1286,7 @@ public final class AgentToolCardView: AgentFlippedView {
             } else {
                 descriptionLabel.frame = descFrame
             }
-            currentY += descHeight + 6
+            currentY += descHeight + (isCompactMode ? 4 : 6)
         }
 
         // 3. Detail Container & Virtualized Editor
@@ -1281,7 +1323,7 @@ public final class AgentToolCardView: AgentFlippedView {
                     detailContainer.frame = detailFrame
                     detailContainer.alphaValue = 1
                 }
-                currentY += containerHeight + 8
+                currentY += containerHeight + (isCompactMode ? 6 : 8)
             } else {
                 if animated {
                     detailContainer.animator().alphaValue = 0

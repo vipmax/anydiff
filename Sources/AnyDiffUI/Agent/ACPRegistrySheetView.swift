@@ -183,7 +183,6 @@ public struct ACPRegistrySheetView: View {
                         if isLoading {
                             ProgressView()
                                 .controlSize(.small)
-                                .scaleEffect(0.68)
                         } else {
                             Image(systemName: "arrow.clockwise")
                                 .font(.system(size: 11, weight: .medium))

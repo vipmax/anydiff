@@ -37,6 +37,13 @@ public struct GitHubDiffReference: Equatable, Hashable, Sendable {
 public final class GitHubDiffService: Sendable {
     public static let shared = GitHubDiffService()
 
+    private static let supportedWebHosts: Set<String> = [
+        "github.com",
+        "www.github.com",
+        "diffshub.com",
+        "www.diffshub.com",
+    ]
+
     public init() {}
 
     public enum ServiceError: LocalizedError {
@@ -65,6 +72,35 @@ public final class GitHubDiffService: Sendable {
         }
     }
 
+    /// Returns `true` when `input` looks like an HTTP(S) diff URL, a supported host URL without scheme, or an `owner/repo#123` shorthand.
+    public func isRemoteReference(_ input: String) -> Bool {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+
+        let lowercased = trimmed.lowercased()
+        if trimmed.hasPrefix("/") || trimmed.hasPrefix("~") || trimmed.hasPrefix("./") || trimmed.hasPrefix("../") || lowercased.hasPrefix("file://") {
+            return false
+        }
+
+        if let url = URL(string: trimmed),
+           let scheme = url.scheme?.lowercased(),
+           scheme == "http" || scheme == "https" {
+            return true
+        }
+
+        if parseShorthand(trimmed) != nil {
+            return true
+        }
+
+        if let url = URL(string: "https://" + trimmed),
+           let host = url.host?.lowercased(),
+           Self.supportedWebHosts.contains(host) {
+            return true
+        }
+
+        return false
+    }
+
     /// Parses an input string (GitHub URL, DiffsHub URL, shorthand like `owner/repo#123`, or raw diff URL) into a `GitHubDiffReference`
     public func parseReference(from input: String) -> Result<GitHubDiffReference, ServiceError> {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -90,7 +126,7 @@ public final class GitHubDiffService: Sendable {
         let pathComponents = url.pathComponents.filter { $0 != "/" && !$0.isEmpty }
 
         // 3. GitHub or DiffsHub URLs:
-        if host == "github.com" || host == "www.github.com" || host == "diffshub.com" || host == "www.diffshub.com" {
+        if Self.supportedWebHosts.contains(host) {
             // Pattern: /owner/repo/pull/123
             if pathComponents.count >= 4 && pathComponents[2].lowercased() == "pull" {
                 let owner = pathComponents[0]
@@ -180,30 +216,41 @@ public final class GitHubDiffService: Sendable {
     }
 
     private func parseShorthand(_ input: String) -> GitHubDiffReference? {
-        // e.g. "oven-sh/bun#30412" or "bun#30412"
+        // e.g. "oven-sh/bun#30412"
         let hashParts = input.components(separatedBy: "#")
-        if hashParts.count == 2, let prNumber = Int(hashParts[1].trimmingCharacters(in: .whitespaces)) {
-            let repoPart = hashParts[0].trimmingCharacters(in: .whitespaces)
-            let slashParts = repoPart.components(separatedBy: "/")
-            let owner = slashParts.count > 1 ? slashParts[0] : nil
-            let repo = slashParts.count > 1 ? slashParts[1] : slashParts[0]
-
-            if let owner = owner {
-                guard let diffURL = URL(string: "https://github.com/\(owner)/\(repo)/pull/\(prNumber).diff"),
-                      let webURL = URL(string: "https://github.com/\(owner)/\(repo)/pull/\(prNumber)") else {
-                    return nil
-                }
-                return GitHubDiffReference(
-                    owner: owner,
-                    repo: repo,
-                    kind: .pullRequest(prNumber),
-                    diffURL: diffURL,
-                    webURL: webURL,
-                    displayTitle: "\(owner)/\(repo) #\(prNumber)"
-                )
-            }
+        guard hashParts.count == 2,
+              let prNumber = Int(hashParts[1].trimmingCharacters(in: .whitespaces)),
+              prNumber > 0 else {
+            return nil
         }
-        return nil
+
+        let repoPart = hashParts[0].trimmingCharacters(in: .whitespaces)
+        let slashParts = repoPart.components(separatedBy: "/")
+        guard slashParts.count == 2 else {
+            return nil
+        }
+
+        let owner = slashParts[0]
+        let repo = slashParts[1]
+        guard !owner.isEmpty,
+              !repo.isEmpty,
+              !owner.contains(where: \.isWhitespace),
+              !repo.contains(where: \.isWhitespace) else {
+            return nil
+        }
+
+        guard let diffURL = URL(string: "https://github.com/\(owner)/\(repo)/pull/\(prNumber).diff"),
+              let webURL = URL(string: "https://github.com/\(owner)/\(repo)/pull/\(prNumber)") else {
+            return nil
+        }
+        return GitHubDiffReference(
+            owner: owner,
+            repo: repo,
+            kind: .pullRequest(prNumber),
+            diffURL: diffURL,
+            webURL: webURL,
+            displayTitle: "\(owner)/\(repo) #\(prNumber)"
+        )
     }
 
     /// Fetches the raw diff text for a given `GitHubDiffReference`

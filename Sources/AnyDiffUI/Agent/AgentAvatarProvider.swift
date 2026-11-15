@@ -131,6 +131,8 @@ public enum AgentAvatarProvider {
     private static var cachedUserAvatar: NSImage?
     private static var hasLoadedUserAvatar = false
     private static var cachedAgentAvatars: [String: NSImage] = [:]
+    private static var cachedSettings: AvatarSettings?
+    private static let settingsLock = NSLock()
 
     public static weak var activePopover: NSPopover?
 
@@ -187,14 +189,34 @@ public enum AgentAvatarProvider {
     // MARK: - Settings & Cache
 
     public static func loadSettings() -> AvatarSettings {
+        settingsLock.lock()
+        if let cached = cachedSettings {
+            settingsLock.unlock()
+            return cached
+        }
+        settingsLock.unlock()
+
+        let loaded: AvatarSettings
         if let data = try? Data(contentsOf: settingsURL),
            let settings = try? JSONDecoder().decode(AvatarSettings.self, from: data) {
-            return settings
+            loaded = settings
+        } else {
+            loaded = AvatarSettings()
         }
-        return AvatarSettings()
+
+        settingsLock.lock()
+        if cachedSettings == nil {
+            cachedSettings = loaded
+        }
+        let result = cachedSettings ?? loaded
+        settingsLock.unlock()
+        return result
     }
 
     public static func saveSettings(_ settings: AvatarSettings) {
+        settingsLock.lock()
+        cachedSettings = settings
+        settingsLock.unlock()
         if let data = try? JSONEncoder().encode(settings) {
             try? data.write(to: settingsURL)
         }
@@ -204,6 +226,9 @@ public enum AgentAvatarProvider {
         cachedUserAvatar = nil
         hasLoadedUserAvatar = false
         cachedAgentAvatars.removeAll()
+        settingsLock.lock()
+        cachedSettings = nil
+        settingsLock.unlock()
     }
 
     public static var currentUserAvatarSize: CGFloat {

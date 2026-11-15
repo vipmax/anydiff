@@ -7,6 +7,7 @@ public struct AgentSettingsPopoverView: View {
     public var theme: Theme
     public var workingDirectory: String
     public var activeSessionId: UUID?
+    public var worktrees: [GitWorktree]
     public var onClose: () -> Void
     public var onSelectSession: ((UUID) -> Void)?
     public var onNewSession: (() -> Void)?
@@ -16,6 +17,7 @@ public struct AgentSettingsPopoverView: View {
         theme: Theme,
         workingDirectory: String,
         activeSessionId: UUID? = nil,
+        worktrees: [GitWorktree] = [],
         onClose: @escaping () -> Void,
         onSelectSession: ((UUID) -> Void)? = nil,
         onNewSession: (() -> Void)? = nil
@@ -24,6 +26,7 @@ public struct AgentSettingsPopoverView: View {
         self.theme = theme
         self.workingDirectory = workingDirectory
         self.activeSessionId = activeSessionId
+        self.worktrees = worktrees
         self.onClose = onClose
         self.onSelectSession = onSelectSession
         self.onNewSession = onNewSession
@@ -61,8 +64,10 @@ public struct AgentSettingsPopoverView: View {
                         AgentSessionRowView(
                             session: session,
                             isActive: session.id == (activeSessionId ?? coordinator.activeSessionId),
-                            canClose: coordinator.sessions.count > 1,
+                            canClose: true,
                             theme: theme,
+                            worktrees: worktrees,
+                            fallbackWorkingDirectory: workingDirectory,
                             onSelect: {
                                 withAnimation(.easeInOut(duration: 0.15)) {
                                     if let onSelectSession = onSelectSession {
@@ -102,6 +107,6 @@ public struct AgentSettingsPopoverView: View {
             .padding(.bottom, 3)
         }
         .padding(6)
-        .frame(width: 300)
+        .frame(width: 340)
     }
 }

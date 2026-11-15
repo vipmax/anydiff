@@ -211,12 +211,14 @@ final class AgentSessionManagerTests: XCTestCase {
         _ = cell.layout(for: 420)
 
         XCTAssertTrue(cell.typingIndicatorView.isHidden, "Moving '...' typing indicator dots must remain hidden")
-        XCTAssertNotNil(
+        XCTAssertNil(
             cell.roleIconView.layer?.animation(forKey: "agentRolePulse"),
-            "Avatar should pulse while waiting for response"
+            "Avatar itself must not dim/pulse while waiting for response"
         )
+        XCTAssertTrue(cell.avatarAuraView.isAnimating, "Aura should animate while waiting for response")
+        XCTAssertFalse(cell.avatarAuraView.isHidden, "Aura should be visible while waiting for response")
 
-        // Even after thought, tool call, and text arrive, the avatar must keep pulsing while isStreaming == true
+        // Even after thought, tool call, and text arrive, the aura must keep animating while isStreaming == true
         streaming.appendThought("Inspecting codebase")
         streaming.appendToolCall(ToolCallItem(id: "t1", toolName: "run_command", command: "git status", status: .running))
         streaming.appendText("Working on it...")
@@ -224,18 +226,13 @@ final class AgentSessionManagerTests: XCTestCase {
         _ = cell.layout(for: 420)
 
         XCTAssertTrue(cell.typingIndicatorView.isHidden)
-        XCTAssertNotNil(
-            cell.roleIconView.layer?.animation(forKey: "agentRolePulse"),
-            "Avatar should keep breathing for the entire streaming turn"
-        )
+        XCTAssertNil(cell.roleIconView.layer?.animation(forKey: "agentRolePulse"))
+        XCTAssertTrue(cell.avatarAuraView.isAnimating, "Aura should keep animating for the entire streaming turn")
 
-        // Once streaming finishes, the pulse animation stops
+        // Once streaming finishes, the aura animation stops
         streaming.isStreaming = false
         cell.configure(message: streaming, theme: .zedDark)
-        XCTAssertNil(
-            cell.roleIconView.layer?.animation(forKey: "agentRolePulse"),
-            "Avatar pulse should stop once streaming finishes"
-        )
+        XCTAssertFalse(cell.avatarAuraView.isAnimating, "Aura should stop once streaming finishes")
     }
 
     func testStandardChatScrollViewUsesNativeDocumentView() {
@@ -956,7 +953,7 @@ final class AgentSessionManagerTests: XCTestCase {
         transport.terminate()
         try transport.launch(command: "/bin/sleep 5", workingDirectory: "/tmp")
 
-        Thread.sleep(forTimeInterval: 0.15)
+        Thread.sleep(forTimeInterval: 0.04)
         delegate.lock.lock()
         let count = delegate.terminateCount
         delegate.lock.unlock()
@@ -987,11 +984,13 @@ final class AgentSessionManagerTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: tempRoot) }
 
         let scriptURL = tempRoot.appendingPathComponent("mock_acp.py")
+        let releaseURL = tempRoot.appendingPathComponent("release_turn1")
         let script = """
         import json, os, sys, time
 
         cwd_name = os.path.basename(os.getcwd())
         session_id = f"sess-{cwd_name}"
+        release_path = \(String(reflecting: releaseURL.path))
 
         for raw in sys.stdin:
             raw = raw.strip()
@@ -1018,7 +1017,10 @@ final class AgentSessionManagerTests: XCTestCase {
                 }
                 print(json.dumps(resp), flush=True)
             elif method == "session/prompt":
-                time.sleep(0.25)
+                if cwd_name == "worktree-a":
+                    deadline = time.monotonic() + 5.0
+                    while not os.path.exists(release_path) and time.monotonic() < deadline:
+                        time.sleep(0.002)
                 note = {
                     "jsonrpc": "2.0",
                     "method": "session/update",
@@ -1049,18 +1051,19 @@ final class AgentSessionManagerTests: XCTestCase {
 
         let busyDeadline = Date().addingTimeInterval(5.0)
         while manager.status != .busy && Date() < busyDeadline {
-            try await Task.sleep(nanoseconds: 20_000_000)
+            try await Task.sleep(nanoseconds: 5_000_000)
         }
         XCTAssertEqual(manager.status, .busy)
         XCTAssertEqual(manager.currentSessionId, "sess-worktree-a")
 
-        // 2. Switch worktree while turn 1 is actively running!
+        // 2. Switch worktree while turn 1 is actively running, then unblock turn 1!
         manager.prepareAgent(workingDirectory: dirB.path)
+        FileManager.default.createFile(atPath: releaseURL.path, contents: Data())
 
         // 3. Turn 1 must finish cleanly without "Client stopped" AND then reconnect to dirB.
         let switchDeadline = Date().addingTimeInterval(5.0)
         while (manager.currentSessionId != "sess-worktree-b" || manager.initializationState != .ready) && Date() < switchDeadline {
-            try await Task.sleep(nanoseconds: 25_000_000)
+            try await Task.sleep(nanoseconds: 5_000_000)
         }
 
         XCTAssertEqual(manager.currentSessionId, "sess-worktree-b")
@@ -1072,7 +1075,7 @@ final class AgentSessionManagerTests: XCTestCase {
         manager.sendPrompt("hello in B", workingDirectory: dirB.path)
         let turn2Deadline = Date().addingTimeInterval(5.0)
         while (!manager.messages.contains { $0.role == .assistant && $0.content.contains("reply-from-worktree-b") } || manager.status != .idle) && Date() < turn2Deadline {
-            try await Task.sleep(nanoseconds: 25_000_000)
+            try await Task.sleep(nanoseconds: 5_000_000)
         }
 
         XCTAssertEqual(manager.status, .idle)
@@ -1155,12 +1158,44 @@ final class AgentSessionManagerTests: XCTestCase {
 
         let deadline = Date().addingTimeInterval(5.0)
         while (!manager.messages.contains { $0.role == .assistant && $0.content.contains("ok-worktree-b") } || manager.status != .idle) && Date() < deadline {
-            try await Task.sleep(nanoseconds: 25_000_000)
+            try await Task.sleep(nanoseconds: 5_000_000)
         }
 
         XCTAssertEqual(manager.currentSessionId, "sess-worktree-b")
         XCTAssertEqual(manager.status, .idle)
         XCTAssertFalse(manager.messages.contains { $0.content.contains("Client stopped") })
     }
+
+    func testAgentMessageCellHidesEditedFilesCardWhenNoToolCalls() {
+        let summary = AgentEditedFilesSummary(files: [
+            AgentEditedFileItem(path: "Sources/AnyDiffUI/Agent/AgentAvatarAuraView.swift", additions: 11, deletions: 3)
+        ])
+
+        // Message with NO tool calls
+        let messageWithoutTools = AgentMessage(
+            role: .assistant,
+            content: "Здравствуйте! Чем могу вам помочь?",
+            toolCalls: [],
+            editedFilesSummary: summary
+        )
+
+        let cell = AgentMessageCell(message: messageWithoutTools, theme: .zedDark)
+
+        // Must NOT display the edited files card because there were zero tool calls!
+        XCTAssertNil(cell.editedFilesCardView)
+
+        // Message WITH tool calls
+        let tool = ToolCallItem(toolName: "fs/write_text_file", path: "AgentAvatarAuraView.swift", status: .completed)
+        let messageWithTools = AgentMessage(
+            role: .assistant,
+            content: "Updated file",
+            toolCalls: [tool],
+            editedFilesSummary: summary
+        )
+
+        cell.configure(message: messageWithTools, theme: .zedDark)
+        XCTAssertNotNil(cell.editedFilesCardView)
+    }
+
     #endif
 }

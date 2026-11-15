@@ -72,9 +72,9 @@ public enum UpdateInstallError: LocalizedError, Equatable {
 public struct UpdateInstaller: Sendable {
     public static let appBundleName = "AnyDiff.app"
 
-    private let session: URLSession
+    private let session: URLSession?
 
-    public init(session: URLSession = .shared) {
+    public init(session: URLSession? = nil) {
         self.session = session
     }
 
@@ -104,7 +104,7 @@ public struct UpdateInstaller: Sendable {
             .appendingPathComponent("anydiff-update-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
         do {
-            let (downloaded, response) = try await session.download(from: downloadURL)
+            let (downloaded, response) = try await (session ?? .shared).download(from: downloadURL)
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
                 throw UpdateInstallError.downloadFailed
             }

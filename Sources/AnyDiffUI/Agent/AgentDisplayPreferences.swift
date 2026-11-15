@@ -22,6 +22,7 @@ public enum ToolcallColorMode: String, CaseIterable, Sendable {
 public enum AgentDisplayPreferences {
     public static let disableColorsKey = "anydiff_agent_disable_colors"
     public static let toolcallColorModeKey = "anydiff_agent_toolcall_color_mode"
+    public static let isCompactModeKey = "anydiff_agent_compact_mode"
     public static let didChangeNotification = Notification.Name("anyDiffAgentDisplayPreferencesChanged")
 
     public static var toolcallColorMode: ToolcallColorMode {
@@ -32,5 +33,9 @@ public enum AgentDisplayPreferences {
 
         // Preserve the previous boolean preference after upgrading.
         return UserDefaults.standard.bool(forKey: disableColorsKey) ? .none : .full
+    }
+
+    public static var isCompactMode: Bool {
+        UserDefaults.standard.bool(forKey: isCompactModeKey)
     }
 }

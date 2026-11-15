@@ -526,17 +526,19 @@ public final class AgentToolGroupView: AgentFlippedView {
     public let headerButton = AgentHoverButton()
     public private(set) var toolViews: [NSView] = []
     public private(set) var isExpanded = false
+    public private(set) var isCompactMode = false
     public var groupKey: String
     public var onToggle: (() -> Void)?
     private var currentTheme: Theme
 
-    private static let headerHeight: CGFloat = 22
-    private static let headerSpacing: CGFloat = 6
-    private static let itemSpacing: CGFloat = 6
+    private var headerHeight: CGFloat { isCompactMode ? 20 : 22 }
+    private var headerSpacing: CGFloat { isCompactMode ? 3 : 6 }
+    private var itemSpacing: CGFloat { isCompactMode ? 2 : 6 }
 
-    public init(groupKey: String, toolViews: [NSView], theme: Theme, isExpanded: Bool = false) {
+    public init(groupKey: String, toolViews: [NSView], theme: Theme, isExpanded: Bool = false, isCompactMode: Bool = false) {
         self.groupKey = groupKey
         self.isExpanded = isExpanded
+        self.isCompactMode = isCompactMode
         self.currentTheme = theme
         super.init(frame: .zero)
         wantsLayer = true
@@ -557,14 +559,14 @@ public final class AgentToolGroupView: AgentFlippedView {
         headerButton.action = #selector(toggle)
         addSubview(headerButton)
 
-        update(toolViews: toolViews, theme: theme, isExpanded: isExpanded)
+        update(toolViews: toolViews, theme: theme, isExpanded: isExpanded, isCompactMode: isCompactMode)
     }
 
     public required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
 
-    public func update(toolViews newViews: [NSView], theme: Theme, isExpanded: Bool) {
+    public func update(toolViews newViews: [NSView], theme: Theme, isExpanded: Bool, isCompactMode: Bool? = nil) {
         let newSet = Set(newViews.map(ObjectIdentifier.init))
 
         for oldView in toolViews where !newSet.contains(ObjectIdentifier(oldView)) {
@@ -575,6 +577,9 @@ public final class AgentToolGroupView: AgentFlippedView {
 
         self.toolViews = newViews
         self.isExpanded = isExpanded
+        if let isCompactMode {
+            self.isCompactMode = isCompactMode
+        }
         self.currentTheme = theme
 
         if isExpanded {
@@ -681,23 +686,23 @@ public final class AgentToolGroupView: AgentFlippedView {
         let textColor = (NSColor(cgColor: theme.gutterForeground.cgColor) ?? .secondaryLabelColor).withAlphaComponent(0.85)
 
         headerButton.attributedTitle = NSAttributedString(string: title, attributes: [
-            .font: NSFont.monospacedSystemFont(ofSize: 11.5, weight: .medium),
+            .font: NSFont.monospacedSystemFont(ofSize: isCompactMode ? 11 : 11.5, weight: .medium),
             .foregroundColor: textColor
         ])
         headerButton.contentTintColor = textColor
 
         headerButton.image = agentFixedWidthChevron(
             expanded: isExpanded,
-            pointSize: 9.5,
+            pointSize: isCompactMode ? 9 : 9.5,
             description: isExpanded ? "Collapse steps" : "Expand steps"
         )
     }
 
     public func measureHeight(width: CGFloat) -> CGFloat {
         guard isExpanded, !toolViews.isEmpty else {
-            return Self.headerHeight
+            return headerHeight
         }
-        var total = Self.headerHeight + Self.headerSpacing
+        var total = headerHeight + headerSpacing
         for (idx, view) in toolViews.enumerated() {
             if let thought = view as? AgentThoughtBlockView {
                 total += thought.measureHeight(width: width)
@@ -707,14 +712,14 @@ public final class AgentToolGroupView: AgentFlippedView {
                 total += simple.measureHeight(width: width)
             }
             if idx < toolViews.count - 1 {
-                total += Self.itemSpacing
+                total += itemSpacing
             }
         }
         return total
     }
 
     public func applyLayout(width: CGFloat, animated: Bool) {
-        let headerFrame = NSRect(x: 0, y: 0, width: max(1, width), height: Self.headerHeight)
+        let headerFrame = NSRect(x: 0, y: 0, width: max(1, width), height: headerHeight)
         if animated {
             headerButton.animator().frame = headerFrame
         } else {
@@ -723,7 +728,7 @@ public final class AgentToolGroupView: AgentFlippedView {
 
         guard isExpanded else { return }
 
-        var y = Self.headerHeight + Self.headerSpacing
+        var y = headerHeight + headerSpacing
         for view in toolViews {
             let h: CGFloat
             if let thought = view as? AgentThoughtBlockView {
@@ -744,7 +749,7 @@ public final class AgentToolGroupView: AgentFlippedView {
             } else {
                 h = 28
             }
-            y += h + Self.itemSpacing
+            y += h + itemSpacing
         }
     }
 }

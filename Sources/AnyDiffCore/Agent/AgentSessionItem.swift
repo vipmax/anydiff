@@ -27,6 +27,11 @@ public final class AgentSessionItem: Identifiable, ObservableObject, @unchecked 
         set { manager.draftPrompt = newValue }
     }
 
+    public var draftBlocks: [PromptBlock] {
+        get { manager.draftBlocks }
+        set { manager.draftBlocks = newValue }
+    }
+
     public var draftAttachments: [AgentImageAttachment] {
         get { manager.draftAttachments }
         set { manager.draftAttachments = newValue }
@@ -132,18 +137,10 @@ public final class AgentSessionItem: Identifiable, ObservableObject, @unchecked 
                 guard let self = self else { return }
 
                 // 1. Auto-update title from first user message
-                if let firstUserMsg = messages.first(where: { $0.role == .user }) {
-                    let firstLine = firstUserMsg.content
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                        .components(separatedBy: .newlines)
-                        .first ?? firstUserMsg.content
-                    let clean = firstLine.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !clean.isEmpty {
-                        let truncated = clean.count > 32 ? String(clean.prefix(32)) + "…" : clean
-                        if self.title.starts(with: "New Session") || self.title.starts(with: "Session ") || self.title.contains("Session ") || self.title == "Mock Session" {
-                            self.title = truncated
-                        }
-                    }
+                if self.isPlaceholderTitle,
+                   let firstUserMsg = messages.first(where: { $0.role == .user }),
+                   let autoTitle = Self.autoTitle(from: firstUserMsg.content) {
+                    self.title = autoTitle
                 }
 
                 // 2. Track unread updates when message comes while session is in background
@@ -158,6 +155,44 @@ public final class AgentSessionItem: Identifiable, ObservableObject, @unchecked 
                 }
             }
             .store(in: &cancellables)
+    }
+
+    public static let maxAutoTitleLength = 160
+
+    private var isPlaceholderTitle: Bool {
+        title.starts(with: "New Session")
+            || title.starts(with: "Session ")
+            || title.contains("Session ")
+            || title == "Mock Session"
+    }
+
+    private static func autoTitle(from content: String) -> String? {
+        var start = content.startIndex
+        let end = content.endIndex
+        while start < end {
+            let lineEnd = content[start...].firstIndex(where: \.isNewline) ?? end
+            let line = trimWhitespace(content[start..<lineEnd])
+            if !line.isEmpty {
+                if line.count > maxAutoTitleLength {
+                    return String(line.prefix(maxAutoTitleLength)) + "…"
+                }
+                return String(line)
+            }
+            if lineEnd == end { break }
+            start = content.index(after: lineEnd)
+        }
+        return nil
+    }
+
+    private static func trimWhitespace(_ slice: Substring) -> Substring {
+        var trimmed = slice
+        while let first = trimmed.first, first.isWhitespace || first.isNewline {
+            trimmed = trimmed.dropFirst()
+        }
+        while let last = trimmed.last, last.isWhitespace || last.isNewline {
+            trimmed = trimmed.dropLast()
+        }
+        return trimmed
     }
 
     public func markAsRead() {

@@ -21,6 +21,7 @@ final class ReadOnlyEditorTests: XCTestCase {
         let displayMap = DisplayMap(multiBuffer: multiBuffer, reviewManager: reviewManager)
 
         let editor = MultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        editor.pasteboard = NSPasteboard.withUniqueName()
         editor.isEditable = false
 
         // Place cursor inside excerpt
@@ -59,6 +60,7 @@ final class ReadOnlyEditorTests: XCTestCase {
         let displayMap = DisplayMap(multiBuffer: multiBuffer, reviewManager: reviewManager)
 
         let editor = MultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        editor.pasteboard = NSPasteboard.withUniqueName()
         editor.isEditable = false
 
         // 1. Initial position
@@ -94,6 +96,7 @@ final class ReadOnlyEditorTests: XCTestCase {
         let reviewManager = ReviewManager()
         let displayMap = DisplayMap(multiBuffer: multiBuffer, reviewManager: reviewManager)
         let editor = MultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        editor.pasteboard = NSPasteboard.withUniqueName()
         editor.cursorPoint = MultiBufferPoint(row: 2, column: 3)
         editor.selectionAnchor = MultiBufferPoint(row: 0, column: 1)
 
@@ -151,6 +154,7 @@ final class ReadOnlyEditorTests: XCTestCase {
         displayMap.rebuild()
 
         let editor = MultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        editor.pasteboard = NSPasteboard.withUniqueName()
         editor.frame = CGRect(x: 0, y: 0, width: 800, height: 600)
         editor.invalidateLayout()
 
@@ -225,6 +229,7 @@ final class ReadOnlyEditorTests: XCTestCase {
         displayMap.rebuild()
 
         let editor = MultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        editor.pasteboard = NSPasteboard.withUniqueName()
         editor.frame = CGRect(x: 0, y: 0, width: 800, height: 600)
         editor.invalidateLayout()
 
@@ -283,6 +288,7 @@ final class ReadOnlyEditorTests: XCTestCase {
 
         let displayMap = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
         let editor = MultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        editor.pasteboard = NSPasteboard.withUniqueName()
         editor.isEditable = true
         editor.ignoreEdits = true
         editor.cursorPoint = MultiBufferPoint(row: 1, column: 2)
@@ -312,6 +318,7 @@ final class ReadOnlyEditorTests: XCTestCase {
         let displayMap = DisplayMap(multiBuffer: multiBuffer, reviewManager: reviewManager)
 
         let editor = MultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        editor.pasteboard = NSPasteboard.withUniqueName()
         editor.isEditable = true
 
         editor.cursorPoint = MultiBufferPoint(row: 0, column: 14)
@@ -483,6 +490,7 @@ final class ReadOnlyEditorTests: XCTestCase {
         }
 
         let editor = MultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        editor.pasteboard = NSPasteboard.withUniqueName()
         editor.frame = NSRect(x: 0, y: 0, width: 1200, height: 700)
         editor.isEditable = true
         editor.cursorPoint = MultiBufferPoint(row: targetRow, column: originalColumn)
@@ -626,6 +634,7 @@ final class ReadOnlyEditorTests: XCTestCase {
         let displayMap = DisplayMap(multiBuffer: multiBuffer, reviewManager: reviewManager)
 
         let editor = MultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        editor.pasteboard = NSPasteboard.withUniqueName()
         editor.isEditable = true
         editor.cursorPoint = MultiBufferPoint(row: 0, column: 5)
         editor.selectionAnchor = nil
@@ -693,6 +702,7 @@ final class ReadOnlyEditorTests: XCTestCase {
 
         let displayMap = DisplayMap(multiBuffer: multiBuffer, reviewManager: ReviewManager())
         let editor = MultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        editor.pasteboard = NSPasteboard.withUniqueName()
         editor.isEditable = true
         editor.cursorPoint = MultiBufferPoint(row: 0, column: 0)
 
@@ -776,6 +786,7 @@ final class ReadOnlyEditorTests: XCTestCase {
         displayMap.rebuild()
 
         let editor = MultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        editor.pasteboard = NSPasteboard.withUniqueName()
         editor.isEditable = true
 
         // Place cursor at the end: "hello test|" (col 10)
@@ -828,6 +839,7 @@ final class ReadOnlyEditorTests: XCTestCase {
         displayMap.rebuild()
 
         let editor = MultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        editor.pasteboard = NSPasteboard.withUniqueName()
         editor.frame = CGRect(x: 0, y: 0, width: 800, height: 600)
         editor.splitRatio = 0.5
         editor.invalidateLayout()
@@ -866,7 +878,7 @@ final class ReadOnlyEditorTests: XCTestCase {
         editor.cursorPoint = MultiBufferPoint(row: 1, column: 3)
 
         editor.copy(nil)
-        let pasted = NSPasteboard.general.string(forType: .string)
+        let pasted = editor.pasteboard.string(forType: .string)
         XCTAssertEqual(pasted, "old", "Copy in left split column should extract text from old/deleted line")
 
         // Click in right column code rect
@@ -890,7 +902,7 @@ final class ReadOnlyEditorTests: XCTestCase {
         editor.selectionAnchor = MultiBufferPoint(row: 1, column: 0)
         editor.cursorPoint = MultiBufferPoint(row: 1, column: 3)
         editor.copy(nil)
-        let pastedRight = NSPasteboard.general.string(forType: .string)
+        let pastedRight = editor.pasteboard.string(forType: .string)
         XCTAssertEqual(pastedRight, "new", "Copy in right split column should extract text from new/added line")
     }
 
@@ -936,6 +948,7 @@ final class ReadOnlyEditorTests: XCTestCase {
         displayMap.rebuild()
 
         let editor = MultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        editor.pasteboard = NSPasteboard.withUniqueName()
         editor.isEditable = true
 
         // Place cursor on line 163 (row 8)
@@ -991,6 +1004,7 @@ final class ReadOnlyEditorTests: XCTestCase {
         displayMap.rebuild()
 
         let editor = MultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        editor.pasteboard = NSPasteboard.withUniqueName()
         editor.isEditable = true
 
         // Position cursor at row 1 (the added line "line 2"), end of line (col 6)
@@ -1075,6 +1089,7 @@ final class ReadOnlyEditorTests: XCTestCase {
         displayMap.rebuild()
 
         let editor = MultiBufferEditorView(displayMap: displayMap, theme: .unifiedDark)
+        editor.pasteboard = NSPasteboard.withUniqueName()
         editor.isEditable = true
 
         guard let visualPt = displayMap.visualPoint(for: buffer.id, bufferPoint: BufferPoint(row: testRow, column: 4)) else {

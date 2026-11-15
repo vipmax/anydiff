@@ -16,9 +16,10 @@ public struct TerminalPanelView: View {
         slot: PanelSlot = .right,
         theme: Theme,
         fontSize: CGFloat = 12,
+        startShell: Bool = true,
         onBack: (() -> Void)? = nil
     ) {
-        self.coordinator = TerminalCoordinator(singleSession: session)
+        self.coordinator = TerminalCoordinator(singleSession: session, startShell: startShell)
         self.slot = slot
         self.theme = theme
         self.fontSize = fontSize
@@ -41,7 +42,7 @@ public struct TerminalPanelView: View {
     }
 
     private var currentTab: TerminalTab? {
-        coordinator.activeTab(for: slot)
+        coordinator.peekTab(for: slot)
     }
 
     public var body: some View {
@@ -77,6 +78,13 @@ public struct TerminalPanelView: View {
             }
         }
         .background(Color(theme.background).ignoresSafeArea())
+        .onAppear {
+            if coordinator.tabs.isEmpty || coordinator.slotTabs[slot] == nil {
+                DispatchQueue.main.async {
+                    coordinator.ensureInitialTabIfNeeded(for: slot)
+                }
+            }
+        }
     }
 
     // MARK: - Tab Bar (Leading)
@@ -427,7 +435,7 @@ private struct TerminalTabContentView: View {
             }
         }
         .onAppear {
-            if tab.isShowingInteractive && !tab.activeTerminalSession.isRunning && tab.activeTerminalSession.exitCode == nil {
+            if tab.startShell && tab.isShowingInteractive && !tab.activeTerminalSession.isRunning && tab.activeTerminalSession.exitCode == nil {
                 tab.activeTerminalSession.start()
             }
         }

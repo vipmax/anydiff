@@ -1,5 +1,6 @@
 import XCTest
 @testable import AnyDiffCore
+@testable import AnyDiffUI
 
 final class SelectionQuoteTests: XCTestCase {
     func testFormatEditorQuoteWithLineRange() {
@@ -192,5 +193,84 @@ final class SelectionQuoteTests: XCTestCase {
 
         let range4 = MarkdownSelectionLineFinder.findLineRange(in: lines, for: "A quoted statement")
         XCTAssertEqual(range4, 14...14)
+    }
+
+    func testAgentInputMakeInputBlocksRestoresQuotesAndSurroundingText() {
+        let quote = SelectionQuote(
+            id: "agent:msg:text_0",
+            text: "status indicator badge",
+            source: .agent,
+            label: "Quote from Assistant"
+        )
+        let draftBlocks: [PromptBlock] = [
+            .text("context before"),
+            .quote(quote),
+            .text("comment after quote")
+        ]
+
+        let restored = AgentInputView.makeInputBlocks(from: draftBlocks, fallbackText: "ignored")
+        XCTAssertEqual(restored.map(\.asPromptBlock), draftBlocks)
+
+        if case .text(let first) = restored[0], case .text(let last) = restored[2] {
+            XCTAssertEqual(first.focusRequest, 0)
+            XCTAssertEqual(last.focusRequest, 1)
+        } else {
+            XCTFail("Expected text blocks at indices 0 and 2")
+        }
+
+        // Empty draftBlocks falls back to draftPrompt text
+        let fromFallback = AgentInputView.makeInputBlocks(from: [], fallbackText: "plain draft")
+        XCTAssertEqual(fromFallback.map(\.asPromptBlock), [.text("plain draft")])
+
+        // Quote-only draftBlocks still ensures an editable text block
+        let quoteOnly = AgentInputView.makeInputBlocks(from: [.quote(quote)], fallbackText: "")
+        XCTAssertEqual(quoteOnly.map(\.asPromptBlock), [.quote(quote), .text("")])
+    }
+
+    func testDraftBlocksPreservedAcrossStartScreenAndClearedOnReset() {
+        let coordinator = AgentSessionCoordinator(isMockAgent: false, autoCreateSession: true)
+        guard let session = coordinator.activeSession else {
+            XCTFail("Expected active session")
+            return
+        }
+
+        let quote = SelectionQuote(
+            id: "agent:msg:text_0",
+            text: "quoted snippet",
+            source: .agent,
+            label: "Quote from Assistant"
+        )
+
+        // Quote-only draft counts as sendable draft content
+        session.draftBlocks = [.quote(quote), .text("")]
+        XCTAssertTrue(session.manager.hasDraftContent)
+
+        let expectedBlocks: [PromptBlock] = [
+            .text("before quote"),
+            .quote(quote),
+            .text("after quote")
+        ]
+        session.draftBlocks = expectedBlocks
+        session.draftPrompt = SelectionQuoteFormatter.formatPromptBlocks(expectedBlocks)
+
+        // Navigate to empty agents panel (start screen) and back to the agent session
+        coordinator.openStartScreen()
+        XCTAssertTrue(coordinator.showStartScreen)
+        coordinator.selectSession(id: session.id)
+        XCTAssertFalse(coordinator.showStartScreen)
+
+        XCTAssertEqual(coordinator.activeSession?.draftBlocks, expectedBlocks)
+        XCTAssertEqual(
+            AgentInputView.makeInputBlocks(
+                from: coordinator.activeSession?.draftBlocks ?? [],
+                fallbackText: coordinator.activeSession?.draftPrompt ?? ""
+            ).map(\.asPromptBlock),
+            expectedBlocks
+        )
+
+        session.manager.clearSession()
+        XCTAssertTrue(session.draftBlocks.isEmpty)
+        XCTAssertEqual(session.draftPrompt, "")
+        XCTAssertFalse(session.manager.hasDraftContent)
     }
 }

@@ -106,13 +106,23 @@ public final class WindowLifecycleView: NSView {
     public func applyAppearance() {
         guard let window = self.window else { return }
         let targetAppearance = NSAppearance(named: theme.isDark ? .darkAqua : .aqua)
-        window.backgroundColor = theme.background
-        window.appearance = targetAppearance
-        window.titlebarAppearsTransparent = true
-        window.titlebarSeparatorStyle = .none
+        if window.backgroundColor != theme.background {
+            window.backgroundColor = theme.background
+        }
+        if window.appearance?.name != targetAppearance?.name {
+            window.appearance = targetAppearance
+        }
+        if !window.titlebarAppearsTransparent {
+            window.titlebarAppearsTransparent = true
+        }
+        if window.titlebarSeparatorStyle != .none {
+            window.titlebarSeparatorStyle = .none
+        }
         configureSplitViewControllerHoldingPriorities(in: window)
         updateSplitViewDividers(in: window, color: theme.panelDivider)
-        configureFullScreenToolbars(theme: theme)
+        if NSApp.windows.count > 1 {
+            configureFullScreenToolbars(theme: theme)
+        }
     }
 }
 

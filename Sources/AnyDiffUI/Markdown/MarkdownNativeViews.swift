@@ -1055,6 +1055,7 @@ public enum MarkdownInlineFormatter {
 public enum MarkdownDocumentSection {
     case text(textView: MarkdownSelectableTextView, headerAnchors: [(headerIndex: Int, charRange: NSRange)])
     case codeBlock(view: MarkdownNativeCodeBlockView)
+    case mermaid(view: MermaidBlockView)
     case imageGroup(view: MarkdownNativeImageGroupView)
     case table(view: MarkdownTableScrollView)
     case divider(view: MarkdownNativeDividerView)
@@ -1063,6 +1064,7 @@ public enum MarkdownDocumentSection {
         switch self {
         case .text(let tv, _): return tv
         case .codeBlock(let cb): return cb
+        case .mermaid(let mv): return mv
         case .imageGroup(let ig): return ig
         case .table(let tb): return tb
         case .divider(let dv): return dv
@@ -1188,6 +1190,11 @@ public final class MarkdownNativeContainerView: NSView {
                 sectionHeight = cb.measuredHeight(for: contentWidth)
                 cb.frame = NSRect(x: contentX, y: currentY, width: contentWidth, height: sectionHeight)
                 cb.applyLayout(width: contentWidth)
+
+            case .mermaid(let mv):
+                sectionHeight = mv.measuredHeight(for: contentWidth)
+                mv.frame = NSRect(x: contentX, y: currentY, width: contentWidth, height: sectionHeight)
+                mv.applyLayout(width: contentWidth)
 
             case .imageGroup(let ig):
                 sectionHeight = ig.measuredHeight(for: contentWidth)
@@ -1723,16 +1730,27 @@ public enum MarkdownSectionCompiler {
 
             case .codeBlock(let language, let code):
                 flushText()
-                let codeRange = blockIndex < blockLineRanges.count ? blockLineRanges[blockIndex] : nil
-                sections.append(.codeBlock(view: MarkdownNativeCodeBlockView(
-                    language: language,
-                    code: code,
-                    theme: theme,
-                    filePath: fullPath,
-                    displayPath: displayPath,
-                    lineRange: codeRange,
-                    rawContentProvider: { content }
-                )))
+                if MermaidEngine.isMermaidLanguage(language) {
+                    let mermaidView = MermaidBlockView(
+                        code: code,
+                        theme: theme,
+                        maxDiagramHeight: .greatestFiniteMagnitude,
+                        allowsCodeScrolling: false
+                    )
+                    mermaidView.onNeedsLayout = onImageLoaded
+                    sections.append(.mermaid(view: mermaidView))
+                } else {
+                    let codeRange = blockIndex < blockLineRanges.count ? blockLineRanges[blockIndex] : nil
+                    sections.append(.codeBlock(view: MarkdownNativeCodeBlockView(
+                        language: language,
+                        code: code,
+                        theme: theme,
+                        filePath: fullPath,
+                        displayPath: displayPath,
+                        lineRange: codeRange,
+                        rawContentProvider: { content }
+                    )))
+                }
 
             case .image(let alt, let path):
                 flushText()

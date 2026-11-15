@@ -33,8 +33,7 @@ public struct AgentHeaderControlsView: View {
     }
 
     private var canSend: Bool {
-        let hasDraft = !agentManager.draftPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !agentManager.draftAttachments.isEmpty
-        return hasDraft && agentManager.canAcceptPrompt
+        agentManager.hasDraftContent && agentManager.canAcceptPrompt
     }
 
     public var body: some View {
@@ -58,8 +57,7 @@ public struct AgentHeaderControlsView: View {
         if agentManager.initializationState == .starting || agentManager.status == .connecting {
             HStack(spacing: 5) {
                 ProgressView()
-                    .controlSize(.mini)
-                    .scaleEffect(0.7)
+                    .controlSize(.small)
                 Text(agentManager.agentTitle)
                     .font(.system(size: 11, weight: .medium))
                     .foregroundColor(Color(theme.foreground).opacity(0.75))
@@ -149,7 +147,7 @@ public struct AgentHeaderControlsView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help("Stop Generation (Esc)")
+                .help("Stop Generation (Esc Esc)")
                 .onHover { isStopHovered = $0 }
             }
 
@@ -175,9 +173,15 @@ public struct AgentHeaderControlsView: View {
         if let onSend {
             onSend()
         } else {
-            let prompt = agentManager.draftPrompt
+            let prompt: String
+            if !agentManager.draftBlocks.isEmpty {
+                prompt = SelectionQuoteFormatter.formatPromptBlocks(agentManager.draftBlocks)
+            } else {
+                prompt = agentManager.draftPrompt
+            }
             let images = agentManager.draftAttachments
             agentManager.draftPrompt = ""
+            agentManager.draftBlocks = []
             agentManager.draftAttachments = []
             agentManager.sendPrompt(prompt, images: images, workingDirectory: workingDirectory)
         }
@@ -360,4 +364,3 @@ private final class AgentSettingsMenuActionTarget: NSObject {
         action()
     }
 }
-

@@ -52,10 +52,10 @@ public struct UpdateChecker: Sendable {
         #endif
     }()
 
-    private let session: URLSession
+    private let session: URLSession?
     private let endpoint: URL
 
-    public init(session: URLSession = .shared, endpoint: URL = UpdateChecker.latestReleaseURL) {
+    public init(session: URLSession? = nil, endpoint: URL = UpdateChecker.latestReleaseURL) {
         self.session = session
         self.endpoint = endpoint
     }
@@ -67,7 +67,7 @@ public struct UpdateChecker: Sendable {
         request.setValue("AnyDiff", forHTTPHeaderField: "User-Agent")
         request.timeoutInterval = 15
 
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await (session ?? .shared).data(for: request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             throw UpdateCheckError.badResponse
         }

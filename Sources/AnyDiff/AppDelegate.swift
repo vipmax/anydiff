@@ -17,10 +17,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         UserDefaults.standard.register(defaults: ["NSAppSleepDisabled": true])
         NSApp.setActivationPolicy(.regular)
 
-        if let icon = loadAppIcon() {
-            NSApp.applicationIconImage = icon
-        }
-
         let screen = NSScreen.main
         let visibleFrame = screen?.visibleFrame ?? NSRect(x: 100, y: 100, width: 1260, height: 800)
         let windowWidth = min(1260, visibleFrame.width * 0.95)
@@ -43,12 +39,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if currentFrame.maxX > visibleFrame.maxX { currentFrame.origin.x = visibleFrame.maxX - currentFrame.width }
         if currentFrame.minY < visibleFrame.minY { currentFrame.origin.y = visibleFrame.minY }
         if currentFrame.maxY > visibleFrame.maxY { currentFrame.origin.y = visibleFrame.maxY - currentFrame.height }
-        mainWindow.setFrame(currentFrame, display: true)
+        mainWindow.setFrame(currentFrame, display: false)
         mainWindow.title = "AnyDiff"
         mainWindow.titleVisibility = .hidden
         mainWindow.titlebarAppearsTransparent = true
         mainWindow.titlebarSeparatorStyle = .none
-        mainWindow.backgroundColor = initialTheme().background
+        let theme = initialTheme()
+        mainWindow.backgroundColor = theme.background
+        mainWindow.appearance = NSAppearance(named: theme.isDark ? .darkAqua : .aqua)
         mainWindow.toolbarStyle = .unified
         let windowToolbar = NSToolbar(identifier: "AnyDiffWindowToolbar")
         windowToolbar.allowsUserCustomization = false
@@ -62,12 +60,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         mainWindow.orderFrontRegardless()
         self.window = mainWindow
 
-        setupMainMenu()
-        observeUpdateState()
-        UpdateCoordinator.shared.startScheduledChecks()
-
         NSRunningApplication.current.activate(options: [.activateAllWindows])
         NSApp.activate(ignoringOtherApps: true)
+
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self = self else { return }
+                self.setupMainMenu()
+                self.observeUpdateState()
+            }
+        }
+        // Only set the Dock icon dynamically for unbundled CLI/debug runs;
+        // `.app` bundles already supply AppIcon.icns via Info.plist.
+        if Bundle.main.bundleURL.pathExtension != "app" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                MainActor.assumeIsolated {
+                    if let icon = self?.loadAppIcon() {
+                        NSApp.applicationIconImage = icon
+                    }
+                }
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            MainActor.assumeIsolated {
+                UpdateCoordinator.shared.startScheduledChecks()
+            }
+        }
     }
 
     func loadAppIcon() -> NSImage? {

@@ -13,8 +13,13 @@ public final class GitStreamReader: Sendable {
         arguments: [String],
         workingDirectory: String? = nil,
         chunkSize: Int = defaultChunkSize,
+        shouldCancel: (() -> Bool)? = nil,
+        onProcessStarted: ((Process) -> Void)? = nil,
+        onProcessFinished: (() -> Void)? = nil,
         onFileParsed: @escaping (FileDiff) -> Void
     ) throws {
+        if shouldCancel?() == true { return }
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         process.arguments = arguments
@@ -28,12 +33,24 @@ public final class GitStreamReader: Sendable {
 
         let streamer = StreamingGitDiffParser()
         let splitter = ChunkLineSplitter { lineBytes in
-            if let file = streamer.feed(lineBytes: lineBytes) {
+            if shouldCancel?() != true, let file = streamer.feed(lineBytes: lineBytes) {
                 onFileParsed(file)
             }
         }
 
-        try process.run()
+        let exitSemaphore = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in
+            exitSemaphore.signal()
+        }
+
+        do {
+            try process.run()
+        } catch {
+            process.terminationHandler = nil
+            throw error
+        }
+
+        onProcessStarted?(process)
 
         let readHandle = pipe.fileHandleForReading
         let fd = readHandle.fileDescriptor
@@ -42,17 +59,28 @@ public final class GitStreamReader: Sendable {
         defer { buffer.deallocate() }
 
         while true {
+            if shouldCancel?() == true { break }
             let bytesRead = read(fd, buffer, chunkSize)
-            if bytesRead <= 0 { break }
+            if bytesRead < 0 {
+                if errno == EINTR { continue }
+                break
+            }
+            if bytesRead == 0 { break }
             splitter.processChunk(UnsafeBufferPointer(start: buffer, count: bytesRead))
         }
 
-        splitter.finish()
-        if let lastFile = streamer.finish() {
-            onFileParsed(lastFile)
+        if shouldCancel?() != true {
+            splitter.finish()
+            if let lastFile = streamer.finish() {
+                onFileParsed(lastFile)
+            }
         }
 
-        process.waitUntilExit()
+        // Wait via terminationHandler semaphore instead of Process.waitUntilExit()
+        // because waitUntilExit() spins CFRunLoop and can miss child exit on worker threads.
+        exitSemaphore.wait()
+        onProcessFinished?()
+        process.terminationHandler = nil
     }
 
     /// Streams diff from a local file path using 64 KB POSIX chunking

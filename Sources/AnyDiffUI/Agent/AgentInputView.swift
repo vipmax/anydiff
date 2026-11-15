@@ -7,7 +7,7 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
     @Binding public var text: String
     public var placeholder: String
     public var theme: Theme
-    public var minHeight: CGFloat = 22
+    public var minHeight: CGFloat = 18
     public var maxHeight: CGFloat = 160
     public var focusRequest: Int = 0
     public var cursorToEnd: Bool = true
@@ -23,7 +23,7 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
         text: Binding<String>,
         placeholder: String,
         theme: Theme,
-        minHeight: CGFloat = 22,
+        minHeight: CGFloat = 18,
         maxHeight: CGFloat = 160,
         focusRequest: Int = 0,
         cursorToEnd: Bool = true,
@@ -194,7 +194,7 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
         weak var textView: AgentInputCustomTextView?
         weak var scrollView: NSScrollView?
         private var heightBinding: Binding<CGFloat>?
-        private var minHeight: CGFloat = 22
+        private var minHeight: CGFloat = 18
         private var maxHeight: CGFloat = 160
         private var lastReportedHeight: CGFloat?
         private var lastFocusRequest: Int?
@@ -495,7 +495,7 @@ public final class AgentInputCustomTextView: NSTextView {
         lm.ensureLayout(for: tc)
         let usedRect = lm.usedRect(for: tc)
         let newH = ceil(usedRect.height)
-        let clampedH = min(160, max(22, newH))
+        let clampedH = min(160, max(18, newH))
         if let sv = enclosingScrollView, clampedH < 160 {
             sv.contentView.scroll(to: .zero)
         }
@@ -525,7 +525,7 @@ public struct AgentInputTextBlockState: Identifiable, Equatable, Sendable {
     public init(
         id: String = UUID().uuidString,
         text: String = "",
-        height: CGFloat = 22,
+        height: CGFloat = 18,
         focusRequest: Int = 0,
         cursorToEnd: Bool = true
     ) {
@@ -584,13 +584,70 @@ public struct AgentInputView: View {
     @State private var inputFocusRequest: Int = 0
     @State private var isInputDropTargeted: Bool = false
     @ObservedObject private var quoteStore = SelectionQuoteStore.shared
-    @State private var blocks: [AgentInputBlock] = [.text(AgentInputTextBlockState(text: "", focusRequest: 1))]
-    @State private var focusedBlockId: String = ""
+    @State private var blocks: [AgentInputBlock]
+    @State private var focusedBlockId: String
     @State private var maxAvatarWidth: CGFloat = AgentMessageCell.maxAvatarWidth
+    @State private var userAvatarSize: CGFloat = AgentMessageCell.userAvatarSize
     @State private var isQuoteButtonHovered: Bool = false
+
+    private static let inputFirstLineHeight: CGFloat = ceil(
+        NSLayoutManager().defaultLineHeight(for: NSFont.systemFont(ofSize: 13, weight: .regular))
+    )
+
+    private var inputVerticalOffsets: (avatarTop: CGFloat, contentTop: CGFloat) {
+        guard attachedImages.isEmpty else {
+            return (0, 0)
+        }
+        let firstCenter: CGFloat = blocks.first?.isQuote == true ? 20 : Self.inputFirstLineHeight / 2
+        let avatarCenter = userAvatarSize / 2
+        if avatarCenter >= firstCenter {
+            return (0, avatarCenter - firstCenter)
+        }
+        return (firstCenter - avatarCenter, 0)
+    }
     /// Reports the full natural height of the input stack (banner + queue + editor) so the
     /// host can reserve room for it instead of letting extra rows overlap the chat above.
     public var onTotalHeightChange: ((CGFloat) -> Void)?
+
+    public static func makeInputBlocks(from draftBlocks: [PromptBlock], fallbackText: String) -> [AgentInputBlock] {
+        let sourceBlocks: [PromptBlock]
+        if !draftBlocks.isEmpty {
+            sourceBlocks = draftBlocks
+        } else if !fallbackText.isEmpty {
+            sourceBlocks = [.text(fallbackText)]
+        } else {
+            sourceBlocks = [.text("")]
+        }
+
+        let lastTextIndex = sourceBlocks.lastIndex {
+            if case .text = $0 { return true }
+            return false
+        }
+
+        var result: [AgentInputBlock] = []
+        for (index, block) in sourceBlocks.enumerated() {
+            switch block {
+            case .text(let value):
+                result.append(
+                    .text(
+                        AgentInputTextBlockState(
+                            text: value,
+                            height: 18,
+                            focusRequest: (index == lastTextIndex) ? 1 : 0,
+                            cursorToEnd: true
+                        )
+                    )
+                )
+            case .quote(let quote):
+                result.append(.quote(id: "quote-\(UUID().uuidString)", quote: quote))
+            }
+        }
+
+        if !result.contains(where: \.isText) {
+            result.append(.text(AgentInputTextBlockState(text: "", height: 18, focusRequest: 1)))
+        }
+        return result
+    }
 
     public init(
         text: Binding<String>,
@@ -620,6 +677,12 @@ public struct AgentInputView: View {
         self.onCancel = onCancel
         self.onReview = onReview
         self.onPreviewImages = onPreviewImages
+        let initialBlocks = Self.makeInputBlocks(
+            from: agentManager.draftBlocks,
+            fallbackText: text.wrappedValue
+        )
+        self._blocks = State(initialValue: initialBlocks)
+        self._focusedBlockId = State(initialValue: initialBlocks.last(where: \.isText)?.id ?? initialBlocks.first?.id ?? "")
     }
 
     public init(
@@ -650,6 +713,12 @@ public struct AgentInputView: View {
         self.onCancel = onCancel
         self.onReview = onReview
         self.onPreviewImages = onPreviewImages
+        let initialBlocks = Self.makeInputBlocks(
+            from: agentManager.draftBlocks,
+            fallbackText: text.wrappedValue
+        )
+        self._blocks = State(initialValue: initialBlocks)
+        self._focusedBlockId = State(initialValue: initialBlocks.last(where: \.isText)?.id ?? initialBlocks.first?.id ?? "")
     }
 
     private var isBusy: Bool {
@@ -740,11 +809,20 @@ public struct AgentInputView: View {
             }
         }
         .onAppear {
-            if !text.isEmpty && blocks.count == 1, case .text(var state) = blocks[0], state.text.isEmpty {
+            if !agentManager.draftBlocks.isEmpty {
+                let currentPromptBlocks = blocks.map(\.asPromptBlock)
+                if currentPromptBlocks != agentManager.draftBlocks {
+                    let restored = Self.makeInputBlocks(from: agentManager.draftBlocks, fallbackText: text)
+                    blocks = restored
+                    focusedBlockId = restored.last(where: \.isText)?.id ?? restored.first?.id ?? ""
+                }
+            } else if !text.isEmpty && blocks.count == 1, case .text(var state) = blocks[0], state.text.isEmpty {
                 state.text = text
                 blocks[0] = .text(state)
                 focusedBlockId = state.id
+                syncDraftState()
             }
+            recalculateTotalHeight()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                 inputFocusRequest &+= 1
             }
@@ -767,6 +845,21 @@ public struct AgentInputView: View {
                 if state.text != newText {
                     state.text = newText
                     blocks[0] = .text(state)
+                    syncDraftState()
+                }
+            }
+        }
+        .onChange(of: agentManager.draftBlocks) { newDraftBlocks in
+            if newDraftBlocks.isEmpty && text.isEmpty {
+                let isSingleEmptyText = blocks.count == 1 && {
+                    if case .text(let state) = blocks[0] { return state.text.isEmpty }
+                    return false
+                }()
+                if !isSingleEmptyText {
+                    let newId = UUID().uuidString
+                    blocks = [.text(AgentInputTextBlockState(id: newId, text: "", height: 18, focusRequest: 1))]
+                    focusedBlockId = newId
+                    recalculateTotalHeight()
                 }
             }
         }
@@ -798,10 +891,12 @@ public struct AgentInputView: View {
                 .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
 
+            let offsets = inputVerticalOffsets
             HStack(alignment: .top, spacing: 12) {
                 // User avatar on the left, dynamically sized to user avatar size
                 AgentAvatarProvider.userAvatarSwiftUIView()
                     .frame(width: maxAvatarWidth, alignment: .center)
+                    .padding(.top, offsets.avatarTop)
 
                 VStack(alignment: .leading, spacing: 6) {
                     // Attached images miniature strip
@@ -880,6 +975,7 @@ public struct AgentInputView: View {
                         .padding(.top, 2)
                     }
                 }
+                .padding(.top, offsets.contentTop)
                 .frame(maxWidth: AgentMessageCell.maxContentWidth, alignment: .leading)
 
                 Spacer(minLength: 0)
@@ -895,6 +991,8 @@ public struct AgentInputView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: AgentAvatarProvider.avatarDidChangeNotification)) { _ in
                 maxAvatarWidth = AgentMessageCell.maxAvatarWidth
+                userAvatarSize = AgentMessageCell.userAvatarSize
+                recalculateTotalHeight()
             }
         }
         .animation(.easeInOut(duration: 0.14), value: shouldShowLiveEditedSummary)
@@ -933,6 +1031,13 @@ public struct AgentInputView: View {
                         }
                     }()
 
+                    let shouldApplyGlobalFocus: Bool = {
+                        if blocks.count <= 1 { return true }
+                        if !focusedBlockId.isEmpty { return state.id == focusedBlockId }
+                        return index == blocks.lastIndex(where: \.isText)
+                    }()
+                    let effectiveFocusRequest = state.focusRequest + (shouldApplyGlobalFocus ? (inputFocusRequest + externalFocusRequest) : 0)
+
                     AgentAutoGrowingTextView(
                         text: Binding(
                             get: { state.text },
@@ -940,9 +1045,9 @@ public struct AgentInputView: View {
                         ),
                         placeholder: placeholder,
                         theme: theme,
-                        minHeight: 22,
+                        minHeight: 18,
                         maxHeight: needsScroll ? 120 : 160,
-                        focusRequest: state.focusRequest + inputFocusRequest + externalFocusRequest,
+                        focusRequest: effectiveFocusRequest,
                         cursorToEnd: state.cursorToEnd,
                         calculatedHeight: Binding(
                             get: { state.height },
@@ -968,9 +1073,8 @@ public struct AgentInputView: View {
                             navigateToNextTextBlock(fromIndex: index, toStart: toStart)
                         }
                     )
-                    .padding(.top, index == 0 ? 2 : 0)
                     .frame(maxWidth: .infinity)
-                    .frame(height: state.height + (index == 0 ? 2 : 0))
+                    .frame(height: state.height)
                 }
             }
         }
@@ -989,15 +1093,39 @@ public struct AgentInputView: View {
         }
     }
 
+    private func syncDraftState() {
+        let promptBlocks = blocks.map(\.asPromptBlock)
+        if agentManager.draftBlocks != promptBlocks {
+            agentManager.draftBlocks = promptBlocks
+        }
+        if hasQuotes {
+            let formatted = SelectionQuoteFormatter.formatPromptBlocks(promptBlocks)
+            if self.text != formatted {
+                self.text = formatted
+            }
+        } else {
+            let plainText: String
+            if blocks.count == 1, case .text(let state) = blocks[0] {
+                plainText = state.text
+            } else {
+                plainText = blocks.compactMap { block -> String? in
+                    if case .text(let state) = block { return state.text }
+                    return nil
+                }.joined(separator: "\n\n")
+            }
+            if self.text != plainText {
+                self.text = plainText
+            }
+        }
+    }
+
     private func updateTextBlock(id: String, text: String) {
         guard let index = blocks.firstIndex(where: { $0.id == id }) else { return }
         if case .text(var state) = blocks[index] {
             state.text = text
             blocks[index] = .text(state)
         }
-        if !hasQuotes {
-            self.text = text
-        }
+        syncDraftState()
     }
 
     private var estimatedBlocksHeight: CGFloat {
@@ -1008,16 +1136,20 @@ public struct AgentInputView: View {
             case .quote:
                 total += 42
             case .text(let state):
-                total += max(22, state.height)
+                total += max(18, state.height)
             }
         }
         return total
     }
 
     private func recalculateTotalHeight() {
-        let minH = max(AgentMessageCell.userAvatarSize + 8, 38)
-        let total = estimatedBlocksHeight
-        self.calculatedHeight = max(minH, min(total + 8, 280))
+        let offsets = inputVerticalOffsets
+        let minH = max(userAvatarSize + 8, 38)
+        let attachmentsHeight: CGFloat = attachedImages.isEmpty ? 0 : 62
+        let contentHeight = offsets.contentTop + attachmentsHeight + estimatedBlocksHeight
+        let avatarHeight = offsets.avatarTop + userAvatarSize
+        let total = 8 + max(avatarHeight, contentHeight)
+        self.calculatedHeight = max(minH, min(total, 280))
     }
 
     private func updateTextBlockHeight(id: String, height: CGFloat) {
@@ -1052,7 +1184,7 @@ public struct AgentInputView: View {
             AgentInputTextBlockState(
                 id: nextTextBlockId,
                 text: "",
-                height: 22,
+                height: 18,
                 focusRequest: 1
             )
         )
@@ -1074,6 +1206,7 @@ public struct AgentInputView: View {
                 blocks.insert(contentsOf: [quoteBlock, nextTextBlock], at: insertAt)
             }
             focusedBlockId = nextTextBlockId
+            syncDraftState()
             recalculateTotalHeight()
             inputFocusRequest &+= 1
         }
@@ -1119,10 +1252,10 @@ public struct AgentInputView: View {
             }
 
             if blocks.isEmpty {
-                let fallbackState = AgentInputTextBlockState(text: "", height: 22, focusRequest: 1)
+                let fallbackState = AgentInputTextBlockState(text: "", height: 18, focusRequest: 1)
                 blocks = [.text(fallbackState)]
                 focusedBlockId = fallbackState.id
-                self.text = ""
+                syncDraftState()
                 recalculateTotalHeight()
                 inputFocusRequest &+= 1
                 return
@@ -1138,13 +1271,13 @@ public struct AgentInputView: View {
                 }.joined(separator: "\n\n")
 
                 let singleId = blocks.first(where: \.isText)?.id ?? UUID().uuidString
-                let finalState = AgentInputTextBlockState(id: singleId, text: singleText, height: 22, focusRequest: 1)
+                let finalState = AgentInputTextBlockState(id: singleId, text: singleText, height: 18, focusRequest: 1)
                 blocks = [.text(finalState)]
                 focusedBlockId = singleId
-                self.text = singleText
                 inputFocusRequest &+= 1
             }
 
+            syncDraftState()
             recalculateTotalHeight()
         }
     }
@@ -1210,8 +1343,9 @@ public struct AgentInputView: View {
 
         attachedImages = []
         let newId = UUID().uuidString
-        blocks = [.text(AgentInputTextBlockState(id: newId, text: "", height: 22, focusRequest: 1))]
+        blocks = [.text(AgentInputTextBlockState(id: newId, text: "", height: 18, focusRequest: 1))]
         text = ""
+        agentManager.draftBlocks = []
         focusedBlockId = newId
         recalculateTotalHeight()
         inputFocusRequest &+= 1
@@ -1482,6 +1616,3 @@ private struct AgentInputQuoteBadgeView: View {
         }
     }
 }
-
-
-

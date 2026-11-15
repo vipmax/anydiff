@@ -132,6 +132,8 @@ final class MarkdownParserTests: XCTestCase {
                 h = tv.measuredHeight(for: 700)
             case .codeBlock(let cb):
                 h = cb.measuredHeight(for: 700)
+            case .mermaid(let mv):
+                h = mv.measuredHeight(for: 700)
             case .imageGroup(let ig):
                 h = ig.measuredHeight(for: 700)
             case .table(let tb):

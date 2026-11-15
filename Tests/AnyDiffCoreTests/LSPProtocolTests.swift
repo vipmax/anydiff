@@ -430,6 +430,8 @@ final class LSPProtocolTests: XCTestCase {
     }
 
     func testPyrightDiagnosticsLive() async throws {
+        try requireIntegrationTestsEnabled()
+
         let pyrightPath = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".anydiff/lsp/bin/pyright/node_modules/.bin/pyright-langserver").path
         guard FileManager.default.isExecutableFile(atPath: pyrightPath) else {
@@ -461,7 +463,6 @@ final class LSPProtocolTests: XCTestCase {
         await fulfillment(of: [exp], timeout: 5.0)
 
         let diags = await service.getDiagnostics(for: testPyPath)
-        print("Final diags count: \(diags.count)")
         XCTAssertFalse(diags.isEmpty)
         await service.stopAll()
     }

@@ -446,6 +446,7 @@ final class LSPRegistryTests: XCTestCase {
     }
 
     func testIdleTimeoutAutoStopsUnusedServer() async throws {
+        try requireIntegrationTestsEnabled()
         let ws = LSPWorkspaceService()
         let defaultTimeout = await ws.idleTimeout
         XCTAssertEqual(defaultTimeout, 300, "Default LSP idle timeout should be 5 minutes (300 seconds)")
@@ -498,6 +499,7 @@ final class LSPRegistryTests: XCTestCase {
     }
 
     func testLSPAutoStartPreferenceAndSuppression() async throws {
+        try requireIntegrationTestsEnabled()
         let ws = LSPWorkspaceService()
 
         // 1. Check default is enabled
@@ -536,6 +538,7 @@ final class LSPRegistryTests: XCTestCase {
     }
 
     func testNotifyDocumentOpenedRespectsAutostartSetting() async throws {
+        try requireIntegrationTestsEnabled()
         let ws = LSPWorkspaceService()
         await ws.stopAll()
 

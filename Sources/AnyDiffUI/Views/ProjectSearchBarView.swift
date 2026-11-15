@@ -195,7 +195,6 @@ public struct ProjectSearchBarView: View {
                 if isSearching {
                     ProgressView()
                         .controlSize(.small)
-                        .scaleEffect(0.65)
                         .frame(width: 16, height: 16)
                         .padding(.horizontal, 4)
                 } else if !matchCounterText.isEmpty {

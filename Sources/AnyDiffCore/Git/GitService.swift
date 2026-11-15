@@ -20,12 +20,18 @@ public final class GitService: Sendable {
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
+        let exitSemaphore = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in
+            exitSemaphore.signal()
+        }
         do {
             try process.run()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
+            exitSemaphore.wait()
+            process.terminationHandler = nil
             return data.isEmpty ? nil : data
         } catch {
+            process.terminationHandler = nil
             return nil
         }
     }
@@ -38,14 +44,20 @@ public final class GitService: Sendable {
         let errPipe = Pipe()
         process.standardOutput = outPipe
         process.standardError = errPipe
+        let exitSemaphore = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in
+            exitSemaphore.signal()
+        }
         do {
             try process.run()
             let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
             let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
+            exitSemaphore.wait()
+            process.terminationHandler = nil
             let errText = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             return (process.terminationStatus, outData, errText)
         } catch {
+            process.terminationHandler = nil
             return (-1, Data(), error.localizedDescription)
         }
     }
@@ -154,69 +166,93 @@ public final class GitService: Sendable {
         }
 
         return AsyncThrowingStream { continuation in
-            let task = Task {
+            let state = StreamCancellationState()
+
+            continuation.onTermination = { _ in
+                state.cancel()
+            }
+
+            DispatchQueue.global(qos: .userInitiated).async {
                 for baseArgs in argumentSets {
-                    if Task.isCancelled { break }
+                    if state.isCancelled { break }
                     var args = baseArgs
                     if let pathFilter, !pathFilter.isEmpty {
                         args += ["--"] + pathFilter.sorted()
                     }
 
-                    let process = Process()
-                    process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-                    process.arguments = args
-                    let pipe = Pipe()
-                    process.standardOutput = pipe
-                    process.standardError = FileHandle.nullDevice
-
-                    do {
-                        try process.run()
-                    } catch {
-                        continue
-                    }
-
-                    let streamer = StreamingGitDiffParser()
                     var yieldedAny = false
-
                     do {
-                        for try await line in pipe.fileHandleForReading.bytes.lines {
-                            if Task.isCancelled {
-                                process.terminate()
-                                break
-                            }
-                            if let file = streamer.feed(line: line) {
+                        try GitStreamReader.shared.streamGitDiff(
+                            arguments: args,
+                            shouldCancel: { state.isCancelled },
+                            onProcessStarted: { state.setActiveProcess($0) },
+                            onProcessFinished: { state.clearActiveProcess() }
+                        ) { file in
+                            if !state.isCancelled {
                                 yieldedAny = true
                                 continuation.yield(file)
                             }
                         }
-                        if !Task.isCancelled, let finalFile = streamer.finish() {
-                            yieldedAny = true
-                            continuation.yield(finalFile)
-                        }
                     } catch {
-                        process.terminate()
+                        state.clearActiveProcess()
+                        continue
                     }
-                    process.waitUntilExit()
 
                     if yieldedAny {
                         break
                     }
                 }
 
-                if case .workingTree = target, !Task.isCancelled {
-                    let untracked = untrackedFiles(at: path, pathFilter: pathFilter)
-                    let filtered = filterIgnoredFiles(untracked, at: path)
+                if case .workingTree = target, !state.isCancelled {
+                    let untracked = self.untrackedFiles(at: path, pathFilter: pathFilter)
+                    let filtered = self.filterIgnoredFiles(untracked, at: path)
                     for file in filtered {
+                        if state.isCancelled { break }
                         continuation.yield(file)
                     }
                 }
 
                 continuation.finish()
             }
+        }
+    }
 
-            continuation.onTermination = { _ in
-                task.cancel()
+    private final class StreamCancellationState: @unchecked Sendable {
+        private let lock = NSLock()
+        private var cancelled = false
+        private var activeProcess: Process?
+
+        var isCancelled: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return cancelled
+        }
+
+        func setActiveProcess(_ process: Process) {
+            lock.lock()
+            let alreadyCancelled = cancelled
+            if !alreadyCancelled {
+                activeProcess = process
             }
+            lock.unlock()
+            if alreadyCancelled {
+                process.terminate()
+            }
+        }
+
+        func clearActiveProcess() {
+            lock.lock()
+            activeProcess = nil
+            lock.unlock()
+        }
+
+        func cancel() {
+            lock.lock()
+            cancelled = true
+            let process = activeProcess
+            activeProcess = nil
+            lock.unlock()
+            process?.terminate()
         }
     }
 

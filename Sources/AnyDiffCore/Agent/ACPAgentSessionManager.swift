@@ -247,10 +247,16 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
                 )
                 guard !Task.isCancelled else { return }
                 if let summary {
+                    let targetIdx: Int?
                     if let streamId = self.currentStreamMessageId, let idx = self.messages.firstIndex(where: { $0.id == streamId }) {
-                        self.messages[idx].editedFilesSummary = summary
+                        targetIdx = idx
                     } else if let lastIdx = self.messages.indices.last, self.messages[lastIdx].role == .assistant {
-                        self.messages[lastIdx].editedFilesSummary = summary
+                        targetIdx = lastIdx
+                    } else {
+                        targetIdx = nil
+                    }
+                    if let targetIdx, !self.messages[targetIdx].toolCalls.isEmpty {
+                        self.messages[targetIdx].editedFilesSummary = summary
                     }
                 }
                 self.liveEditedSummary = nil
@@ -977,8 +983,18 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
             guard let self = self else { return }
             self.liveGitDiffTask = nil
             if self.status == .busy, self.preTurnSnapshot?.baseCommitHash == snapshot.baseCommitHash {
-                if let liveSum {
+                let hasToolCalls: Bool
+                if let streamId = self.currentStreamMessageId, let idx = self.messages.firstIndex(where: { $0.id == streamId }) {
+                    hasToolCalls = !self.messages[idx].toolCalls.isEmpty
+                } else if let last = self.messages.last, last.role == .assistant {
+                    hasToolCalls = !last.toolCalls.isEmpty
+                } else {
+                    hasToolCalls = false
+                }
+                if hasToolCalls, let liveSum {
                     self.liveEditedSummary = liveSum
+                } else {
+                    self.liveEditedSummary = nil
                 }
             }
             if self.liveGitDiffPending {

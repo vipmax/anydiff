@@ -18,6 +18,7 @@ public struct MainWindowShortcuts: View {
     public var onZoomReset: () -> Void
     public var onToggleAgent: () -> Void
     public var onToggleMarkdown: () -> Void
+    public var onReturnToAgentStartScreen: (() -> Void)?
     public var onCancel: () -> Void
 
     public init(
@@ -37,6 +38,7 @@ public struct MainWindowShortcuts: View {
         onZoomReset: @escaping () -> Void,
         onToggleAgent: @escaping () -> Void,
         onToggleMarkdown: @escaping () -> Void,
+        onReturnToAgentStartScreen: (() -> Void)? = nil,
         onCancel: @escaping () -> Void
     ) {
         self.onSelectPanel = onSelectPanel
@@ -55,6 +57,7 @@ public struct MainWindowShortcuts: View {
         self.onZoomReset = onZoomReset
         self.onToggleAgent = onToggleAgent
         self.onToggleMarkdown = onToggleMarkdown
+        self.onReturnToAgentStartScreen = onReturnToAgentStartScreen
         self.onCancel = onCancel
     }
 
@@ -100,6 +103,10 @@ public struct MainWindowShortcuts: View {
                 .keyboardShortcut("a", modifiers: [.command, .option])
             Button(action: onToggleMarkdown) {}
                 .keyboardShortcut("e", modifiers: .command)
+            if let onReturnToAgentStartScreen {
+                Button(action: onReturnToAgentStartScreen) {}
+                    .keyboardShortcut(.escape, modifiers: .command)
+            }
             Button(action: onCancel) {}
                 .keyboardShortcut(.cancelAction)
         }

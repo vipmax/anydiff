@@ -54,8 +54,24 @@ rebuild:
     just build-debug
     just build
 
-# Run fast unit tests in Debug configuration
+# Run fast unit tests in Debug configuration (compact output; use `just test-verbose` for every test case)
 test:
+    @set -o pipefail; \
+    swift test -c debug --filter AnyDiffCoreTests --skip Performance 2>&1 | awk ' \
+        /^Test Case .* started\.$/ { next } \
+        /^Test Case .* (passed|skipped) \([0-9.]+ seconds\)\.$/ { next } \
+        /: Test skipped - / { next } \
+        /^sandbox_extension_consume failed: / { next } \
+        /^Test Suite .* started at / { next } \
+        /^Test Suite '\''AnyDiffCoreTests\.xctest'\'' (passed|failed) at / { print; show_exec = 1; next } \
+        /^Test Suite .* failed at / { print; show_exec = 1; next } \
+        /^Test Suite .* passed at / { show_exec = 0; next } \
+        /^[[:space:]]+Executed [0-9]+ tests?, / { if (show_exec) print; show_exec = 0; next } \
+        { print } \
+    '
+
+# Run fast unit tests with full per-test XCTest output.
+test-verbose:
     swift test -c debug --filter AnyDiffCoreTests --skip Performance
 
 # Run fast unit tests in Release configuration.
