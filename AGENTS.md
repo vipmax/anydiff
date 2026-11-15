@@ -31,6 +31,10 @@ just publish <version>     # Bump version, push tag to trigger GitHub Actions re
 
 Use `swift test --filter AnyDiffCoreTests.SomeTest` to target one test; `just clean` removes SwiftPM artifacts.
 
+## Search & CLI Guidelines
+
+- **Always use `rg` instead of `grep`**: Use `rg` (ripgrep) for all code and text searches in this repository. Never run `grep` (`grep -rn`, `grep -R`, etc.) — `rg` is faster and automatically respects `.gitignore` (skipping `.build/`, `dist/`, etc.).
+
 ## Release & Deployment Guidelines
 
 - **NEVER build or upload release binaries locally**: Do not compile release binaries or package DMGs/ZIPs locally for distribution. All public release artifacts (`AnyDiff.app`, DMG, and ZIP archives) must be built strictly by GitHub Actions (`.github/workflows/release.yml`) on clean CI macOS runners.
