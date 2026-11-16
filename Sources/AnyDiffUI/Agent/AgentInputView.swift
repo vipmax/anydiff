@@ -589,6 +589,7 @@ public struct AgentInputView: View {
     @State private var maxAvatarWidth: CGFloat = AgentMessageCell.maxAvatarWidth
     @State private var userAvatarSize: CGFloat = AgentMessageCell.userAvatarSize
     @State private var isQuoteButtonHovered: Bool = false
+    @State private var isQuoteDismissHovered: Bool = false
 
     private static let inputFirstLineHeight: CGFloat = ceil(
         NSLayoutManager().defaultLineHeight(for: NSFont.systemFont(ofSize: 13, weight: .regular))
@@ -943,36 +944,65 @@ public struct AgentInputView: View {
                     if let quote = quoteStore.currentQuote,
                        !isAlreadyQuoted(quote) {
                         HStack(spacing: 6) {
-                            Button(action: {
-                                addQuote(quote)
-                            }) {
-                                Image(systemName: "quote.opening")
-                                    .font(.system(size: 11.5, weight: .semibold))
-                                    .foregroundColor(accentColor)
-                                    .frame(width: 24, height: 24)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                            .fill(accentColor.opacity(isQuoteButtonHovered ? 0.18 : 0.08))
-                                    )
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                            .stroke(accentColor.opacity(isQuoteButtonHovered ? 0.28 : 0.0), lineWidth: 1)
-                                    )
-                            }
-                            .buttonStyle(.plain)
-                            .onHover { hovering in
-                                withAnimation(.easeOut(duration: 0.12)) {
-                                    isQuoteButtonHovered = hovering
+                            HStack(spacing: 0) {
+                                Button(action: {
+                                    addQuote(quote)
+                                }) {
+                                    Image(systemName: "quote.opening")
+                                        .font(.system(size: 11.5, weight: .semibold))
+                                        .foregroundColor(accentColor)
+                                        .frame(width: 24, height: 24)
+                                        .background(
+                                            accentColor.opacity(isQuoteButtonHovered ? 0.20 : 0.08)
+                                        )
                                 }
+                                .buttonStyle(.plain)
+                                .onHover { hovering in
+                                    withAnimation(.easeOut(duration: 0.12)) {
+                                        isQuoteButtonHovered = hovering
+                                    }
+                                }
+                                .overlay(AgentInputPointingHandCursorView())
+                                .help(quoteSuggestionHelpText(quote: quote))
+                                .accessibilityLabel("Quote selection (\(quote.label))")
+
+                                Rectangle()
+                                    .fill(accentColor.opacity(0.18))
+                                    .frame(width: 1, height: 14)
+
+                                Button(action: {
+                                    withAnimation(.easeOut(duration: 0.12)) {
+                                        quoteStore.clearQuote(scopedToId: quote.id)
+                                    }
+                                }) {
+                                    Image(systemName: "xmark")
+                                        .font(.system(size: 8.5, weight: .bold))
+                                        .foregroundColor(accentColor.opacity(isQuoteDismissHovered ? 1.0 : 0.7))
+                                        .frame(width: 20, height: 24)
+                                        .background(
+                                            accentColor.opacity(isQuoteDismissHovered ? 0.20 : 0.08)
+                                        )
+                                }
+                                .buttonStyle(.plain)
+                                .onHover { hovering in
+                                    withAnimation(.easeOut(duration: 0.12)) {
+                                        isQuoteDismissHovered = hovering
+                                    }
+                                }
+                                .overlay(AgentInputPointingHandCursorView())
+                                .help("Dismiss quote")
+                                .accessibilityLabel("Dismiss quote")
                             }
-                            .overlay(AgentInputPointingHandCursorView())
-                            .help("Quote selection (\(quote.label)): \"\(quote.text.prefix(60).replacingOccurrences(of: "\n", with: " "))\"")
-                            .accessibilityLabel("Quote selection (\(quote.label))")
-                            .transition(.scale(scale: 0.85).combined(with: .opacity))
+                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .stroke(accentColor.opacity(isQuoteButtonHovered || isQuoteDismissHovered ? 0.30 : 0.15), lineWidth: 1)
+                            )
 
                             Spacer()
                         }
                         .padding(.top, 2)
+                        .transition(.scale(scale: 0.85).combined(with: .opacity))
                     }
                 }
                 .padding(.top, offsets.contentTop)
@@ -1082,6 +1112,11 @@ public struct AgentInputView: View {
 
     private var hasQuotes: Bool {
         blocks.contains(where: \.isQuote)
+    }
+
+    private func quoteSuggestionHelpText(quote: SelectionQuote) -> String {
+        let snippet = quote.text.prefix(60).replacingOccurrences(of: "\n", with: " ")
+        return "Quote selection (\(quote.label)): \"\(snippet)\""
     }
 
     private func isAlreadyQuoted(_ quote: SelectionQuote) -> Bool {

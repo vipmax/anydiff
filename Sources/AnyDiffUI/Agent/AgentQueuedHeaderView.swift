@@ -115,7 +115,6 @@ public final class AgentQueuedHeaderView: NSView {
         currentAccentColor = accentColor
 
         let accentNSColor = NSColor(accentColor)
-        let fgNSColor = NSColor(cgColor: theme.foreground.cgColor) ?? .labelColor
 
         badgeContainer.layer?.backgroundColor = accentNSColor.withAlphaComponent(0.12).cgColor
         badgeContainer.layer?.borderColor = accentNSColor.withAlphaComponent(0.28).cgColor
@@ -125,24 +124,15 @@ public final class AgentQueuedHeaderView: NSView {
         badgeIconView.image = NSImage(systemSymbolName: "tray.full.fill", accessibilityDescription: nil)?.withSymbolConfiguration(iconConfig)
         badgeIconView.contentTintColor = accentNSColor
 
-        let attr = NSMutableAttributedString()
-        let posStr = NSAttributedString(
+        let attr = NSAttributedString(
             string: "Queued #\(position)",
             attributes: [
                 .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
                 .foregroundColor: accentNSColor
             ]
         )
-        let subStr = NSAttributedString(
-            string: " • sends after turn",
-            attributes: [
-                .font: NSFont.systemFont(ofSize: 11, weight: .regular),
-                .foregroundColor: fgNSColor.withAlphaComponent(0.65)
-            ]
-        )
-        attr.append(posStr)
-        attr.append(subStr)
         badgeLabel.attributedStringValue = attr
+        badgeContainer.toolTip = "Queued message • Sends after current turn completes"
 
         let btnDefaultBg = NSColor.clear
         let btnHoverBg = accentNSColor.withAlphaComponent(0.22)
@@ -178,13 +168,21 @@ public final class AgentQueuedHeaderView: NSView {
     public func applyLayout(width: CGFloat) {
         let headerHeight: CGFloat = 24
         let labelSize = badgeLabel.attributedStringValue.size()
-        let textWidth = ceil(labelSize.width) + 2
+        let textWidth = ceil(labelSize.width)
+        let textHeight = ceil(labelSize.height)
 
-        badgeIconView.frame = NSRect(x: 6, y: 5, width: 14, height: 14)
-        badgeLabel.frame = NSRect(x: 24, y: 3, width: textWidth, height: 18)
+        let iconSize: CGFloat = 14
+        let iconY = round((headerHeight - iconSize) / 2)
+        badgeIconView.frame = NSRect(x: 7, y: iconY, width: iconSize, height: iconSize)
 
-        let separatorX = 24 + textWidth + 6
-        separatorView.frame = NSRect(x: separatorX, y: 5, width: 1, height: 14)
+        let labelX: CGFloat = 25
+        let labelY: CGFloat = 4.5
+        badgeLabel.frame = NSRect(x: labelX, y: labelY, width: textWidth + 2, height: textHeight + 1)
+
+        let separatorX = labelX + textWidth + 5.5
+        let separatorHeight: CGFloat = 13
+        let separatorY = round((headerHeight - separatorHeight) / 2)
+        separatorView.frame = NSRect(x: separatorX, y: separatorY, width: 1, height: separatorHeight)
 
         let btnSize: CGFloat = 20
         let btnSpacing: CGFloat = 2
@@ -197,8 +195,9 @@ public final class AgentQueuedHeaderView: NSView {
         visibleButtons.append(deleteButton)
 
         let actionsWidth = CGFloat(visibleButtons.count) * btnSize + CGFloat(max(0, visibleButtons.count - 1)) * btnSpacing
-        let actionsStartX = separatorX + 6
-        actionsContainer.frame = NSRect(x: actionsStartX, y: 2, width: actionsWidth, height: btnSize)
+        let actionsStartX = separatorX + 1 + 5
+        let actionsY = round((headerHeight - btnSize) / 2)
+        actionsContainer.frame = NSRect(x: actionsStartX, y: actionsY, width: actionsWidth, height: btnSize)
 
         var currentBtnX: CGFloat = 0
         for btn in visibleButtons {
