@@ -152,6 +152,7 @@ public final class AgentMessageCell: NSView {
     }
     var streamingFadeChunks: [StreamingFadeChunk] = []
     var streamingFadeTimer: Timer?
+    var streamingBaseAttributedString: NSAttributedString?
     var thoughtFadeChunks: [StreamingFadeChunk] = []
     var thoughtFadeTimer: Timer?
     var previousStreamedLength: Int = 0
@@ -898,6 +899,7 @@ public final class AgentMessageCell: NSView {
         streamingFadeTimer?.invalidate()
         streamingFadeTimer = nil
         streamingFadeChunks.removeAll()
+        streamingBaseAttributedString = nil
         thoughtFadeTimer?.invalidate()
         thoughtFadeTimer = nil
         thoughtFadeChunks.removeAll()
@@ -1398,6 +1400,7 @@ public final class AgentMessageCell: NSView {
             addSubview(textView)
             markdownViews.append(textView)
             streamingRenderedContent = ""
+            streamingBaseAttributedString = nil
         }
 
         let sections = compileSections(from: content, splitRichText: false)
@@ -1468,6 +1471,9 @@ public final class AgentMessageCell: NSView {
         // Time-based left-to-right fade-in: each newly added token chunk fades in over 160ms
         // and automatically reaches 100% solid opacity even if streaming pauses or tool calls start!
         let newLength = mutable.length
+        if newLength < previousStreamedLength {
+            streamingFadeChunks.removeAll { $0.range.location >= newLength }
+        }
         if newLength > previousStreamedLength {
             let addedRange = NSRange(location: previousStreamedLength, length: newLength - previousStreamedLength)
             streamingFadeChunks.append(StreamingFadeChunk(range: addedRange, startTime: CACurrentMediaTime()))
@@ -1479,16 +1485,22 @@ public final class AgentMessageCell: NSView {
         }
         previousStreamedLength = newLength
 
-        let now = CACurrentMediaTime()
-        let duration: TimeInterval = 0.16
-        let baseColor = NSColor(cgColor: theme.foreground.cgColor) ?? .textColor
-        for chunk in streamingFadeChunks {
-            guard chunk.range.location + chunk.range.length <= mutable.length else { continue }
-            let progress = min(1.0, max(0.0, (now - chunk.startTime) / duration))
-            let alpha = 0.15 + (0.85 * progress)
-            mutable.addAttribute(.foregroundColor, value: baseColor.withAlphaComponent(alpha), range: chunk.range)
+        if streamingFadeChunks.isEmpty {
+            streamingBaseAttributedString = nil
+            textView.textStorage?.setAttributedString(mutable)
+        } else {
+            streamingBaseAttributedString = mutable
+            let faded = NSMutableAttributedString(attributedString: mutable)
+            let now = CACurrentMediaTime()
+            let duration: TimeInterval = 0.16
+            let baseColor = NSColor(cgColor: theme.foreground.cgColor) ?? .textColor
+            for chunk in streamingFadeChunks {
+                let progress = min(1.0, max(0.0, (now - chunk.startTime) / duration))
+                let alpha = 0.15 + (0.85 * progress)
+                applyStreamingForeground(alpha: alpha, in: chunk.range, from: mutable, to: faded, fallbackColor: baseColor)
+            }
+            textView.textStorage?.setAttributedString(faded)
         }
-        textView.textStorage?.setAttributedString(mutable)
         textView.needsDisplay = true
         streamingRenderedContent = content
     }
@@ -1500,11 +1512,13 @@ public final class AgentMessageCell: NSView {
             streamingFadeTimer?.invalidate()
             streamingFadeTimer = nil
             streamingFadeChunks.removeAll()
+            streamingBaseAttributedString = nil
             return
         }
 
         let now = CACurrentMediaTime()
         let duration: TimeInterval = 0.16
+        let expiredChunks = streamingFadeChunks.filter { now - $0.startTime >= duration }
         streamingFadeChunks.removeAll { now - $0.startTime >= duration }
 
         let baseColor = NSColor(cgColor: theme.foreground.cgColor) ?? .textColor
@@ -1512,16 +1526,39 @@ public final class AgentMessageCell: NSView {
         if streamingFadeChunks.isEmpty {
             streamingFadeTimer?.invalidate()
             streamingFadeTimer = nil
-            textStorage.addAttribute(.foregroundColor, value: baseColor, range: NSRange(location: 0, length: textStorage.length))
-        } else {
+            if let base = streamingBaseAttributedString {
+                let fullRange = NSRange(location: 0, length: min(base.length, textStorage.length))
+                applyStreamingForeground(alpha: 1.0, in: fullRange, from: base, to: textStorage, fallbackColor: baseColor)
+            }
+            streamingBaseAttributedString = nil
+        } else if let base = streamingBaseAttributedString {
+            for chunk in expiredChunks {
+                applyStreamingForeground(alpha: 1.0, in: chunk.range, from: base, to: textStorage, fallbackColor: baseColor)
+            }
             for chunk in streamingFadeChunks {
-                guard chunk.range.location + chunk.range.length <= textStorage.length else { continue }
                 let progress = min(1.0, max(0.0, (now - chunk.startTime) / duration))
                 let alpha = 0.15 + (0.85 * progress)
-                textStorage.addAttribute(.foregroundColor, value: baseColor.withAlphaComponent(alpha), range: chunk.range)
+                applyStreamingForeground(alpha: alpha, in: chunk.range, from: base, to: textStorage, fallbackColor: baseColor)
             }
         }
         textStorage.endEditing()
+    }
+
+    private func applyStreamingForeground(
+        alpha: CGFloat,
+        in range: NSRange,
+        from base: NSAttributedString,
+        to target: NSMutableAttributedString,
+        fallbackColor: NSColor
+    ) {
+        let clampedEnd = min(range.location + range.length, min(base.length, target.length))
+        guard range.location >= 0, clampedEnd > range.location else { return }
+        let safeRange = NSRange(location: range.location, length: clampedEnd - range.location)
+        base.enumerateAttribute(.foregroundColor, in: safeRange, options: []) { value, subrange, _ in
+            let origColor = (value as? NSColor) ?? fallbackColor
+            let finalColor = alpha >= 0.999 ? origColor : origColor.withAlphaComponent(origColor.alphaComponent * alpha)
+            target.addAttribute(.foregroundColor, value: finalColor, range: subrange)
+        }
     }
 
     func buildAssistantViews() {

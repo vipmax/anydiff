@@ -322,6 +322,161 @@ final class AgentSessionManagerTests: XCTestCase {
             XCTAssertTrue(visibleUserSubtree.isEmpty, "User message bubble must not stay at alpha 0 when scrolled into view")
         }
     }
+
+    func testStreamingLargeGrowthAndBottomInsetKeepAutoScrollPinned() {
+        let streamingID = UUID()
+        var messages: [AgentMessage] = (1...14).map { idx in
+            AgentMessage(
+                role: idx.isMultiple(of: 2) ? .assistant : .user,
+                content: "Message \(idx) line 1\nMessage \(idx) line 2"
+            )
+        }
+        messages.append(AgentMessage(id: streamingID, role: .assistant, content: "Starting...", isStreaming: true))
+
+        let scrollView = AgentChatScrollView(frame: NSRect(x: 0, y: 0, width: 420, height: 400))
+        scrollView.update(messages: messages, theme: .zedDark, animated: false)
+        scrollView.layoutSubtreeIfNeeded()
+
+        let initialDocHeight = scrollView.documentView?.bounds.height ?? 0
+        XCTAssertGreaterThan(initialDocHeight, 400)
+        XCTAssertEqual(scrollView.contentView.bounds.maxY, initialDocHeight, accuracy: 1.0)
+        XCTAssertTrue(scrollView.isNearBottom)
+
+        // Grow streaming message by >100pt (exceeding the 70pt near-bottom threshold) in one update.
+        let largeChunk = (1...14).map { "Streamed line \($0) with enough text to wrap cleanly" }.joined(separator: "\n")
+        messages[messages.count - 1].content = largeChunk
+        scrollView.update(messages: messages, theme: .zedDark, animated: false)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.06))
+
+        let afterChunkHeight = scrollView.documentView?.bounds.height ?? 0
+        XCTAssertGreaterThan(afterChunkHeight - initialDocHeight, 100)
+        XCTAssertEqual(
+            scrollView.contentView.bounds.maxY,
+            afterChunkHeight,
+            accuracy: 1.0,
+            "Auto-scroll must stay pinned to bottom even when one streaming update grows height by >70pt"
+        )
+        XCTAssertTrue(scrollView.isNearBottom)
+
+        // Spawning a tool call + increasing bottomInset should also keep bottom pinned.
+        messages[messages.count - 1].appendToolCall(
+            ToolCallItem(id: "tc-1", toolName: "read_file", path: "Sources/App.swift", status: .running)
+        )
+        scrollView.update(messages: messages, theme: .zedDark, animated: false, bottomInset: 80)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.06))
+
+        let afterToolHeight = scrollView.documentView?.bounds.height ?? 0
+        XCTAssertGreaterThan(afterToolHeight, afterChunkHeight)
+        XCTAssertEqual(
+            scrollView.contentView.bounds.maxY,
+            afterToolHeight,
+            accuracy: 1.0,
+            "Auto-scroll must stay pinned after tool call spawn and bottomInset change"
+        )
+
+        // If the user explicitly scrolls up, subsequent streaming updates must NOT yank them back down.
+        let scrolledUpY = max(0, afterToolHeight - 400 - 200)
+        scrollView.contentView.scroll(to: NSPoint(x: 0, y: scrolledUpY))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        XCTAssertFalse(scrollView.isNearBottom)
+
+        messages[messages.count - 1].content += "\nMore streamed lines\nEven more streamed lines"
+        scrollView.update(messages: messages, theme: .zedDark, animated: false)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.06))
+
+        XCTAssertEqual(scrollView.contentView.bounds.origin.y, scrolledUpY, accuracy: 1.0)
+        XCTAssertFalse(scrollView.isNearBottom)
+    }
+
+    func testConcurrentToolCallSpawnsWhileScrollingStaySmoothAndStable() {
+        let streamingID = UUID()
+        var messages: [AgentMessage] = (1...12).map { idx in
+            AgentMessage(
+                role: idx.isMultiple(of: 2) ? .assistant : .user,
+                content: "Turn \(idx) line 1\nTurn \(idx) line 2\nTurn \(idx) line 3"
+            )
+        }
+        messages.append(AgentMessage(id: streamingID, role: .assistant, content: "Inspecting...", isStreaming: true))
+        messages.append(AgentMessage(role: .user, content: "Queued follow-up", isQueued: true, queuePosition: 1, queueTotal: 1))
+
+        let scrollView = AgentChatScrollView(frame: NSRect(x: 0, y: 0, width: 460, height: 420))
+        scrollView.update(messages: messages, theme: .zedDark, animated: true)
+        scrollView.layoutSubtreeIfNeeded()
+
+        let activeIdx = messages.count - 2
+
+        // 1. Pinned at bottom: spawn tool calls + grouped tool calls + interleaved text
+        // while a queued message is present. Bottom must stay locked with no animated scroll-fights.
+        messages[activeIdx].appendToolCall(
+            ToolCallItem(id: "tc-1", toolName: "fs/read_text_file", path: "Sources/A.swift", status: .running)
+        )
+        scrollView.update(messages: messages, theme: .zedDark, animated: true)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.06))
+        XCTAssertEqual(
+            scrollView.contentView.bounds.maxY,
+            scrollView.documentView?.bounds.height ?? 0,
+            accuracy: 1.0,
+            "First tool call spawn must remain pinned at bottom"
+        )
+        XCTAssertTrue(scrollView.contentView.layer?.animationKeys()?.isEmpty ?? true, "Streaming updates must not start scroll animations")
+
+        // Second consecutive tool call triggers grouping into AgentToolGroupView
+        messages[activeIdx].appendToolCall(
+            ToolCallItem(id: "tc-2", toolName: "run_command", command: "git status", status: .running)
+        )
+        scrollView.update(messages: messages, theme: .zedDark, animated: true)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.06))
+        XCTAssertEqual(
+            scrollView.contentView.bounds.maxY,
+            scrollView.documentView?.bounds.height ?? 0,
+            accuracy: 1.0,
+            "Grouping consecutive tool calls must keep bottom pinned without losing auto-scroll"
+        )
+
+        // Interleaved text after tool calls + third tool call
+        messages[activeIdx].appendText("\nFound the issue, running tests now.\n")
+        messages[activeIdx].appendToolCall(
+            ToolCallItem(id: "tc-3", toolName: "run_command", command: "just test", output: "604 passed", status: .completed)
+        )
+        scrollView.update(messages: messages, theme: .zedDark, animated: true)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.06))
+        XCTAssertEqual(
+            scrollView.contentView.bounds.maxY,
+            scrollView.documentView?.bounds.height ?? 0,
+            accuracy: 1.0,
+            "Interleaved text and subsequent tool calls must keep bottom pinned"
+        )
+        XCTAssertTrue(scrollView.contentView.layer?.animationKeys()?.isEmpty ?? true)
+
+        // 2. Concurrent manual scrolling while tool calls continue spawning below:
+        // origin.y must track ONLY the user's manual scroll deltas with zero jumping or yanking.
+        let docHeight = scrollView.documentView?.bounds.height ?? 0
+        var manualY = max(0, docHeight - 420 - 200)
+        scrollView.contentView.scroll(to: NSPoint(x: 0, y: manualY))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        XCTAssertFalse(scrollView.isNearBottom)
+
+        for step in 4...5 {
+            manualY = max(0, manualY - 35)
+            scrollView.contentView.scroll(to: NSPoint(x: 0, y: manualY))
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+
+            messages[activeIdx].appendToolCall(
+                ToolCallItem(id: "tc-\(step)", toolName: "fs/read_text_file", path: "Sources/File\(step).swift", status: .running)
+            )
+            messages[activeIdx].appendText("\nStep \(step) streamed output.")
+            scrollView.update(messages: messages, theme: .zedDark, animated: true)
+            RunLoop.main.run(until: Date().addingTimeInterval(0.06))
+
+            XCTAssertEqual(
+                scrollView.contentView.bounds.origin.y,
+                manualY,
+                accuracy: 0.5,
+                "Manual scroll position must not jump when tool calls spawn during scroll (step \(step))"
+            )
+            XCTAssertTrue(scrollView.contentView.layer?.animationKeys()?.isEmpty ?? true)
+        }
+    }
     #endif
 
     func testStreamingMessageUsesOneIncrementalTextViewUntilCompletion() {

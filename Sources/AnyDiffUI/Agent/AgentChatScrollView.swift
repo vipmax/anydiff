@@ -272,6 +272,7 @@ public final class AgentChatScrollView: NSScrollView {
     private var resizeLayoutWorkItem: DispatchWorkItem?
     private var pendingResizeWidth: CGFloat?
     private var isResizing = false
+    fileprivate var isUpdatingLayout = false
     fileprivate var followsBottom = true
     public var onNearBottomChanged: ((Bool) -> Void)?
     public var onReview: ((AgentEditedFilesSummary) -> Void)? {
@@ -432,7 +433,7 @@ public final class AgentChatScrollView: NSScrollView {
         let visibleCount = messages.filter { $0.hasVisibleContent }.count
         let isCountChanged = visibleCount != documentViewCustom.currentMessageCount
 
-        if messages.last?.isStreaming == true && !isCountChanged {
+        if messages.last(where: { !$0.isQueued })?.isStreaming == true && !isCountChanged {
             guard streamingUpdateWorkItem == nil else { return }
             let workItem = DispatchWorkItem { [weak self] in
                 guard let self else { return }
@@ -477,7 +478,7 @@ public final class AgentChatScrollView: NSScrollView {
         )
 
         if shouldScrollToBottom {
-            let isStreaming = messages.last?.isStreaming == true
+            let isStreaming = messages.last(where: { !$0.isQueued })?.isStreaming == true
             self.scrollToBottom(animated: !isStreaming)
             self.notifyNearBottomChanged()
         }
@@ -583,7 +584,11 @@ public final class AgentChatScrollView: NSScrollView {
         super.reflectScrolledClipView(cView)
         documentViewCustom.updateVisibleCells(in: cView)
         documentViewCustom.updateStickyAvatars(clipTop: cView.bounds.minY)
-        guard !isResizing else { return }
+        guard !isResizing && !isUpdatingLayout else { return }
+        notifyNearBottomChanged()
+    }
+
+    fileprivate func refreshNearBottomState() {
         notifyNearBottomChanged()
     }
 
@@ -679,7 +684,7 @@ public final class AgentChatDocumentView: NSView {
             if inputHostingView != nil {
                 inputHostingView?.removeFromSuperview()
                 inputHostingView = nil
-                layoutContent(for: max(100, lastLayoutWidth))
+                relayoutAndPreserveBottomPin()
             }
             return
         }
@@ -690,7 +695,7 @@ public final class AgentChatDocumentView: NSView {
         if let existing = inputHostingView {
             existing.rootView = view
             if heightChanged {
-                layoutContent(for: max(100, lastLayoutWidth))
+                relayoutAndPreserveBottomPin()
             }
         } else {
             let hosting = AgentChatInputHostingView(rootView: view)
@@ -701,7 +706,7 @@ public final class AgentChatDocumentView: NSView {
             hosting.layer?.masksToBounds = false
             hosting.layerContentsRedrawPolicy = .onSetNeedsDisplay
             inputHostingView = hosting
-            layoutContent(for: max(100, lastLayoutWidth))
+            relayoutAndPreserveBottomPin()
         }
     }
 
@@ -742,7 +747,7 @@ public final class AgentChatDocumentView: NSView {
         for entry in orderedCells {
             entry.cell.refreshAvatars()
         }
-        layoutContent(for: max(100, lastLayoutWidth))
+        relayoutAndPreserveBottomPin()
     }
 
     @discardableResult
@@ -789,7 +794,20 @@ public final class AgentChatDocumentView: NSView {
         guard abs(newInset - bottomInset) >= 1.0 else { return }
 
         bottomInset = newInset
-        layoutContent(for: max(100, lastLayoutWidth))
+        relayoutAndPreserveBottomPin()
+    }
+
+    private func relayoutAndPreserveBottomPin() {
+        let scrollView = enclosingScrollView as? AgentChatScrollView
+        let clipWidth = scrollView?.contentView.bounds.width ?? 0
+        let width = max(100, clipWidth > 50 ? clipWidth : lastLayoutWidth)
+        layoutContent(for: width)
+        if let scrollView {
+            if scrollView.followsBottom {
+                scrollView.scrollToBottom(animated: false)
+            }
+            scrollView.refreshNearBottomState()
+        }
     }
 
     fileprivate func updateMessages(
@@ -850,9 +868,8 @@ public final class AgentChatDocumentView: NSView {
                 cell.onEditQueuedMessage = onEditQueuedMessage
                 cell.onUpdateQueuedMessage = onUpdateQueuedMessage
                 cell.onMoveQueuedMessage = onMoveQueuedMessage
-                cell.onRequestLayout = { [weak self, weak scrollView] in
-                    guard let self, let scrollView else { return }
-                    self.layoutContent(for: max(100, scrollView.contentView.bounds.width))
+                cell.onRequestLayout = { [weak self] in
+                    self?.relayoutAndPreserveBottomPin()
                 }
                 if themeChanged || accentChanged || iconChanged || agentIdChanged || displayModeChanged || messagesByID[message.id] != message {
                     cell.configure(
@@ -886,9 +903,8 @@ public final class AgentChatDocumentView: NSView {
                 cell.onEditQueuedMessage = onEditQueuedMessage
                 cell.onUpdateQueuedMessage = onUpdateQueuedMessage
                 cell.onMoveQueuedMessage = onMoveQueuedMessage
-                cell.onRequestLayout = { [weak self, weak scrollView] in
-                    guard let self, let scrollView else { return }
-                    self.layoutContent(for: max(100, scrollView.contentView.bounds.width))
+                cell.onRequestLayout = { [weak self] in
+                    self?.relayoutAndPreserveBottomPin()
                 }
                 cell.onToggleThought = { [weak self] in
                     guard let self else { return }
@@ -917,8 +933,10 @@ public final class AgentChatDocumentView: NSView {
         let effectiveWidth = scrollView.contentView.bounds.width > 50 ? scrollView.contentView.bounds.width : 400
         layoutContent(for: max(100, effectiveWidth))
         if scrollView.followsBottom || oldIds.isEmpty {
-            scrollView.scrollToBottom(animated: animated && newMessages.last?.isStreaming != true)
+            let isStreamingTurn = newMessages.last(where: { !$0.isQueued })?.isStreaming == true
+            scrollView.scrollToBottom(animated: animated && !isStreamingTurn)
         }
+        scrollView.refreshNearBottomState()
         updateVisibleCells(in: scrollView.contentView, force: true)
         for item in orderedCells {
             item.cell.animatePendingAppearances(animated: animated && item.cell.superview != nil && !item.cell.isHidden)
@@ -966,7 +984,11 @@ public final class AgentChatDocumentView: NSView {
         let minHeight = enclosingScrollView?.contentView.bounds.height ?? 0
         let contentHeight = currentY + 6 + bottomInset
         let documentHeight = max(minHeight, contentHeight)
+        let scrollView = enclosingScrollView as? AgentChatScrollView
+        let wasUpdating = scrollView?.isUpdatingLayout ?? false
+        scrollView?.isUpdatingLayout = true
         setFrameSize(NSSize(width: contentWidth, height: documentHeight))
+        scrollView?.isUpdatingLayout = wasUpdating
         updateVisibleCells(in: enclosingScrollView?.contentView, force: true)
     }
 
