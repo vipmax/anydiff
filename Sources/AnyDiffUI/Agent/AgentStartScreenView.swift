@@ -189,6 +189,9 @@ public struct AgentStartScreenView: View {
                                     onAddProfile: {
                                         promptForProfileDuplication(preset: group.basePreset)
                                     },
+                                    onRenameProfile: { p in
+                                        promptForProfileRename(p)
+                                    },
                                     onDeleteProfile: { p in
                                         confirmDeleteProfile(p)
                                     },
@@ -664,6 +667,40 @@ public struct AgentStartScreenView: View {
         }
     }
 
+    private func promptForProfileRename(_ preset: AgentPreset) {
+        guard let currentProfile = preset.profile, !currentProfile.isEmpty else { return }
+        let alert = NSAlert()
+        alert.messageText = "Rename Account Profile"
+        alert.informativeText = "Enter a new profile name for '\(currentProfile)'."
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        input.stringValue = currentProfile
+        input.placeholderString = "Work"
+        alert.accessoryView = input
+        alert.window.initialFirstResponder = input
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            let newName = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !newName.isEmpty, newName != currentProfile else { return }
+            withAnimation(.easeInOut(duration: 0.15)) {
+                if let updated = coordinator.renameProfile(preset, to: newName) {
+                    if updated.id != preset.id {
+                        AgentAvatarProvider.migrateAgentAvatar(from: preset.id, to: updated.id)
+                    }
+                } else {
+                    let errorAlert = NSAlert()
+                    errorAlert.messageText = "Cannot Rename Profile"
+                    errorAlert.informativeText = "A profile named '\(newName)' already exists for '\(preset.name)'."
+                    errorAlert.alertStyle = .warning
+                    errorAlert.addButton(withTitle: "OK")
+                    errorAlert.runModal()
+                }
+            }
+        }
+    }
+
     private func confirmDeleteProfile(_ preset: AgentPreset) {
         guard let profileName = preset.profile, !profileName.isEmpty else { return }
         let alert = NSAlert()
@@ -812,6 +849,7 @@ private struct AgentCardButton: View {
     let onToggleNewWorktree: () -> Void
     let onSelectProfile: (AgentPreset) -> Void
     let onAddProfile: () -> Void
+    let onRenameProfile: (AgentPreset) -> Void
     let onDeleteProfile: (AgentPreset) -> Void
     let onOpenSessions: () -> Void
     var onDeleteAgent: (() -> Void)? = nil
@@ -854,6 +892,7 @@ private struct AgentCardButton: View {
                 AgentIconView(
                     icon: group.basePreset.iconName,
                     agentId: group.selectedPreset.id,
+                    fallbackBaseId: group.basePreset.id,
                     tintColor: presetColor,
                     size: customAvatar == nil ? 26 : 44
                 )
@@ -1252,6 +1291,19 @@ private struct AgentCardButton: View {
 
         if let customProfile = preset.profile, !customProfile.isEmpty {
             menu.addItem(.separator())
+            let renameTarget = ProfileMenuActionTarget {
+                onRenameProfile(preset)
+            }
+            targets.append(renameTarget)
+            let renameItem = NSMenuItem(
+                title: "Rename Profile…",
+                action: #selector(ProfileMenuActionTarget.invoke(_:)),
+                keyEquivalent: ""
+            )
+            renameItem.target = renameTarget
+            renameItem.image = NSImage(systemSymbolName: "pencil", accessibilityDescription: nil)
+            menu.addItem(renameItem)
+
             let deleteTarget = ProfileMenuActionTarget {
                 onDeleteProfile(preset)
             }

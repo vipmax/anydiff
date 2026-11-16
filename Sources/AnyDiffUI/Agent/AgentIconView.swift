@@ -60,6 +60,7 @@ public final class AgentIconLoader: ObservableObject {
 public struct AgentIconView: View {
     public let icon: String
     public var agentId: String? = nil
+    public var fallbackBaseId: String? = nil
     public var tintColor: Color = .primary
     public var size: CGFloat = 20
 
@@ -67,9 +68,10 @@ public struct AgentIconView: View {
     @State private var customAvatar: NSImage? = nil
     @State private var isShowingEditor: Bool = false
 
-    public init(icon: String, agentId: String? = nil, tintColor: Color = .primary, size: CGFloat = 20) {
+    public init(icon: String, agentId: String? = nil, fallbackBaseId: String? = nil, tintColor: Color = .primary, size: CGFloat = 20) {
         self.icon = icon
         self.agentId = agentId
+        self.fallbackBaseId = fallbackBaseId
         self.tintColor = tintColor
         self.size = size
     }
@@ -101,6 +103,7 @@ public struct AgentIconView: View {
         }
         .onChange(of: icon) { _ in fetchIcon() }
         .onChange(of: agentId) { _ in refreshAvatar() }
+        .onChange(of: fallbackBaseId) { _ in refreshAvatar() }
         .onReceive(NotificationCenter.default.publisher(for: AgentAvatarProvider.avatarDidChangeNotification)) { _ in
             refreshAvatar()
         }
@@ -131,7 +134,7 @@ public struct AgentIconView: View {
     }
 
     private func refreshAvatar() {
-        customAvatar = AgentAvatarProvider.customAgentAvatarImage(for: agentId)
+        customAvatar = AgentAvatarProvider.customAgentAvatarImage(for: agentId, fallbackBaseId: fallbackBaseId)
     }
 
     private var fallbackSymbol: String {

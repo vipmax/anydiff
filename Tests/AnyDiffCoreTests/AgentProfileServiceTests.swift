@@ -201,4 +201,60 @@ final class AgentProfileServiceTests: XCTestCase {
         XCTAssertFalse(reloaded.customPresets.contains(where: { $0.id == custom.id }))
         XCTAssertEqual(reloaded.customPresets.filter { $0.effectiveBaseId == custom.id }.count, 0)
     }
+
+    func testRenameProfileMigratesDirectorySelectionAndRejectsCollisions() throws {
+        let suiteName = "AgentRenameTests_\(UUID().uuidString)"
+        let testDefaults = UserDefaults(suiteName: suiteName)!
+        defer { testDefaults.removePersistentDomain(forName: suiteName) }
+
+        let tempProfilesDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("anydiff_profiles_test_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempProfilesDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempProfilesDir) }
+
+        let coordinator = AgentSessionCoordinator(userDefaults: testDefaults)
+        let original = coordinator.duplicatePreset(.agy, profileName: "ivapofaf021@gmail.com ivapofaf021@gmail.com")
+        _ = coordinator.duplicatePreset(.agy, profileName: "Work")
+        coordinator.selectProfile(preset: original, forBaseId: "agy")
+
+        // Create fake profile storage & saved agent config for the original profile
+        let oldDir = tempProfilesDir.appendingPathComponent(original.id, isDirectory: true)
+        try FileManager.default.createDirectory(at: oldDir, withIntermediateDirectories: true)
+        let markerFile = oldDir.appendingPathComponent("creds.json")
+        try Data("{\"ok\":true}".utf8).write(to: markerFile)
+        testDefaults.set(["model": "gemini-pro"], forKey: "anydiff_agent_config_\(original.id.lowercased())")
+
+        // Reject collision with existing "Work" profile (case-insensitive slug match)
+        XCTAssertNil(coordinator.renameProfile(original, to: "work", profilesDirectory: tempProfilesDir))
+
+        // Rename to "ivapofaf021"
+        let renamed = coordinator.renameProfile(original, to: "ivapofaf021", profilesDirectory: tempProfilesDir)
+        XCTAssertNotNil(renamed)
+        XCTAssertEqual(renamed?.id, "agy-ivapofaf021")
+        XCTAssertEqual(renamed?.profile, "ivapofaf021")
+        XCTAssertEqual(renamed?.environment?["GEMINI_HOME"], "~/.anydiff/profiles/agy-ivapofaf021")
+
+        // Directory should be moved to new ID without losing files
+        let newDir = tempProfilesDir.appendingPathComponent("agy-ivapofaf021", isDirectory: true)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: oldDir.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: newDir.appendingPathComponent("creds.json").path))
+
+        // Selection and saved config migrated
+        XCTAssertEqual(coordinator.selectedPresetId, "agy-ivapofaf021")
+        XCTAssertEqual(testDefaults.string(forKey: "anydiff_selected_profile_agy"), "agy-ivapofaf021")
+        XCTAssertNil(testDefaults.dictionary(forKey: "anydiff_agent_config_\(original.id.lowercased())"))
+        XCTAssertEqual(
+            testDefaults.dictionary(forKey: "anydiff_agent_config_agy-ivapofaf021")?["model"] as? String,
+            "gemini-pro"
+        )
+
+        // Verify persistence and same-slug case rename
+        let reloaded = AgentSessionCoordinator(userDefaults: testDefaults)
+        let loadedProfile = reloaded.agentGroups.first(where: { $0.id == "agy" })?.selectedPreset
+        XCTAssertEqual(loadedProfile?.profile, "ivapofaf021")
+
+        let upperRenamed = reloaded.renameProfile(loadedProfile!, to: "Ivapofaf021", profilesDirectory: tempProfilesDir)
+        XCTAssertEqual(upperRenamed?.id, "agy-ivapofaf021")
+        XCTAssertEqual(upperRenamed?.profile, "Ivapofaf021")
+    }
 }

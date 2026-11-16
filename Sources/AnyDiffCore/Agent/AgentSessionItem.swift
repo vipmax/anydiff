@@ -7,7 +7,7 @@ public final class AgentSessionItem: Identifiable, ObservableObject, @unchecked 
     public let createdAt: Date
     public let manager: AgentSessionManager
     public let isMock: Bool
-    public let preset: AgentPreset
+    @Published public internal(set) var preset: AgentPreset
     @Published public var hasUnreadUpdates: Bool = false
     public var isCurrentlyActive: Bool = false {
         didSet {

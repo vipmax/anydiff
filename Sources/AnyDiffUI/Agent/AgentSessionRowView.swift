@@ -120,6 +120,9 @@ public struct AgentSessionRowView: View {
         .onAppear {
             refreshAvatar()
         }
+        .onChange(of: session.preset.id) { _ in
+            refreshAvatar()
+        }
         .onReceive(NotificationCenter.default.publisher(for: AgentAvatarProvider.avatarDidChangeNotification)) { _ in
             refreshAvatar()
         }
@@ -384,7 +387,10 @@ public struct AgentSessionRowView: View {
     // MARK: - Avatar & Status Badge
 
     private func refreshAvatar() {
-        customAvatar = AgentAvatarProvider.customAgentAvatarImage(for: session.preset.id)
+        customAvatar = AgentAvatarProvider.customAgentAvatarImage(
+            for: session.preset.id,
+            fallbackBaseId: session.preset.effectiveBaseId
+        )
         avatarSize = AgentAvatarProvider.currentAgentAvatarSize(for: session.preset.id)
         showAgentCircle = AgentAvatarProvider.shouldShowAgentCircle(for: session.preset.id)
     }

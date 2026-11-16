@@ -305,7 +305,7 @@ public enum AgentAvatarProvider {
     }
 
     /// Returns the custom agent avatar image if configured for the given agent/profile, or nil if standard icon should be used.
-    public static func customAgentAvatarImage(for agentId: String? = nil) -> NSImage? {
+    public static func customAgentAvatarImage(for agentId: String? = nil, fallbackBaseId: String? = nil) -> NSImage? {
         guard let id = agentId?.trimmingCharacters(in: .whitespacesAndNewlines), !id.isEmpty else {
             return nil
         }
@@ -326,12 +326,14 @@ public enum AgentAvatarProvider {
         }
 
         // 2. Base ID match and sibling profile match (e.g. "antigravity-acp-max93petrov" -> "antigravity-acp" -> "antigravity-acp-djvipmax")
+        let rootId = AgentProfileService.rootAgentId(for: id)
         let basePrefix: String
-        if let dashIdx = id.lastIndex(of: "-") {
-            basePrefix = String(id[..<dashIdx])
+        if let fallback = fallbackBaseId?.trimmingCharacters(in: .whitespacesAndNewlines), !fallback.isEmpty {
+            basePrefix = fallback
         } else {
-            basePrefix = id
+            basePrefix = rootId
         }
+        let isKnownTemplate = AgentProfileService.knownProfileTemplates[rootId] != nil
 
         // Check if the base ID itself has a config
         if basePrefix != id, let baseConfig = settings.agentConfigs[basePrefix], baseConfig.useCustom {
@@ -339,10 +341,21 @@ public enum AgentAvatarProvider {
                 return img
             }
         }
+        if rootId != id, rootId != basePrefix, let rootConfig = settings.agentConfigs[rootId], rootConfig.useCustom {
+            if let img = customAgentAvatarImage(for: rootId) {
+                return img
+            }
+        }
 
         // Check sibling profiles sharing the same base prefix
         for (cfgId, cfg) in settings.agentConfigs where cfg.useCustom && cfgId != id {
-            if cfgId.hasPrefix(basePrefix + "-") || cfgId == basePrefix {
+            let cfgRoot = AgentProfileService.rootAgentId(for: cfgId)
+            let matchesBase = cfgId == basePrefix
+                || cfgId.hasPrefix(basePrefix + "-")
+                || cfgRoot == basePrefix
+                || cfgRoot == rootId
+                || (!isKnownTemplate && id.hasPrefix(cfgId + "-"))
+            if matchesBase {
                 if let img = customAgentAvatarImage(for: cfgId) {
                     return img
                 }
@@ -415,6 +428,42 @@ public enum AgentAvatarProvider {
 
         invalidateCache()
         NotificationCenter.default.post(name: avatarDidChangeNotification, object: nil)
+    }
+
+    public static func migrateAgentAvatar(from oldAgentId: String, to newAgentId: String) {
+        let oldId = oldAgentId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let newId = newAgentId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !oldId.isEmpty, !newId.isEmpty, oldId != newId else { return }
+
+        let fm = FileManager.default
+        let oldOrig = agentOriginalImageURL(for: oldId)
+        let newOrig = agentOriginalImageURL(for: newId)
+        if fm.fileExists(atPath: oldOrig.path) {
+            if fm.fileExists(atPath: newOrig.path) {
+                try? fm.removeItem(at: newOrig)
+            }
+            try? fm.moveItem(at: oldOrig, to: newOrig)
+        }
+
+        let oldRend = agentRenderedAvatarURL(for: oldId)
+        let newRend = agentRenderedAvatarURL(for: newId)
+        if fm.fileExists(atPath: oldRend.path) {
+            if fm.fileExists(atPath: newRend.path) {
+                try? fm.removeItem(at: newRend)
+            }
+            try? fm.moveItem(at: oldRend, to: newRend)
+        }
+
+        var settings = loadSettings()
+        if let oldConfig = settings.agentConfigs.removeValue(forKey: oldId) {
+            settings.agentConfigs[newId] = oldConfig
+            saveSettings(settings)
+        }
+
+        invalidateCache()
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: avatarDidChangeNotification, object: nil)
+        }
     }
 
     // MARK: - Discovered Agent Profiles

@@ -481,6 +481,134 @@ public final class AgentSessionCoordinator: ObservableObject, @unchecked Sendabl
         objectWillChange.send()
     }
 
+    @discardableResult
+    public func renameProfile(
+        _ preset: AgentPreset,
+        to newProfileName: String,
+        profilesDirectory: URL = AgentProfileService.baseProfilesDirectory
+    ) -> AgentPreset? {
+        let trimmed = newProfileName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let oldProfile = preset.profile,
+              !oldProfile.isEmpty,
+              let index = customPresets.firstIndex(where: { $0.id == preset.id }) else {
+            return nil
+        }
+
+        if trimmed == oldProfile {
+            return customPresets[index]
+        }
+
+        var updated = customPresets[index]
+        let oldId = updated.id
+        let baseId = updated.effectiveBaseId
+        let newSlug = AgentProfileService.sanitizeSlug(trimmed)
+        let candidateId = "\(baseId)-\(newSlug)"
+
+        // Reject duplicates within the same agent group
+        let hasCollision = customPresets.enumerated().contains { idx, existing in
+            guard idx != index, existing.effectiveBaseId == baseId else { return false }
+            if let existingProfile = existing.profile, existingProfile == trimmed {
+                return true
+            }
+            return candidateId != oldId && existing.id == candidateId
+        }
+        if hasCollision {
+            return nil
+        }
+
+        updated.profile = trimmed
+
+        if candidateId != oldId {
+            let oldDir = profilesDirectory.appendingPathComponent(oldId, isDirectory: true)
+            let newDir = profilesDirectory.appendingPathComponent(candidateId, isDirectory: true)
+            let fm = FileManager.default
+            let oldDirExists = fm.fileExists(atPath: oldDir.path)
+            let newDirExists = fm.fileExists(atPath: newDir.path)
+            let inActiveUse = isAgentInActiveUse(id: oldId)
+
+            var didMigrateId = false
+            if !inActiveUse {
+                if !oldDirExists {
+                    didMigrateId = true
+                } else if !newDirExists {
+                    do {
+                        try fm.moveItem(at: oldDir, to: newDir)
+                        didMigrateId = true
+                    } catch {
+                        didMigrateId = false
+                    }
+                }
+            }
+
+            if didMigrateId {
+                var migratedEnv = updated.environment
+                if var env = migratedEnv {
+                    let oldSuffix = "/\(oldId)"
+                    let newSuffix = "/\(candidateId)"
+                    let oldMid = "/\(oldId)/"
+                    let newMid = "/\(candidateId)/"
+                    for (key, value) in env {
+                        if value == oldId {
+                            env[key] = candidateId
+                        } else if value.hasSuffix(oldSuffix) {
+                            env[key] = String(value.dropLast(oldSuffix.count)) + newSuffix
+                        } else if value.contains(oldMid) {
+                            env[key] = value.replacingOccurrences(of: oldMid, with: newMid)
+                        }
+                    }
+                    migratedEnv = env
+                }
+                updated = AgentPreset(
+                    id: candidateId,
+                    name: updated.name,
+                    version: updated.version,
+                    command: updated.command,
+                    arguments: updated.arguments,
+                    iconName: updated.iconName,
+                    colorName: updated.colorName,
+                    providerName: updated.providerName,
+                    summary: updated.summary,
+                    isMock: updated.isMock,
+                    isCustom: updated.isCustom,
+                    profile: trimmed,
+                    environment: migratedEnv
+                )
+
+                let oldConfigKey = "anydiff_agent_config_\(oldId.lowercased())"
+                let newConfigKey = "anydiff_agent_config_\(candidateId.lowercased())"
+                if oldConfigKey != newConfigKey,
+                   let savedConfig = userDefaults.dictionary(forKey: oldConfigKey) {
+                    if userDefaults.dictionary(forKey: newConfigKey) == nil {
+                        userDefaults.set(savedConfig, forKey: newConfigKey)
+                    }
+                    userDefaults.removeObject(forKey: oldConfigKey)
+                }
+
+                if userDefaults.string(forKey: "anydiff_selected_profile_\(baseId)") == oldId {
+                    userDefaults.set(candidateId, forKey: "anydiff_selected_profile_\(baseId)")
+                }
+                if selectedPresetId == oldId {
+                    selectedPresetId = candidateId
+                }
+            }
+        }
+
+        customPresets[index] = updated
+
+        for session in sessions where session.preset.id == oldId {
+            session.preset = updated
+            if let acp = session.manager as? ACPAgentSessionManager {
+                acp.preset = updated
+            }
+            session.manager.presetId = updated.id
+        }
+
+        saveCustomPresets()
+        objectWillChange.send()
+        return updated
+    }
+
     private var cancellables = Set<AnyCancellable>()
 
     public init(
