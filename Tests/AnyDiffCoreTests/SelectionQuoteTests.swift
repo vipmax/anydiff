@@ -227,6 +227,44 @@ final class SelectionQuoteTests: XCTestCase {
         XCTAssertEqual(quoteOnly.map(\.asPromptBlock), [.quote(quote), .text("")])
     }
 
+    func testAgentInputMakeInputBlocksRestoresInlineImagePositions() {
+        let image = AgentImageAttachment(
+            data: Data([0x01, 0x02]),
+            mimeType: "image/png",
+            filename: "capture.png"
+        )
+        let textBeforeImage = "before\u{FFFC}after"
+        let restored = AgentInputView.makeInputBlocks(
+            from: [.text(textBeforeImage), .text("second block")],
+            fallbackText: "",
+            images: [image]
+        )
+
+        XCTAssertEqual(restored.map(\.asPromptBlock), [.text(textBeforeImage), .text("second block")])
+        XCTAssertEqual(
+            AgentImageAttachment.removingInlineTextMarkers(from: textBeforeImage),
+            "beforeafter"
+        )
+        guard case .text(let first) = restored[0] else {
+            XCTFail("Expected the first block to contain text and an inline image")
+            return
+        }
+        XCTAssertEqual(first.inlineImages.map(\.id), [image.id])
+
+        // Drafts created before inline composition stored images separately. Restore those at the end.
+        let legacyDraft = AgentInputView.makeInputBlocks(
+            from: [.text("legacy draft")],
+            fallbackText: "",
+            images: [image]
+        )
+        guard case .text(let legacyText) = legacyDraft[0] else {
+            XCTFail("Expected the legacy draft to be editable")
+            return
+        }
+        XCTAssertEqual(legacyText.text, "legacy draft\n\u{FFFC}\n")
+        XCTAssertEqual(legacyText.inlineImages.map(\.id), [image.id])
+    }
+
     func testDraftBlocksPreservedAcrossStartScreenAndClearedOnReset() {
         let coordinator = AgentSessionCoordinator(isMockAgent: false, autoCreateSession: true)
         guard let session = coordinator.activeSession else {
@@ -272,5 +310,94 @@ final class SelectionQuoteTests: XCTestCase {
         XCTAssertTrue(session.draftBlocks.isEmpty)
         XCTAssertEqual(session.draftPrompt, "")
         XCTAssertFalse(session.manager.hasDraftContent)
+    }
+
+    @MainActor
+    func testInlineImageInsertionPointIsTallOnlyImmediatelyAfterImage() {
+        let sampleImage = NSImage(size: NSSize(width: 240, height: 120))
+        sampleImage.lockFocus()
+        NSColor.systemBlue.setFill()
+        NSBezierPath.fill(NSRect(x: 0, y: 0, width: 240, height: 120))
+        sampleImage.unlockFocus()
+
+        let tv = AgentInputCustomTextView(frame: NSRect(x: 0, y: 0, width: 500, height: 200))
+        tv.isRichText = true
+        tv.isEditable = true
+        tv.font = NSFont.systemFont(ofSize: 13, weight: .regular)
+        let pStyle = NSMutableParagraphStyle()
+        pStyle.lineSpacing = 3
+        tv.customParagraphStyle = pStyle
+
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.writeObjects([sampleImage])
+        tv.paste(nil)
+        XCTAssertEqual(tv.string, "\(AgentImageAttachment.inlineTextMarker)\n")
+
+        // Typing right before the image ("|[image]\n") must insert a newline before the image
+        // and keep the caret after the typed character ("к|\n[image]\n")
+        tv.selectedRange = NSRange(location: 0, length: 0)
+        tv.insertText("к", replacementRange: tv.selectedRange())
+        XCTAssertEqual(tv.string, "к\n\(AgentImageAttachment.inlineTextMarker)\n")
+        XCTAssertEqual(tv.selectedRange(), NSRange(location: 1, length: 0))
+
+        tv.insertText("у", replacementRange: tv.selectedRange())
+        XCTAssertEqual(tv.string, "ку\n\(AgentImageAttachment.inlineTextMarker)\n")
+        XCTAssertEqual(tv.selectedRange(), NSRange(location: 2, length: 0))
+
+        // Typing right after the image ("ку\n[image]|\n") must place text on the next line
+        tv.selectedRange = NSRange(location: 4, length: 0)
+        tv.insertText("куку", replacementRange: tv.selectedRange())
+        XCTAssertEqual(tv.string, "ку\n\(AgentImageAttachment.inlineTextMarker)\nкуку")
+
+        tv.layoutManager?.ensureLayout(for: tv.textContainer!)
+
+        let rawTallRect = NSRect(x: 20, y: 0, width: 2, height: 124)
+
+        // 1. Caret right before image ("ку\n|[image]\nкуку"): cursor should be normal text line height (~16pt), NOT 124pt
+        tv.selectedRange = NSRange(location: 3, length: 0)
+        let beforeImageRect = tv.adjustedInsertionPointRect(rawTallRect)
+        XCTAssertLessThanOrEqual(beforeImageRect.height, 20, "Caret before inline image must have normal text height")
+        XCTAssertGreaterThan(beforeImageRect.minY, 80, "Caret before inline image must sit on the text baseline near the bottom of the line")
+
+        // 2. Caret at start of text line ("|ку\n[image]\nкуку"): cursor is normal text line height
+        tv.selectedRange = NSRange(location: 0, length: 0)
+        let startOfLineRect = tv.adjustedInsertionPointRect(rawTallRect)
+        XCTAssertLessThanOrEqual(startOfLineRect.height, 20)
+
+        // 3. Caret right after image ("ку\n[image]|\nкуку"): cursor stays full image height
+        tv.selectedRange = NSRange(location: 4, length: 0)
+        let afterImageRect = tv.adjustedInsertionPointRect(rawTallRect)
+        XCTAssertEqual(afterImageRect.height, rawTallRect.height, "Caret immediately after inline image keeps full image height")
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 500, height: 300),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = tv
+        window.makeFirstResponder(tv)
+        tv.selectedRange = NSRange(location: 3, length: 0)
+        tv.layoutSubtreeIfNeeded()
+        tv.displayIfNeeded()
+        for subview in tv.subviews where String(describing: type(of: subview)).contains("InsertionIndicator") {
+            XCTAssertLessThanOrEqual(subview.frame.height, 20, "System insertion indicator before image must be shrunk to text height")
+        }
+        tv.selectedRange = NSRange(location: 4, length: 0)
+        tv.layoutSubtreeIfNeeded()
+        tv.displayIfNeeded()
+        for subview in tv.subviews where String(describing: type(of: subview)).contains("InsertionIndicator") {
+            XCTAssertGreaterThan(subview.frame.height, 80, "System insertion indicator immediately after image must be full image height")
+        }
+
+        // 4. Copying the inline image and pasting while the image is selected appends a second image instead of replacing the first
+        tv.selectedRange = NSRange(location: 3, length: 1)
+        tv.copy(nil)
+        let pasteMenuItem = NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        XCTAssertTrue(tv.validateUserInterfaceItem(pasteMenuItem), "Edit -> Paste menu item must be enabled when PNG image is on pasteboard")
+        tv.paste(nil)
+        let markerCount = tv.string.components(separatedBy: AgentImageAttachment.inlineTextMarker).count - 1
+        XCTAssertEqual(markerCount, 2, "Pasting a copied inline image must append a second image even if the first image was selected")
     }
 }

@@ -39,14 +39,14 @@ public final class AgentImageStore: @unchecked Sendable {
         let ext = fileExtension(for: mimeType)
         let fileURL = cacheDirectory.appendingPathComponent("\(id.uuidString).\(ext)")
 
-        try? data.write(to: fileURL, options: .atomic)
+        let wroteToDisk = (try? data.write(to: fileURL, options: .atomic)) != nil
 
         enforceCacheLimitAsync()
 
         return AgentImageAttachment(
             id: id,
-            data: data,
-            filePath: fileURL.path,
+            data: wroteToDisk ? nil : data,
+            filePath: wroteToDisk ? fileURL.path : nil,
             mimeType: mimeType,
             filename: filename,
             width: width,

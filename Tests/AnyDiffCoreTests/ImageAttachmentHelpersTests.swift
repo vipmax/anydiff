@@ -447,4 +447,29 @@ final class ImageAttachmentHelpersTests: XCTestCase {
         cellAssistantSingle.updateStickyAvatar(viewportTopInDocument: 200)
         XCTAssertEqual(cellAssistantSingle.roleIconView.frame.origin.y, assistantInitialY, "Single line assistant avatar must not move or stick")
     }
+
+    func testPrepareImageForAgentDownscalesOversizedImagesTo1568AndUnder5MB() {
+        let (largeImage, largeData) = createTestPNGImage(width: 3862, height: 2877)
+        let prepared = ImageAttachmentHelpers.prepareImageForAgent(
+            image: largeImage,
+            fallbackData: largeData,
+            preferredMimeType: "image/png"
+        )
+
+        XCTAssertEqual(Int(prepared.pixelSize.width), 1568)
+        XCTAssertEqual(Int(prepared.pixelSize.height), 1168)
+        XCTAssertLessThanOrEqual(prepared.data.count, ImageAttachmentHelpers.maxModelImageBytes)
+        XCTAssertEqual(prepared.mimeType, "image/png")
+
+        // Images already <= 1568x1568 and <= 5 MB remain untouched
+        let (smallImage, smallData) = createTestPNGImage(width: 400, height: 300)
+        let expectedSmallSize = ImageAttachmentHelpers.imagePixelSize(image: smallImage, data: smallData)
+        let smallPrepared = ImageAttachmentHelpers.prepareImageForAgent(
+            image: smallImage,
+            fallbackData: smallData,
+            preferredMimeType: "image/png"
+        )
+        XCTAssertEqual(smallPrepared.pixelSize, expectedSmallSize)
+        XCTAssertEqual(smallPrepared.data, smallData)
+    }
 }

@@ -83,7 +83,7 @@ public struct AgentPanelView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            if !agentManager.hasVisibleMessages {
+            if (!agentManager.authMethods.isEmpty || agentManager.isAuthenticating) && !agentManager.hasVisibleMessages {
                 agentInputView
                     .frame(maxWidth: .infinity, alignment: .top)
                     .fixedSize(horizontal: false, vertical: true)
@@ -265,12 +265,35 @@ public struct AgentPanelView: View {
     private var messagesArea: some View {
         ZStack {
             if !agentManager.hasVisibleMessages {
-                if (agentManager.status == .connecting || agentManager.statusMessage == "Loading session...") && !agentManager.isAuthenticating && agentManager.authMethods.isEmpty {
-                    welcomeStateView(isLaunching: true)
-                } else if !agentManager.authMethods.isEmpty || agentManager.isAuthenticating {
+                if !agentManager.authMethods.isEmpty || agentManager.isAuthenticating {
                     authRequiredEmptyStateView
                 } else {
-                    welcomeStateView(isLaunching: false)
+                    let isLaunching = (agentManager.status == .connecting || agentManager.statusMessage == "Loading session...")
+                    ScrollViewReader { proxy in
+                        ScrollView(.vertical, showsIndicators: true) {
+                            VStack(spacing: 0) {
+                                agentInputView
+                                    .frame(maxWidth: .infinity, alignment: .top)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .padding(.top, 10)
+
+                                if isCreatingWorktreeForPrompt || worktreeCreationError != nil {
+                                    worktreeStatusBar
+                                }
+
+                                welcomeStateView(isLaunching: isLaunching)
+                                    .id("startScreenWelcomeAnchor")
+                            }
+                            .frame(maxWidth: .infinity, alignment: .top)
+                        }
+                        .onChange(of: inputContentHeight) { newHeight in
+                            if newHeight > 120 {
+                                DispatchQueue.main.async {
+                                    proxy.scrollTo("startScreenWelcomeAnchor", anchor: .bottom)
+                                }
+                            }
+                        }
+                    }
                 }
             } else {
                 AgentChatScrollRepresentable(
@@ -538,7 +561,8 @@ public struct AgentPanelView: View {
             let baseBranch = agentManager.pendingNewWorktreeBaseBranch
 
             Task { @MainActor in
-                let result = await onCreateWorktreeForPrompt(prompt, baseBranch)
+                let worktreePrompt = AgentImageAttachment.removingInlineTextMarkers(from: prompt)
+                let result = await onCreateWorktreeForPrompt(worktreePrompt, baseBranch)
                 isCreatingWorktreeForPrompt = false
 
                 switch result {
@@ -554,7 +578,7 @@ public struct AgentPanelView: View {
 
                 case .failure(let error):
                     if agentManager.draftPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        agentManager.draftPrompt = prompt
+                        agentManager.draftPrompt = worktreePrompt
                     }
                     if agentManager.draftAttachments.isEmpty && !images.isEmpty {
                         agentManager.draftAttachments = images

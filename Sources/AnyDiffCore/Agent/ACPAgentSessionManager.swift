@@ -69,16 +69,19 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
     }
 
     public override func sendPrompt(_ text: String, images: [AgentImageAttachment] = [], workingDirectory: String) {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty || !images.isEmpty else { return }
+        let displayText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let promptText = AgentImageAttachment
+            .removingInlineTextMarkers(from: displayText)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !promptText.isEmpty || !images.isEmpty else { return }
 
         // If busy, streaming, or running a prompt, stage it in the backend queue.
         if isBusyOrStreaming || currentStreamMessageId != nil || promptTask != nil || pendingPrompt != nil {
-            _ = enqueuePrompt(trimmed, images: images, workingDirectory: workingDirectory)
+            _ = enqueuePrompt(displayText, images: images, workingDirectory: workingDirectory)
             return
         }
 
-        let userMsg = AgentMessage(role: .user, content: trimmed, images: images)
+        let userMsg = AgentMessage(role: .user, content: displayText, images: images)
         messages.append(userMsg)
 
         let assistantMsgId = UUID()
@@ -86,7 +89,7 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
         let assistantMsg = AgentMessage(id: assistantMsgId, role: .assistant, content: "", isStreaming: true)
         messages.append(assistantMsg)
 
-        pendingPrompt = (text: trimmed, images: images, workingDirectory: workingDirectory)
+        pendingPrompt = (text: promptText, images: images, workingDirectory: workingDirectory)
         if isReadyForPrompt, currentSessionId != nil, Self.pathsMatch(currentWorkingDirectory, workingDirectory), client.isConnected {
             startPendingPromptIfPossible()
         } else {

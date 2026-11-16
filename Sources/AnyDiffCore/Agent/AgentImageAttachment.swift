@@ -1,6 +1,10 @@
 import Foundation
 
 public struct AgentImageAttachment: Identifiable, Codable, Sendable, Equatable {
+    /// Compose-only placeholder preserving an image's position in user-visible text.
+    /// Remove it before sending prompt text to an agent.
+    public static let inlineTextMarker = "\u{FFFC}"
+
     public let id: UUID
     private var inMemoryData: Data?
     public let filePath: String?
@@ -42,6 +46,10 @@ public struct AgentImageAttachment: Identifiable, Codable, Sendable, Equatable {
 
     public var base64String: String {
         data.base64EncodedString()
+    }
+
+    public static func removingInlineTextMarkers(from text: String) -> String {
+        text.replacingOccurrences(of: inlineTextMarker, with: "")
     }
 
     public var fileSizeDescription: String {

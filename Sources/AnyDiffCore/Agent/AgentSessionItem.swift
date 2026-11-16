@@ -166,7 +166,8 @@ public final class AgentSessionItem: Identifiable, ObservableObject, @unchecked 
             || title == "Mock Session"
     }
 
-    private static func autoTitle(from content: String) -> String? {
+    private static func autoTitle(from rawContent: String) -> String? {
+        let content = AgentImageAttachment.removingInlineTextMarkers(from: rawContent)
         var start = content.startIndex
         let end = content.endIndex
         while start < end {

@@ -124,7 +124,109 @@ public final class AgentDividerView: AgentFlippedView {
     }
 }
 
+public final class AgentInlineImageHoverBarView: NSView {
+    public var attachment: AgentImageAttachment?
+    public var imageOrdinal: Int = 0
+    public var onCopy: ((AgentImageAttachment?, Int) -> Void)?
+    public var onDelete: ((Int) -> Void)?
+
+    private let copyButton = NSButton()
+    private let deleteButton = NSButton()
+    private let showsDelete: Bool
+    private var resetCopyWorkItem: DispatchWorkItem?
+
+    public override var isFlipped: Bool { true }
+
+    public init(showsDelete: Bool) {
+        self.showsDelete = showsDelete
+        let width: CGFloat = showsDelete ? 56 : 30
+        super.init(frame: NSRect(x: 0, y: 0, width: width, height: 26))
+        wantsLayer = true
+        layer?.cornerRadius = 13
+        layer?.masksToBounds = true
+        layer?.backgroundColor = NSColor.black.withAlphaComponent(0.72).cgColor
+        layer?.borderWidth = 1
+        layer?.borderColor = NSColor.white.withAlphaComponent(0.22).cgColor
+
+        configureButton(copyButton, symbol: "doc.on.doc", tooltip: "Copy image", action: #selector(handleCopy))
+        copyButton.frame = NSRect(x: 3, y: 1, width: 24, height: 24)
+        addSubview(copyButton)
+
+        if showsDelete {
+            configureButton(deleteButton, symbol: "xmark", tooltip: "Remove image", action: #selector(handleDelete))
+            deleteButton.frame = NSRect(x: 29, y: 1, width: 24, height: 24)
+            addSubview(deleteButton)
+        }
+    }
+
+    public required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    private func configureButton(_ button: NSButton, symbol: String, tooltip: String, action: Selector) {
+        button.isBordered = false
+        button.refusesFirstResponder = true
+        button.bezelStyle = .regularSquare
+        button.imagePosition = .imageOnly
+        button.toolTip = tooltip
+        button.target = self
+        button.action = action
+        setSymbol(symbol, on: button, tint: .white.withAlphaComponent(0.92))
+    }
+
+    public override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+
+    public override func hitTest(_ point: NSPoint) -> NSView? {
+        frame.contains(point) ? self : nil
+    }
+
+    public override func mouseDown(with event: NSEvent) {
+        let pt = convert(event.locationInWindow, from: nil)
+        guard bounds.contains(pt) else { return }
+        if showsDelete && pt.x >= bounds.width / 2 {
+            handleDelete()
+        } else {
+            handleCopy()
+        }
+    }
+
+    private func setSymbol(_ name: String, on button: NSButton, tint: NSColor) {
+        if let img = NSImage(systemSymbolName: name, accessibilityDescription: nil) {
+            let config = NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold)
+            button.image = img.withSymbolConfiguration(config)
+        }
+        button.contentTintColor = tint
+    }
+
+    @objc private func handleCopy() {
+        if let attachment {
+            ImageAttachmentHelpers.copyToPasteboard(attachment)
+        }
+        onCopy?(attachment, imageOrdinal)
+        resetCopyWorkItem?.cancel()
+        setSymbol("checkmark", on: copyButton, tint: NSColor.systemGreen)
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.setSymbol("doc.on.doc", on: self.copyButton, tint: .white.withAlphaComponent(0.92))
+        }
+        resetCopyWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: work)
+    }
+
+    @objc private func handleDelete() {
+        onDelete?(imageOrdinal)
+    }
+
+    public override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: .pointingHand)
+    }
+}
+
 public final class AgentSelectableTextView: NSTextView, NSTextStorageDelegate {
+    public static let userInlineImageIndexKey = NSAttributedString.Key("AnyDiff.UserInlineImageIndex")
     public weak var parentCell: AgentMessageCell?
     public var cellId: UUID?
     public var tvKey: String = ""
@@ -146,13 +248,59 @@ public final class AgentSelectableTextView: NSTextView, NSTextStorageDelegate {
     }
     private var hasLinksChecked: Bool = false
     private var _hasLinks: Bool = false
+    private var hasAttachmentsChecked: Bool = false
+    private var _hasAttachments: Bool = false
+    private var inlineImageTrackingArea: NSTrackingArea?
+    private var inlineImageHoverBar: AgentInlineImageHoverBarView?
+    private var hoveredInlineImageIndex: Int?
     private var cachedLinkRects: [NSRect]?
     private var lastCalculatedBoundsWidth: CGFloat = -1
 
+    public var hasInlineAttachments: Bool {
+        if !hasAttachmentsChecked {
+            hasAttachmentsChecked = true
+            _hasAttachments = false
+            if let ts = textStorage, ts.length > 0 {
+                ts.enumerateAttribute(.attachment, in: NSRange(location: 0, length: ts.length), options: [.longestEffectiveRangeNotRequired]) { val, _, stop in
+                    if val is NSTextAttachment {
+                        self._hasAttachments = true
+                        stop.pointee = true
+                    }
+                }
+            }
+            syncInlineImageTrackingArea()
+        }
+        return _hasAttachments
+    }
+
+    private func syncInlineImageTrackingArea() {
+        if _hasAttachments {
+            if inlineImageTrackingArea == nil {
+                let area = NSTrackingArea(
+                    rect: .zero,
+                    options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+                    owner: self,
+                    userInfo: ["anyDiffInlineImageHover": true]
+                )
+                super.addTrackingArea(area)
+                inlineImageTrackingArea = area
+            }
+        } else if let area = inlineImageTrackingArea {
+            removeTrackingArea(area)
+            inlineImageTrackingArea = nil
+            inlineImageHoverBar?.isHidden = true
+            hoveredInlineImageIndex = nil
+        }
+    }
+
     public func invalidateLinksCache() {
         hasLinksChecked = false
+        hasAttachmentsChecked = false
         cachedLinkRects = nil
         lastCalculatedBoundsWidth = -1
+        inlineImageHoverBar?.isHidden = true
+        hoveredInlineImageIndex = nil
+        _ = hasInlineAttachments
     }
 
     public func textStorage(
@@ -226,6 +374,10 @@ public final class AgentSelectableTextView: NSTextView, NSTextStorageDelegate {
     }
 
     public override func addTrackingArea(_ trackingArea: NSTrackingArea) {
+        if trackingArea.userInfo?["anyDiffInlineImageHover"] != nil {
+            super.addTrackingArea(trackingArea)
+            return
+        }
         // AppKit's NSTextView automatically adds a tracking area with
         // .cursorUpdate | .mouseEnteredAndExited | .mouseMoved (rawValue 551),
         // which forces NSCursor.iBeam over all text and causes rapid cursor flickering
@@ -247,7 +399,12 @@ public final class AgentSelectableTextView: NSTextView, NSTextStorageDelegate {
     }
 
     public override func mouseExited(with event: NSEvent) {
-        // Suppress NSTextView's default cursor resetting
+        let pInTV = convert(event.locationInWindow, from: nil)
+        if bounds.contains(pInTV), inlineImageHit(at: pInTV) != nil {
+            return
+        }
+        inlineImageHoverBar?.isHidden = true
+        hoveredInlineImageIndex = nil
     }
 
     public override func cursorUpdate(with event: NSEvent) {
@@ -264,14 +421,83 @@ public final class AgentSelectableTextView: NSTextView, NSTextStorageDelegate {
 
     public override func mouseMoved(with event: NSEvent) {
         super.mouseMoved(with: event)
+        let pInTV = convert(event.locationInWindow, from: nil)
+        if hasInlineAttachments {
+            updateInlineImageHover(at: pInTV)
+        }
         if hasLinks {
-            let pInTV = convert(event.locationInWindow, from: nil)
             if isOverLink(at: pInTV) {
                 NSCursor.pointingHand.set()
                 return
             }
         }
+        if let bar = inlineImageHoverBar, !bar.isHidden, bar.frame.contains(pInTV) {
+            NSCursor.pointingHand.set()
+            return
+        }
         NSCursor.arrow.set()
+    }
+
+    private func inlineImageHit(at pInTV: NSPoint) -> (index: Int, rect: NSRect)? {
+        guard hasInlineAttachments,
+              let lm = layoutManager,
+              let tc = textContainer,
+              let ts = textStorage,
+              ts.length > 0 else { return nil }
+        let glyphIdx = lm.glyphIndex(for: pInTV, in: tc)
+        guard glyphIdx < lm.numberOfGlyphs else { return nil }
+        let rect = lm.boundingRect(forGlyphRange: NSRange(location: glyphIdx, length: 1), in: tc)
+        guard rect.contains(pInTV) else { return nil }
+        let charIdx = lm.characterIndexForGlyph(at: glyphIdx)
+        guard charIdx < ts.length,
+              ts.attribute(.attachment, at: charIdx, effectiveRange: nil) is NSTextAttachment else { return nil }
+
+        if let explicitIdx = ts.attribute(Self.userInlineImageIndexKey, at: charIdx, effectiveRange: nil) as? Int {
+            return (explicitIdx, rect)
+        }
+        var ordinal = 0
+        if charIdx > 0 {
+            ts.enumerateAttribute(.attachment, in: NSRange(location: 0, length: charIdx)) { value, _, _ in
+                if value is NSTextAttachment {
+                    ordinal += 1
+                }
+            }
+        }
+        return (ordinal, rect)
+    }
+
+    private func updateInlineImageHover(at pInTV: NSPoint) {
+        if let bar = inlineImageHoverBar, !bar.isHidden, bar.frame.insetBy(dx: -4, dy: -4).contains(pInTV) {
+            return
+        }
+        guard let hit = inlineImageHit(at: pInTV),
+              let parentCell,
+              parentCell.message.role == .user,
+              hit.index < parentCell.message.images.count else {
+            inlineImageHoverBar?.isHidden = true
+            hoveredInlineImageIndex = nil
+            return
+        }
+        hoveredInlineImageIndex = hit.index
+        let bar: AgentInlineImageHoverBarView
+        if let existing = inlineImageHoverBar {
+            bar = existing
+        } else {
+            let created = AgentInlineImageHoverBarView(showsDelete: false)
+            addSubview(created)
+            inlineImageHoverBar = created
+            bar = created
+        }
+        bar.imageOrdinal = hit.index
+        bar.attachment = parentCell.message.images[hit.index]
+        let barSize = bar.bounds.size
+        bar.frame = NSRect(
+            x: max(hit.rect.minX + 4, hit.rect.maxX - barSize.width - 6),
+            y: hit.rect.minY + 6,
+            width: barSize.width,
+            height: barSize.height
+        )
+        bar.isHidden = false
     }
 
     private func isOverLink(at pInTV: NSPoint) -> Bool {
@@ -285,11 +511,17 @@ public final class AgentSelectableTextView: NSTextView, NSTextStorageDelegate {
     }
 
     public override func hitTest(_ point: NSPoint) -> NSView? {
+        let pInTV = convert(point, from: superview)
+        if let bar = inlineImageHoverBar, !bar.isHidden, bar.frame.contains(pInTV) {
+            return bar
+        }
         if hasLinks {
-            let pInTV = convert(point, from: superview)
             if isOverLink(at: pInTV) {
                 return self
             }
+        }
+        if hasInlineAttachments, inlineImageHit(at: pInTV) != nil {
+            return self
         }
         if enclosingScrollView != nil {
             return super.hitTest(point)
@@ -299,6 +531,38 @@ public final class AgentSelectableTextView: NSTextView, NSTextStorageDelegate {
 
     public override func mouseDown(with event: NSEvent) {
         let pt = convert(event.locationInWindow, from: nil)
+        if let bar = inlineImageHoverBar, !bar.isHidden, bar.frame.contains(pt) {
+            bar.mouseDown(with: event)
+            return
+        }
+        var inlineImageIndex: Int?
+        if event.clickCount >= 2,
+           let lm = layoutManager,
+           let tc = textContainer,
+           let ts = textStorage {
+            let glyphIdx = lm.glyphIndex(for: pt, in: tc)
+            if glyphIdx < lm.numberOfGlyphs {
+                let rect = lm.boundingRect(forGlyphRange: NSRange(location: glyphIdx, length: 1), in: tc)
+                let charIdx = lm.characterIndexForGlyph(at: glyphIdx)
+                if rect.contains(pt),
+                   charIdx < ts.length,
+                   ts.attribute(.attachment, at: charIdx, effectiveRange: nil) is NSTextAttachment {
+                    if let explicitIdx = ts.attribute(Self.userInlineImageIndexKey, at: charIdx, effectiveRange: nil) as? Int {
+                        inlineImageIndex = explicitIdx
+                    } else {
+                        var ordinal = 0
+                        if charIdx > 0 {
+                            ts.enumerateAttribute(.attachment, in: NSRange(location: 0, length: charIdx)) { value, _, _ in
+                                if value is NSTextAttachment {
+                                    ordinal += 1
+                                }
+                            }
+                        }
+                        inlineImageIndex = ordinal
+                    }
+                }
+            }
+        }
         if hasLinks, let lm = layoutManager, let tc = textContainer, let ts = textStorage {
             let glyphIdx = lm.glyphIndex(for: pt, in: tc)
             if glyphIdx < lm.numberOfGlyphs {
@@ -323,7 +587,71 @@ public final class AgentSelectableTextView: NSTextView, NSTextStorageDelegate {
             }
         }
         super.mouseDown(with: event)
+        if let inlineImageIndex,
+           let parentCell,
+           parentCell.message.role == .user,
+           inlineImageIndex < parentCell.message.images.count {
+            parentCell.onPreviewImages?(parentCell.message.images, inlineImageIndex)
+        }
         checkAndPublishQuote(for: selectedRange())
+    }
+
+    public override func copy(_ sender: Any?) {
+        if let ts = textStorage,
+           let parentCell,
+           parentCell.message.role == .user,
+           !parentCell.message.images.isEmpty {
+            let sel = selectedRange()
+            if sel.length > 0, sel.location + sel.length <= ts.length {
+                var foundIndex: Int?
+                ts.enumerateAttribute(.attachment, in: sel) { val, range, stop in
+                    if val is NSTextAttachment {
+                        if let explicitIdx = ts.attribute(Self.userInlineImageIndexKey, at: range.location, effectiveRange: nil) as? Int {
+                            foundIndex = explicitIdx
+                        } else {
+                            foundIndex = 0
+                        }
+                        stop.pointee = true
+                    }
+                }
+                let plainWithoutMarkers = AgentImageAttachment
+                    .removingInlineTextMarkers(from: (ts.string as NSString).substring(with: sel))
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if let idx = foundIndex, plainWithoutMarkers.isEmpty, idx < parentCell.message.images.count {
+                    ImageAttachmentHelpers.copyToPasteboard(parentCell.message.images[idx])
+                    return
+                }
+            }
+        }
+        super.copy(sender)
+    }
+
+    public override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        if item.action == #selector(paste(_:)) {
+            return ImageAttachmentHelpers.hasImages(in: .general) || NSPasteboard.general.string(forType: .string) != nil
+        }
+        return super.validateUserInterfaceItem(item)
+    }
+
+    public override func paste(_ sender: Any?) {
+        let images = ImageAttachmentHelpers.extractImages(from: .general)
+        if !images.isEmpty {
+            NotificationCenter.default.post(
+                name: Notification.Name("anyDiffAttachImages"),
+                object: nil,
+                userInfo: ["images": images]
+            )
+            NotificationCenter.default.post(name: Notification.Name("anyDiffFocusAgentInput"), object: nil)
+            return
+        }
+        NotificationCenter.default.post(name: Notification.Name("anyDiffFocusAgentInput"), object: nil)
+    }
+
+    @objc private func handleContextCopyImage() {
+        guard let idx = hoveredInlineImageIndex,
+              let cell = parentCell,
+              idx < cell.message.images.count else { return }
+        ImageAttachmentHelpers.copyToPasteboard(cell.message.images[idx])
     }
 
     public override func mouseUp(with event: NSEvent) {
@@ -378,6 +706,18 @@ public final class AgentSelectableTextView: NSTextView, NSTextStorageDelegate {
     }
 
     public override func menu(for event: NSEvent) -> NSMenu? {
+        let pt = convert(event.locationInWindow, from: nil)
+        if let hit = inlineImageHit(at: pt),
+           let parentCell,
+           parentCell.message.role == .user,
+           hit.index < parentCell.message.images.count {
+            hoveredInlineImageIndex = hit.index
+            let menu = NSMenu()
+            let copyItem = NSMenuItem(title: "Copy Image", action: #selector(handleContextCopyImage), keyEquivalent: "")
+            copyItem.target = self
+            menu.addItem(copyItem)
+            return menu
+        }
         let menu = super.menu(for: event) ?? NSMenu()
         let range = selectedRange()
         if range.location != NSNotFound, range.length > 0 {

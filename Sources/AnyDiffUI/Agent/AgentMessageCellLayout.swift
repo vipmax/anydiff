@@ -33,6 +33,22 @@ extension AgentMessageCell {
         if layoutManager.numberOfGlyphs > 0 {
             var lineGlyphRange = NSRange(location: 0, length: 0)
             let usedRect = layoutManager.lineFragmentUsedRect(forGlyphAt: 0, effectiveRange: &lineGlyphRange)
+            if let textStorage = textView.textStorage, textStorage.length > 0 {
+                let charRange = layoutManager.characterRange(forGlyphRange: lineGlyphRange, actualGlyphRange: nil)
+                let clampedRange = NSIntersectionRange(charRange, NSRange(location: 0, length: textStorage.length))
+                var hasAttachment = false
+                if clampedRange.length > 0 {
+                    textStorage.enumerateAttribute(.attachment, in: clampedRange) { value, _, stop in
+                        if value is NSTextAttachment {
+                            hasAttachment = true
+                            stop.pointee = true
+                        }
+                    }
+                }
+                if hasAttachment {
+                    return Self.defaultBodyFirstLineHeight
+                }
+            }
             if usedRect.height > 0 {
                 // TextKit includes paragraphStyle.lineSpacing in line 0's usedRect
                 // whenever another line follows, which would shift multi-line text
@@ -90,6 +106,23 @@ extension AgentMessageCell {
             }
         }
         return Self.defaultBodyFirstLineHeight / 2
+    }
+
+    private func userImageSize(_ imageView: NSButton, contentWidth: CGFloat) -> CGSize {
+        let imageSize = imageView.image?.size ?? CGSize(width: 240, height: 140)
+        guard imageSize.width > 0, imageSize.height > 0 else {
+            return CGSize(width: min(contentWidth, 420), height: 240)
+        }
+        let scale = min(1, contentWidth / imageSize.width, 480 / imageSize.width, 300 / imageSize.height)
+        return CGSize(width: imageSize.width * scale, height: imageSize.height * scale)
+    }
+
+    private func userImagesHeight(contentWidth: CGFloat) -> CGFloat {
+        guard !userImageViews.isEmpty else { return 0 }
+        let imageHeight = userImageViews.reduce(CGFloat.zero) { total, imageView in
+            total + userImageSize(imageView, contentWidth: contentWidth).height
+        }
+        return imageHeight + CGFloat(max(0, userImageViews.count - 1)) * 8
     }
 
     private func assistantFirstRowCenterOffset(contentWidth: CGFloat) -> CGFloat {
@@ -328,7 +361,7 @@ extension AgentMessageCell {
             let queuedHeaderSpacing: CGFloat = isQueued ? 6 : 0
 
             let hasImages = !userImageViews.isEmpty
-            let imagesHeight: CGFloat = hasImages ? (userImageViews.count == 1 ? 140 : 54) : 0
+            let imagesHeight = userImagesHeight(contentWidth: contentWidth)
 
             let contentH: CGFloat
             if isQueued && isEditingQueuedMessage {
@@ -337,13 +370,8 @@ extension AgentMessageCell {
             } else {
                 let hasContent = !userContentViews.isEmpty
                 let fullTextHeight = hasContent ? measureUserContentViewsHeight(width: contentWidth) : 0
-                let hasComplexViews = userContentViews.contains { $0 is AgentUserCodeBlockView || $0 is AgentUserQuoteBlockView }
-                let isCollapsible = !hasComplexViews && fullTextHeight > userTextCollapseThreshold
-                let displayedTextHeight = (isCollapsible && !isUserTextExpanded) ? maxUserTextCollapsedHeight : fullTextHeight
-                let buttonHeight: CGFloat = isCollapsible ? 22 : 0
-                let buttonSpacing: CGFloat = isCollapsible ? 4 : 0
-
-                contentH = queuedHeaderHeight + queuedHeaderSpacing + imagesHeight + (hasImages && hasContent ? 8 : 0) + displayedTextHeight + (isCollapsible ? (buttonSpacing + buttonHeight) : 0)
+                contentH = queuedHeaderHeight + queuedHeaderSpacing + imagesHeight +
+                    (hasImages && hasContent ? 8 : 0) + fullTextHeight
             }
             let userSize = AgentMessageCell.userAvatarSize
             let (avatarY, contentTop) = verticalAlignmentOffsets(
@@ -431,7 +459,7 @@ extension AgentMessageCell {
             let queuedHeaderSpacing: CGFloat = isQueued ? 6 : 0
 
             let hasImages = !userImageViews.isEmpty
-            let imagesHeight: CGFloat = hasImages ? (userImageViews.count == 1 ? 140 : 54) : 0
+            let imagesHeight = userImagesHeight(contentWidth: contentWidth)
             let hasContent = !userContentViews.isEmpty
             let fullTextHeight = hasContent ? measureUserContentViewsHeight(width: contentWidth) : 0
 
@@ -440,13 +468,8 @@ extension AgentMessageCell {
                 let editorHeight = queuedEditorView.measuredHeight(for: contentWidth)
                 contentH = queuedHeaderHeight + queuedHeaderSpacing + imagesHeight + (hasImages ? 8 : 0) + editorHeight
             } else {
-                let hasComplexViews = userContentViews.contains { $0 is AgentUserCodeBlockView || $0 is AgentUserQuoteBlockView }
-                let isCollapsible = !hasComplexViews && fullTextHeight > userTextCollapseThreshold
-                let displayedTextHeight = (isCollapsible && !isUserTextExpanded) ? maxUserTextCollapsedHeight : fullTextHeight
-                let buttonHeight: CGFloat = isCollapsible ? 22 : 0
-                let buttonSpacing: CGFloat = isCollapsible ? 4 : 0
-
-                contentH = queuedHeaderHeight + queuedHeaderSpacing + imagesHeight + (hasImages && hasContent ? 8 : 0) + displayedTextHeight + (isCollapsible ? (buttonSpacing + buttonHeight) : 0)
+                contentH = queuedHeaderHeight + queuedHeaderSpacing + imagesHeight +
+                    (hasImages && hasContent ? 8 : 0) + fullTextHeight
             }
 
             let bubbleFrame = NSRect(
@@ -474,17 +497,14 @@ extension AgentMessageCell {
                 queuedHeaderView.isHidden = true
             }
             if hasImages {
-                if userImageViews.count == 1, let singleBtn = userImageViews.first {
-                    let imgW = min(contentWidth, 240)
-                    let imgFrame = NSRect(x: 0, y: currentInsideY, width: imgW, height: 140)
-                    if animated { singleBtn.animator().frame = imgFrame } else { singleBtn.frame = imgFrame }
-                } else {
-                    for (i, btn) in userImageViews.enumerated() {
-                        let btnFrame = NSRect(x: CGFloat(i) * 60, y: currentInsideY, width: 54, height: 54)
-                        if animated { btn.animator().frame = btnFrame } else { btn.frame = btnFrame }
-                    }
+                for btn in userImageViews {
+                    let size = userImageSize(btn, contentWidth: contentWidth)
+                    let imgFrame = NSRect(x: 0, y: currentInsideY, width: size.width, height: size.height)
+                    if animated { btn.animator().frame = imgFrame } else { btn.frame = imgFrame }
+                    currentInsideY += size.height + 8
                 }
-                currentInsideY += imagesHeight + (hasContent ? 8 : 0)
+                currentInsideY -= 8
+                currentInsideY += hasContent ? 8 : 0
             }
 
             userTextView.isHidden = true
@@ -496,17 +516,10 @@ extension AgentMessageCell {
                 queuedEditorView.applyLayout(width: contentWidth)
                 queuedEditorView.isHidden = false
                 userContentContainerView.isHidden = true
-                userExpandButton.isHidden = true
             } else {
                 queuedEditorView.isHidden = true
                 if hasContent {
-                    let hasComplexViews = userContentViews.contains { $0 is AgentUserCodeBlockView || $0 is AgentUserQuoteBlockView }
-                    let isCollapsible = !hasComplexViews && fullTextHeight > userTextCollapseThreshold
-                    let displayedTextHeight = (isCollapsible && !isUserTextExpanded) ? maxUserTextCollapsedHeight : fullTextHeight
-                    let buttonHeight: CGFloat = isCollapsible ? 22 : 0
-                    let buttonSpacing: CGFloat = isCollapsible ? 4 : 0
-
-                    let containerFrame = NSRect(x: 0, y: currentInsideY, width: contentWidth, height: displayedTextHeight)
+                    let containerFrame = NSRect(x: 0, y: currentInsideY, width: contentWidth, height: fullTextHeight)
                     if animated {
                         userContentContainerView.animator().frame = containerFrame
                     } else {
@@ -538,31 +551,10 @@ extension AgentMessageCell {
                         }
                         subY += viewH + 8
                     }
-                    userContentContainerView.layer?.masksToBounds = (isCollapsible && !isUserTextExpanded)
+                    userContentContainerView.layer?.masksToBounds = false
                     userContentContainerView.isHidden = false
-
-                    if isCollapsible {
-                        userExpandButton.isHidden = false
-                        updateUserExpandButtonAppearance()
-
-                        let btnWidth: CGFloat = 92
-                        let btnFrame = NSRect(
-                            x: 0,
-                            y: currentInsideY + displayedTextHeight + buttonSpacing,
-                            width: btnWidth,
-                            height: buttonHeight
-                        )
-                        if animated {
-                            userExpandButton.animator().frame = btnFrame
-                        } else {
-                            userExpandButton.frame = btnFrame
-                        }
-                    } else {
-                        userExpandButton.isHidden = true
-                    }
                 } else {
                     userContentContainerView.isHidden = true
-                    userExpandButton.isHidden = true
                 }
             }
         } else {

@@ -258,15 +258,18 @@ public final class MockAgentSessionManager: AgentSessionManager, @unchecked Send
     }
 
     public override func sendPrompt(_ text: String, images: [AgentImageAttachment] = [], workingDirectory: String) {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty || !images.isEmpty else { return }
+        let displayText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let promptText = AgentImageAttachment
+            .removingInlineTextMarkers(from: displayText)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !promptText.isEmpty || !images.isEmpty else { return }
 
         if isBusyOrStreaming || mockTask != nil {
-            _ = enqueuePrompt(trimmed, images: images, workingDirectory: workingDirectory)
+            _ = enqueuePrompt(displayText, images: images, workingDirectory: workingDirectory)
             return
         }
 
-        let userMsg = AgentMessage(role: .user, content: trimmed, images: images)
+        let userMsg = AgentMessage(role: .user, content: displayText, images: images)
         messages.append(userMsg)
 
         let assistantMsgId = UUID()
@@ -286,7 +289,7 @@ public final class MockAgentSessionManager: AgentSessionManager, @unchecked Send
             if Task.isCancelled { return }
 
             let hasImages = !images.isEmpty
-            let isEditRequest = trimmed.lowercased().contains("edit") || trimmed.lowercased().contains("fix") || trimmed.lowercased().contains("change")
+            let isEditRequest = promptText.lowercased().contains("edit") || promptText.lowercased().contains("fix") || promptText.lowercased().contains("change")
 
             if hasImages {
                 self.messages[idx].thought = "Analyzing \(images.count) attached image(s)...\nDetecting UI layout structure, typography, and diff elements."
@@ -317,7 +320,7 @@ public final class MockAgentSessionManager: AgentSessionManager, @unchecked Send
                 ])
 
                 guard await self.streamResponse(
-                    self.makeImageAnalysisResponse(prompt: trimmed, images: images),
+                    self.makeImageAnalysisResponse(prompt: promptText, images: images),
                     messageId: assistantMsgId
                 ) else { return }
             } else if isEditRequest {
@@ -363,11 +366,11 @@ public final class MockAgentSessionManager: AgentSessionManager, @unchecked Send
                 ])
 
                 guard await self.streamResponse(
-                    self.makeEditResponse(prompt: trimmed),
+                    self.makeEditResponse(prompt: promptText),
                     messageId: assistantMsgId
                 ) else { return }
             } else {
-                self.messages[idx].thought = "Analyzing prompt «\(trimmed)»...\nChecking change context and file structure."
+                self.messages[idx].thought = "Analyzing prompt «\(promptText)»...\nChecking change context and file structure."
 
                 // 2. Simulated read tool execution
                 try? await Task.sleep(nanoseconds: 250_000_000)
@@ -395,7 +398,7 @@ public final class MockAgentSessionManager: AgentSessionManager, @unchecked Send
 
                 // 3. Stream in medium-sized chunks.
                 guard await self.streamResponse(
-                    self.makePromptResponse(prompt: trimmed),
+                    self.makePromptResponse(prompt: promptText),
                     messageId: assistantMsgId
                 ) else { return }
             }

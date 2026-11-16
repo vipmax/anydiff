@@ -916,11 +916,6 @@ public final class AgentChatDocumentView: NSView {
                     scrollView.stopFollowingBottom()
                     self.layoutContent(for: max(100, scrollView.contentView.bounds.width))
                 }
-                cell.onToggleUserExpand = { [weak self] in
-                    guard let self else { return }
-                    scrollView.stopFollowingBottom()
-                    self.layoutContent(for: max(100, scrollView.contentView.bounds.width))
-                }
                 cells[message.id] = cell
             }
 

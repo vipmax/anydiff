@@ -232,6 +232,34 @@ final class AgentAvatarTests: XCTestCase {
         )
         XCTAssertGreaterThan(userMultiHeight, userSingleCell.frame.height)
 
+        // 2b. User message starting with an inline image: avatar stays locked at the top row, not pushed to image midY
+        let sampleImage = NSImage(size: NSSize(width: 240, height: 140))
+        sampleImage.lockFocus()
+        NSColor.systemBlue.setFill()
+        NSBezierPath.fill(NSRect(x: 0, y: 0, width: 240, height: 140))
+        sampleImage.unlockFocus()
+        let imageData = sampleImage.tiffRepresentation ?? Data()
+        let attachment = AgentImageAttachment(
+            data: imageData,
+            mimeType: "image/tiff",
+            filename: "sample.tiff",
+            width: 240,
+            height: 140
+        )
+        let userWithImage = AgentMessage(
+            role: .user,
+            content: "\(AgentImageAttachment.inlineTextMarker)\nкуку",
+            images: [attachment]
+        )
+        let userWithImageCell = AgentMessageCell(message: userWithImage, theme: .zedDark)
+        _ = userWithImageCell.layout(for: 500)
+        XCTAssertEqual(
+            userWithImageCell.roleIconView.frame.origin.y,
+            userSingleCell.roleIconView.frame.origin.y,
+            accuracy: 0.5,
+            "User avatar must stay locked at top when message begins with an inline image"
+        )
+
         // 3. Assistant single-line
         let assistantSingle = AgentMessage(role: .assistant, content: "Привет! Чем могу помочь?")
         let assistantSingleCell = AgentMessageCell(message: assistantSingle, theme: .zedDark)
@@ -320,5 +348,44 @@ final class AgentAvatarTests: XCTestCase {
         let expectedAgentAvatarTop = 10 + expectedInputHeight + 16
         let actualAgentAvatarTop = assistantCell.convert(assistantCell.roleIconView.frame, to: docView).minY
         XCTAssertEqual(actualAgentAvatarTop, expectedAgentAvatarTop, accuracy: 0.5)
+
+        // Same invariant when user message starts with inline images (like screenshot: image + "куку" + image + "ку")
+        let sampleImage = NSImage(size: NSSize(width: 260, height: 100))
+        sampleImage.lockFocus()
+        NSColor.systemTeal.setFill()
+        NSBezierPath.fill(NSRect(x: 0, y: 0, width: 260, height: 100))
+        sampleImage.unlockFocus()
+        let imgData = sampleImage.tiffRepresentation ?? Data()
+        let img1 = AgentImageAttachment(data: imgData, mimeType: "image/tiff", filename: "1.tiff", width: 260, height: 100)
+        let img2 = AgentImageAttachment(data: imgData, mimeType: "image/tiff", filename: "2.tiff", width: 260, height: 100)
+        let m = AgentImageAttachment.inlineTextMarker
+        let inlineMsg = AgentMessage(
+            role: .user,
+            content: "\(m)\nкуку\n\(m)\nку",
+            images: [img1, img2]
+        )
+        scrollView.update(messages: [inlineMsg, assistantWaitingMsg], theme: .zedDark, animated: false)
+        scrollView.layoutSubtreeIfNeeded()
+
+        let inlineCells = docView.subviews.compactMap { $0 as? AgentMessageCell }.sorted { $0.frame.minY < $1.frame.minY }
+        XCTAssertEqual(inlineCells.count, 2)
+        let inlineUserCell = inlineCells[0]
+        let inlineAssistantCell = inlineCells[1]
+
+        let inlineUserAvatarTop = inlineUserCell.convert(inlineUserCell.roleIconView.frame, to: docView).minY
+        XCTAssertEqual(inlineUserAvatarTop, expectedUserAvatarTop, accuracy: 0.5)
+
+        guard let inlineUserTV = inlineUserCell.userContentViews.first as? AgentSelectableTextView else {
+            XCTFail("Expected inline-image user text view")
+            return
+        }
+        let inlineUserTextTop = inlineUserTV.convert(inlineUserTV.bounds, to: docView).minY
+        XCTAssertEqual(inlineUserTextTop, expectedUserTextTop, accuracy: 0.5)
+
+        let inlineTextHeight = ceil(inlineUserTV.layoutManager!.usedRect(for: inlineUserTV.textContainer!).height)
+        let expectedInlineInputHeight = 2 + max(inputAvatarOffset + userAvatarSize, inputContentOffset + max(18, inlineTextHeight)) + 6
+        let expectedInlineAgentAvatarTop = 10 + expectedInlineInputHeight + 16
+        let actualInlineAgentAvatarTop = inlineAssistantCell.convert(inlineAssistantCell.roleIconView.frame, to: docView).minY
+        XCTAssertEqual(actualInlineAgentAvatarTop, expectedInlineAgentAvatarTop, accuracy: 0.5)
     }
 }

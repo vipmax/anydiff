@@ -16,7 +16,6 @@ public final class AgentMessageCell: NSView {
 
     public var onToggleThought: (() -> Void)?
     public var onToggleTool: (() -> Void)?
-    public var onToggleUserExpand: (() -> Void)?
     public var onReview: ((AgentEditedFilesSummary) -> Void)? {
         didSet {
             (editedFilesCardView as? AgentEditedFilesCardView)?.onReview = onReview
@@ -39,9 +38,6 @@ public final class AgentMessageCell: NSView {
     var isCompactMode: Bool
     let nativeTextSelectionEnabled: Bool
     var isThoughtExpanded: Bool = false
-    var isUserTextExpanded: Bool = false
-    let maxUserTextCollapsedHeight: CGFloat = 180
-    let userTextCollapseThreshold: CGFloat = 240
     var expandedToolIds: Set<String> = []
     var expandedToolGroupKeys: Set<String> = []
     var toolGroupViewsByKey: [String: AgentToolGroupView] = [:]
@@ -117,7 +113,6 @@ public final class AgentMessageCell: NSView {
     public private(set) var isEditingQueuedMessage: Bool = false
     let userContentContainerView = AgentFlippedView()
     let userTextView = AgentSelectableTextView()
-    let userExpandButton = AgentHoverButton()
     var userImageViews: [NSButton] = []
     var userContentViews: [NSView] = []
     var renderedUserContent: String? = nil
@@ -226,12 +221,7 @@ public final class AgentMessageCell: NSView {
         userBubbleView.addSubview(queuedHeaderView)
         userBubbleView.addSubview(queuedEditorView)
         userBubbleView.addSubview(userContentContainerView)
-        userBubbleView.addSubview(userExpandButton)
         addSubview(userBubbleView)
-
-        userExpandButton.target = self
-        userExpandButton.action = #selector(toggleUserTextExpand)
-        updateUserExpandButtonAppearance()
 
         thoughtHeaderButton.wantsLayer = true
         thoughtHeaderButton.layerContentsRedrawPolicy = .onSetNeedsDisplay
@@ -253,38 +243,6 @@ public final class AgentMessageCell: NSView {
         thoughtTextView.parentCell = self
         thoughtTextView.isHidden = true
         thoughtTextView.alphaValue = 0
-    }
-
-    @objc func toggleUserTextExpand() {
-        isUserTextExpanded.toggle()
-        updateUserExpandButtonAppearance()
-        invalidateLayoutCache()
-        onToggleUserExpand?()
-    }
-
-    func updateUserExpandButtonAppearance() {
-        let title = isUserTextExpanded ? "Show less" : "Show more"
-        let symbolName = isUserTextExpanded ? "chevron.up" : "chevron.down"
-        if let img = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil) {
-            let config = NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold)
-            userExpandButton.image = img.withSymbolConfiguration(config)
-        }
-        userExpandButton.imagePosition = .imageTrailing
-        userExpandButton.imageHugsTitle = true
-
-        let style = NSMutableParagraphStyle()
-        style.alignment = .center
-        let textColor = NSColor(cgColor: theme.gutterForeground.cgColor) ?? .secondaryLabelColor
-        let attr = NSAttributedString(
-            string: title + " ",
-            attributes: [
-                .font: NSFont.systemFont(ofSize: 11.5, weight: .medium),
-                .foregroundColor: textColor.withAlphaComponent(0.9),
-                .paragraphStyle: style
-            ]
-        )
-        userExpandButton.attributedTitle = attr
-        userExpandButton.contentTintColor = textColor.withAlphaComponent(0.9)
     }
 
     public func configure(
@@ -365,28 +323,31 @@ public final class AgentMessageCell: NSView {
             userImageViews.forEach { $0.removeFromSuperview() }
             userImageViews.removeAll()
 
-            for (index, img) in message.images.enumerated() {
-                if let nsImage = NSImage(data: img.data) {
-                    let btn = NSButton()
-                    btn.image = nsImage
-                    btn.imageScaling = .scaleProportionallyUpOrDown
-                    btn.isBordered = false
-                    btn.wantsLayer = true
-                    btn.layerContentsRedrawPolicy = .onSetNeedsDisplay
-                    btn.layer?.cornerRadius = 8
-                    btn.layer?.masksToBounds = true
-                    btn.layer?.borderWidth = 1
-                    btn.layer?.borderColor = (NSColor(cgColor: theme.excerptHeaderBorder.cgColor) ?? NSColor.separatorColor).withAlphaComponent(0.6).cgColor
-                    btn.target = self
-                    btn.action = #selector(handleImageClick(_:))
-                    btn.tag = index
-                    userBubbleView.addSubview(btn)
-                    userImageViews.append(btn)
+            let inlineMarkerCount = message.content.components(separatedBy: AgentImageAttachment.inlineTextMarker).count - 1
+            let hasInlineImagePositions = !message.images.isEmpty && inlineMarkerCount == message.images.count
+            if !hasInlineImagePositions {
+                for (index, img) in message.images.enumerated() {
+                    if let nsImage = ImageAttachmentHelpers.inlineDisplayImage(for: img).image {
+                        let btn = NSButton()
+                        btn.image = nsImage
+                        btn.imageScaling = .scaleProportionallyUpOrDown
+                        btn.isBordered = false
+                        btn.wantsLayer = true
+                        btn.layerContentsRedrawPolicy = .onSetNeedsDisplay
+                        btn.layer?.cornerRadius = 8
+                        btn.layer?.masksToBounds = true
+                        btn.layer?.borderWidth = 1
+                        btn.layer?.borderColor = (NSColor(cgColor: theme.excerptHeaderBorder.cgColor) ?? NSColor.separatorColor).withAlphaComponent(0.6).cgColor
+                        btn.target = self
+                        btn.action = #selector(handleImageClick(_:))
+                        btn.tag = index
+                        userBubbleView.addSubview(btn)
+                        userImageViews.append(btn)
+                    }
                 }
             }
 
             rebuildUserContentViews(content: message.content, forceRebuild: themeChanged || accentChanged)
-            updateUserExpandButtonAppearance()
 
             if message.isQueued {
                 userBubbleView.alphaValue = 0.94
@@ -438,7 +399,6 @@ public final class AgentMessageCell: NSView {
                     queuedEditorView.updateTheme(theme: theme, accentColor: accentColor)
                     queuedEditorView.isHidden = false
                     userContentContainerView.isHidden = true
-                    userExpandButton.isHidden = true
                 } else {
                     queuedEditorView.isHidden = true
                 }
@@ -959,7 +919,6 @@ public final class AgentMessageCell: NSView {
         queuedEditorView.setText(message.content, theme: theme, accentColor: accentColor)
         queuedEditorView.isHidden = false
         userContentContainerView.isHidden = true
-        userExpandButton.isHidden = true
         invalidateLayoutCache()
         onRequestLayout?()
         DispatchQueue.main.async { [weak self] in
@@ -1004,7 +963,29 @@ public final class AgentMessageCell: NSView {
         let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
-        let blocks = AgentMarkdownParser.parse(trimmed)
+        let inlineMarkerCount = trimmed.components(separatedBy: AgentImageAttachment.inlineTextMarker).count - 1
+        let hasInlineImagePositions = inlineMarkerCount > 0 && inlineMarkerCount == message.images.count
+        let blocks = AgentMarkdownParser.parse(
+            hasInlineImagePositions ? trimmed : AgentImageAttachment.removingInlineTextMarkers(from: trimmed)
+        )
+        let hasComplexBlocks = blocks.contains { block in
+            if case .codeBlock = block { return true }
+            if case .quote = block { return true }
+            return false
+        }
+        if hasInlineImagePositions && !hasComplexBlocks {
+            var nextImageIndex = 0
+            let tv = AgentSelectableTextView()
+            tv.parentCell = self
+            tv.cellId = message.id
+            tv.tvKey = "user_text_inline_images"
+            tv.isSelectable = true
+            tv.textStorage?.setAttributedString(inlineImageAttributedText(from: trimmed, imageIndex: &nextImageIndex))
+            userContentContainerView.addSubview(tv)
+            userContentViews.append(tv)
+            return
+        }
+
         guard !blocks.isEmpty else {
             let tv = AgentSelectableTextView()
             tv.parentCell = self
@@ -1059,6 +1040,7 @@ public final class AgentMessageCell: NSView {
         ]
 
         var lastBlockWasListItem = false
+        var nextInlineImageIndex = 0
 
         for block in blocks {
             switch block {
@@ -1079,7 +1061,18 @@ public final class AgentMessageCell: NSView {
                 lastBlockWasListItem = false
 
             case .paragraph(let text):
-                let attr = formatInlineMarkdownString(text, font: bodyFont, color: bodyColor, paragraphStyle: bodyStyle)
+                let attr: NSAttributedString
+                if hasInlineImagePositions && text.contains(AgentImageAttachment.inlineTextMarker) {
+                    attr = inlineImageAttributedText(
+                        from: text,
+                        imageIndex: &nextInlineImageIndex,
+                        font: bodyFont,
+                        color: bodyColor,
+                        paragraphStyle: bodyStyle
+                    )
+                } else {
+                    attr = formatInlineMarkdownString(text, font: bodyFont, color: bodyColor, paragraphStyle: bodyStyle)
+                }
                 if currentText.length > 0 {
                     currentText.append(NSAttributedString(string: "\n\n", attributes: separatorAttrs))
                 }
@@ -1151,6 +1144,71 @@ public final class AgentMessageCell: NSView {
             }
         }
         flushCurrentText()
+    }
+
+    private func inlineImageAttributedText(
+        from content: String,
+        imageIndex: inout Int,
+        font: NSFont? = nil,
+        color: NSColor? = nil,
+        paragraphStyle: NSMutableParagraphStyle? = nil
+    ) -> NSAttributedString {
+        let result = NSMutableAttributedString()
+        let source = content as NSString
+        let bodyFont = font ?? NSFont.systemFont(ofSize: 13, weight: .regular)
+        let bodyColor = color ?? (NSColor(cgColor: theme.foreground.cgColor) ?? .textColor)
+        let bodyStyle: NSMutableParagraphStyle = paragraphStyle ?? {
+            let s = NSMutableParagraphStyle()
+            s.lineSpacing = 3
+            return s
+        }()
+
+        var textLocation = 0
+        while textLocation < source.length, imageIndex < message.images.count {
+            let markerRange = source.range(
+                of: AgentImageAttachment.inlineTextMarker,
+                options: [],
+                range: NSRange(location: textLocation, length: source.length - textLocation)
+            )
+            guard markerRange.location != NSNotFound else { break }
+            if markerRange.location > textLocation {
+                let segment = source.substring(with: NSRange(location: textLocation, length: markerRange.location - textLocation))
+                result.append(
+                    formatInlineMarkdownString(segment, font: bodyFont, color: bodyColor, paragraphStyle: bodyStyle)
+                )
+            }
+
+            let currentImageOrdinal = imageIndex
+            let item = message.images[currentImageOrdinal]
+            let display = ImageAttachmentHelpers.inlineDisplayImage(for: item)
+            if let image = display.image {
+                let attachment = NSTextAttachment()
+                attachment.image = image
+                attachment.bounds = display.bounds
+                let attachmentString = NSMutableAttributedString(attachment: attachment)
+                attachmentString.addAttributes(
+                    [
+                        .font: bodyFont,
+                        .foregroundColor: bodyColor,
+                        .paragraphStyle: bodyStyle,
+                        AgentSelectableTextView.userInlineImageIndexKey: currentImageOrdinal
+                    ],
+                    range: NSRange(location: 0, length: attachmentString.length)
+                )
+                result.append(attachmentString)
+            }
+
+            imageIndex += 1
+            textLocation = NSMaxRange(markerRange)
+        }
+
+        if textLocation < source.length {
+            let segment = source.substring(from: textLocation)
+            result.append(
+                formatInlineMarkdownString(segment, font: bodyFont, color: bodyColor, paragraphStyle: bodyStyle)
+            )
+        }
+        return result
     }
 
     func measureUserContentViewsHeight(width: CGFloat) -> CGFloat {

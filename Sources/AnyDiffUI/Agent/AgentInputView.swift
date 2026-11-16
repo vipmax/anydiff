@@ -3,39 +3,214 @@ import AppKit
 import UniformTypeIdentifiers
 import AnyDiffCore
 
+private final class AgentInputImageAttachmentBox: NSObject, NSCopying {
+    let image: AgentImageAttachment
+
+    init(_ image: AgentImageAttachment) {
+        self.image = image
+    }
+
+    func copy(with zone: NSZone? = nil) -> Any {
+        self
+    }
+}
+
+private enum AgentInputImageTextSupport {
+    static let marker = AgentImageAttachment.inlineTextMarker
+    static let attachmentKey = NSAttributedString.Key("AnyDiff.AgentInputImageAttachment")
+
+    static func attributedString(
+        from text: String,
+        images: [AgentImageAttachment],
+        attributes: [NSAttributedString.Key: Any]
+    ) -> NSAttributedString {
+        let result = NSMutableAttributedString(string: text, attributes: attributes)
+        let source = text as NSString
+        var imageIndex = 0
+        var searchLocation = 0
+
+        while searchLocation < source.length, imageIndex < images.count {
+            let markerRange = source.range(of: marker, options: [], range: NSRange(location: searchLocation, length: source.length - searchLocation))
+            guard markerRange.location != NSNotFound else { break }
+            let item = images[imageIndex]
+            let display = ImageAttachmentHelpers.inlineDisplayImage(for: item)
+            let textAttachment = NSTextAttachment()
+            textAttachment.image = display.image
+            textAttachment.bounds = display.bounds
+
+            let richAttachment = NSMutableAttributedString(attachment: textAttachment)
+            let attachmentRange = NSRange(location: 0, length: richAttachment.length)
+            richAttachment.addAttributes(attributes, range: attachmentRange)
+            richAttachment.addAttribute(
+                attachmentKey,
+                value: AgentInputImageAttachmentBox(item),
+                range: attachmentRange
+            )
+            result.replaceCharacters(in: markerRange, with: richAttachment)
+            imageIndex += 1
+            searchLocation = markerRange.location + richAttachment.length
+        }
+
+        return result
+    }
+
+    static func images(in textView: NSTextView) -> [AgentImageAttachment] {
+        guard let textStorage = textView.textStorage else { return [] }
+        var images: [AgentImageAttachment] = []
+        let fullRange = NSRange(location: 0, length: textStorage.length)
+        textStorage.enumerateAttribute(attachmentKey, in: fullRange) { value, _, _ in
+            if let box = value as? AgentInputImageAttachmentBox {
+                images.append(box.image)
+            }
+        }
+        return images
+    }
+
+    static func containsImages(_ images: [AgentImageAttachment], in textView: NSTextView) -> Bool {
+        let currentImages = self.images(in: textView)
+        return currentImages.map(\.id) == images.map(\.id)
+    }
+
+    static func imageHit(in textView: NSTextView, at point: NSPoint) -> (ordinal: Int, rect: NSRect)? {
+        guard let lm = textView.layoutManager,
+              let tc = textView.textContainer,
+              let textStorage = textView.textStorage,
+              textStorage.length > 0 else { return nil }
+        lm.ensureLayout(for: tc)
+        let origin = textView.textContainerOrigin
+        let tcPoint = NSPoint(
+            x: point.x - origin.x,
+            y: point.y - origin.y
+        )
+        let glyphIdx = lm.glyphIndex(for: tcPoint, in: tc)
+        guard glyphIdx < lm.numberOfGlyphs else { return nil }
+        let glyphRect = lm.boundingRect(forGlyphRange: NSRange(location: glyphIdx, length: 1), in: tc)
+        guard glyphRect.contains(tcPoint) else { return nil }
+        let charIdx = lm.characterIndexForGlyph(at: glyphIdx)
+        guard charIdx < textStorage.length,
+              textStorage.attribute(attachmentKey, at: charIdx, effectiveRange: nil) is AgentInputImageAttachmentBox else {
+            return nil
+        }
+        var ordinal = 0
+        if charIdx > 0 {
+            textStorage.enumerateAttribute(attachmentKey, in: NSRange(location: 0, length: charIdx)) { value, _, _ in
+                if value is AgentInputImageAttachmentBox {
+                    ordinal += 1
+                }
+            }
+        }
+        let viewRect = glyphRect.offsetBy(dx: origin.x, dy: origin.y)
+        return (ordinal, viewRect)
+    }
+
+    static func imageOrdinal(in textView: NSTextView, at point: NSPoint) -> Int? {
+        imageHit(in: textView, at: point)?.ordinal
+    }
+
+    static func inlineImageString(
+        _ images: [AgentImageAttachment],
+        attributes: [NSAttributedString.Key: Any]
+    ) -> NSAttributedString {
+        let result = NSMutableAttributedString()
+        for image in images {
+            let display = ImageAttachmentHelpers.inlineDisplayImage(for: image)
+            let textAttachment = NSTextAttachment()
+            textAttachment.image = display.image
+            textAttachment.bounds = display.bounds
+            let richAttachment = NSMutableAttributedString(attachment: textAttachment)
+            let attachmentRange = NSRange(location: 0, length: richAttachment.length)
+            richAttachment.addAttributes(attributes, range: attachmentRange)
+            richAttachment.addAttribute(
+                attachmentKey,
+                value: AgentInputImageAttachmentBox(image),
+                range: attachmentRange
+            )
+            result.append(richAttachment)
+            result.append(NSAttributedString(string: "\n", attributes: attributes))
+        }
+        return result
+    }
+
+    static func removingMarkers(from text: String) -> String {
+        AgentImageAttachment.removingInlineTextMarkers(from: text)
+    }
+
+    static func markerRange(in text: String, atOrdinal ordinal: Int) -> NSRange? {
+        guard ordinal >= 0 else { return nil }
+        let source = text as NSString
+        var location = 0
+        var currentOrdinal = 0
+        while location < source.length {
+            let range = source.range(of: marker, options: [], range: NSRange(location: location, length: source.length - location))
+            guard range.location != NSNotFound else { return nil }
+            if currentOrdinal == ordinal { return range }
+            currentOrdinal += 1
+            location = NSMaxRange(range)
+        }
+        return nil
+    }
+
+    private static func imageBounds(for attachment: AgentImageAttachment, image: NSImage?) -> NSRect {
+        let imageSize = image?.size ?? .zero
+        let width = imageSize.width > 0 ? imageSize.width : CGFloat(attachment.width ?? 0)
+        let height = imageSize.height > 0 ? imageSize.height : CGFloat(attachment.height ?? 0)
+        guard width > 0, height > 0 else {
+            return NSRect(x: 0, y: 0, width: 240, height: 150)
+        }
+
+        let scale = min(1, 420 / width, 220 / height)
+        return NSRect(x: 0, y: 0, width: width * scale, height: height * scale)
+    }
+}
+
+private final class AgentPassthroughScrollView: NSScrollView {
+    override func scrollWheel(with event: NSEvent) {
+        if !hasVerticalScroller {
+            nextResponder?.scrollWheel(with: event)
+        } else {
+            super.scrollWheel(with: event)
+        }
+    }
+}
+
 public struct AgentAutoGrowingTextView: NSViewRepresentable {
     @Binding public var text: String
+    public var inlineImages: [AgentImageAttachment]
     public var placeholder: String
     public var theme: Theme
     public var minHeight: CGFloat = 18
-    public var maxHeight: CGFloat = 160
+    public var maxHeight: CGFloat = .greatestFiniteMagnitude
     public var focusRequest: Int = 0
     public var cursorToEnd: Bool = true
     @Binding public var calculatedHeight: CGFloat
     public var onSend: () -> Void
     public var onFocusChanged: ((Bool) -> Void)?
-    public var onImagesPasted: (([AgentImageAttachment]) -> Void)?
+    public var onInlineImagesChanged: (([AgentImageAttachment]) -> Void)?
+    public var onImagePreview: ((Int) -> Void)?
     public var onDeleteBackwardWhenEmpty: (() -> Void)?
     public var onNavigatePrevious: ((_ toEnd: Bool) -> Bool)?
     public var onNavigateNext: ((_ toStart: Bool) -> Bool)?
 
     public init(
         text: Binding<String>,
+        inlineImages: [AgentImageAttachment] = [],
         placeholder: String,
         theme: Theme,
         minHeight: CGFloat = 18,
-        maxHeight: CGFloat = 160,
+        maxHeight: CGFloat = .greatestFiniteMagnitude,
         focusRequest: Int = 0,
         cursorToEnd: Bool = true,
         calculatedHeight: Binding<CGFloat>,
         onSend: @escaping () -> Void,
         onFocusChanged: ((Bool) -> Void)? = nil,
-        onImagesPasted: (([AgentImageAttachment]) -> Void)? = nil,
+        onInlineImagesChanged: (([AgentImageAttachment]) -> Void)? = nil,
+        onImagePreview: ((Int) -> Void)? = nil,
         onDeleteBackwardWhenEmpty: (() -> Void)? = nil,
         onNavigatePrevious: ((_ toEnd: Bool) -> Bool)? = nil,
         onNavigateNext: ((_ toStart: Bool) -> Bool)? = nil
     ) {
         self._text = text
+        self.inlineImages = inlineImages
         self.placeholder = placeholder
         self.theme = theme
         self.minHeight = minHeight
@@ -45,7 +220,8 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
         self._calculatedHeight = calculatedHeight
         self.onSend = onSend
         self.onFocusChanged = onFocusChanged
-        self.onImagesPasted = onImagesPasted
+        self.onInlineImagesChanged = onInlineImagesChanged
+        self.onImagePreview = onImagePreview
         self.onDeleteBackwardWhenEmpty = onDeleteBackwardWhenEmpty
         self.onNavigatePrevious = onNavigatePrevious
         self.onNavigateNext = onNavigateNext
@@ -54,7 +230,7 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
     public func makeNSView(context: Context) -> NSScrollView {
         context.coordinator.update(from: self, heightBinding: _calculatedHeight)
 
-        let scrollView = NSScrollView()
+        let scrollView = AgentPassthroughScrollView()
         scrollView.drawsBackground = false
         scrollView.borderType = .noBorder
         scrollView.hasVerticalScroller = false
@@ -64,8 +240,10 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
         scrollView.registerForDraggedTypes([.fileURL, .png, .tiff])
 
         let textView = AgentInputCustomTextView()
+        textView.wantsLayer = true
+        textView.layerContentsRedrawPolicy = .onSetNeedsDisplay
         textView.setupDragDrop()
-        textView.isRichText = false
+        textView.isRichText = true
         textView.isEditable = true
         textView.isSelectable = true
         textView.allowsUndo = true
@@ -83,6 +261,14 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
             .foregroundColor: textColor,
             .paragraphStyle: paraStyle
         ]
+        textView.string = text
+        textView.textStorage?.setAttributedString(
+            AgentInputImageTextSupport.attributedString(
+                from: text,
+                images: inlineImages,
+                attributes: textView.typingAttributes
+            )
+        )
         textView.backgroundColor = .clear
         textView.drawsBackground = false
         textView.textContainerInset = .zero
@@ -91,17 +277,17 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
         textView.autoresizingMask = [.width]
-        textView.delegate = context.coordinator
         textView.placeholderString = placeholder
-        textView.string = text
+        textView.delegate = context.coordinator
         context.coordinator.lastKnownText = text
         context.coordinator.lastObservedText = text
+        context.coordinator.lastThemeId = theme.id
         if !text.isEmpty {
             textView.selectedRange = NSRange(location: (text as NSString).length, length: 0)
         }
         textView.onSend = onSend
         textView.onFocusChanged = onFocusChanged
-        textView.onImagesPasted = onImagesPasted
+        textView.onImagePreview = onImagePreview
         textView.onDeleteBackwardWhenEmpty = onDeleteBackwardWhenEmpty
         textView.onNavigatePrevious = onNavigatePrevious
         textView.onNavigateNext = onNavigateNext
@@ -142,11 +328,20 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
                 shouldUpdateText = false
             }
 
-            if shouldUpdateText {
-                tv.string = text
+            if shouldUpdateText || !AgentInputImageTextSupport.containsImages(inlineImages, in: tv) {
+                tv.hideInlineImageHoverBar()
+                let selection = tv.selectedRange()
+                tv.textStorage?.setAttributedString(
+                    AgentInputImageTextSupport.attributedString(
+                        from: text,
+                        images: inlineImages,
+                        attributes: tv.typingAttributes
+                    )
+                )
                 context.coordinator.lastKnownText = text
                 context.coordinator.lastObservedText = text
-                tv.selectedRange = NSRange(location: (text as NSString).length, length: 0)
+                let maxLocation = (tv.string as NSString).length
+                tv.selectedRange = NSRange(location: min(selection.location, maxLocation), length: 0)
                 tv.needsDisplay = true
                 DispatchQueue.main.async {
                     tv.recalculateHeight()
@@ -154,33 +349,33 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
             } else if tv.string == text {
                 context.coordinator.lastObservedText = text
             }
-            let textColor = NSColor(cgColor: theme.foreground.cgColor) ?? .textColor
-            tv.textColor = textColor
-            tv.insertionPointColor = textColor
-            let pStyle = tv.customParagraphStyle ?? {
-                let p = NSMutableParagraphStyle()
-                p.lineSpacing = 3
-                p.paragraphSpacing = 0
-                return p
-            }()
-            tv.customParagraphStyle = pStyle
-            tv.typingAttributes = [
-                .font: tv.font ?? NSFont.systemFont(ofSize: 13, weight: .regular),
-                .foregroundColor: textColor,
-                .paragraphStyle: pStyle
-            ]
+            if context.coordinator.lastThemeId != theme.id {
+                context.coordinator.lastThemeId = theme.id
+                let textColor = NSColor(cgColor: theme.foreground.cgColor) ?? .textColor
+                tv.textColor = textColor
+                tv.insertionPointColor = textColor
+                let pStyle = tv.customParagraphStyle ?? {
+                    let p = NSMutableParagraphStyle()
+                    p.lineSpacing = 3
+                    p.paragraphSpacing = 0
+                    return p
+                }()
+                tv.customParagraphStyle = pStyle
+                tv.typingAttributes = [
+                    .font: tv.font ?? NSFont.systemFont(ofSize: 13, weight: .regular),
+                    .foregroundColor: textColor,
+                    .paragraphStyle: pStyle
+                ]
+            }
             tv.onSend = onSend
             tv.onFocusChanged = onFocusChanged
-            tv.onImagesPasted = onImagesPasted
+            tv.onImagePreview = onImagePreview
             tv.onDeleteBackwardWhenEmpty = onDeleteBackwardWhenEmpty
             tv.onNavigatePrevious = onNavigatePrevious
             tv.onNavigateNext = onNavigateNext
         }
 
-        scrollView.hasVerticalScroller = (calculatedHeight >= maxHeight)
-        if calculatedHeight < maxHeight {
-            scrollView.contentView.scroll(to: .zero)
-        }
+        scrollView.hasVerticalScroller = false
 
         context.coordinator.focusTextViewIfRequested()
     }
@@ -195,11 +390,12 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
         weak var scrollView: NSScrollView?
         private var heightBinding: Binding<CGFloat>?
         private var minHeight: CGFloat = 18
-        private var maxHeight: CGFloat = 160
+        private var maxHeight: CGFloat = .greatestFiniteMagnitude
         private var lastReportedHeight: CGFloat?
         private var lastFocusRequest: Int?
         var lastKnownText: String = ""
         var lastObservedText: String = ""
+        var lastThemeId: String = ""
 
         init(_ parent: AgentAutoGrowingTextView) {
             self.parent = parent
@@ -249,7 +445,7 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
         }
 
         func reportHeight(_ rawHeight: CGFloat) {
-            let newHeight = ceil(min(maxHeight, max(minHeight, rawHeight)))
+            let newHeight = ceil(max(minHeight, min(maxHeight, rawHeight)))
             if let lastReportedHeight, abs(lastReportedHeight - newHeight) < 1.0 {
                 return
             }
@@ -271,6 +467,7 @@ public struct AgentAutoGrowingTextView: NSViewRepresentable {
         public func textDidChange(_ notification: Notification) {
             guard let tv = textView else { return }
             lastKnownText = tv.string
+            parent.onInlineImagesChanged?(AgentInputImageTextSupport.images(in: tv))
             parent.text = tv.string
             tv.recalculateHeight()
             tv.needsDisplay = true
@@ -291,11 +488,20 @@ public final class AgentInputCustomTextView: NSTextView {
     public var onSend: (() -> Void)?
     public var onHeightChanged: ((CGFloat) -> Void)?
     public var onFocusChanged: ((Bool) -> Void)?
-    public var onImagesPasted: (([AgentImageAttachment]) -> Void)?
+    public var onImagePreview: ((Int) -> Void)?
     public var onDeleteBackwardWhenEmpty: (() -> Void)?
     public var onNavigatePrevious: ((_ toEnd: Bool) -> Bool)?
     public var onNavigateNext: ((_ toStart: Bool) -> Bool)?
     public var needsAutoFocusOnWindowAttachment: Bool = false
+    private var isInsertingInlineImages: Bool = false
+    private var inlineImageHoverBar: AgentInlineImageHoverBarView?
+    private var hoveredInlineImageOrdinal: Int?
+    private var hoverTrackingArea: NSTrackingArea?
+
+    public func hideInlineImageHoverBar() {
+        inlineImageHoverBar?.isHidden = true
+        hoveredInlineImageOrdinal = nil
+    }
 
     public func isCursorOnFirstLine() -> Bool {
         let sel = selectedRange()
@@ -358,6 +564,16 @@ public final class AgentInputCustomTextView: NSTextView {
             NSPasteboard.PasteboardType("NSFilenamesPboardType"),
             .string
         ])
+        if hoverTrackingArea == nil {
+            let area = NSTrackingArea(
+                rect: .zero,
+                options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+                owner: self,
+                userInfo: nil
+            )
+            addTrackingArea(area)
+            hoverTrackingArea = area
+        }
     }
 
     public var customParagraphStyle: NSParagraphStyle?
@@ -365,6 +581,8 @@ public final class AgentInputCustomTextView: NSTextView {
     public override var typingAttributes: [NSAttributedString.Key: Any] {
         get {
             var attrs = super.typingAttributes
+            attrs.removeValue(forKey: .attachment)
+            attrs.removeValue(forKey: AgentInputImageTextSupport.attachmentKey)
             if attrs[.paragraphStyle] == nil, let p = customParagraphStyle {
                 attrs[.paragraphStyle] = p
             }
@@ -372,6 +590,8 @@ public final class AgentInputCustomTextView: NSTextView {
         }
         set {
             var newAttrs = newValue
+            newAttrs.removeValue(forKey: .attachment)
+            newAttrs.removeValue(forKey: AgentInputImageTextSupport.attachmentKey)
             if newAttrs[.paragraphStyle] == nil, let p = customParagraphStyle {
                 newAttrs[.paragraphStyle] = p
             }
@@ -396,30 +616,45 @@ public final class AgentInputCustomTextView: NSTextView {
     }
 
     public override func scrollRangeToVisible(_ range: NSRange) {
-        if let sv = enclosingScrollView {
-            let usedH = layoutManager?.usedRect(for: textContainer!).height ?? bounds.height
-            if usedH <= 160 {
-                sv.contentView.scroll(to: .zero)
-                return
-            }
-        }
         super.scrollRangeToVisible(range)
+        guard let lm = layoutManager, let tc = textContainer else { return }
+        lm.ensureLayout(for: tc)
+        let glyphRange = lm.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+        var caretRect = lm.boundingRect(forGlyphRange: glyphRange, in: tc)
+        if caretRect.height <= 0, lm.numberOfGlyphs > 0 {
+            let charIdx = min(range.location, max(0, (string as NSString).length - 1))
+            let glyphIdx = min(lm.glyphIndexForCharacter(at: charIdx), lm.numberOfGlyphs - 1)
+            caretRect = lm.lineFragmentRect(forGlyphAt: glyphIdx, effectiveRange: nil)
+        }
+        let targetRect = caretRect.insetBy(dx: 0, dy: -24)
+        if let outerScrollView = enclosingScrollView?.enclosingScrollView,
+           let docView = outerScrollView.documentView {
+            let rectInDoc = convert(targetRect, to: docView)
+            docView.scrollToVisible(rectInDoc)
+        }
     }
 
     public override func keyDown(with event: NSEvent) {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if (flags == .command || flags == [.command, .shift]),
+           (event.keyCode == 9 || event.charactersIgnoringModifiers?.lowercased() == "v") {
+            paste(nil)
+            return
+        }
         if event.keyCode == 36 { // Enter
             if event.modifierFlags.contains(.shift) || event.modifierFlags.contains(.option) {
                 insertNewlineIgnoringFieldEditor(nil)
                 recalculateHeight()
-                if let sv = enclosingScrollView, sv.bounds.height < 160 {
-                    sv.contentView.scroll(to: .zero)
-                }
             } else {
                 onSend?()
             }
             return
         }
         if event.keyCode == 51 { // Backspace
+            if event.modifierFlags.intersection([.command, .control, .option]).isEmpty,
+               deleteInlineImageBeforeCaret() {
+                return
+            }
             if string.isEmpty {
                 onDeleteBackwardWhenEmpty?()
                 return
@@ -455,18 +690,224 @@ public final class AgentInputCustomTextView: NSTextView {
         }
         super.keyDown(with: event)
         recalculateHeight()
-        if let sv = enclosingScrollView, sv.bounds.height < 160 {
-            sv.contentView.scroll(to: .zero)
+    }
+
+    public override func hitTest(_ point: NSPoint) -> NSView? {
+        let pInTV = convert(point, from: superview)
+        if let bar = inlineImageHoverBar, !bar.isHidden, bar.frame.contains(pInTV) {
+            return bar
         }
+        return super.hitTest(point)
+    }
+
+    public override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        if let bar = inlineImageHoverBar, !bar.isHidden, bar.frame.contains(point) {
+            bar.mouseDown(with: event)
+            return
+        }
+        super.mouseDown(with: event)
+        guard event.clickCount >= 2,
+              let imageIndex = AgentInputImageTextSupport.imageOrdinal(in: self, at: point) else { return }
+        onImagePreview?(imageIndex)
+    }
+
+    public override func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+        let point = convert(event.locationInWindow, from: nil)
+        updateInlineImageHover(at: point)
+    }
+
+    public override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        let point = convert(event.locationInWindow, from: nil)
+        if bounds.contains(point), AgentInputImageTextSupport.imageHit(in: self, at: point) != nil {
+            return
+        }
+        inlineImageHoverBar?.isHidden = true
+        hoveredInlineImageOrdinal = nil
+    }
+
+    private func updateInlineImageHover(at point: NSPoint) {
+        if let bar = inlineImageHoverBar, !bar.isHidden, bar.frame.insetBy(dx: -4, dy: -4).contains(point) {
+            return
+        }
+        guard let hit = AgentInputImageTextSupport.imageHit(in: self, at: point) else {
+            inlineImageHoverBar?.isHidden = true
+            hoveredInlineImageOrdinal = nil
+            return
+        }
+        hoveredInlineImageOrdinal = hit.ordinal
+        let imgs = AgentInputImageTextSupport.images(in: self)
+        let bar: AgentInlineImageHoverBarView
+        if let existing = inlineImageHoverBar {
+            bar = existing
+        } else {
+            let created = AgentInlineImageHoverBarView(showsDelete: true)
+            created.onCopy = { [weak self] attachment, ordinal in
+                guard let self else { return }
+                if attachment == nil {
+                    self.copyInlineImage(at: ordinal)
+                }
+            }
+            created.onDelete = { [weak self] ordinal in
+                guard let self else { return }
+                self.deleteInlineImage(at: ordinal)
+            }
+            addSubview(created)
+            inlineImageHoverBar = created
+            bar = created
+        }
+        bar.imageOrdinal = hit.ordinal
+        bar.attachment = (hit.ordinal >= 0 && hit.ordinal < imgs.count) ? imgs[hit.ordinal] : nil
+        let barSize = bar.bounds.size
+        bar.frame = NSRect(
+            x: max(hit.rect.minX + 4, hit.rect.maxX - barSize.width - 6),
+            y: hit.rect.minY + 6,
+            width: barSize.width,
+            height: barSize.height
+        )
+        bar.isHidden = false
+    }
+
+    private func copyHoveredInlineImage() {
+        guard let ordinal = hoveredInlineImageOrdinal else { return }
+        copyInlineImage(at: ordinal)
+    }
+
+    private func copyInlineImage(at ordinal: Int) {
+        let imgs = AgentInputImageTextSupport.images(in: self)
+        guard ordinal >= 0, ordinal < imgs.count else { return }
+        ImageAttachmentHelpers.copyToPasteboard(imgs[ordinal])
+    }
+
+    private func deleteHoveredInlineImage() {
+        guard let ordinal = hoveredInlineImageOrdinal else { return }
+        deleteInlineImage(at: ordinal)
+    }
+
+    private func deleteInlineImage(at ordinal: Int) {
+        guard let textStorage else { return }
+        var foundRange: NSRange?
+        var current = 0
+        textStorage.enumerateAttribute(
+            AgentInputImageTextSupport.attachmentKey,
+            in: NSRange(location: 0, length: textStorage.length)
+        ) { value, range, stop in
+            guard value is AgentInputImageAttachmentBox else { return }
+            if current == ordinal {
+                foundRange = range
+                stop.pointee = true
+            }
+            current += 1
+        }
+        guard var deleteRange = foundRange else { return }
+        let source = string as NSString
+        if NSMaxRange(deleteRange) < source.length,
+           source.substring(with: NSRange(location: NSMaxRange(deleteRange), length: 1)) == "\n" {
+            deleteRange.length += 1
+        }
+        if source.replacingCharacters(in: deleteRange, with: "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            deleteRange = NSRange(location: 0, length: source.length)
+        }
+        inlineImageHoverBar?.isHidden = true
+        hoveredInlineImageOrdinal = nil
+        insertText("", replacementRange: deleteRange)
+        recalculateHeight()
+    }
+
+    public override func copy(_ sender: Any?) {
+        if let textStorage {
+            let sel = selectedRange()
+            if sel.length > 0, sel.location + sel.length <= textStorage.length {
+                var matchedBox: AgentInputImageAttachmentBox?
+                textStorage.enumerateAttribute(AgentInputImageTextSupport.attachmentKey, in: sel) { val, _, stop in
+                    if let box = val as? AgentInputImageAttachmentBox {
+                        matchedBox = box
+                        stop.pointee = true
+                    }
+                }
+                let plainWithoutMarkers = AgentImageAttachment
+                    .removingInlineTextMarkers(from: (textStorage.string as NSString).substring(with: sel))
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if let box = matchedBox, plainWithoutMarkers.isEmpty {
+                    ImageAttachmentHelpers.copyToPasteboard(box.image)
+                    return
+                }
+            }
+        }
+        super.copy(sender)
+    }
+
+    public override func menu(for event: NSEvent) -> NSMenu? {
+        let pt = convert(event.locationInWindow, from: nil)
+        if let hit = AgentInputImageTextSupport.imageHit(in: self, at: pt) {
+            hoveredInlineImageOrdinal = hit.ordinal
+            let menu = NSMenu()
+            let copyItem = NSMenuItem(title: "Copy Image", action: #selector(handleContextCopyInlineImage), keyEquivalent: "")
+            copyItem.target = self
+            menu.addItem(copyItem)
+            let deleteItem = NSMenuItem(title: "Remove Image", action: #selector(handleContextDeleteInlineImage), keyEquivalent: "")
+            deleteItem.target = self
+            menu.addItem(deleteItem)
+            return menu
+        }
+        return super.menu(for: event)
+    }
+
+    @objc private func handleContextCopyInlineImage() {
+        copyHoveredInlineImage()
+    }
+
+    @objc private func handleContextDeleteInlineImage() {
+        deleteHoveredInlineImage()
+    }
+
+    public override var readablePasteboardTypes: [NSPasteboard.PasteboardType] {
+        var types = super.readablePasteboardTypes
+        let imageTypes: [NSPasteboard.PasteboardType] = [
+            .png,
+            .tiff,
+            .fileURL,
+            NSPasteboard.PasteboardType("public.png"),
+            NSPasteboard.PasteboardType("public.jpeg"),
+            NSPasteboard.PasteboardType("public.image"),
+            NSPasteboard.PasteboardType("public.tiff"),
+            NSPasteboard.PasteboardType("public.file-url"),
+            NSPasteboard.PasteboardType("NSFilenamesPboardType")
+        ]
+        for t in imageTypes where !types.contains(t) {
+            types.append(t)
+        }
+        return types
+    }
+
+    public override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        if item.action == #selector(paste(_:)) || item.action == #selector(pasteAsPlainText(_:)) {
+            if ImageAttachmentHelpers.hasImages(in: .general) || NSPasteboard.general.string(forType: .string) != nil {
+                return true
+            }
+        }
+        return super.validateUserInterfaceItem(item)
+    }
+
+    public override func pasteAsPlainText(_ sender: Any?) {
+        paste(sender)
     }
 
     public override func paste(_ sender: Any?) {
         let images = ImageAttachmentHelpers.extractImages(from: .general)
         if !images.isEmpty {
-            onImagesPasted?(images)
-            if let string = NSPasteboard.general.string(forType: .string), !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                super.paste(sender)
+            insertInlineImages(images)
+            if let string = NSPasteboard.general.string(forType: .string),
+               !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                insertText(string, replacementRange: selectedRange())
             }
+            recalculateHeight()
+            return
+        }
+        if let string = NSPasteboard.general.string(forType: .string) {
+            insertText(string, replacementRange: selectedRange())
             recalculateHeight()
             return
         }
@@ -484,22 +925,282 @@ public final class AgentInputCustomTextView: NSTextView {
     public override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         let images = ImageAttachmentHelpers.extractImages(from: sender.draggingPasteboard)
         if !images.isEmpty {
-            onImagesPasted?(images)
+            let point = convert(sender.draggingLocation, from: nil)
+            let location = characterIndexForInsertion(at: point)
+            selectedRange = NSRange(location: min(location, (string as NSString).length), length: 0)
+            insertInlineImages(images)
             return true
         }
         return super.performDragOperation(sender)
+    }
+
+    private func insertInlineImages(_ images: [AgentImageAttachment]) {
+        guard !images.isEmpty else { return }
+
+        let source = string as NSString
+        var range = selectedRange()
+        if range.length > 0, let textStorage {
+            var selectionContainsImage = false
+            let clamped = NSIntersectionRange(range, NSRange(location: 0, length: textStorage.length))
+            if clamped.length > 0 {
+                textStorage.enumerateAttribute(AgentInputImageTextSupport.attachmentKey, in: clamped) { value, _, stop in
+                    if value is AgentInputImageAttachmentBox {
+                        selectionContainsImage = true
+                        stop.pointee = true
+                    }
+                }
+            }
+            if selectionContainsImage {
+                range = NSRange(location: NSMaxRange(clamped), length: 0)
+            }
+        }
+        var safeLocation = min(range.location, source.length)
+        if range.length == 0,
+           safeLocation > 0,
+           safeLocation < source.length,
+           let textStorage,
+           textStorage.attribute(AgentInputImageTextSupport.attachmentKey, at: safeLocation - 1, effectiveRange: nil) is AgentInputImageAttachmentBox,
+           source.substring(with: NSRange(location: safeLocation, length: 1)) == "\n" {
+            safeLocation += 1
+        }
+        range = NSRange(location: safeLocation, length: min(range.length, source.length - safeLocation))
+        let insertions = NSMutableAttributedString()
+
+        if safeLocation > 0, source.substring(with: NSRange(location: safeLocation - 1, length: 1)) != "\n" {
+            insertions.append(NSAttributedString(string: "\n", attributes: typingAttributes))
+        }
+        insertions.append(
+            AgentInputImageTextSupport.inlineImageString(images, attributes: typingAttributes)
+        )
+
+        isInsertingInlineImages = true
+        insertText(insertions, replacementRange: range)
+        isInsertingInlineImages = false
+        let caretLocation = safeLocation + insertions.length
+        selectedRange = NSRange(location: max(0, min(caretLocation, (string as NSString).length)), length: 0)
+        scrollRangeToVisible(selectedRange())
+        recalculateHeight()
+    }
+
+    public override func insertText(_ insertString: Any, replacementRange: NSRange) {
+        if isInsertingInlineImages {
+            super.insertText(insertString, replacementRange: replacementRange)
+            return
+        }
+
+        let rawText: String?
+        if let s = insertString as? String {
+            rawText = s
+        } else if let attr = insertString as? NSAttributedString {
+            rawText = attr.string
+        } else {
+            rawText = nil
+        }
+
+        guard let rawText, !rawText.isEmpty, let textStorage else {
+            super.insertText(insertString, replacementRange: replacementRange)
+            return
+        }
+
+        let cleanText = AgentImageAttachment.removingInlineTextMarkers(from: rawText)
+        guard !cleanText.isEmpty else { return }
+
+        let source = string as NSString
+        var targetRange = replacementRange.location != NSNotFound ? replacementRange : selectedRange()
+        targetRange.location = min(targetRange.location, source.length)
+        targetRange.length = min(targetRange.length, source.length - targetRange.location)
+
+        let isAfterAttachment = targetRange.location > 0
+            && targetRange.location <= textStorage.length
+            && textStorage.attribute(
+                AgentInputImageTextSupport.attachmentKey,
+                at: targetRange.location - 1,
+                effectiveRange: nil
+            ) is AgentInputImageAttachmentBox
+
+        var textToInsert = cleanText
+        if isAfterAttachment {
+            let afterIdx = NSMaxRange(targetRange)
+            if targetRange.length == 0,
+               afterIdx < source.length,
+               source.substring(with: NSRange(location: afterIdx, length: 1)) == "\n" {
+                // Move insertion onto the line below the image instead of typing on the image's line
+                targetRange.location += 1
+                if textToInsert == "\n" {
+                    selectedRange = NSRange(location: targetRange.location, length: 0)
+                    scrollRangeToVisible(selectedRange())
+                    recalculateHeight()
+                    return
+                }
+            } else if !textToInsert.hasPrefix("\n") {
+                textToInsert = "\n" + textToInsert
+            }
+        }
+
+        let afterIdx = NSMaxRange(targetRange)
+        let isBeforeAttachment = afterIdx < textStorage.length
+            && textStorage.attribute(
+                AgentInputImageTextSupport.attachmentKey,
+                at: afterIdx,
+                effectiveRange: nil
+            ) is AgentInputImageAttachmentBox
+
+        var desiredCaretLocation: Int?
+        if isBeforeAttachment {
+            if targetRange.location > 0,
+               source.substring(with: NSRange(location: targetRange.location - 1, length: 1)) != "\n",
+               !textToInsert.hasPrefix("\n") {
+                textToInsert = "\n" + textToInsert
+            }
+            if !textToInsert.hasSuffix("\n") {
+                let caretOffset = (textToInsert as NSString).length
+                textToInsert += "\n"
+                desiredCaretLocation = targetRange.location + caretOffset
+            }
+        }
+
+        let attributedInsertion = NSAttributedString(string: textToInsert, attributes: typingAttributes)
+        super.insertText(attributedInsertion, replacementRange: targetRange)
+        if let desiredCaretLocation {
+            let clamped = max(0, min(desiredCaretLocation, (string as NSString).length))
+            selectedRange = NSRange(location: clamped, length: 0)
+        }
+        recalculateHeight()
+    }
+
+    private func deleteInlineImageBeforeCaret() -> Bool {
+        let selection = selectedRange()
+        guard selection.length == 0,
+              let textStorage,
+              selection.location > 0 else { return false }
+
+        let source = string as NSString
+        let previousLocation = selection.location - 1
+
+        // If caret is at the start of an image line ("text\n|[image]"), don't delete the "\n"
+        // and merge the image onto the text line; move the caret to the end of the text line instead.
+        if selection.location < textStorage.length,
+           textStorage.attribute(
+                AgentInputImageTextSupport.attachmentKey,
+                at: selection.location,
+                effectiveRange: nil
+           ) is AgentInputImageAttachmentBox,
+           source.substring(with: NSRange(location: previousLocation, length: 1)) == "\n",
+           previousLocation > 0,
+           source.substring(with: NSRange(location: previousLocation - 1, length: 1)) != "\n" {
+            selectedRange = NSRange(location: previousLocation, length: 0)
+            return true
+        }
+
+        let imageLocation: Int
+        var deleteRange: NSRange
+        if source.substring(with: NSRange(location: previousLocation, length: 1)) == "\n",
+           previousLocation > 0,
+           textStorage.attribute(
+                AgentInputImageTextSupport.attachmentKey,
+                at: previousLocation - 1,
+                effectiveRange: nil
+           ) is AgentInputImageAttachmentBox {
+            imageLocation = previousLocation - 1
+            deleteRange = NSRange(location: imageLocation, length: 2)
+        } else if textStorage.attribute(
+            AgentInputImageTextSupport.attachmentKey,
+            at: previousLocation,
+            effectiveRange: nil
+        ) is AgentInputImageAttachmentBox {
+            imageLocation = previousLocation
+            deleteRange = NSRange(location: imageLocation, length: 1)
+            if NSMaxRange(deleteRange) < source.length,
+               source.substring(with: NSRange(location: NSMaxRange(deleteRange), length: 1)) == "\n" {
+                deleteRange.length += 1
+            }
+        } else {
+            return false
+        }
+        if source.replacingCharacters(in: deleteRange, with: "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            deleteRange = NSRange(location: 0, length: source.length)
+        }
+        hideInlineImageHoverBar()
+        insertText("", replacementRange: deleteRange)
+        recalculateHeight()
+        return true
     }
 
     public func recalculateHeight() {
         guard let lm = layoutManager, let tc = textContainer else { return }
         lm.ensureLayout(for: tc)
         let usedRect = lm.usedRect(for: tc)
-        let newH = ceil(usedRect.height)
-        let clampedH = min(160, max(18, newH))
-        if let sv = enclosingScrollView, clampedH < 160 {
-            sv.contentView.scroll(to: .zero)
+        onHeightChanged?(ceil(max(18, usedRect.height)))
+    }
+
+    public func adjustedInsertionPointRect(_ rect: NSRect) -> NSRect {
+        let baseFont = font ?? NSFont.systemFont(ofSize: 13, weight: .regular)
+        let normalHeight = ceil(layoutManager?.defaultLineHeight(for: baseFont) ?? 16)
+        guard rect.height > normalHeight + 4,
+              let textStorage,
+              let layoutManager else {
+            return rect
         }
-        onHeightChanged?(clampedH)
+
+        let sel = selectedRange()
+        if sel.length == 0,
+           sel.location > 0,
+           sel.location <= textStorage.length,
+           textStorage.attribute(
+                AgentInputImageTextSupport.attachmentKey,
+                at: sel.location - 1,
+                effectiveRange: nil
+           ) is AgentInputImageAttachmentBox {
+            return rect
+        }
+
+        let charIdx = min(sel.location, max(0, textStorage.length - 1))
+        if layoutManager.numberOfGlyphs > 0 {
+            let glyphIdx = min(layoutManager.glyphIndexForCharacter(at: charIdx), layoutManager.numberOfGlyphs - 1)
+            let lineRect = layoutManager.lineFragmentRect(forGlyphAt: glyphIdx, effectiveRange: nil)
+            let baselineY = layoutManager.location(forGlyphAt: glyphIdx).y
+            let topY = textContainerOrigin.y + lineRect.minY + baselineY - baseFont.ascender
+            return NSRect(x: rect.origin.x, y: floor(topY), width: rect.width, height: normalHeight)
+        }
+
+        return NSRect(x: rect.origin.x, y: rect.maxY - normalHeight, width: rect.width, height: normalHeight)
+    }
+
+    public override func layout() {
+        super.layout()
+        syncSystemInsertionIndicatorFrame()
+    }
+
+    public override func setSelectedRanges(
+        _ ranges: [NSValue],
+        affinity: NSSelectionAffinity,
+        stillSelecting stillSelectingFlag: Bool
+    ) {
+        super.setSelectedRanges(ranges, affinity: affinity, stillSelecting: stillSelectingFlag)
+        syncSystemInsertionIndicatorFrame()
+        needsDisplay = true
+    }
+
+    public override func updateInsertionPointStateAndRestartTimer(_ restartFlag: Bool) {
+        super.updateInsertionPointStateAndRestartTimer(restartFlag)
+        syncSystemInsertionIndicatorFrame()
+    }
+
+    private func syncSystemInsertionIndicatorFrame() {
+        for subview in subviews where String(describing: type(of: subview)).contains("InsertionIndicator") {
+            let adjusted = adjustedInsertionPointRect(subview.frame)
+            if subview.frame != adjusted {
+                subview.frame = adjusted
+            }
+        }
+    }
+
+    public override func drawInsertionPoint(in rect: NSRect, color: NSColor, turnedOn flag: Bool) {
+        if flag {
+            super.drawInsertionPoint(in: adjustedInsertionPointRect(rect), color: color, turnedOn: true)
+        } else {
+            super.drawInsertionPoint(in: rect, color: color, turnedOn: false)
+        }
     }
 
     public override func draw(_ dirtyRect: NSRect) {
@@ -518,6 +1219,7 @@ public final class AgentInputCustomTextView: NSTextView {
 public struct AgentInputTextBlockState: Identifiable, Equatable, Sendable {
     public let id: String
     public var text: String
+    public var inlineImages: [AgentImageAttachment]
     public var height: CGFloat
     public var focusRequest: Int
     public var cursorToEnd: Bool
@@ -525,12 +1227,14 @@ public struct AgentInputTextBlockState: Identifiable, Equatable, Sendable {
     public init(
         id: String = UUID().uuidString,
         text: String = "",
+        inlineImages: [AgentImageAttachment] = [],
         height: CGFloat = 18,
         focusRequest: Int = 0,
         cursorToEnd: Bool = true
     ) {
         self.id = id
         self.text = text
+        self.inlineImages = inlineImages
         self.height = height
         self.focusRequest = focusRequest
         self.cursorToEnd = cursorToEnd
@@ -596,9 +1300,6 @@ public struct AgentInputView: View {
     )
 
     private var inputVerticalOffsets: (avatarTop: CGFloat, contentTop: CGFloat) {
-        guard attachedImages.isEmpty else {
-            return (0, 0)
-        }
         let firstCenter: CGFloat = blocks.first?.isQuote == true ? 20 : Self.inputFirstLineHeight / 2
         let avatarCenter = userAvatarSize / 2
         if avatarCenter >= firstCenter {
@@ -610,7 +1311,11 @@ public struct AgentInputView: View {
     /// host can reserve room for it instead of letting extra rows overlap the chat above.
     public var onTotalHeightChange: ((CGFloat) -> Void)?
 
-    public static func makeInputBlocks(from draftBlocks: [PromptBlock], fallbackText: String) -> [AgentInputBlock] {
+    public static func makeInputBlocks(
+        from draftBlocks: [PromptBlock],
+        fallbackText: String,
+        images: [AgentImageAttachment] = []
+    ) -> [AgentInputBlock] {
         let sourceBlocks: [PromptBlock]
         if !draftBlocks.isEmpty {
             sourceBlocks = draftBlocks
@@ -626,19 +1331,26 @@ public struct AgentInputView: View {
         }
 
         var result: [AgentInputBlock] = []
+        var nextImageIndex = 0
         for (index, block) in sourceBlocks.enumerated() {
             switch block {
             case .text(let value):
+                let markerCount = ((value as NSString).components(separatedBy: AgentInputImageTextSupport.marker).count - 1)
+                let imageCount = min(markerCount, images.count - nextImageIndex)
                 result.append(
                     .text(
                         AgentInputTextBlockState(
                             text: value,
+                            inlineImages: imageCount > 0
+                                ? Array(images[nextImageIndex..<(nextImageIndex + imageCount)])
+                                : [],
                             height: 18,
                             focusRequest: (index == lastTextIndex) ? 1 : 0,
                             cursorToEnd: true
                         )
                     )
                 )
+                nextImageIndex += imageCount
             case .quote(let quote):
                 result.append(.quote(id: "quote-\(UUID().uuidString)", quote: quote))
             }
@@ -646,6 +1358,18 @@ public struct AgentInputView: View {
 
         if !result.contains(where: \.isText) {
             result.append(.text(AgentInputTextBlockState(text: "", height: 18, focusRequest: 1)))
+        }
+
+        if nextImageIndex < images.count,
+           let lastTextIndex = result.lastIndex(where: \.isText),
+           case .text(var state) = result[lastTextIndex] {
+            let remainingImages = Array(images[nextImageIndex...])
+            if !state.text.isEmpty, !(state.text as NSString).hasSuffix("\n") {
+                state.text += "\n"
+            }
+            state.text += String(repeating: AgentInputImageTextSupport.marker + "\n", count: remainingImages.count)
+            state.inlineImages.append(contentsOf: remainingImages)
+            result[lastTextIndex] = .text(state)
         }
         return result
     }
@@ -680,7 +1404,8 @@ public struct AgentInputView: View {
         self.onPreviewImages = onPreviewImages
         let initialBlocks = Self.makeInputBlocks(
             from: agentManager.draftBlocks,
-            fallbackText: text.wrappedValue
+            fallbackText: text.wrappedValue,
+            images: attachedImages?.wrappedValue ?? agentManager.draftAttachments
         )
         self._blocks = State(initialValue: initialBlocks)
         self._focusedBlockId = State(initialValue: initialBlocks.last(where: \.isText)?.id ?? initialBlocks.first?.id ?? "")
@@ -716,7 +1441,8 @@ public struct AgentInputView: View {
         self.onPreviewImages = onPreviewImages
         let initialBlocks = Self.makeInputBlocks(
             from: agentManager.draftBlocks,
-            fallbackText: text.wrappedValue
+            fallbackText: text.wrappedValue,
+            images: attachedImages?.wrappedValue ?? agentManager.draftAttachments
         )
         self._blocks = State(initialValue: initialBlocks)
         self._focusedBlockId = State(initialValue: initialBlocks.last(where: \.isText)?.id ?? initialBlocks.first?.id ?? "")
@@ -745,17 +1471,13 @@ public struct AgentInputView: View {
             .onDrop(of: [UTType.image, UTType.fileURL, UTType.png, UTType.jpeg, UTType.tiff, UTType.webP, UTType.heic, UTType.url, UTType.data, UTType.item], isTargeted: $isInputDropTargeted) { providers in
                 ImageAttachmentHelpers.extractImages(from: providers) { droppedImages in
                     guard !droppedImages.isEmpty else { return }
-                    withAnimation(.spring(response: 0.25, dampingFraction: 0.75)) {
-                        attachedImages = ImageAttachmentHelpers.deduplicateAttachments(attachedImages + droppedImages)
-                    }
+                    addImagesInline(droppedImages)
                 }
                 return true
             }
             .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffAttachImages"))) { notification in
                 if let newImages = notification.userInfo?["images"] as? [AgentImageAttachment], !newImages.isEmpty {
-                    withAnimation(.spring(response: 0.25, dampingFraction: 0.75)) {
-                        attachedImages = ImageAttachmentHelpers.deduplicateAttachments(attachedImages + newImages)
-                    }
+                    addImagesInline(newImages)
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffAgentSubmitPrompt"))) { _ in
@@ -771,11 +1493,7 @@ public struct AgentInputView: View {
             }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffDeleteDraftImage"))) { notification in
             if let delIdx = notification.userInfo?["index"] as? Int {
-                withAnimation(.easeInOut(duration: 0.15)) {
-                    if delIdx >= 0 && delIdx < attachedImages.count {
-                        attachedImages.remove(at: delIdx)
-                    }
-                }
+                removeInlineImage(at: delIdx)
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("anyDiffUpdateDraftImage"))) { notification in
@@ -783,9 +1501,7 @@ public struct AgentInputView: View {
                   let image = notification.userInfo?["image"] as? AgentImageAttachment,
                   index >= 0,
                   index < attachedImages.count else { return }
-            withAnimation(.easeInOut(duration: 0.15)) {
-                attachedImages[index] = image
-            }
+            updateInlineImage(at: index, with: image)
         }
         .overlay {
             if onPreviewImages == nil, previewImageIndex != nil && !attachedImages.isEmpty {
@@ -794,15 +1510,10 @@ public struct AgentInputView: View {
                     selectedIndex: $previewImageIndex,
                     allowsEditing: true,
                     onDelete: { delIdx in
-                        withAnimation(.easeInOut(duration: 0.15)) {
-                            if delIdx >= 0 && delIdx < attachedImages.count {
-                                attachedImages.remove(at: delIdx)
-                            }
-                        }
+                        removeInlineImage(at: delIdx)
                     },
                     onEdit: { index, image in
-                        guard index >= 0, index < attachedImages.count else { return }
-                        attachedImages[index] = image
+                        updateInlineImage(at: index, with: image)
                     },
                     theme: theme
                 )
@@ -813,9 +1524,14 @@ public struct AgentInputView: View {
             if !agentManager.draftBlocks.isEmpty {
                 let currentPromptBlocks = blocks.map(\.asPromptBlock)
                 if currentPromptBlocks != agentManager.draftBlocks {
-                    let restored = Self.makeInputBlocks(from: agentManager.draftBlocks, fallbackText: text)
+                    let restored = Self.makeInputBlocks(
+                        from: agentManager.draftBlocks,
+                        fallbackText: text,
+                        images: attachedImages
+                    )
                     blocks = restored
                     focusedBlockId = restored.last(where: \.isText)?.id ?? restored.first?.id ?? ""
+                    syncDraftState()
                 }
             } else if !text.isEmpty && blocks.count == 1, case .text(var state) = blocks[0], state.text.isEmpty {
                 state.text = text
@@ -840,11 +1556,24 @@ public struct AgentInputView: View {
                 inputFocusRequest &+= 1
             }
         }
+        .onChange(of: attachedImages) { newImages in
+            guard inlineImagesInBlocks.isEmpty, !newImages.isEmpty else { return }
+            let restored = Self.makeInputBlocks(
+                from: blocks.map(\.asPromptBlock),
+                fallbackText: text,
+                images: newImages
+            )
+            blocks = restored
+            focusedBlockId = restored.last(where: \.isText)?.id ?? restored.first?.id ?? ""
+            syncDraftState()
+            recalculateTotalHeight()
+        }
         .onChange(of: text) { newText in
             guard !hasQuotes else { return }
             if blocks.count == 1, case .text(var state) = blocks[0] {
-                if state.text != newText {
+                if AgentInputImageTextSupport.removingMarkers(from: state.text) != newText {
                     state.text = newText
+                    state.inlineImages = []
                     blocks[0] = .text(state)
                     syncDraftState()
                 }
@@ -900,43 +1629,10 @@ public struct AgentInputView: View {
                     .padding(.top, offsets.avatarTop)
 
                 VStack(alignment: .leading, spacing: 6) {
-                    // Attached images miniature strip
-                    if !attachedImages.isEmpty {
-                        AgentInputAttachmentThumbnailView(
-                            images: attachedImages,
-                            theme: theme,
-                            onSelect: { index in
-                                if let onPreviewImages = onPreviewImages {
-                                    onPreviewImages(attachedImages, index, true)
-                                } else {
-                                    previewImageIndex = index
-                                }
-                            },
-                            onDelete: { index in
-                                withAnimation(.easeInOut(duration: 0.15)) {
-                                    if index >= 0 && index < attachedImages.count {
-                                        attachedImages.remove(at: index)
-                                    }
-                                }
-                            }
-                        )
-                        .padding(.top, 2)
-                    }
-
                     // Blocks flow (interleaved quotes and text)
                     HStack(alignment: .bottom, spacing: 8) {
                         VStack(alignment: .leading, spacing: 6) {
-                            let totalHeight = estimatedBlocksHeight
-                            let needsScroll = totalHeight > 280
-
-                            if needsScroll {
-                                ScrollView(.vertical, showsIndicators: true) {
-                                    blocksContentView(needsScroll: true)
-                                }
-                                .frame(height: 280)
-                            } else {
-                                blocksContentView(needsScroll: false)
-                            }
+                            blocksContentView()
                         }
                         .frame(maxWidth: .infinity)
                     }
@@ -1041,7 +1737,7 @@ public struct AgentInputView: View {
     }
 
     @ViewBuilder
-    private func blocksContentView(needsScroll: Bool) -> some View {
+    private func blocksContentView() -> some View {
         VStack(spacing: 6) {
             ForEach(Array(blocks.enumerated()), id: \.element.id) { index, block in
                 switch block {
@@ -1073,10 +1769,11 @@ public struct AgentInputView: View {
                             get: { state.text },
                             set: { newText in updateTextBlock(id: state.id, text: newText) }
                         ),
+                        inlineImages: state.inlineImages,
                         placeholder: placeholder,
                         theme: theme,
                         minHeight: 18,
-                        maxHeight: needsScroll ? 120 : 160,
+                        maxHeight: .greatestFiniteMagnitude,
                         focusRequest: effectiveFocusRequest,
                         cursorToEnd: state.cursorToEnd,
                         calculatedHeight: Binding(
@@ -1088,9 +1785,19 @@ public struct AgentInputView: View {
                             isInputFocused = focused
                             if focused { focusedBlockId = state.id }
                         },
-                        onImagesPasted: { newImages in
-                            withAnimation(.spring(response: 0.25, dampingFraction: 0.75)) {
-                                attachedImages = ImageAttachmentHelpers.deduplicateAttachments(attachedImages + newImages)
+                        onInlineImagesChanged: { newImages in
+                            updateTextBlockImages(id: state.id, images: newImages)
+                        },
+                        onImagePreview: { localIndex in
+                            let precedingImageCount = blocks.prefix(index).reduce(0) { count, block in
+                                if case .text(let state) = block { return count + state.inlineImages.count }
+                                return count
+                            }
+                            let globalIndex = precedingImageCount + localIndex
+                            if let onPreviewImages {
+                                onPreviewImages(attachedImages, globalIndex, true)
+                            } else {
+                                previewImageIndex = globalIndex
                             }
                         },
                         onDeleteBackwardWhenEmpty: {
@@ -1133,18 +1840,27 @@ public struct AgentInputView: View {
         if agentManager.draftBlocks != promptBlocks {
             agentManager.draftBlocks = promptBlocks
         }
+        let images = inlineImagesInBlocks
+        if attachedImages != images {
+            attachedImages = images
+        }
+        if agentManager.draftAttachments != images {
+            agentManager.draftAttachments = images
+        }
         if hasQuotes {
-            let formatted = SelectionQuoteFormatter.formatPromptBlocks(promptBlocks)
+            let formatted = SelectionQuoteFormatter.formatPromptBlocks(promptBlocks.map(removingImageMarkers))
             if self.text != formatted {
                 self.text = formatted
             }
         } else {
             let plainText: String
             if blocks.count == 1, case .text(let state) = blocks[0] {
-                plainText = state.text
+                plainText = AgentInputImageTextSupport.removingMarkers(from: state.text)
             } else {
                 plainText = blocks.compactMap { block -> String? in
-                    if case .text(let state) = block { return state.text }
+                    if case .text(let state) = block {
+                        return AgentInputImageTextSupport.removingMarkers(from: state.text)
+                    }
                     return nil
                 }.joined(separator: "\n\n")
             }
@@ -1161,6 +1877,96 @@ public struct AgentInputView: View {
             blocks[index] = .text(state)
         }
         syncDraftState()
+    }
+
+    private var inlineImagesInBlocks: [AgentImageAttachment] {
+        blocks.flatMap { block in
+            if case .text(let state) = block { return state.inlineImages }
+            return []
+        }
+    }
+
+    private func updateTextBlockImages(id: String, images: [AgentImageAttachment]) {
+        guard let index = blocks.firstIndex(where: { $0.id == id }),
+              case .text(var state) = blocks[index],
+              state.inlineImages != images else { return }
+        state.inlineImages = images
+        blocks[index] = .text(state)
+        syncDraftState()
+    }
+
+    private func addImagesInline(_ images: [AgentImageAttachment]) {
+        guard !images.isEmpty else { return }
+        let newImages = ImageAttachmentHelpers.deduplicateAttachments(images)
+        guard !newImages.isEmpty else { return }
+
+        let targetIndex = blocks.firstIndex(where: { $0.id == focusedBlockId && $0.isText })
+            ?? blocks.lastIndex(where: \.isText)
+        guard let targetIndex, case .text(var state) = blocks[targetIndex] else { return }
+        if !state.text.isEmpty, !(state.text as NSString).hasSuffix("\n") {
+            state.text += "\n"
+        }
+        state.text += String(repeating: AgentInputImageTextSupport.marker + "\n", count: newImages.count)
+        state.inlineImages.append(contentsOf: newImages)
+        blocks[targetIndex] = .text(state)
+        syncDraftState()
+        recalculateTotalHeight()
+        inputFocusRequest &+= 1
+    }
+
+    private func removeInlineImage(at globalIndex: Int) {
+        guard globalIndex >= 0 else { return }
+        var imageOffset = 0
+        for blockIndex in blocks.indices {
+            guard case .text(var state) = blocks[blockIndex] else { continue }
+            let imageEnd = imageOffset + state.inlineImages.count
+            guard globalIndex < imageEnd else {
+                imageOffset = imageEnd
+                continue
+            }
+            let localIndex = globalIndex - imageOffset
+            guard let markerRange = AgentInputImageTextSupport.markerRange(in: state.text, atOrdinal: localIndex) else { return }
+            state.text = (state.text as NSString).replacingCharacters(in: markerRange, with: "")
+            state.inlineImages.remove(at: localIndex)
+            blocks[blockIndex] = .text(state)
+            syncDraftState()
+            recalculateTotalHeight()
+            return
+        }
+    }
+
+    private func updateInlineImage(at globalIndex: Int, with image: AgentImageAttachment) {
+        guard globalIndex >= 0 else { return }
+        var imageOffset = 0
+        for blockIndex in blocks.indices {
+            guard case .text(var state) = blocks[blockIndex] else { continue }
+            let imageEnd = imageOffset + state.inlineImages.count
+            guard globalIndex < imageEnd else {
+                imageOffset = imageEnd
+                continue
+            }
+            let existingImage = state.inlineImages[globalIndex - imageOffset]
+            state.inlineImages[globalIndex - imageOffset] = AgentImageAttachment(
+                id: existingImage.id == image.id ? UUID() : image.id,
+                data: image.data,
+                mimeType: image.mimeType,
+                filename: image.filename,
+                width: image.width,
+                height: image.height,
+                fileSize: image.fileSize
+            )
+            blocks[blockIndex] = .text(state)
+            syncDraftState()
+            recalculateTotalHeight()
+            return
+        }
+    }
+
+    private func removingImageMarkers(from block: PromptBlock) -> PromptBlock {
+        if case .text(let value) = block {
+            return .text(AgentInputImageTextSupport.removingMarkers(from: value))
+        }
+        return block
     }
 
     private var estimatedBlocksHeight: CGFloat {
@@ -1180,11 +1986,10 @@ public struct AgentInputView: View {
     private func recalculateTotalHeight() {
         let offsets = inputVerticalOffsets
         let minH = max(userAvatarSize + 8, 38)
-        let attachmentsHeight: CGFloat = attachedImages.isEmpty ? 0 : 62
-        let contentHeight = offsets.contentTop + attachmentsHeight + estimatedBlocksHeight
+        let contentHeight = offsets.contentTop + estimatedBlocksHeight
         let avatarHeight = offsets.avatarTop + userAvatarSize
         let total = 8 + max(avatarHeight, contentHeight)
-        self.calculatedHeight = max(minH, min(total, 280))
+        self.calculatedHeight = max(minH, total)
     }
 
     private func updateTextBlockHeight(id: String, height: CGFloat) {
@@ -1269,6 +2074,7 @@ public struct AgentInputView: View {
                     merged = prevT.isEmpty ? nextT : prevT
                 }
                 prevState.text = merged
+                prevState.inlineImages.append(contentsOf: nextState.inlineImages)
                 prevState.cursorToEnd = true
                 prevState.focusRequest += 1
                 blocks[prevIdx] = .text(prevState)
@@ -1304,9 +2110,16 @@ public struct AgentInputView: View {
                     }
                     return nil
                 }.joined(separator: "\n\n")
+                let singleImages = inlineImagesInBlocks
 
                 let singleId = blocks.first(where: \.isText)?.id ?? UUID().uuidString
-                let finalState = AgentInputTextBlockState(id: singleId, text: singleText, height: 18, focusRequest: 1)
+                let finalState = AgentInputTextBlockState(
+                    id: singleId,
+                    text: singleText,
+                    inlineImages: singleImages,
+                    height: 18,
+                    focusRequest: 1
+                )
                 blocks = [.text(finalState)]
                 focusedBlockId = singleId
                 inputFocusRequest &+= 1
@@ -1359,7 +2172,8 @@ public struct AgentInputView: View {
     private var canSubmitPrompt: Bool {
         let hasText = blocks.contains { block in
             if case .text(let state) = block {
-                return !state.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                return !AgentInputImageTextSupport.removingMarkers(from: state.text)
+                    .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             }
             return false
         }
