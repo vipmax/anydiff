@@ -314,13 +314,13 @@ public final class FolderWatcher: @unchecked Sendable {
 // MARK: - Swift Concurrency AsyncStream
 
 extension FolderWatcher {
-    /// Creates an `AsyncStream` that yields file change event batches as they occur on disk.
+    /// Creates an `AsyncStream` that yields file change event batches for one or more folders.
     public static func events(
-        for url: URL,
+        for urls: [URL],
         latency: TimeInterval = 0.25
     ) -> AsyncStream<[FileSystemChangeEvent]> {
         AsyncStream { continuation in
-            let watcher = FolderWatcher(url: url, latency: latency) { events in
+            let watcher = FolderWatcher(urls: urls, latency: latency) { events in
                 continuation.yield(events)
             }
             watcher.start()
@@ -328,6 +328,14 @@ extension FolderWatcher {
                 watcher.stop()
             }
         }
+    }
+
+    /// Creates an `AsyncStream` that yields file change event batches as they occur on disk.
+    public static func events(
+        for url: URL,
+        latency: TimeInterval = 0.25
+    ) -> AsyncStream<[FileSystemChangeEvent]> {
+        events(for: [url], latency: latency)
     }
 
     /// Creates an `AsyncStream` that yields file change event batches for a path string.

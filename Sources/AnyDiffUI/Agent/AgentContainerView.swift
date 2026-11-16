@@ -13,6 +13,7 @@ public struct AgentContainerView: View {
     public let isGitRepository: Bool
     public let currentBranch: String
     public let worktrees: [GitWorktree]
+    public let reloadToken: UInt64
     public let repoName: String
     public let onClose: () -> Void
     public let onReview: (AgentEditedFilesSummary) -> Void
@@ -36,6 +37,7 @@ public struct AgentContainerView: View {
         isGitRepository: Bool = false,
         currentBranch: String = "",
         worktrees: [GitWorktree] = [],
+        reloadToken: UInt64 = 0,
         repoName: String = "",
         onClose: @escaping () -> Void,
         onReview: @escaping (AgentEditedFilesSummary) -> Void,
@@ -54,6 +56,7 @@ public struct AgentContainerView: View {
         self.isGitRepository = isGitRepository
         self.currentBranch = currentBranch
         self.worktrees = worktrees
+        self.reloadToken = reloadToken
         self.repoName = repoName
         self.onClose = onClose
         self.onReview = onReview
@@ -163,7 +166,9 @@ public struct AgentContainerView: View {
                 agentManager: currentSession.manager,
                 theme: theme,
                 fallbackWorkingDirectory: workingDirectory,
-                worktrees: worktrees
+                worktrees: worktrees,
+                reloadToken: reloadToken,
+                onSelectWorktree: onSelectWorktree
             )
         }
     }
@@ -276,14 +281,60 @@ private struct AgentHeaderWorktreeView: View {
     let theme: Theme
     let fallbackWorkingDirectory: String
     let worktrees: [GitWorktree]
+    let reloadToken: UInt64
+    let onSelectWorktree: ((GitWorktree) -> Void)?
+
+    private var worktreeAccent: Color { Color(theme.accentColor) }
 
     @State private var isHovered: Bool = false
+    @State private var diffStats: GitDiffStats = .zero
+    @State private var externalWatchRevision: UInt64 = 0
+
+    private struct StatsRefreshKey: Equatable {
+        let directory: String
+        let pendingNewWorktree: Bool
+        let status: AgentConnectionStatus
+        let messageCount: Int
+        let liveFileCount: Int
+        let liveAdditions: Int
+        let liveDeletions: Int
+        let reloadToken: UInt64
+        let externalWatchRevision: UInt64
+    }
+
+    private var statsRefreshKey: StatsRefreshKey {
+        StatsRefreshKey(
+            directory: sessionWorkingDirectory,
+            pendingNewWorktree: agentManager.pendingNewWorktree,
+            status: agentManager.status,
+            messageCount: agentManager.messages.count,
+            liveFileCount: agentManager.liveEditedSummary?.files.count ?? 0,
+            liveAdditions: agentManager.liveEditedSummary?.totalAdditions ?? 0,
+            liveDeletions: agentManager.liveEditedSummary?.totalDeletions ?? 0,
+            reloadToken: reloadToken,
+            externalWatchRevision: externalWatchRevision
+        )
+    }
+
+    private var externalWatchTargetPath: String? {
+        guard !agentManager.pendingNewWorktree,
+              worktreeBadgeTitle != nil,
+              !isViewingSessionWorktree,
+              !sessionWorkingDirectory.isEmpty else {
+            return nil
+        }
+        return resolvedPath(sessionWorkingDirectory)
+    }
 
     private var sessionWorkingDirectory: String {
         if let dir = agentManager.workingDirectory, !dir.isEmpty {
             return dir
         }
         return fallbackWorkingDirectory
+    }
+
+    private func resolvedPath(_ path: String) -> String {
+        URL(fileURLWithPath: path).resolvingSymlinksInPath().path
     }
 
     private var worktreeBadgeTitle: String? {
@@ -296,37 +347,94 @@ private struct AgentHeaderWorktreeView: View {
         )
     }
 
+    private var isViewingSessionWorktree: Bool {
+        guard !agentManager.pendingNewWorktree else { return false }
+        return resolvedPath(fallbackWorkingDirectory) == resolvedPath(sessionWorkingDirectory)
+    }
+
+    private var mainWorktree: GitWorktree? {
+        worktrees.first(where: \.isMain)
+    }
+
+    private var targetWorktree: GitWorktree? {
+        guard !agentManager.pendingNewWorktree else { return nil }
+        let targetSessionPath = resolvedPath(sessionWorkingDirectory)
+        if isViewingSessionWorktree {
+            guard let main = mainWorktree, resolvedPath(main.path) != targetSessionPath else {
+                return nil
+            }
+            return main
+        }
+        if let matched = worktrees.first(where: { resolvedPath($0.path) == targetSessionPath }) {
+            return matched
+        }
+        return GitWorktree(path: sessionWorkingDirectory, branch: worktreeBadgeTitle)
+    }
+
+    private var canSwitch: Bool {
+        onSelectWorktree != nil && targetWorktree != nil
+    }
+
     private var worktreeHelpText: String {
         if agentManager.pendingNewWorktree {
             return "Will create a new worktree from \(sessionWorkingDirectory)"
+        }
+        guard let title = worktreeBadgeTitle else { return sessionWorkingDirectory }
+        let statsSuffix = diffStats.hasChanges ? " (+\(diffStats.additions) -\(diffStats.deletions))" : ""
+        if isViewingSessionWorktree, let main = mainWorktree {
+            return "Viewing worktree “\(title)”\(statsSuffix) — click to return to \(main.displayTitle) (Uncommitted)"
+        }
+        if canSwitch {
+            return "Click to switch window diff to “\(title)”\(statsSuffix) — \(sessionWorkingDirectory)"
         }
         return sessionWorkingDirectory
     }
 
     var body: some View {
         if let worktreeTitle = worktreeBadgeTitle {
-            HStack(spacing: 4) {
-                Image(systemName: "square.stack.3d.up")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(isHovered ? Color(theme.foreground).opacity(0.85) : Color(theme.gutterForeground))
-                Text(worktreeTitle)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(isHovered ? Color(theme.foreground) : Color(theme.foreground).opacity(0.75))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+            Button(action: {
+                guard let target = targetWorktree else { return }
+                onSelectWorktree?(target)
+            }) {
+                HStack(spacing: 6) {
+                    if !agentManager.pendingNewWorktree && diffStats.hasChanges {
+                        HStack(spacing: 3) {
+                            if diffStats.additions > 0 {
+                                Text("+\(diffStats.additions)")
+                                    .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                                    .foregroundColor(Color(nsColor: .systemGreen).opacity(0.95))
+                            }
+                            if diffStats.deletions > 0 {
+                                Text("-\(diffStats.deletions)")
+                                    .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                                    .foregroundColor(Color(nsColor: .systemRed).opacity(0.95))
+                            }
+                        }
+                        .fixedSize(horizontal: true, vertical: false)
+                        .layoutPriority(1)
+                    }
+
+                    HStack(spacing: 4) {
+                        Image(systemName: "square.stack.3d.up")
+                            .font(.system(size: 10, weight: .medium))
+                        Text(worktreeTitle)
+                            .font(.system(size: 11, weight: isViewingSessionWorktree ? .semibold : .medium))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    .foregroundColor(badgeForegroundColor)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .frame(minHeight: 20)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(badgeBackgroundColor)
+                    )
+                }
+                .contentShape(Rectangle())
             }
-            .padding(.horizontal, 6)
-            .padding(.vertical, 3)
-            .frame(minHeight: 20)
-            .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(isHovered ? Color(theme.foreground).opacity(0.08) : Color.clear)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .stroke(isHovered ? Color(theme.excerptHeaderBorder).opacity(0.5) : Color.clear, lineWidth: 1)
-            )
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .disabled(!canSwitch)
             .onHover { hovering in
                 withAnimation(.easeOut(duration: 0.12)) {
                     isHovered = hovering
@@ -335,6 +443,55 @@ private struct AgentHeaderWorktreeView: View {
             .help(worktreeHelpText)
             .frame(minWidth: 0, maxWidth: .infinity, alignment: .trailing)
             .padding(.leading, 4)
+            .onChange(of: sessionWorkingDirectory) { _ in
+                diffStats = .zero
+            }
+            .task(id: externalWatchTargetPath) {
+                guard let watchPath = externalWatchTargetPath else { return }
+                let urls: [URL] = await Task.detached(priority: .utility) {
+                    var result = [URL(fileURLWithPath: watchPath, isDirectory: true)]
+                    if let gitPaths = GitService.shared.resolveGitPaths(at: watchPath),
+                       gitPaths.isLinkedWorktree {
+                        result.append(URL(fileURLWithPath: gitPaths.gitDir, isDirectory: true))
+                    }
+                    return result
+                }.value
+                guard !Task.isCancelled else { return }
+                for await _ in FolderWatcher.events(for: urls, latency: 0.3) {
+                    if Task.isCancelled { break }
+                    externalWatchRevision &+= 1
+                }
+            }
+            .task(id: statsRefreshKey) {
+                guard !agentManager.pendingNewWorktree, !sessionWorkingDirectory.isEmpty else {
+                    diffStats = .zero
+                    return
+                }
+                if agentManager.isBusyOrStreaming {
+                    try? await Task.sleep(nanoseconds: 120_000_000)
+                    if Task.isCancelled { return }
+                }
+                let dir = sessionWorkingDirectory
+                let stats = await Task.detached(priority: .utility) {
+                    GitService.shared.workingTreeDiffStats(at: dir)
+                }.value
+                guard !Task.isCancelled, sessionWorkingDirectory == dir else { return }
+                diffStats = stats
+            }
         }
+    }
+
+    private var badgeForegroundColor: Color {
+        if isViewingSessionWorktree || (isHovered && canSwitch) {
+            return worktreeAccent
+        }
+        return worktreeAccent.opacity(0.88)
+    }
+
+    private var badgeBackgroundColor: Color {
+        if isViewingSessionWorktree {
+            return worktreeAccent.opacity(isHovered && canSwitch ? 0.20 : 0.14)
+        }
+        return isHovered && canSwitch ? worktreeAccent.opacity(0.08) : Color.clear
     }
 }

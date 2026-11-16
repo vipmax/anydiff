@@ -1,5 +1,22 @@
 import Foundation
 
+/// Aggregate added/deleted line counts for a diff.
+public struct GitDiffStats: Equatable, Sendable {
+    public let additions: Int
+    public let deletions: Int
+
+    public static let zero = GitDiffStats(additions: 0, deletions: 0)
+
+    public var hasChanges: Bool {
+        additions > 0 || deletions > 0
+    }
+
+    public init(additions: Int, deletions: Int) {
+        self.additions = additions
+        self.deletions = deletions
+    }
+}
+
 /// Service for executing git commands and reading repository state.
 public final class GitService: Sendable {
     public static let shared = GitService()
@@ -336,5 +353,146 @@ public final class GitService: Sendable {
             }
         }
         return paths
+    }
+
+    /// Computes aggregate uncommitted additions/deletions (tracked + untracked) for a working tree
+    /// using `git diff --numstat -z` and direct byte line counting without parsing full patch hunks.
+    public func workingTreeDiffStats(at path: String) -> GitDiffStats {
+        guard !path.isEmpty, FileManager.default.fileExists(atPath: path) else {
+            return .zero
+        }
+
+        let headResult = runWithStatus(arguments: ["-C", path, "diff", "--numstat", "-z", "HEAD"])
+        let trackedStats: GitDiffStats
+        if headResult.exitCode == 0 {
+            trackedStats = Self.parseNumstatZ(headResult.stdout)
+        } else {
+            let stagedResult = runWithStatus(arguments: ["-C", path, "diff", "--numstat", "-z", "--staged"])
+            if stagedResult.exitCode == 0 {
+                trackedStats = Self.parseNumstatZ(stagedResult.stdout)
+            } else {
+                let unstagedResult = runWithStatus(arguments: ["-C", path, "diff", "--numstat", "-z"])
+                trackedStats = Self.parseNumstatZ(unstagedResult.stdout)
+            }
+        }
+
+        var untrackedAdditions = 0
+        let untrackedResult = runWithStatus(arguments: ["-C", path, "ls-files", "--others", "--exclude-standard", "-z"])
+        if untrackedResult.exitCode == 0, !untrackedResult.stdout.isEmpty {
+            let baseURL = URL(fileURLWithPath: path, isDirectory: true)
+            untrackedResult.stdout.withUnsafeBytes { rawBuffer in
+                var start = 0
+                let count = rawBuffer.count
+                while start < count {
+                    var end = start
+                    while end < count && rawBuffer[end] != 0 {
+                        end += 1
+                    }
+                    if end > start,
+                       let relPath = String(bytes: rawBuffer[start..<end], encoding: .utf8) {
+                        let fileURL = baseURL.appendingPathComponent(relPath, isDirectory: false)
+                        if let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey]),
+                           values.isRegularFile == true,
+                           let fileData = try? Data(contentsOf: fileURL, options: .mappedIfSafe) {
+                            untrackedAdditions += Self.countTextLines(in: fileData)
+                        }
+                    }
+                    start = end + 1
+                }
+            }
+        }
+
+        return GitDiffStats(
+            additions: trackedStats.additions + untrackedAdditions,
+            deletions: trackedStats.deletions
+        )
+    }
+
+    public static func parseNumstatZ(_ data: Data) -> GitDiffStats {
+        guard !data.isEmpty else { return .zero }
+        var additions = 0
+        var deletions = 0
+
+        data.withUnsafeBytes { rawBuffer in
+            let count = rawBuffer.count
+            var index = 0
+            var skipChunks = 0
+
+            while index < count {
+                var end = index
+                while end < count && rawBuffer[end] != 0 {
+                    end += 1
+                }
+
+                if skipChunks > 0 {
+                    skipChunks -= 1
+                    index = end + 1
+                    continue
+                }
+
+                if end > index {
+                    var firstTab = -1
+                    var secondTab = -1
+                    var cursor = index
+                    while cursor < end {
+                        if rawBuffer[cursor] == 0x09 {
+                            if firstTab < 0 {
+                                firstTab = cursor
+                            } else {
+                                secondTab = cursor
+                                break
+                            }
+                        }
+                        cursor += 1
+                    }
+
+                    if firstTab > index, secondTab > firstTab {
+                        additions += parseASCIIInt(rawBuffer, from: index, to: firstTab)
+                        deletions += parseASCIIInt(rawBuffer, from: firstTab + 1, to: secondTab)
+                        // Rename/copy entries have an empty path after the second tab,
+                        // followed by two NUL-terminated paths (oldPath\0newPath\0).
+                        if secondTab + 1 == end {
+                            skipChunks = 2
+                        }
+                    }
+                }
+
+                index = end + 1
+            }
+        }
+
+        return GitDiffStats(additions: additions, deletions: deletions)
+    }
+
+    private static func parseASCIIInt(_ buffer: UnsafeRawBufferPointer, from start: Int, to end: Int) -> Int {
+        var value = 0
+        for idx in start..<end {
+            let byte = buffer[idx]
+            guard byte >= 0x30 && byte <= 0x39 else { return 0 }
+            value = value * 10 + Int(byte - 0x30)
+        }
+        return value
+    }
+
+    private static func countTextLines(in data: Data) -> Int {
+        guard !data.isEmpty else { return 0 }
+        return data.withUnsafeBytes { rawBuffer in
+            let sampleCount = min(rawBuffer.count, 4096)
+            for idx in 0..<sampleCount {
+                if rawBuffer[idx] == 0 {
+                    return 0
+                }
+            }
+            var lines = 0
+            for idx in 0..<rawBuffer.count {
+                if rawBuffer[idx] == 0x0A {
+                    lines += 1
+                }
+            }
+            if rawBuffer[rawBuffer.count - 1] != 0x0A {
+                lines += 1
+            }
+            return lines
+        }
     }
 }

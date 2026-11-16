@@ -2330,13 +2330,17 @@ final class TerminalTests: XCTestCase {
         let hostingView = NSHostingView(rootView: rootView)
         hostingView.frame = NSRect(x: 0, y: 0, width: 500, height: 300)
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 500, height: 300),
+            contentRect: NSRect(x: -10000, y: -10000, width: 500, height: 300),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
         )
+        window.alphaValue = 0
+        window.ignoresMouseEvents = true
         window.contentView = hostingView
-        window.makeKeyAndOrderFront(nil)
+        window.orderBack(nil)
+        window.makeKey()
+        defer { window.orderOut(nil) }
         hostingView.layoutSubtreeIfNeeded()
 
         func findBlockTerminal(in view: NSView) -> BlockTerminalNSView? {
@@ -2399,13 +2403,17 @@ final class TerminalTests: XCTestCase {
         let hostingView = NSHostingView(rootView: rootView)
         hostingView.frame = NSRect(x: 0, y: 0, width: 400, height: 200)
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 400, height: 200),
+            contentRect: NSRect(x: -10000, y: -10000, width: 400, height: 200),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
         )
+        window.alphaValue = 0
+        window.ignoresMouseEvents = true
         window.contentView = hostingView
-        window.makeKeyAndOrderFront(nil)
+        window.orderBack(nil)
+        window.makeKey()
+        defer { window.orderOut(nil) }
         hostingView.layoutSubtreeIfNeeded()
 
         func findTerminal(in view: NSView) -> TerminalNSView? {

@@ -248,4 +248,36 @@ final class GitServiceTests: XCTestCase {
         XCTAssertEqual(suggestion.branch, "fix-bug-3")
         XCTAssertTrue(suggestion.path.hasSuffix("/wt-store/demo-app/fix-bug-3"))
     }
+
+    func testWorkingTreeDiffStatsAndParseNumstatZ() throws {
+        // Direct parser check including normal, binary (`-`), and NUL-delimited rename records.
+        let sample = Data("10\t2\tsrc/app.swift\0-\t-\tassets/icon.png\04\t1\t\0old/name.swift\0new/name.swift\0".utf8)
+        XCTAssertEqual(GitService.parseNumstatZ(sample), GitDiffStats(additions: 14, deletions: 3))
+        XCTAssertEqual(GitService.parseNumstatZ(Data()), .zero)
+
+        let repoURL = tempDirectory.appendingPathComponent("stats-repo", isDirectory: true)
+        try FileManager.default.createDirectory(at: repoURL, withIntermediateDirectories: true)
+        let repoPath = repoURL.path
+
+        XCTAssertNotNil(GitService.shared.run(arguments: ["-C", repoPath, "init", "-b", "main"]))
+        _ = GitService.shared.run(arguments: ["-C", repoPath, "config", "user.email", "test@example.com"])
+        _ = GitService.shared.run(arguments: ["-C", repoPath, "config", "user.name", "Test User"])
+
+        let trackedURL = repoURL.appendingPathComponent("tracked.txt")
+        try "one\ntwo\n".write(to: trackedURL, atomically: true, encoding: .utf8)
+        _ = GitService.shared.run(arguments: ["-C", repoPath, "add", "tracked.txt"])
+        _ = GitService.shared.run(arguments: ["-C", repoPath, "commit", "-m", "initial"])
+
+        XCTAssertEqual(GitService.shared.workingTreeDiffStats(at: repoPath), .zero)
+
+        // Modify tracked file (+2 additions, -1 deletion) and add untracked file (+3 lines).
+        try "one\nthree\nfour\n".write(to: trackedURL, atomically: true, encoding: .utf8)
+        let untrackedURL = repoURL.appendingPathComponent("new.txt")
+        try "a\nb\nc".write(to: untrackedURL, atomically: true, encoding: .utf8)
+
+        XCTAssertEqual(
+            GitService.shared.workingTreeDiffStats(at: repoPath),
+            GitDiffStats(additions: 5, deletions: 1)
+        )
+    }
 }

@@ -704,6 +704,7 @@ public struct MainWindowView: View {
             isGitRepository: repo.repoStatus != .notGitRepository,
             currentBranch: repo.currentBranch,
             worktrees: repo.worktrees,
+            reloadToken: repo.reloadToken,
             repoName: repo.currentFolderName,
             onClose: {
                 withAnimation(.easeInOut(duration: 0.18)) {
@@ -712,6 +713,9 @@ public struct MainWindowView: View {
             },
             onReview: { summary in beginReview(summary: summary) },
             onOpenURL: { url in handleOpenURL(url) },
+            onSelectWorktree: { wt in
+                repo.switchToWorktree(wt)
+            },
             onCreateWorktreeForPrompt: { prompt, baseBranch in
                 await repo.createWorktreeForPrompt(prompt: prompt, baseRef: baseBranch)
             }
