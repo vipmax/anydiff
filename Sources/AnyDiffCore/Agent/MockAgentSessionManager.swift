@@ -24,6 +24,7 @@ public final class MockAgentSessionManager: AgentSessionManager, @unchecked Send
         self.selectedModel = "Mock Model (Pro)"
         self.selectedModelValue = "mock-pro"
         self.contextUsagePercentage = 72
+        self.contextUsageTokens = (used: 147_456, total: 204_800)
         self.status = .idle
         self.initializationState = .ready
         self.currentSessionId = "mock-1"
@@ -251,6 +252,7 @@ public final class MockAgentSessionManager: AgentSessionManager, @unchecked Send
 
         self.messages = [msg1, msg2, msg3, msg4, msg5, msg6, msg7, msg8, msg9, msg10, msg11, msg12, msg13, msg14]
         self.contextUsagePercentage = 72
+        self.contextUsageTokens = (used: 147_456, total: 204_800)
         self.status = .idle
         self.statusMessage = nil
     }
@@ -412,6 +414,9 @@ public final class MockAgentSessionManager: AgentSessionManager, @unchecked Send
             self.statusMessage = nil
             self.mockTask = nil
             self.contextUsagePercentage = min(95, (self.contextUsagePercentage ?? 68) + 4)
+            if let total = self.contextUsageTokens?.total {
+                self.contextUsageTokens = (used: total * self.contextUsagePercentage! / 100, total: total)
+            }
             self.drainQueueIfPossible(workingDirectory: workingDirectory)
         }
     }

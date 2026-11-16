@@ -12,7 +12,6 @@ public struct AgentHeaderControlsView: View {
     @State private var isModelHovered: Bool = false
     @State private var isSendHovered: Bool = false
     @State private var isStopHovered: Bool = false
-    @State private var isUsageHovered: Bool = false
 
     public init(
         agentManager: AgentSessionManager,
@@ -43,9 +42,7 @@ public struct AgentHeaderControlsView: View {
                 .padding(.trailing, 2)
 
             // Context usage ring
-            if let pct = agentManager.contextUsagePercentage {
-                contextUsageRing(percentage: pct)
-            }
+            contextUsageRing(percentage: agentManager.contextUsagePercentage ?? 0)
 
             // Send / Stop button
             sendOrCancelControls
@@ -115,24 +112,25 @@ public struct AgentHeaderControlsView: View {
         .frame(width: 12, height: 12)
         .frame(width: 24, height: 22)
         .contentShape(Rectangle())
-        .overlay(alignment: .top) {
-            if isUsageHovered {
-                Text("\(percentage)%")
-                    .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
-                    .foregroundColor(Color(theme.foreground))
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 2)
-                    .background(.thinMaterial, in: Capsule())
-                    .overlay(
-                        Capsule().stroke(Color(theme.excerptHeaderBorder).opacity(0.7), lineWidth: 1)
-                    )
-                    .offset(y: 18)
-                    .allowsHitTesting(false)
-                    .zIndex(1)
-            }
+        .help(contextUsageHelpText(percentage: percentage))
+    }
+
+    private func contextUsageHelpText(percentage: Int) -> String {
+        if let tokens = agentManager.contextUsageTokens {
+            return "Context usage: \(percentage)% (\(Self.formatTokenCount(tokens.used)) / \(Self.formatTokenCount(tokens.total)) tokens)"
         }
-        .help("Context usage: \(percentage)%")
-        .onHover { isUsageHovered = $0 }
+        return "Context usage: \(percentage)%"
+    }
+
+    /// Formats a token count compactly: 1234 → "1.2k", 1_234_567 → "1.2M".
+    private static func formatTokenCount(_ value: Int) -> String {
+        if value >= 1_000_000 {
+            return String(format: "%.1fM", Double(value) / 1_000_000.0)
+        }
+        if value >= 1_000 {
+            return String(format: "%.1fk", Double(value) / 1_000.0)
+        }
+        return "\(value)"
     }
 
     @ViewBuilder

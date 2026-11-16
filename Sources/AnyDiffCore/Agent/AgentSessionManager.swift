@@ -64,6 +64,8 @@ open class AgentSessionManager: ObservableObject, @unchecked Sendable {
     @Published public var selectedAgentMode: String = ""
     @Published public var selectedAgentModeValue: String = ""
     @Published public var contextUsagePercentage: Int? = nil
+    /// Absolute context window usage in tokens (used / total), when reported by the agent.
+    @Published public var contextUsageTokens: (used: Int, total: Int)? = nil
     @Published public var pendingPermission: AgentPermissionRequest? = nil
     @Published public var liveEditedSummary: AgentEditedFilesSummary? = nil
     @Published public var isNotificationsEnabled: Bool = false

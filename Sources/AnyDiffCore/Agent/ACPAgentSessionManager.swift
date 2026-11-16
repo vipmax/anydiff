@@ -635,6 +635,7 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
             if type == "usage_update" {
                 if let used = update.used, let size = update.size, size > 0 {
                     self.contextUsagePercentage = Int(round(Double(used) / Double(size) * 100.0))
+                    self.contextUsageTokens = (used: used, total: size)
                 }
                 return
             }
