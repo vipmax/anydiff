@@ -196,15 +196,6 @@ public struct AgentPanelView: View {
         .onChange(of: workingDirectory) { newDirectory in
             agentManager.prepareAgent(workingDirectory: newDirectory)
         }
-        .onChange(of: inputContentHeight) { _ in
-            preserveChatBottomIfNeeded()
-        }
-        .onChange(of: inputTotalHeight) { _ in
-            preserveChatBottomIfNeeded()
-        }
-        .onChange(of: agentManager.draftAttachments.count) { _ in
-            preserveChatBottomIfNeeded()
-        }
         .onChange(of: agentManager.status) { newStatus in
             if lastKnownStatus == .busy && newStatus == .idle {
                 HapticFeedback.perform(.generic)
@@ -242,11 +233,6 @@ public struct AgentPanelView: View {
             }
         }
         return view
-    }
-
-    private func preserveChatBottomIfNeeded() {
-        guard isChatNearBottom else { return }
-        scrollToBottomRequest &+= 1
     }
 
     private var displayedMessages: [AgentMessage] {

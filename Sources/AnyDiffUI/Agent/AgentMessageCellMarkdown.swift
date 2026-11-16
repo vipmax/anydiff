@@ -485,17 +485,57 @@ extension AgentMessageCell {
         color: NSColor,
         paragraphStyle: NSParagraphStyle
     ) -> NSAttributedString {
+        let cacheKey: StreamingLineCacheKey?
+        if message.isStreaming || !streamingLineCache.isEmpty {
+            let key = StreamingLineCacheKey(
+                raw: raw,
+                fontSize: font.pointSize,
+                fontTraits: UInt(font.fontDescriptor.symbolicTraits.rawValue),
+                colorAlpha: Int((color.alphaComponent * 100).rounded()),
+                headIndent: paragraphStyle.headIndent,
+                firstLineHeadIndent: paragraphStyle.firstLineHeadIndent,
+                lineSpacing: paragraphStyle.lineSpacing,
+                paragraphSpacing: paragraphStyle.paragraphSpacing,
+                paragraphSpacingBefore: paragraphStyle.paragraphSpacingBefore
+            )
+            if let cached = streamingLineCache[key] {
+                return cached
+            }
+            cacheKey = message.isStreaming ? key : nil
+        } else {
+            cacheKey = nil
+        }
+
         let baseAttributes: [NSAttributedString.Key: Any] = [
             .font: font,
             .foregroundColor: color,
             .paragraphStyle: paragraphStyle
         ]
 
+        let hasMarkdownSyntax = raw.utf8.contains { byte in
+            // '*', '_', '`', '~', '[', '\\'
+            byte == 42 || byte == 95 || byte == 96 || byte == 126 || byte == 91 || byte == 92
+        }
+
+        if !hasMarkdownSyntax {
+            let plain = NSMutableAttributedString(string: raw, attributes: baseAttributes)
+            linkifyRawURLs(in: plain)
+            let immutable = NSAttributedString(attributedString: plain)
+            if let cacheKey {
+                streamingLineCache[cacheKey] = immutable
+            }
+            return immutable
+        }
+
         guard let parsed = try? AttributedString(
             markdown: raw,
             options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
         ) else {
-            return NSAttributedString(string: raw, attributes: baseAttributes)
+            let fallback = NSAttributedString(string: raw, attributes: baseAttributes)
+            if let cacheKey {
+                streamingLineCache[cacheKey] = fallback
+            }
+            return fallback
         }
 
         let text = String(parsed.characters)
@@ -561,17 +601,24 @@ extension AgentMessageCell {
 
         linkifyRawURLs(in: result)
 
-        return result
+        let immutable = NSAttributedString(attributedString: result)
+        if let cacheKey {
+            streamingLineCache[cacheKey] = immutable
+        }
+        return immutable
     }
 
     static let rawLinkDetector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
 
     func linkifyRawURLs(in attrString: NSMutableAttributedString) {
         guard let detector = Self.rawLinkDetector else { return }
-        let fullLength = (attrString.string as NSString).length
+        let str = attrString.string
+        guard !str.isEmpty else { return }
+        guard str.contains("://") || str.contains("www.") || str.contains("mailto:") else { return }
+        let fullLength = (str as NSString).length
         guard fullLength > 0 else { return }
         let fullRange = NSRange(location: 0, length: fullLength)
-        let matches = detector.matches(in: attrString.string, options: [], range: fullRange)
+        let matches = detector.matches(in: str, options: [], range: fullRange)
         let linkColor = NSColor(accentColor)
 
         for match in matches {

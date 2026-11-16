@@ -145,6 +145,18 @@ public final class AgentMessageCell: NSView {
         let range: NSRange
         let startTime: TimeInterval
     }
+    struct StreamingLineCacheKey: Hashable {
+        let raw: String
+        let fontSize: CGFloat
+        let fontTraits: UInt
+        let colorAlpha: Int
+        let headIndent: CGFloat
+        let firstLineHeadIndent: CGFloat
+        let lineSpacing: CGFloat
+        let paragraphSpacing: CGFloat
+        let paragraphSpacingBefore: CGFloat
+    }
+    var streamingLineCache: [StreamingLineCacheKey: NSAttributedString] = [:]
     var streamingFadeChunks: [StreamingFadeChunk] = []
     var streamingFadeTimer: Timer?
     var streamingBaseAttributedString: NSAttributedString?
@@ -274,6 +286,24 @@ public final class AgentMessageCell: NSView {
             cachedParsedDiffFiles = nil
             cachedParsedDiffDataCount = -1
         }
+        if themeChanged || accentChanged {
+            streamingLineCache.removeAll(keepingCapacity: message.isStreaming)
+        }
+        defer {
+            if !message.isStreaming && !streamingLineCache.isEmpty {
+                streamingLineCache.removeAll(keepingCapacity: false)
+            }
+        }
+
+        let isSameUserMessageMetadataOnlyUpdate =
+            (!userContentViews.isEmpty || !userImageViews.isEmpty) &&
+            previousMessage.id == message.id &&
+            previousMessage.role == .user &&
+            message.role == .user &&
+            !contentChanged &&
+            !themeChanged &&
+            !accentChanged &&
+            previousMessage.images == message.images
 
         self.message = message
         self.theme = theme
@@ -282,72 +312,76 @@ public final class AgentMessageCell: NSView {
         self.isCompactMode = isCompactMode
         self.agentIconName = agentIconName
         self.agentId = agentId
-        invalidateLayoutCache()
+        if !isSameUserMessageMetadataOnlyUpdate || previousMessage.isQueued != message.isQueued {
+            invalidateLayoutCache()
+        }
 
         if message.role == .user {
-            avatarAuraView.stopAnimating(animated: false)
-            roleIconView.layer?.removeAnimation(forKey: "agentRolePulse")
-            roleIconView.layer?.opacity = 1.0
-            let userSize = AgentMessageCell.userAvatarSize
-            roleIconView.isUserRole = true
-            roleIconView.image = AgentAvatarProvider.userAvatarImage
-            roleIconView.layer?.cornerRadius = userSize / 2
-            roleIconView.layer?.masksToBounds = true
-            roleIconView.layer?.backgroundColor = nil
-            roleIconView.contentTintColor = nil
-            roleIconView.isHidden = false
-            roleIconView.toolTip = "Click or right-click to customize avatar settings"
-            roleIconView.onRightClick = { [weak self] view in
-                guard self != nil else { return }
-                AgentAvatarProvider.showEditor(relativeTo: view, initialTab: .user)
-            }
-            roleIconView.onClick = { [weak self] view in
-                guard self != nil else { return }
-                AgentAvatarProvider.showEditor(relativeTo: view, initialTab: .user)
-            }
+            if !isSameUserMessageMetadataOnlyUpdate {
+                avatarAuraView.stopAnimating(animated: false)
+                roleIconView.layer?.removeAnimation(forKey: "agentRolePulse")
+                roleIconView.layer?.opacity = 1.0
+                let userSize = AgentMessageCell.userAvatarSize
+                roleIconView.isUserRole = true
+                roleIconView.image = AgentAvatarProvider.userAvatarImage
+                roleIconView.layer?.cornerRadius = userSize / 2
+                roleIconView.layer?.masksToBounds = true
+                roleIconView.layer?.backgroundColor = nil
+                roleIconView.contentTintColor = nil
+                roleIconView.isHidden = false
+                roleIconView.toolTip = "Click or right-click to customize avatar settings"
+                roleIconView.onRightClick = { [weak self] view in
+                    guard self != nil else { return }
+                    AgentAvatarProvider.showEditor(relativeTo: view, initialTab: .user)
+                }
+                roleIconView.onClick = { [weak self] view in
+                    guard self != nil else { return }
+                    AgentAvatarProvider.showEditor(relativeTo: view, initialTab: .user)
+                }
 
-            userTextView.cellId = message.id
-            userTextView.tvKey = "user"
-            userBubbleView.isHidden = false
-            thoughtHeaderButton.isHidden = true
-            thoughtTextView.isHidden = true
-            thoughtTextView.alphaValue = 0
-            thoughtTextView.removeFromSuperview()
+                userTextView.cellId = message.id
+                userTextView.tvKey = "user"
+                userBubbleView.isHidden = false
+                thoughtHeaderButton.isHidden = true
+                thoughtTextView.isHidden = true
+                thoughtTextView.alphaValue = 0
+                thoughtTextView.removeFromSuperview()
 
-            userBubbleView.layer?.backgroundColor = NSColor.clear.cgColor
-            userBubbleView.layer?.borderWidth = 0.0
-            userBubbleView.layer?.borderColor = nil
-            userBubbleView.layer?.shadowColor = nil
-            userBubbleView.layer?.shadowOpacity = 0.0
+                userBubbleView.layer?.backgroundColor = NSColor.clear.cgColor
+                userBubbleView.layer?.borderWidth = 0.0
+                userBubbleView.layer?.borderColor = nil
+                userBubbleView.layer?.shadowColor = nil
+                userBubbleView.layer?.shadowOpacity = 0.0
 
-            userImageViews.forEach { $0.removeFromSuperview() }
-            userImageViews.removeAll()
+                userImageViews.forEach { $0.removeFromSuperview() }
+                userImageViews.removeAll()
 
-            let inlineMarkerCount = message.content.components(separatedBy: AgentImageAttachment.inlineTextMarker).count - 1
-            let hasInlineImagePositions = !message.images.isEmpty && inlineMarkerCount == message.images.count
-            if !hasInlineImagePositions {
-                for (index, img) in message.images.enumerated() {
-                    if let nsImage = ImageAttachmentHelpers.inlineDisplayImage(for: img).image {
-                        let btn = NSButton()
-                        btn.image = nsImage
-                        btn.imageScaling = .scaleProportionallyUpOrDown
-                        btn.isBordered = false
-                        btn.wantsLayer = true
-                        btn.layerContentsRedrawPolicy = .onSetNeedsDisplay
-                        btn.layer?.cornerRadius = 8
-                        btn.layer?.masksToBounds = true
-                        btn.layer?.borderWidth = 1
-                        btn.layer?.borderColor = (NSColor(cgColor: theme.excerptHeaderBorder.cgColor) ?? NSColor.separatorColor).withAlphaComponent(0.6).cgColor
-                        btn.target = self
-                        btn.action = #selector(handleImageClick(_:))
-                        btn.tag = index
-                        userBubbleView.addSubview(btn)
-                        userImageViews.append(btn)
+                let inlineMarkerCount = message.content.components(separatedBy: AgentImageAttachment.inlineTextMarker).count - 1
+                let hasInlineImagePositions = !message.images.isEmpty && inlineMarkerCount == message.images.count
+                if !hasInlineImagePositions {
+                    for (index, img) in message.images.enumerated() {
+                        if let nsImage = ImageAttachmentHelpers.inlineDisplayImage(for: img).image {
+                            let btn = NSButton()
+                            btn.image = nsImage
+                            btn.imageScaling = .scaleProportionallyUpOrDown
+                            btn.isBordered = false
+                            btn.wantsLayer = true
+                            btn.layerContentsRedrawPolicy = .onSetNeedsDisplay
+                            btn.layer?.cornerRadius = 8
+                            btn.layer?.masksToBounds = true
+                            btn.layer?.borderWidth = 1
+                            btn.layer?.borderColor = (NSColor(cgColor: theme.excerptHeaderBorder.cgColor) ?? NSColor.separatorColor).withAlphaComponent(0.6).cgColor
+                            btn.target = self
+                            btn.action = #selector(handleImageClick(_:))
+                            btn.tag = index
+                            userBubbleView.addSubview(btn)
+                            userImageViews.append(btn)
+                        }
                     }
                 }
-            }
 
-            rebuildUserContentViews(content: message.content, forceRebuild: themeChanged || accentChanged)
+                rebuildUserContentViews(content: message.content, forceRebuild: themeChanged || accentChanged)
+            }
 
             if message.isQueued {
                 userBubbleView.alphaValue = 0.94
@@ -598,7 +632,9 @@ public final class AgentMessageCell: NSView {
             }
         }
 
-        updateNativeTextSelection()
+        if !message.isStreaming || themeChanged {
+            updateNativeTextSelection()
+        }
     }
 
     public var isWaitingForResponse: Bool {
@@ -806,28 +842,29 @@ public final class AgentMessageCell: NSView {
 
         let now = CACurrentMediaTime()
         let duration: TimeInterval = 0.16
+        let expiredThoughtChunks = thoughtFadeChunks.filter { now - $0.startTime >= duration }
         thoughtFadeChunks.removeAll { now - $0.startTime >= duration }
 
         let baseColor = (NSColor(cgColor: theme.gutterForeground.cgColor) ?? .secondaryLabelColor)
             .withAlphaComponent(0.8)
         textStorage.beginEditing()
-        if thoughtFadeChunks.isEmpty {
+        for chunk in expiredThoughtChunks {
+            guard chunk.range.location + chunk.range.length <= textStorage.length else { continue }
             textStorage.addAttribute(
                 .foregroundColor,
                 value: baseColor,
-                range: NSRange(location: 0, length: textStorage.length)
+                range: chunk.range
             )
-        } else {
-            for chunk in thoughtFadeChunks {
-                guard chunk.range.location + chunk.range.length <= textStorage.length else { continue }
-                let progress = min(1.0, max(0.0, (now - chunk.startTime) / duration))
-                let alpha = 0.15 + (0.85 * progress)
-                textStorage.addAttribute(
-                    .foregroundColor,
-                    value: baseColor.withAlphaComponent(alpha),
-                    range: chunk.range
-                )
-            }
+        }
+        for chunk in thoughtFadeChunks {
+            guard chunk.range.location + chunk.range.length <= textStorage.length else { continue }
+            let progress = min(1.0, max(0.0, (now - chunk.startTime) / duration))
+            let alpha = 0.15 + (0.85 * progress)
+            textStorage.addAttribute(
+                .foregroundColor,
+                value: baseColor.withAlphaComponent(alpha),
+                range: chunk.range
+            )
         }
         textStorage.endEditing()
 
@@ -856,6 +893,7 @@ public final class AgentMessageCell: NSView {
         editedFilesCardView?.removeFromSuperview()
         editedFilesCardView = nil
         streamingRenderedContent = ""
+        streamingLineCache.removeAll()
         streamingFadeTimer?.invalidate()
         streamingFadeTimer = nil
         streamingFadeChunks.removeAll()
@@ -1312,6 +1350,60 @@ public final class AgentMessageCell: NSView {
     }
 
     func rebuildMarkdownViews(content: String, highlightCode: Bool) {
+        let textParts: [String] = message.orderedParts.compactMap { part in
+            if case .text(let text) = part { return text }
+            return nil
+        }
+
+        if textParts.count == 1,
+           markdownViews.count == 1,
+           let existing = markdownViews[0] as? AgentSelectableTextView,
+           existing.tvKey == "md_0" {
+            let text = textParts[0]
+            let sections = compileSections(
+                from: text,
+                splitRichText: !nativeTextSelectionEnabled,
+                allowUnclosedTrailingMermaid: !message.isStreaming
+            )
+            if sections.count == 1, case .richText(let attr) = sections[0] {
+                existing.cellId = message.id
+                existing.isSelectable = nativeTextSelectionEnabled
+                if let prevBase = streamingBaseAttributedString,
+                   prevBase.isEqual(to: attr),
+                   let ts = existing.textStorage,
+                   ts.length == attr.length {
+                    // Already up-to-date from streaming; let any active tail fade finish naturally.
+                } else {
+                    streamingFadeTimer?.invalidate()
+                    streamingFadeTimer = nil
+                    streamingFadeChunks.removeAll()
+                    if let ts = existing.textStorage {
+                        let commonLen = streamingBaseAttributedString.map {
+                            ts.length == $0.length ? Self.commonAttributedPrefixLength($0, attr) : 0
+                        } ?? 0
+                        ts.beginEditing()
+                        if commonLen == 0 {
+                            ts.setAttributedString(attr)
+                        } else {
+                            let oldTail = NSRange(location: commonLen, length: ts.length - commonLen)
+                            let newTail = NSRange(location: commonLen, length: attr.length - commonLen)
+                            ts.replaceCharacters(in: oldTail, with: attr.attributedSubstring(from: newTail))
+                        }
+                        ts.endEditing()
+                    }
+                    streamingBaseAttributedString = nil
+                }
+                streamingRenderedContent = ""
+                markdownViewsByTextPart = [[existing]]
+                invalidateLayoutCache()
+                return
+            }
+        }
+
+        streamingFadeTimer?.invalidate()
+        streamingFadeTimer = nil
+        streamingFadeChunks.removeAll()
+        streamingBaseAttributedString = nil
         for v in markdownViews { v.removeFromSuperview() }
         markdownViews.removeAll()
         markdownViewsByTextPart.removeAll()
@@ -1319,8 +1411,7 @@ public final class AgentMessageCell: NSView {
         invalidateLayoutCache()
 
         var sectionIndex = 0
-        for part in message.orderedParts {
-            guard case .text(let text) = part else { continue }
+        for text in textParts {
             let sections = compileSections(
                 from: text,
                 splitRichText: !nativeTextSelectionEnabled,
@@ -1528,13 +1619,18 @@ public final class AgentMessageCell: NSView {
 
         // Time-based left-to-right fade-in: each newly added token chunk fades in over 160ms
         // and automatically reaches 100% solid opacity even if streaming pauses or tool calls start!
+        let now = CACurrentMediaTime()
+        let duration: TimeInterval = 0.16
+        let expiredChunks = streamingFadeChunks.filter { now - $0.startTime >= duration }
+        streamingFadeChunks.removeAll { now - $0.startTime >= duration }
+
         let newLength = mutable.length
         if newLength < previousStreamedLength {
             streamingFadeChunks.removeAll { $0.range.location >= newLength }
         }
         if newLength > previousStreamedLength {
             let addedRange = NSRange(location: previousStreamedLength, length: newLength - previousStreamedLength)
-            streamingFadeChunks.append(StreamingFadeChunk(range: addedRange, startTime: CACurrentMediaTime()))
+            streamingFadeChunks.append(StreamingFadeChunk(range: addedRange, startTime: now))
             if streamingFadeTimer == nil {
                 streamingFadeTimer = Timer.scheduledTimer(withTimeInterval: 0.03, repeats: true) { [weak self] _ in
                     self?.updateStreamingFadeAnimation()
@@ -1543,24 +1639,61 @@ public final class AgentMessageCell: NSView {
         }
         previousStreamedLength = newLength
 
-        if streamingFadeChunks.isEmpty {
-            streamingBaseAttributedString = nil
-            textView.textStorage?.setAttributedString(mutable)
+        let commonPrefixLen: Int
+        if let prevBase = streamingBaseAttributedString,
+           let ts = textView.textStorage,
+           ts.length == prevBase.length {
+            commonPrefixLen = Self.commonAttributedPrefixLength(prevBase, mutable)
         } else {
-            streamingBaseAttributedString = mutable
-            let faded = NSMutableAttributedString(attributedString: mutable)
-            let now = CACurrentMediaTime()
-            let duration: TimeInterval = 0.16
+            commonPrefixLen = 0
+        }
+        streamingBaseAttributedString = NSAttributedString(attributedString: mutable)
+
+        if let textStorage = textView.textStorage {
             let baseColor = NSColor(cgColor: theme.foreground.cgColor) ?? .textColor
+            textStorage.beginEditing()
+            if commonPrefixLen == 0 {
+                textStorage.setAttributedString(mutable)
+            } else {
+                let oldTailRange = NSRange(location: commonPrefixLen, length: textStorage.length - commonPrefixLen)
+                let newTailRange = NSRange(location: commonPrefixLen, length: mutable.length - commonPrefixLen)
+                textStorage.replaceCharacters(in: oldTailRange, with: mutable.attributedSubstring(from: newTailRange))
+                for chunk in expiredChunks where chunk.range.location < commonPrefixLen {
+                    let clampedLen = min(chunk.range.length, commonPrefixLen - chunk.range.location)
+                    if clampedLen > 0 {
+                        let prefixChunkRange = NSRange(location: chunk.range.location, length: clampedLen)
+                        applyStreamingForeground(alpha: 1.0, in: prefixChunkRange, from: mutable, to: textStorage, fallbackColor: baseColor)
+                    }
+                }
+            }
             for chunk in streamingFadeChunks {
                 let progress = min(1.0, max(0.0, (now - chunk.startTime) / duration))
                 let alpha = 0.15 + (0.85 * progress)
-                applyStreamingForeground(alpha: alpha, in: chunk.range, from: mutable, to: faded, fallbackColor: baseColor)
+                applyStreamingForeground(alpha: alpha, in: chunk.range, from: mutable, to: textStorage, fallbackColor: baseColor)
             }
-            textView.textStorage?.setAttributedString(faded)
+            textStorage.endEditing()
         }
         textView.needsDisplay = true
         streamingRenderedContent = content
+    }
+
+    private static func commonAttributedPrefixLength(_ oldAttr: NSAttributedString, _ newAttr: NSAttributedString) -> Int {
+        let minLen = min(oldAttr.length, newAttr.length)
+        guard minLen > 0 else { return 0 }
+        let nsOld = oldAttr.string as NSString
+        var searchLen = minLen
+        for _ in 0..<3 {
+            guard searchLen > 0 else { break }
+            let nlRange = nsOld.range(of: "\n", options: .backwards, range: NSRange(location: 0, length: searchLen))
+            guard nlRange.location != NSNotFound else { break }
+            let candidateLen = nlRange.location + 1
+            let prefixRange = NSRange(location: 0, length: candidateLen)
+            if oldAttr.attributedSubstring(from: prefixRange).isEqual(to: newAttr.attributedSubstring(from: prefixRange)) {
+                return candidateLen
+            }
+            searchLen = nlRange.location
+        }
+        return 0
     }
 
     func updateStreamingFadeAnimation() {
@@ -1581,15 +1714,7 @@ public final class AgentMessageCell: NSView {
 
         let baseColor = NSColor(cgColor: theme.foreground.cgColor) ?? .textColor
         textStorage.beginEditing()
-        if streamingFadeChunks.isEmpty {
-            streamingFadeTimer?.invalidate()
-            streamingFadeTimer = nil
-            if let base = streamingBaseAttributedString {
-                let fullRange = NSRange(location: 0, length: min(base.length, textStorage.length))
-                applyStreamingForeground(alpha: 1.0, in: fullRange, from: base, to: textStorage, fallbackColor: baseColor)
-            }
-            streamingBaseAttributedString = nil
-        } else if let base = streamingBaseAttributedString {
+        if let base = streamingBaseAttributedString {
             for chunk in expiredChunks {
                 applyStreamingForeground(alpha: 1.0, in: chunk.range, from: base, to: textStorage, fallbackColor: baseColor)
             }
@@ -1600,6 +1725,10 @@ public final class AgentMessageCell: NSView {
             }
         }
         textStorage.endEditing()
+        if streamingFadeChunks.isEmpty {
+            streamingFadeTimer?.invalidate()
+            streamingFadeTimer = nil
+        }
     }
 
     private func applyStreamingForeground(

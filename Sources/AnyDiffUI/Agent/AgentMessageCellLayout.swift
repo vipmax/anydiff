@@ -23,12 +23,19 @@ extension AgentMessageCell {
         NSLayoutManager().defaultLineHeight(for: NSFont.systemFont(ofSize: 13, weight: .regular))
     )
 
+    func ensureTextContainerWidth(_ textContainer: NSTextContainer, width: CGFloat) {
+        let targetWidth = max(1, width)
+        if abs(textContainer.containerSize.width - targetWidth) > 0.01 || textContainer.containerSize.height < .greatestFiniteMagnitude / 2 {
+            textContainer.containerSize = NSSize(width: targetWidth, height: .greatestFiniteMagnitude)
+        }
+    }
+
     func firstLineHeight(for textView: NSTextView, width: CGFloat) -> CGFloat {
         guard let layoutManager = textView.layoutManager,
               let textContainer = textView.textContainer else {
             return Self.defaultBodyFirstLineHeight
         }
-        textContainer.containerSize = NSSize(width: max(1, width), height: .greatestFiniteMagnitude)
+        ensureTextContainerWidth(textContainer, width: width)
         layoutManager.ensureLayout(for: textContainer)
         if layoutManager.numberOfGlyphs > 0 {
             var lineGlyphRange = NSRange(location: 0, length: 0)
@@ -184,7 +191,7 @@ extension AgentMessageCell {
             // important for the single plain-text view used during streaming:
             // boundingRect would reflow the entire growing response for every
             // appended chunk.
-            textContainer.containerSize = NSSize(width: max(1, width), height: .greatestFiniteMagnitude)
+            ensureTextContainerWidth(textContainer, width: width)
             layoutManager.ensureLayout(for: textContainer)
             measured = max(18, ceil(layoutManager.usedRect(for: textContainer).height + textView.textContainerInset.height * 2))
         } else {
@@ -272,7 +279,9 @@ extension AgentMessageCell {
             card.applyLayout(width: contentWidth)
         } else if let tv = view as? AgentSelectableTextView {
             let wrapWidth = max(50, contentWidth - 6)
-            tv.textContainer?.containerSize = NSSize(width: wrapWidth, height: .greatestFiniteMagnitude)
+            if let textContainer = tv.textContainer {
+                ensureTextContainerWidth(textContainer, width: wrapWidth)
+            }
             let frame = NSRect(x: contentLeft, y: currentY, width: contentWidth, height: height)
             if animated { tv.animator().frame = frame } else { tv.frame = frame }
             tv.layer?.masksToBounds = true

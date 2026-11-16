@@ -477,6 +477,156 @@ final class AgentSessionManagerTests: XCTestCase {
             XCTAssertTrue(scrollView.contentView.layer?.animationKeys()?.isEmpty ?? true)
         }
     }
+
+    func testStreamingScrollPreservesResponsiveScrollingAndEliminatesRubberBandAndNearBottomJitter() {
+        XCTAssertTrue(
+            AgentChatScrollView.isCompatibleWithResponsiveScrolling,
+            "AgentChatScrollView must remain compatible with macOS asynchronous responsive scrolling"
+        )
+        XCTAssertTrue(FlippedClipView.isCompatibleWithResponsiveScrolling)
+        XCTAssertTrue(AgentChatDocumentView.isCompatibleWithResponsiveScrolling)
+
+        let streamingID = UUID()
+        var messages: [AgentMessage] = (1...14).map { idx in
+            AgentMessage(
+                role: idx.isMultiple(of: 2) ? .assistant : .user,
+                content: "History \(idx) line 1\nHistory \(idx) line 2\nHistory \(idx) line 3"
+            )
+        }
+        messages.append(AgentMessage(id: streamingID, role: .assistant, content: "Done. I inspected the", isStreaming: true))
+
+        let viewportHeight: CGFloat = 420
+        let scrollView = AgentChatScrollView(frame: NSRect(x: 0, y: 0, width: 460, height: viewportHeight))
+        scrollView.update(messages: messages, theme: .zedDark, animated: false)
+        scrollView.layoutSubtreeIfNeeded()
+
+        let activeIdx = messages.count - 1
+        let initialDocHeight = scrollView.documentView?.bounds.height ?? 0
+        let initialMaxY = max(0, initialDocHeight - viewportHeight)
+        XCTAssertEqual(scrollView.contentView.bounds.origin.y, initialMaxY, accuracy: 0.5)
+
+        // 1. Small upward scroll (18pt, well within the 70pt isNearBottom hysteresis zone):
+        // Streaming updates MUST NOT yank the user back to bottom.
+        let subtleUpwardY = initialMaxY - 18
+        scrollView.contentView.scroll(to: NSPoint(x: 0, y: subtleUpwardY))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        XCTAssertTrue(scrollView.isNearBottom, "18pt from bottom is still within the button's near-bottom hysteresis")
+
+        messages[activeIdx].appendText(" project workspace and verified the context.\n\n## Verified Items")
+        scrollView.update(messages: messages, theme: .zedDark, animated: true)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.06))
+        XCTAssertEqual(
+            scrollView.contentView.bounds.origin.y,
+            subtleUpwardY,
+            accuracy: 0.5,
+            "Upward scroll inside the 70pt hysteresis zone must not be yanked back to bottom on stream tick"
+        )
+
+        // 2. Downward scroll entering the <=35pt zone (e.g. 20pt from bottom):
+        // Must NOT teleport the remaining 20pt before the user's scroll actually reaches the bottom.
+        let docHeight2 = scrollView.documentView?.bounds.height ?? 0
+        let nearBottomY = max(0, docHeight2 - viewportHeight - 20)
+        scrollView.contentView.scroll(to: NSPoint(x: 0, y: nearBottomY))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+
+        messages[activeIdx].appendText("\n- Layout stability and smooth scrolling.")
+        scrollView.update(messages: messages, theme: .zedDark, animated: true)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.06))
+        XCTAssertEqual(
+            scrollView.contentView.bounds.origin.y,
+            nearBottomY,
+            accuracy: 0.5,
+            "Approaching bottom (20pt away) during downward scroll must not snap-teleport to bottom"
+        )
+
+        // 3. Downward swipe overscrolling past bottom into rubber-band (+53pt overscroll):
+        // Streaming updates (both multi-line growth and same-line token appends) must preserve
+        // the current overscroll offset instead of snapping origin.y down to maxScrollY.
+        let flippedClip = scrollView.contentView as? FlippedClipView
+        XCTAssertNotNil(flippedClip)
+        func simulateElasticScroll(to y: CGFloat) {
+            flippedClip?.allowsVerticalOverscroll = true
+            scrollView.contentView.setBoundsOrigin(NSPoint(x: 0, y: y))
+            flippedClip?.allowsVerticalOverscroll = false
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+        }
+
+        let docHeight3 = scrollView.documentView?.bounds.height ?? 0
+        let maxScrollY3 = max(0, docHeight3 - viewportHeight)
+        let overscrollAmount: CGFloat = 90
+        let preGrowthOverscrollOriginY = maxScrollY3 + overscrollAmount
+        simulateElasticScroll(to: preGrowthOverscrollOriginY)
+        XCTAssertEqual(scrollView.contentView.bounds.origin.y, preGrowthOverscrollOriginY, accuracy: 0.5)
+
+        // 3a. Multi-line streaming update while rubber-band overscrolled (+90pt):
+        // New content fills into the overscrolled space without clamping origin.y down to maxScrollY4
+        // AND without sawtooth-yanking origin.y upward by +dH.
+        messages[activeIdx].appendText("\n- Real-time Markdown formatting\n- Tool call timeline integration")
+        scrollView.update(messages: messages, theme: .zedDark, animated: true)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.06))
+
+        let docHeight4 = scrollView.documentView?.bounds.height ?? 0
+        let maxScrollY4 = max(0, docHeight4 - viewportHeight)
+        XCTAssertGreaterThan(docHeight4, docHeight3)
+        XCTAssertEqual(
+            scrollView.contentView.bounds.origin.y,
+            maxScrollY4 + overscrollAmount,
+            accuracy: 0.5,
+            "Bottom rubber-band overscroll must stay in phase with AppKit VBL rubber-band curve (maxScrollY4 + overscrollAmount)"
+        )
+
+        // 3b. Same-line streaming update while rubber-band spring relaxes to +35pt
+        let relaxedOverscroll: CGFloat = 35
+        simulateElasticScroll(to: maxScrollY4 + relaxedOverscroll)
+
+        messages[activeIdx].appendText(".")
+        scrollView.update(messages: messages, theme: .zedDark, animated: true)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.06))
+
+        let docHeight5 = scrollView.documentView?.bounds.height ?? 0
+        let maxScrollY5 = max(0, docHeight5 - viewportHeight)
+        XCTAssertEqual(
+            scrollView.contentView.bounds.origin.y,
+            maxScrollY5 + relaxedOverscroll,
+            accuracy: 0.5,
+            "Same-line streaming update must not snap rubber-band overscroll to 0"
+        )
+
+        // 3c. Live-scroll bottom rubber-band relaxation when docHeight grows mid-bounce:
+        // AppKit's spring relaxing back to pre-growth maxScrollY5 must NOT falsely flip followsBottom to false,
+        // and didEndLiveScrollNotification must cleanly pin to the new bottom.
+        NotificationCenter.default.post(name: NSScrollView.willStartLiveScrollNotification, object: scrollView)
+        simulateElasticScroll(to: maxScrollY5 + 10)
+        messages[activeIdx].appendText("\n\nReady for the next instructions!\nExtra line during bounce")
+        scrollView.update(messages: messages, theme: .zedDark, animated: true)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.06))
+        // Simulate AppKit's rubber-band spring relaxing back to the pre-growth maxScrollY5
+        simulateElasticScroll(to: maxScrollY5)
+        NotificationCenter.default.post(name: NSScrollView.didEndLiveScrollNotification, object: scrollView)
+
+        let docHeight6 = scrollView.documentView?.bounds.height ?? 0
+        XCTAssertEqual(
+            scrollView.contentView.bounds.maxY,
+            docHeight6,
+            accuracy: 0.5,
+            "Once rubber-band live scroll ends at bottom, auto-scroll must remain pinned to the new document bottom"
+        )
+
+        // 4. Top rubber-band overscroll (origin.y < 0) must not be clamped to 0 by streaming updates
+        simulateElasticScroll(to: -32)
+        XCTAssertEqual(scrollView.contentView.bounds.origin.y, -32, accuracy: 0.5)
+
+        messages[activeIdx].appendText("\nTrailing line 1\nTrailing line 2")
+        scrollView.update(messages: messages, theme: .zedDark, animated: true)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.06))
+
+        XCTAssertEqual(
+            scrollView.contentView.bounds.origin.y,
+            -32,
+            accuracy: 0.5,
+            "Top rubber-band overscroll must not be clamped to 0 when streaming grows document at bottom"
+        )
+    }
     #endif
 
     func testStreamingMessageUsesOneIncrementalTextViewUntilCompletion() {
