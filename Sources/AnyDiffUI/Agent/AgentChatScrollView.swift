@@ -74,20 +74,7 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
     }
 
     public class Coordinator {
-        struct MessageItemKey: Equatable {
-            let id: UUID
-            let contentCount: Int
-            let isStreaming: Bool
-            let toolCallsCount: Int
-            let queuePosition: Int?
-            let queueTotal: Int?
-        }
-        var lastItemKeys: [MessageItemKey] = []
-        var lastMessageCount: Int = -1
-        var lastLastMessageId: UUID? = nil
-        var lastLastMessageContentCount: Int = -1
-        var lastLastMessageStreaming: Bool = false
-        var lastLastMessageToolCallsCount: Int = -1
+        var lastMessages: [AgentMessage] = []
         var lastThemeId: String = ""
         var lastAccentColor: Color = .accentColor
         var lastAgentIcon: String = "sparkles"
@@ -132,21 +119,7 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
                 toolcallColorMode: toolcallColorMode,
                 isCompactMode: isCompactMode,
                 trigger: trigger
-            ) {
-                record(messages: messages, theme: theme, accentColor: accentColor, agentIcon: agentIcon, agentId: agentId, toolcallColorMode: toolcallColorMode, isCompactMode: isCompactMode, trigger: trigger)
-                return true
-            }
-            let currentItemKeys = messages.map {
-                MessageItemKey(
-                    id: $0.id,
-                    contentCount: $0.content.count,
-                    isStreaming: $0.isStreaming,
-                    toolCallsCount: $0.toolCalls.count,
-                    queuePosition: $0.queuePosition,
-                    queueTotal: $0.queueTotal
-                )
-            }
-            if currentItemKeys != lastItemKeys {
+            ) || messages != lastMessages {
                 record(messages: messages, theme: theme, accentColor: accentColor, agentIcon: agentIcon, agentId: agentId, toolcallColorMode: toolcallColorMode, isCompactMode: isCompactMode, trigger: trigger)
                 return true
             }
@@ -163,22 +136,8 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
             isCompactMode: Bool,
             trigger: Int
         ) {
-            lastItemKeys = messages.map {
-                MessageItemKey(
-                    id: $0.id,
-                    contentCount: $0.content.count,
-                    isStreaming: $0.isStreaming,
-                    toolCallsCount: $0.toolCalls.count,
-                    queuePosition: $0.queuePosition,
-                    queueTotal: $0.queueTotal
-                )
-            }
-            lastMessageCount = messages.count
+            lastMessages = messages
             lastAgentId = agentId
-            lastLastMessageId = messages.last?.id
-            lastLastMessageContentCount = messages.last?.content.count ?? -1
-            lastLastMessageStreaming = messages.last?.isStreaming ?? false
-            lastLastMessageToolCallsCount = messages.last?.toolCalls.count ?? -1
             lastThemeId = theme.id
             lastAccentColor = accentColor
             lastAgentIcon = agentIcon
@@ -474,10 +433,6 @@ public final class AgentChatScrollView: NSScrollView {
         } else {
             bottomOverscrollFloorY = nil
         }
-        print(String(format: "[ScrollLog] LIVE_SCROLL_START originY=%.1f docH=%.1f clipH=%.1f distFromBottom=%.1f overscroll=%.1f followsBottom=%@",
-                     clipBounds.origin.y, docHeight, clipBounds.height, distFromBottom, currentBottomOverscroll,
-                     followsBottom ? "true" : "false"))
-        fflush(stdout)
     }
 
     @objc private func handleDidEndLiveScroll(_ notification: Notification) {
@@ -494,12 +449,6 @@ public final class AgentChatScrollView: NSScrollView {
             scrollToBottom(animated: false)
         }
         notifyNearBottomChanged()
-        let finalBounds = contentView.bounds
-        let finalDist = docHeight - finalBounds.maxY
-        print(String(format: "[ScrollLog] LIVE_SCROLL_END   originY=%.1f docH=%.1f clipH=%.1f distFromBottom=%.1f overscroll=%.1f followsBottom=%@",
-                     finalBounds.origin.y, docHeight, finalBounds.height, finalDist, currentBottomOverscroll,
-                     followsBottom ? "true" : "false"))
-        fflush(stdout)
     }
 
     fileprivate var currentBottomOverscroll: CGFloat {
@@ -691,9 +640,6 @@ public final class AgentChatScrollView: NSScrollView {
                 lastObservedClipOriginY = clipBounds.origin.y
                 return
             }
-            print(String(format: "[ScrollLog] SCROLL_TO_BOTTOM(anim) fromY=%.1f -> targetY=%.1f docH=%.1f clipH=%.1f",
-                         clipBounds.origin.y, targetY, docHeight, clipBounds.height))
-            fflush(stdout)
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = duration
                 context.timingFunction = CAMediaTimingFunction(name: .easeOut)
@@ -705,14 +651,8 @@ public final class AgentChatScrollView: NSScrollView {
             }
             guard abs(clipBounds.origin.y - targetY) > 0.5 || abs(clipBounds.origin.x - targetPoint.x) > 0.5 else {
                 lastObservedClipOriginY = clipBounds.origin.y
-                print(String(format: "[ScrollLog] SCROLL_TO_BOTTOM(skip) originY=%.1f == targetY=%.1f (base=%.1f overscroll=%.1f) docH=%.1f",
-                             clipBounds.origin.y, targetY, baseTargetY, effectiveOverscroll, docHeight))
-                fflush(stdout)
                 return
             }
-            print(String(format: "[ScrollLog] SCROLL_TO_BOTTOM(sync) fromY=%.1f -> targetY=%.1f (base=%.1f overscroll=%.1f) docH=%.1f clipH=%.1f",
-                         clipBounds.origin.y, targetY, baseTargetY, effectiveOverscroll, docHeight, clipBounds.height))
-            fflush(stdout)
             performProgrammaticScroll(to: targetPoint, allowOverscroll: abs(effectiveOverscroll) > 0)
         }
     }
@@ -749,7 +689,6 @@ public final class AgentChatScrollView: NSScrollView {
         let clipBounds = cView.bounds
         let docHeight = documentViewCustom.bounds.height
         let maxScrollY = max(0, docHeight - clipBounds.height)
-        let prevFollows = followsBottom
         if docHeight <= clipBounds.height {
             followsBottom = true
             if isUserLiveScrolling {
@@ -783,13 +722,6 @@ public final class AgentChatScrollView: NSScrollView {
             }
         }
         notifyNearBottomChanged()
-        let distFromBottom = docHeight - clipBounds.maxY
-        print(String(format: "[ScrollLog] REFLECT originY=%.1f deltaY=%+.1f docH=%.1f maxScrollY=%.1f distFromBottom=%.1f overscroll=%.1f follows=%@->%@ nearBottom=%@ live=%@",
-                     newOriginY, deltaY, docHeight, max(0, docHeight - clipBounds.height), distFromBottom, currentBottomOverscroll,
-                     prevFollows ? "T" : "F", followsBottom ? "T" : "F",
-                     (lastNearBottom == true) ? "T" : "F",
-                     isUserLiveScrolling ? "T" : "F"))
-        fflush(stdout)
     }
 
     fileprivate func refreshNearBottomState() {
@@ -1032,7 +964,6 @@ public final class AgentChatDocumentView: NSView {
         animated: Bool,
         forceScrollToBottom: Bool = false
     ) -> Bool {
-        let updateStartTime = CACurrentMediaTime()
         let newMessages = incomingMessages.filter { $0.hasVisibleContent }
         let wasStreamingTurn = orderedCells.last(where: { !$0.cell.message.isQueued })?.cell.message.isStreaming == true
         let newIds = newMessages.map(\.id)
@@ -1139,15 +1070,12 @@ public final class AgentChatDocumentView: NSView {
         messagesByID = Dictionary(uniqueKeysWithValues: newMessages.map { ($0.id, $0) })
 
         let effectiveWidth = scrollView.contentView.bounds.width > 50 ? scrollView.contentView.bounds.width : 400
-        let preDocHeight = bounds.height
-        let preOriginY = scrollView.contentView.bounds.origin.y
         let overscroll = scrollView.currentBottomOverscroll
         let topOverscroll = scrollView.currentTopOverscroll
         if oldIds.isEmpty {
             scrollView.followsBottom = true
         }
         layoutContent(for: max(100, effectiveWidth))
-        let postDocHeight = bounds.height
         let isStreamingTurn = newMessages.last(where: { !$0.isQueued })?.isStreaming == true
         var didPerformScroll = false
         if scrollView.followsBottom && (!scrollView.isUserLiveScrolling || forceScrollToBottom || overscroll > 1.5 || topOverscroll < -1.5) {
@@ -1159,20 +1087,6 @@ public final class AgentChatDocumentView: NSView {
             didPerformScroll = true
         }
         scrollView.refreshNearBottomState()
-        let postOriginY = scrollView.contentView.bounds.origin.y
-        let lastCellFrame = orderedCells.last?.frame ?? .zero
-        let inputFrame = inputHostingView?.frame ?? .zero
-        let elapsedMs = (CACurrentMediaTime() - updateStartTime) * 1000.0
-        print(String(format: "[ScrollLog] UPDATE_MESSAGES ms=%.2f originY=%.1f->%.1f (dY=%+.1f) docH=%.1f->%.1f (dH=%+.1f) overscroll=%.1f follows=%@ stream=%@ lastCellY=%.1f..%.1f inputY=%.1f..%.1f",
-                     elapsedMs,
-                     preOriginY, postOriginY, postOriginY - preOriginY,
-                     preDocHeight, postDocHeight, postDocHeight - preDocHeight,
-                     overscroll,
-                     scrollView.followsBottom ? "T" : "F",
-                     isStreamingTurn ? "T" : "F",
-                     lastCellFrame.minY, lastCellFrame.maxY,
-                     inputFrame.minY, inputFrame.maxY))
-        fflush(stdout)
         for item in orderedCells {
             item.cell.animatePendingAppearances(animated: animated && item.cell.superview != nil && !item.cell.isHidden)
         }

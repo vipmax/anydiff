@@ -67,8 +67,10 @@ Or download directly from [Releases](https://github.com/vipmax/anydiff/releases/
   - High-performance virtualized session browser and agent list supporting hundreds of saved sessions with instant resumption.
   - Multi-provider support: Codex, Claude Code, Gemini / Antigravity, and Custom ACP agents.
 - **Rich Vector File Icons (Devicon SVGs)**: Crisp, high-resolution vector icons for 30+ major languages and configuration formats (TypeScript, React/TSX, JavaScript, Python, Rust, Go, Swift, Kotlin, Java, C++, C#, Docker, Git, SQL, Markdown, YAML, TOML, etc.) natively rendered via AppKit vector SVGs with 120 FPS caching.
-- **Minimalist macOS Titlebar & Dark Themes**:
-  - Curated themes: `Vesper` (Default), `macOS Dark`, `Tokyo Night`, `GitHub Dark`, `Zed Slate Gray`, `Zed Dark`, and `macOS Light`.
+- **Minimalist macOS Titlebar & 30 Built-in Themes**:
+  - **30 curated themes** (21 dark, 9 light) with automatic System appearance matching (`Vesper` in Dark Mode, `macOS Light` in Light Mode):
+    - **Dark (21)**: `Ayu Dark`, `Catppuccin Mocha`, `Dracula`, `Everforest Dark`, `GitHub Dark`, `Gruvbox Dark`, `JetBrains Darcula`, `macOS Dark`, `Matrix`, `Monokai Pro`, `Night Owl`, `Nord`, `One Dark Pro`, `Rosé Pine`, `Solarized Dark`, `Tokyo Night`, `Vesper`, `VS Code Dark+`, `Xcode Dark`, `Zed Dark`, `Zed Slate Gray`.
+    - **Light (9)**: `Catppuccin Latte`, `Everforest Light`, `GitHub Light`, `Gruvbox Light`, `IntelliJ Light`, `macOS Light`, `Solarized Light`, `VS Code Light+`, `Xcode Light`.
   - Tokenized syntax highlighting for Swift, Rust, TypeScript, JavaScript, Python, C++, Go, and JSON.
 - **Native In-App Markdown Document Viewer**:
   - Open and preview `.md` documentation directly in AnyDiff with a dedicated tab badge in the header (`[ 📄 README.md ✕ ]`).
@@ -230,4 +232,3 @@ just release ~/dev/my-project
 ## 📄 License
 
 Released under the MIT License.
-

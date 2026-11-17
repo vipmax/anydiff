@@ -1019,6 +1019,10 @@ public struct MainWindowView: View {
         if agentCoordinator.isPanelOpen != panelLayout.isRightPanelOpen {
             agentCoordinator.isPanelOpen = panelLayout.isRightPanelOpen
         }
+        let coordinator = agentCoordinator
+        repo.onFileSystemChanged = { [weak coordinator] in
+            coordinator?.notifyFileSystemChanged()
+        }
         updateWindowAppearance()
         DispatchQueue.main.async { [repo] in
             repo.loadInitialSource()

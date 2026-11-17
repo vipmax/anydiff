@@ -149,4 +149,107 @@ final class AgentCompactModeTests: XCTestCase {
         XCTAssertTrue(renderedCell.isCompactMode)
         XCTAssertLessThan(scrollCompactCellHeight, scrollRegularCellHeight - 25)
     }
+
+    @MainActor
+    func testEditedFilesCardShowsLiveDuringStreamingWithoutUndoThenRevealsUndoWhenComplete() {
+        let summary = AgentEditedFilesSummary(files: [
+            AgentEditedFileItem(path: "Sources/AnyDiffUI/Agent/AgentInputView.swift", additions: 7, deletions: 4),
+            AgentEditedFileItem(path: "Sources/AnyDiffUI/Agent/AgentPanelView.swift", additions: 14, deletions: 10)
+        ])
+
+        var streamingMessage = AgentMessage(
+            id: UUID(),
+            role: .assistant,
+            content: "Applying edits...",
+            toolCalls: [
+                ToolCallItem(id: "t1", toolName: "edit_file", path: "Sources/AnyDiffUI/Agent/AgentInputView.swift", status: .completed)
+            ],
+            isStreaming: true
+        )
+
+        let liveApplied = AgentPanelView.applyingLiveEditedSummary(
+            summary,
+            isBusyOrStreaming: true,
+            to: [streamingMessage]
+        )
+        XCTAssertEqual(liveApplied[0].editedFilesSummary, summary)
+
+        // Does not attach when not busy/streaming
+        XCTAssertNil(
+            AgentPanelView.applyingLiveEditedSummary(summary, isBusyOrStreaming: false, to: [streamingMessage])[0].editedFilesSummary
+        )
+
+        let cell = AgentMessageCell(message: liveApplied[0], theme: .zedDark)
+        _ = cell.layout(for: 460)
+        guard let card = cell.editedFilesCardView as? AgentEditedFilesCardView else {
+            XCTFail("Expected AgentEditedFilesCardView while streaming with liveEditedSummary")
+            return
+        }
+        let streamingButtons = card.subviews.compactMap { $0 as? NSButton }.filter { !$0.isHidden }
+        XCTAssertEqual(streamingButtons.map { $0.attributedTitle.string }, ["Review"])
+
+        streamingMessage.isStreaming = false
+        streamingMessage.editedFilesSummary = summary
+        cell.configure(message: streamingMessage, theme: .zedDark)
+        _ = cell.layout(for: 460)
+
+        let completedButtons = card.subviews.compactMap { $0 as? NSButton }.filter { !$0.isHidden }
+        XCTAssertEqual(Set(completedButtons.map { $0.attributedTitle.string }), Set(["Undo", "Review"]))
+
+        var revertedSummary = summary
+        revertedSummary.isReverted = true
+        streamingMessage.editedFilesSummary = revertedSummary
+        cell.configure(message: streamingMessage, theme: .zedDark)
+        _ = cell.layout(for: 460)
+
+        let revertedButtons = card.subviews.compactMap { $0 as? NSButton }.filter { !$0.isHidden }
+        XCTAssertEqual(Set(revertedButtons.map { $0.attributedTitle.string }), Set(["Redo", "Review"]))
+    }
+
+    @MainActor
+    func testScrollCoordinatorDetectsLiveEditedSummaryWithoutContentCountChange() {
+        let coordinator = AgentChatScrollRepresentable.Coordinator()
+        var msg = AgentMessage(
+            id: UUID(),
+            role: .assistant,
+            content: "",
+            toolCalls: [
+                ToolCallItem(id: "t1", toolName: "fs/write_text_file", path: "AGENTS.md", status: .completed)
+            ],
+            isStreaming: true
+        )
+
+        XCTAssertTrue(coordinator.needsUpdate(
+            messages: [msg],
+            theme: .zedDark,
+            accentColor: .accentColor,
+            agentIcon: "sparkles",
+            toolcallColorMode: .full,
+            isCompactMode: false,
+            trigger: 0
+        ))
+        XCTAssertFalse(coordinator.needsUpdate(
+            messages: [msg],
+            theme: .zedDark,
+            accentColor: .accentColor,
+            agentIcon: "sparkles",
+            toolcallColorMode: .full,
+            isCompactMode: false,
+            trigger: 0
+        ))
+
+        // Live summary arrives while content.count and toolCalls.count stay unchanged
+        msg.editedFilesSummary = AgentEditedFilesSummary(files: [
+            AgentEditedFileItem(path: "AGENTS.md", additions: 2, deletions: 0)
+        ])
+        XCTAssertTrue(coordinator.needsUpdate(
+            messages: [msg],
+            theme: .zedDark,
+            accentColor: .accentColor,
+            agentIcon: "sparkles",
+            toolcallColorMode: .full,
+            isCompactMode: false,
+            trigger: 0
+        ))
+    }
 }

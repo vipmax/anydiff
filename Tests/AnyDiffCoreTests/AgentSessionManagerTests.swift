@@ -1502,5 +1502,124 @@ final class AgentSessionManagerTests: XCTestCase {
         XCTAssertNotNil(cell.editedFilesCardView)
     }
 
+    func testDidExecuteFSWriteDoesNotHijackRunningReadToolCall() {
+        let manager = ACPAgentSessionManager()
+        let tempDir = NSTemporaryDirectory()
+        let client = ACPClient()
+
+        manager.sendPrompt("Update README", workingDirectory: tempDir)
+
+        // 1. A Read tool call with line range is still running
+        let readStart = ACPSessionUpdateContent(
+            type: "tool_call",
+            toolCallId: "read_theme",
+            toolName: "view_file",
+            toolInput: [
+                "AbsolutePath": AnyCodableSendable("/repo/Sources/Theme.swift"),
+                "StartLine": AnyCodableSendable(660),
+                "EndLine": AnyCodableSendable(705)
+            ],
+            status: "running"
+        )
+        manager.client(client, didReceiveUpdate: readStart, sessionId: "sess-1")
+
+        // 2. An fs/write_text_file executes for a different file (README.md)
+        manager.client(
+            client,
+            didExecuteFSWrite: "/repo/README.md",
+            oldContent: "old",
+            newContent: "new"
+        )
+
+        let exp = expectation(description: "Separate edit created without overwriting Read")
+        DispatchQueue.main.async {
+            let calls = manager.messages[1].toolCalls
+            XCTAssertEqual(calls.count, 2)
+
+            XCTAssertEqual(calls[0].id, "read_theme")
+            XCTAssertEqual(calls[0].shortToolName, "Read")
+            XCTAssertEqual(calls[0].path, "/repo/Sources/Theme.swift")
+            XCTAssertEqual(calls[0].displayTitle, "Theme.swift:660-705")
+
+            XCTAssertEqual(calls[1].shortToolName, "Edit")
+            XCTAssertEqual(calls[1].path, "/repo/README.md")
+            XCTAssertEqual(calls[1].displayTitle, "README.md")
+            XCTAssertNil(calls[1].startLine)
+            XCTAssertNil(calls[1].endLine)
+            XCTAssertEqual(calls[1].oldContent, "old")
+            XCTAssertEqual(calls[1].newContent, "new")
+            exp.fulfill()
+        }
+        wait(for: [exp], timeout: 1.0)
+    }
+
+    func testDidExecuteToolMatchesByCategoryAndPathDuringParallelCalls() {
+        let manager = ACPAgentSessionManager()
+        let tempDir = NSTemporaryDirectory()
+        let client = ACPClient()
+
+        manager.sendPrompt("Inspect files", workingDirectory: tempDir)
+
+        // 1. Parallel Read and Run calls start
+        manager.client(client, didReceiveUpdate: ACPSessionUpdateContent(
+            type: "tool_call",
+            toolCallId: "read_call",
+            toolName: "view_file",
+            toolInput: [
+                "AbsolutePath": AnyCodableSendable("/repo/Theme.swift"),
+                "StartLine": AnyCodableSendable(660),
+                "EndLine": AnyCodableSendable(705)
+            ],
+            status: "running"
+        ), sessionId: "sess-1")
+
+        manager.client(client, didReceiveUpdate: ACPSessionUpdateContent(
+            type: "tool_call",
+            toolCallId: "run_call",
+            toolName: "run_command",
+            toolInput: ["CommandLine": AnyCodableSendable("grep Theme Sources/")],
+            status: "running"
+        ), sessionId: "sess-1")
+
+        // 2. fs/read_text_file finishes for Theme.swift — must complete read_call, not run_call
+        manager.client(client, didExecuteTool: "fs/read_text_file", path: "/repo/Theme.swift", details: "Read 100 chars")
+
+        let exp = expectation(description: "Read completed on matching path")
+        DispatchQueue.main.async {
+            let calls = manager.messages[1].toolCalls
+            XCTAssertEqual(calls.count, 2)
+            XCTAssertEqual(calls[0].id, "read_call")
+            XCTAssertEqual(calls[0].status, .completed)
+            XCTAssertEqual(calls[0].displayTitle, "Theme.swift:660-705")
+            XCTAssertEqual(calls[1].id, "run_call")
+            XCTAssertEqual(calls[1].status, .running)
+            exp.fulfill()
+        }
+        wait(for: [exp], timeout: 1.0)
+    }
+
+    func testMultipleFSWritesToSameFileWithoutPrecreatedEditDoNotOverwritePreviousEdit() {
+        let manager = ACPAgentSessionManager()
+        let tempDir = NSTemporaryDirectory()
+        let client = ACPClient()
+
+        manager.sendPrompt("Edit twice", workingDirectory: tempDir)
+
+        manager.client(client, didExecuteFSWrite: "/repo/README.md", oldContent: "v1", newContent: "v2")
+        manager.client(client, didExecuteFSWrite: "/repo/README.md", oldContent: "v2", newContent: "v3")
+
+        let exp = expectation(description: "Two edits preserved")
+        DispatchQueue.main.async {
+            let calls = manager.messages[1].toolCalls
+            XCTAssertEqual(calls.count, 2)
+            XCTAssertEqual(calls[0].oldContent, "v1")
+            XCTAssertEqual(calls[0].newContent, "v2")
+            XCTAssertEqual(calls[1].oldContent, "v2")
+            XCTAssertEqual(calls[1].newContent, "v3")
+            exp.fulfill()
+        }
+        wait(for: [exp], timeout: 1.0)
+    }
+
     #endif
 }

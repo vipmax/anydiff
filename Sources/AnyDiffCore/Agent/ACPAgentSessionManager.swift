@@ -20,8 +20,8 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
     }
 
     private let client: ACPClient
-    private var currentWorkingDirectory: String = ""
-    private var currentStreamMessageId: UUID? = nil
+    var currentWorkingDirectory: String = ""
+    var currentStreamMessageId: UUID? = nil
     private var initializationTask: Task<Void, Never>?
     private var initializationWorkingDirectory: String?
     private var deferredPrepareWorkingDirectory: String?
@@ -43,6 +43,8 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
         initializationTask?.cancel()
         promptTask?.cancel()
         authTask?.cancel()
+        liveGitDiffTask?.cancel()
+        finalizeInterruptedTurnTask?.cancel()
     }
 
     public override func selectModel(name: String, value: String) {
@@ -210,9 +212,11 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
         }
     }
 
-    private var preTurnSnapshot: PreTurnGitSnapshot? = nil
+    var preTurnSnapshot: PreTurnGitSnapshot? = nil
+    var activeTurnWorkingDirectory: String? = nil
     private var liveGitDiffTask: Task<Void, Never>? = nil
     private var liveGitDiffPending: Bool = false
+    private var finalizeInterruptedTurnTask: Task<Void, Never>? = nil
 
     private func startPendingPromptIfPossible() {
         guard promptTask == nil,
@@ -225,6 +229,8 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
             return
         }
 
+        finalizeInterruptedTurnTask?.cancel()
+        finalizeInterruptedTurnTask = nil
         pendingPrompt = nil
         status = .busy
         statusMessage = "Agent is thinking..."
@@ -237,6 +243,7 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
             let snapshot = await AgentGitChangesDetector.capturePreTurnSnapshotAsync(workingDirectory: workingDir)
             guard !Task.isCancelled else { return }
             self.preTurnSnapshot = snapshot
+            self.activeTurnWorkingDirectory = workingDir
             do {
                 try await self.client.sendPrompt(sessionId: sessionId, text: pending.text, images: pending.images)
                 self.liveGitDiffTask?.cancel()
@@ -249,21 +256,14 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
                     snapshot: self.preTurnSnapshot
                 )
                 guard !Task.isCancelled else { return }
-                if let summary {
-                    let targetIdx: Int?
-                    if let streamId = self.currentStreamMessageId, let idx = self.messages.firstIndex(where: { $0.id == streamId }) {
-                        targetIdx = idx
-                    } else if let lastIdx = self.messages.indices.last, self.messages[lastIdx].role == .assistant {
-                        targetIdx = lastIdx
-                    } else {
-                        targetIdx = nil
-                    }
-                    if let targetIdx, !self.messages[targetIdx].toolCalls.isEmpty {
-                        self.messages[targetIdx].editedFilesSummary = summary
-                    }
+                if let summary,
+                   let targetIdx = self.targetAssistantMessageIndex(for: self.currentStreamMessageId),
+                   !self.messages[targetIdx].toolCalls.isEmpty {
+                    self.messages[targetIdx].editedFilesSummary = summary
                 }
                 self.liveEditedSummary = nil
                 self.preTurnSnapshot = nil
+                self.activeTurnWorkingDirectory = nil
                 self.markCurrentStreamComplete()
                 self.promptTask = nil
                 if !self.promptQueue.isEmpty {
@@ -279,8 +279,13 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
                 self.liveGitDiffTask?.cancel()
                 self.liveGitDiffTask = nil
                 self.liveGitDiffPending = false
+                let streamId = self.currentStreamMessageId
+                let seedSummary = self.liveEditedSummary
+                let snapshot = self.preTurnSnapshot
+                let turnWorkingDir = self.activeTurnWorkingDirectory ?? workingDir
                 self.liveEditedSummary = nil
                 self.preTurnSnapshot = nil
+                self.activeTurnWorkingDirectory = nil
                 self.promptTask = nil
 
                 if let rpcErr = error as? JSONRPCError, rpcErr.code == -1, rpcErr.message == "Client stopped",
@@ -289,6 +294,12 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
                     self.status = .idle
                     self.statusMessage = nil
                     self.markCurrentStreamComplete()
+                    self.finalizeInterruptedTurnEditedFiles(
+                        streamId: streamId,
+                        seedSummary: seedSummary,
+                        workingDirectory: turnWorkingDir,
+                        snapshot: snapshot
+                    )
                     self.prepareAgent(workingDirectory: deferredDir)
                     return
                 }
@@ -297,6 +308,12 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
                 self.statusMessage = "Error: \(error.localizedDescription)"
                 self.appendErrorMessage(error.localizedDescription)
                 self.markCurrentStreamComplete()
+                self.finalizeInterruptedTurnEditedFiles(
+                    streamId: streamId,
+                    seedSummary: seedSummary,
+                    workingDirectory: turnWorkingDir,
+                    snapshot: snapshot
+                )
                 if let deferredDir = self.deferredPrepareWorkingDirectory {
                     self.deferredPrepareWorkingDirectory = nil
                     if !Self.pathsMatch(self.currentWorkingDirectory, deferredDir) {
@@ -334,6 +351,9 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
             authTask = nil
             client.stop()
             pendingPrompt = nil
+            liveEditedSummary = nil
+            preTurnSnapshot = nil
+            activeTurnWorkingDirectory = nil
             markCurrentStreamComplete()
             initializationState = .notStarted
             isAuthenticating = false
@@ -355,7 +375,23 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
             self.authURL = nil
             self.status = .idle
             self.statusMessage = "Stopped"
+
+            let streamId = self.currentStreamMessageId
+            let seedSummary = self.liveEditedSummary
+            let snapshot = self.preTurnSnapshot
+            let turnWorkingDir = self.activeTurnWorkingDirectory ?? self.currentWorkingDirectory
+            self.liveEditedSummary = nil
+            self.preTurnSnapshot = nil
+            self.activeTurnWorkingDirectory = nil
+
             self.markCurrentStreamComplete()
+            self.finalizeInterruptedTurnEditedFiles(
+                streamId: streamId,
+                seedSummary: seedSummary,
+                workingDirectory: turnWorkingDir,
+                snapshot: snapshot
+            )
+
             if let deferredDir = self.deferredPrepareWorkingDirectory {
                 self.deferredPrepareWorkingDirectory = nil
                 if !Self.pathsMatch(self.currentWorkingDirectory, deferredDir) {
@@ -370,6 +406,8 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
         liveGitDiffTask?.cancel()
         liveGitDiffTask = nil
         liveGitDiffPending = false
+        finalizeInterruptedTurnTask?.cancel()
+        finalizeInterruptedTurnTask = nil
         initializationTask?.cancel()
         promptTask?.cancel()
         authTask?.cancel()
@@ -381,6 +419,9 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
         authTask = nil
         pendingPrompt = nil
         pendingPermission = nil
+        liveEditedSummary = nil
+        preTurnSnapshot = nil
+        activeTurnWorkingDirectory = nil
         client.stop()
         messages.removeAll()
         currentStreamMessageId = nil
@@ -399,6 +440,8 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
         liveGitDiffTask?.cancel()
         liveGitDiffTask = nil
         liveGitDiffPending = false
+        finalizeInterruptedTurnTask?.cancel()
+        finalizeInterruptedTurnTask = nil
         initializationTask?.cancel()
         promptTask?.cancel()
         authTask?.cancel()
@@ -410,6 +453,9 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
         authTask = nil
         pendingPrompt = nil
         pendingPermission = nil
+        liveEditedSummary = nil
+        preTurnSnapshot = nil
+        activeTurnWorkingDirectory = nil
         currentStreamMessageId = nil
         client.stop()
         currentSessionId = nil
@@ -581,6 +627,53 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
             if let updated = try? await self.client.setConfigOption(sessionId: sessId, configId: item.configId, value: item.value) {
                 self.applyConfigOptions(updated)
             }
+        }
+    }
+
+    private func targetAssistantMessageIndex(for streamId: UUID?) -> Int? {
+        if let streamId, let idx = messages.firstIndex(where: { $0.id == streamId }) {
+            return idx
+        }
+        if let lastIdx = messages.indices.last, messages[lastIdx].role == .assistant {
+            return lastIdx
+        }
+        return nil
+    }
+
+    private func finalizeInterruptedTurnEditedFiles(
+        streamId: UUID?,
+        seedSummary: AgentEditedFilesSummary?,
+        workingDirectory: String,
+        snapshot: PreTurnGitSnapshot?
+    ) {
+        guard let targetIdx = targetAssistantMessageIndex(for: streamId),
+              !messages[targetIdx].toolCalls.isEmpty else {
+            return
+        }
+        let targetMessageId = messages[targetIdx].id
+
+        if messages[targetIdx].editedFilesSummary == nil,
+           let seedSummary,
+           !seedSummary.files.isEmpty {
+            messages[targetIdx].editedFilesSummary = seedSummary
+        }
+
+        guard let snapshot, !workingDirectory.isEmpty else { return }
+
+        finalizeInterruptedTurnTask?.cancel()
+        finalizeInterruptedTurnTask = Task { @MainActor [weak self] in
+            let (summary, _) = await AgentGitChangesDetector.computeTurnSummaryAsync(
+                workingDirectory: workingDirectory,
+                snapshot: snapshot
+            )
+            guard let self, !Task.isCancelled else { return }
+            self.finalizeInterruptedTurnTask = nil
+            guard let idx = self.messages.firstIndex(where: { $0.id == targetMessageId }),
+                  !self.messages[idx].toolCalls.isEmpty,
+                  self.messages[idx].editedFilesSummary?.isReverted != true else {
+                return
+            }
+            self.messages[idx].editedFilesSummary = summary
         }
     }
 
@@ -765,13 +858,14 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
                    self.messages[targetIdx].toolCalls.contains(where: { $0.id == toolId }) {
                     // Update existing tool call
                     _ = self.messages[targetIdx].updateToolCall(id: toolId) { item in
-                        if toolName != "tool" { item.toolName = toolName }
+                        if toolName != "tool" && !(item.toolName == "fs/write_text_file" && ToolCallItem.isEditToolName(toolName)) {
+                            item.toolName = toolName
+                        }
                         if let locs = update.locations, !locs.isEmpty {
                             item.locations = locs
                         }
                         if let path {
-                            item.path = path
-                            item.title = (path as NSString).lastPathComponent
+                            self.applyPath(path, to: &item)
                         } else if item.title == nil || item.title == "Editing files" || item.title?.lowercased().hasPrefix("running ") == true {
                             item.title = title
                         }
@@ -907,13 +1001,15 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
             guard let self = self else { return }
             if let streamId = self.currentStreamMessageId,
                let idx = self.messages.firstIndex(where: { $0.id == streamId }) {
-                if let rIdx = self.messages[idx].toolCalls.lastIndex(where: { $0.status == .running }) {
-                    let toolID = self.messages[idx].toolCalls[rIdx].id
+                let toolCalls = self.messages[idx].toolCalls
+                let matchedIndex = self.matchingRunningToolCallIndex(in: toolCalls, executedToolName: toolName, path: path)
+
+                if let rIdx = matchedIndex {
+                    let toolID = toolCalls[rIdx].id
                     _ = self.messages[idx].updateToolCall(id: toolID) { item in
                         item.toolName = toolName
                         if let path {
-                            item.path = path
-                            item.title = (path as NSString).lastPathComponent
+                            self.applyPath(path, to: &item)
                         }
                         if item.summary == nil { item.summary = details }
                         item.status = .completed
@@ -943,12 +1039,21 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
             let filename = (path as NSString).lastPathComponent
             if let streamId = self.currentStreamMessageId,
                let idx = self.messages.firstIndex(where: { $0.id == streamId }) {
-                if let rIdx = self.messages[idx].toolCalls.lastIndex(where: { $0.status == .running || $0.shortToolName == "Edit" || $0.path == path }) {
-                    let toolID = self.messages[idx].toolCalls[rIdx].id
+                let toolCalls = self.messages[idx].toolCalls
+                let matchedIndex =
+                    self.matchingRunningToolCallIndex(in: toolCalls, executedToolName: "fs/write_text_file", path: path)
+                    ?? toolCalls.lastIndex(where: { item in
+                        item.isEditToolCall
+                            && item.oldContent == nil
+                            && item.newContent == nil
+                            && item.path.map { Self.pathsMatch($0, path, workingDirectory: self.currentWorkingDirectory) } == true
+                    })
+
+                if let rIdx = matchedIndex {
+                    let toolID = toolCalls[rIdx].id
                     _ = self.messages[idx].updateToolCall(id: toolID) { item in
+                        self.applyPath(path, to: &item)
                         item.toolName = "fs/write_text_file"
-                        item.path = path
-                        item.title = filename
                         item.descriptionText = nil
                         item.oldContent = oldContent
                         item.newContent = newContent
@@ -968,6 +1073,38 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
             }
             self.updateLiveGitDiffState()
         }
+    }
+
+    private func applyPath(_ newPath: String, to item: inout ToolCallItem) {
+        if let existingPath = item.path,
+           !Self.pathsMatch(existingPath, newPath, workingDirectory: currentWorkingDirectory) {
+            item.startLine = nil
+            item.endLine = nil
+        }
+        item.path = newPath
+        item.title = (newPath as NSString).lastPathComponent
+    }
+
+    private func matchingRunningToolCallIndex(
+        in toolCalls: [ToolCallItem],
+        executedToolName: String,
+        path: String?
+    ) -> Int? {
+        if let path {
+            return toolCalls.lastIndex(where: { item in
+                item.status == .running
+                    && Self.isCompatibleToolCategory(existing: item, executedToolName: executedToolName)
+                    && item.path.map { Self.pathsMatch($0, path, workingDirectory: currentWorkingDirectory) } == true
+            }) ?? toolCalls.lastIndex(where: { item in
+                item.status == .running
+                    && Self.isCompatibleToolCategory(existing: item, executedToolName: executedToolName)
+                    && item.path == nil
+            })
+        }
+        return toolCalls.lastIndex(where: { item in
+            item.status == .running
+                && Self.isCompatibleToolCategory(existing: item, executedToolName: executedToolName)
+        })
     }
 
     private func updateLiveGitDiffState() {
@@ -1025,11 +1162,36 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
         }
     }
 
-    private static func pathsMatch(_ a: String, _ b: String) -> Bool {
-        if a == b { return true }
-        guard !a.isEmpty, !b.isEmpty else { return false }
-        return URL(fileURLWithPath: a).standardizedFileURL.resolvingSymlinksInPath().path
-            == URL(fileURLWithPath: b).standardizedFileURL.resolvingSymlinksInPath().path
+    private static func normalizedPath(_ path: String, workingDirectory: String = "") -> String {
+        let expanded = path.hasPrefix("~") ? (path as NSString).expandingTildeInPath : path
+        let resolved: String
+        if expanded.hasPrefix("/") || workingDirectory.isEmpty {
+            resolved = expanded
+        } else {
+            resolved = URL(fileURLWithPath: workingDirectory).appendingPathComponent(expanded).path
+        }
+        return URL(fileURLWithPath: resolved).standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
+    private static func pathsMatch(_ lhs: String, _ rhs: String, workingDirectory: String = "") -> Bool {
+        if lhs == rhs { return true }
+        guard !lhs.isEmpty, !rhs.isEmpty else { return false }
+        return normalizedPath(lhs, workingDirectory: workingDirectory)
+            == normalizedPath(rhs, workingDirectory: workingDirectory)
+    }
+
+    private static func isCompatibleToolCategory(existing: ToolCallItem, executedToolName: String) -> Bool {
+        if existing.toolName == "tool" { return true }
+        switch executedToolName {
+        case "fs/read_text_file":
+            return existing.shortToolName == "Read"
+        case "fs/write_text_file":
+            return existing.isEditToolCall
+        case "run_command":
+            return existing.shortToolName == "Run"
+        default:
+            return existing.toolName == executedToolName
+        }
     }
 
     private static func extractFirstString(from dict: [String: AnyCodableSendable], keys: [String]) -> String? {

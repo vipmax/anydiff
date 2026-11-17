@@ -583,7 +583,8 @@ public final class AgentMessageCell: NSView {
                         summary: summary,
                         theme: theme,
                         accentColor: accentColor,
-                        disableAgentColors: toolcallColorMode != .full
+                        disableAgentColors: toolcallColorMode != .full,
+                        isLiveStreaming: message.isStreaming
                     )
                     card.onReview = onReview
                     card.onRevert = onRevert
@@ -594,7 +595,8 @@ public final class AgentMessageCell: NSView {
                         summary: summary,
                         theme: theme,
                         accentColor: accentColor,
-                        disableAgentColors: toolcallColorMode != .full
+                        disableAgentColors: toolcallColorMode != .full,
+                        isLiveStreaming: message.isStreaming
                     )
                     card.onReview = onReview
                     card.onRevert = onRevert

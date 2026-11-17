@@ -75,22 +75,25 @@ public final class ReviewCoordinator: ObservableObject {
 
         // 2. Fetch turn snapshot diff using the base commit hash
         if isGit, let baseHash = summary.baseCommitHash, !baseHash.isEmpty {
-            if let diffData = AgentGitChangesDetector.fetchTurnDiffData(
-                workingDirectory: workingDirectory,
-                baseCommit: baseHash,
-                pathFilter: Set(summary.filePaths)
-            ), !diffData.isEmpty {
-                let parsed = GitDiffParser.shared.parseZeroCopy(data: diffData)
-                if !parsed.isEmpty {
-                    loadDiff(files: parsed, rawData: diffData, baseDirectory: baseDirectory)
-                    return
+            if !summary.isReverted || (summary.postTurnCommitHash?.isEmpty == false) {
+                if let diffData = AgentGitChangesDetector.fetchTurnDiffData(
+                    workingDirectory: workingDirectory,
+                    baseCommit: baseHash,
+                    targetCommit: summary.isReverted ? summary.postTurnCommitHash : nil,
+                    pathFilter: Set(summary.filePaths)
+                ), !diffData.isEmpty {
+                    let parsed = GitDiffParser.shared.parseZeroCopy(data: diffData)
+                    if !parsed.isEmpty {
+                        loadDiff(files: parsed, rawData: diffData, baseDirectory: baseDirectory)
+                        return
+                    }
                 }
             }
         }
 
-        // 3. Fallback to working tree path filter
+        // 3. Fallback to working tree path filter (only when changes are still on disk)
         let pathFilter = Set(summary.filePaths)
-        let (files, rawData) = isGit
+        let (files, rawData) = (isGit && !summary.isReverted)
             ? GitService.shared.diffFiles(at: workingDirectory, target: .workingTree, pathFilter: pathFilter)
             : (files: [], data: nil)
 

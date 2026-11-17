@@ -1277,7 +1277,6 @@ public struct AgentInputView: View {
     public var accentColor: Color
     public var onSend: (String, [AgentImageAttachment]) -> Void
     public var onCancel: () -> Void
-    public var onReview: ((AgentEditedFilesSummary) -> Void)?
     public var onPreviewImages: (([AgentImageAttachment], Int, Bool) -> Void)?
 
     @Binding public var attachedImages: [AgentImageAttachment]
@@ -1385,7 +1384,6 @@ public struct AgentInputView: View {
         externalFocusRequest: Int = 0,
         onSend: @escaping (String, [AgentImageAttachment]) -> Void,
         onCancel: @escaping () -> Void,
-        onReview: ((AgentEditedFilesSummary) -> Void)? = nil,
         onPreviewImages: (([AgentImageAttachment], Int, Bool) -> Void)? = nil
     ) {
         self._text = text
@@ -1400,7 +1398,6 @@ public struct AgentInputView: View {
         self.externalFocusRequest = externalFocusRequest
         self.onSend = onSend
         self.onCancel = onCancel
-        self.onReview = onReview
         self.onPreviewImages = onPreviewImages
         let initialBlocks = Self.makeInputBlocks(
             from: agentManager.draftBlocks,
@@ -1422,7 +1419,6 @@ public struct AgentInputView: View {
         externalFocusRequest: Int = 0,
         onSend: @escaping (String) -> Void,
         onCancel: @escaping () -> Void,
-        onReview: ((AgentEditedFilesSummary) -> Void)? = nil,
         onPreviewImages: (([AgentImageAttachment], Int, Bool) -> Void)? = nil
     ) {
         self._text = text
@@ -1437,7 +1433,6 @@ public struct AgentInputView: View {
         self.externalFocusRequest = externalFocusRequest
         self.onSend = { prompt, _ in onSend(prompt) }
         self.onCancel = onCancel
-        self.onReview = onReview
         self.onPreviewImages = onPreviewImages
         let initialBlocks = Self.makeInputBlocks(
             from: agentManager.draftBlocks,
@@ -1446,15 +1441,6 @@ public struct AgentInputView: View {
         )
         self._blocks = State(initialValue: initialBlocks)
         self._focusedBlockId = State(initialValue: initialBlocks.last(where: \.isText)?.id ?? initialBlocks.first?.id ?? "")
-    }
-
-    private var isBusy: Bool {
-        agentManager.status == .busy || agentManager.status == .connecting || agentManager.initializationState == .starting
-    }
-
-    private var shouldShowLiveEditedSummary: Bool {
-        agentManager.liveEditedSummary != nil &&
-            (isBusy || agentManager.messages.last?.isStreaming == true)
     }
 
     public var body: some View {
@@ -1598,17 +1584,6 @@ public struct AgentInputView: View {
     @ViewBuilder
     private var expandedView: some View {
         VStack(spacing: 8) {
-            // Live changed files top banner
-            if shouldShowLiveEditedSummary, let liveSummary = agentManager.liveEditedSummary {
-                AgentLiveChangesBannerView(
-                    summary: liveSummary,
-                    theme: theme,
-                    accentColor: accentColor,
-                    onReview: onReview
-                )
-                .transition(.opacity)
-            }
-
             if let permission = agentManager.pendingPermission {
                 AgentPermissionCardView(
                     permission: permission,
@@ -1721,7 +1696,6 @@ public struct AgentInputView: View {
                 recalculateTotalHeight()
             }
         }
-        .animation(.easeInOut(duration: 0.14), value: shouldShowLiveEditedSummary)
     }
 
     private func quoteBadgeView(id: String, quote: SelectionQuote) -> some View {
@@ -2280,93 +2254,6 @@ private extension View {
                 verticalPadding: verticalPadding
             )
         )
-    }
-}
-
-public struct AgentLiveChangesBannerView: View {
-    public let summary: AgentEditedFilesSummary
-    public let theme: Theme
-    public let accentColor: Color
-    public var onReview: ((AgentEditedFilesSummary) -> Void)?
-
-    @State private var isHovered: Bool = false
-
-    public init(
-        summary: AgentEditedFilesSummary,
-        theme: Theme,
-        accentColor: Color,
-        onReview: ((AgentEditedFilesSummary) -> Void)? = nil
-    ) {
-        self.summary = summary
-        self.theme = theme
-        self.accentColor = accentColor
-        self.onReview = onReview
-    }
-
-    public var body: some View {
-        Button(action: {
-            onReview?(summary)
-        }) {
-            HStack(spacing: 8) {
-                // Left section: pencil icon, files count, +/- counters
-                HStack(spacing: 7) {
-                    Image(systemName: "pencil.line")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(accentColor)
-
-                    Text(summary.files.count == 1 ? "1 file changed" : "\(summary.files.count) files changed")
-                        .font(.system(size: 12.5, weight: .semibold))
-                        .foregroundColor(Color(theme.foreground))
-
-                    if summary.totalAdditions > 0 {
-                        Text("+\(summary.totalAdditions)")
-                            .font(.system(size: 12, weight: .bold, design: .monospaced))
-                            .foregroundColor(Color(red: 0.28, green: 0.82, blue: 0.45))
-                    }
-
-                    if summary.totalDeletions > 0 {
-                        Text("-\(summary.totalDeletions)")
-                            .font(.system(size: 12, weight: .bold, design: .monospaced))
-                            .foregroundColor(Color(red: 0.96, green: 0.32, blue: 0.28))
-                    }
-                }
-
-                Spacer(minLength: 8)
-
-                // Right section: Review ↗
-                HStack(spacing: 3) {
-                    Text("Review")
-                        .font(.system(size: 12.5, weight: .semibold))
-                    Image(systemName: "arrow.up.right")
-                        .font(.system(size: 10.5, weight: .bold))
-                }
-                .foregroundColor(accentColor)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(
-                RoundedRectangle(cornerRadius: 13, style: .continuous)
-                    .fill(.ultraThinMaterial)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 13, style: .continuous)
-                            .fill(accentColor.opacity(isHovered ? 0.12 : 0.05))
-                    )
-            )
-            .shadow(
-                color: accentColor.opacity(isHovered ? 0.14 : 0.04),
-                radius: isHovered ? 8 : 4,
-                y: 1
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering in
-            withAnimation(.easeOut(duration: 0.14)) {
-                isHovered = hovering
-            }
-        }
-        .overlay(AgentInputPointingHandCursorView())
-        .help("Review live changes in MultiBuffer (Read-Only)")
     }
 }
 

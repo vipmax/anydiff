@@ -74,6 +74,10 @@ public struct ToolCallItem: Identifiable, Codable, Sendable, Equatable {
     }
 
     public var shortToolName: String {
+        Self.shortToolName(for: toolName, command: command, path: path)
+    }
+
+    public static func shortToolName(for toolName: String, command: String? = nil, path: String? = nil) -> String {
         let lower = toolName.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
         let commandToolNames = [
             "just", "make", "xcodebuild", "swift", "swiftc", "cargo", "npm",
@@ -101,6 +105,11 @@ public struct ToolCallItem: Identifiable, Codable, Sendable, Equatable {
             return "Run"
         }
         return toolName
+    }
+
+    public static func isEditToolName(_ toolName: String) -> Bool {
+        let short = shortToolName(for: toolName)
+        return short == "Edit" || short == "Create" || short == "Write"
     }
 
     public var isEditToolCall: Bool {

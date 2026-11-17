@@ -217,7 +217,6 @@ public struct AgentPanelView: View {
                 handleSendPrompt(prompt, images: images)
             },
             onCancel: { agentManager.cancel() },
-            onReview: onReview,
             onPreviewImages: { imgs, idx, isDraft in
                 if let onPreviewImages = onPreviewImages {
                     onPreviewImages(imgs, idx, isDraft)
@@ -235,8 +234,31 @@ public struct AgentPanelView: View {
         return view
     }
 
+    static func applyingLiveEditedSummary(
+        _ liveSummary: AgentEditedFilesSummary?,
+        isBusyOrStreaming: Bool,
+        to messages: [AgentMessage]
+    ) -> [AgentMessage] {
+        guard let liveSummary,
+              !liveSummary.files.isEmpty,
+              isBusyOrStreaming,
+              let lastAssistantIdx = messages.lastIndex(where: { $0.role == .assistant }),
+              messages[lastAssistantIdx].isStreaming,
+              messages[lastAssistantIdx].editedFilesSummary == nil,
+              !messages[lastAssistantIdx].toolCalls.isEmpty else {
+            return messages
+        }
+        var updated = messages
+        updated[lastAssistantIdx].editedFilesSummary = liveSummary
+        return updated
+    }
+
     private var displayedMessages: [AgentMessage] {
-        let base = agentManager.messages.filter { $0.hasVisibleContent }
+        let base = Self.applyingLiveEditedSummary(
+            agentManager.liveEditedSummary,
+            isBusyOrStreaming: agentManager.isBusyOrStreaming,
+            to: agentManager.messages.filter { $0.hasVisibleContent }
+        )
         if agentManager.promptQueue.isEmpty {
             return base
         }

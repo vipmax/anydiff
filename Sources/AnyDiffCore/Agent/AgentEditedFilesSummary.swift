@@ -442,13 +442,17 @@ public enum AgentGitChangesDetector {
         return (summary, rawData)
     }
 
-    /// Fetches the raw diff against base commit for specific filtered paths.
+    /// Fetches the raw diff against base commit (or between base and target commits) for specific filtered paths.
     public static func fetchTurnDiffData(
         workingDirectory: String,
         baseCommit: String,
+        targetCommit: String? = nil,
         pathFilter: Set<String>? = nil
     ) -> Data? {
         var args = ["-C", workingDirectory, "diff", "-U3", baseCommit]
+        if let targetCommit, !targetCommit.isEmpty {
+            args.append(targetCommit)
+        }
         if let filter = pathFilter, !filter.isEmpty {
             args.append("--")
             args.append(contentsOf: filter.sorted())

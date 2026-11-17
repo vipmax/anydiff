@@ -98,6 +98,8 @@ public final class AgentEditedFilesCardView: AgentFlippedView {
     private var theme: Theme
     private var accentColor: Color
     private var disableAgentColors: Bool
+    private var isLiveStreaming: Bool = false
+    private var hasConfigured: Bool = false
     public var onReview: ((AgentEditedFilesSummary) -> Void)?
     public var onRevert: ((AgentEditedFilesSummary) -> Void)?
     public var onRestore: ((AgentEditedFilesSummary) -> Void)?
@@ -114,15 +116,23 @@ public final class AgentEditedFilesCardView: AgentFlippedView {
         summary: AgentEditedFilesSummary,
         theme: Theme,
         accentColor: Color = .accentColor,
-        disableAgentColors: Bool = false
+        disableAgentColors: Bool = false,
+        isLiveStreaming: Bool = false
     ) {
         self.summary = summary
         self.theme = theme
         self.accentColor = accentColor
         self.disableAgentColors = disableAgentColors
+        self.isLiveStreaming = isLiveStreaming
         super.init(frame: .zero)
         setup()
-        configure(summary: summary, theme: theme, accentColor: accentColor, disableAgentColors: disableAgentColors)
+        configure(
+            summary: summary,
+            theme: theme,
+            accentColor: accentColor,
+            disableAgentColors: disableAgentColors,
+            isLiveStreaming: isLiveStreaming
+        )
     }
 
     public required init?(coder: NSCoder) {
@@ -173,12 +183,23 @@ public final class AgentEditedFilesCardView: AgentFlippedView {
         summary: AgentEditedFilesSummary,
         theme: Theme,
         accentColor: Color,
-        disableAgentColors: Bool
+        disableAgentColors: Bool,
+        isLiveStreaming: Bool = false
     ) {
+        if hasConfigured,
+           self.summary == summary,
+           self.theme.id == theme.id,
+           self.accentColor == accentColor,
+           self.disableAgentColors == disableAgentColors,
+           self.isLiveStreaming == isLiveStreaming {
+            return
+        }
+        hasConfigured = true
         self.summary = summary
         self.theme = theme
         self.accentColor = accentColor
         self.disableAgentColors = disableAgentColors
+        self.isLiveStreaming = isLiveStreaming
 
         let nsAccent = NSColor(accentColor)
         let fgColor = summary.isReverted ? theme.gutterForeground : theme.foreground
@@ -191,7 +212,6 @@ public final class AgentEditedFilesCardView: AgentFlippedView {
         if summary.isReverted {
             restoreButton.isHidden = false
             revertButton.isHidden = true
-            reviewButton.isHidden = true
             statsLabel.isHidden = true
 
             restoreButton.imagePosition = .noImage
@@ -208,8 +228,7 @@ public final class AgentEditedFilesCardView: AgentFlippedView {
             )
         } else {
             restoreButton.isHidden = true
-            revertButton.isHidden = false
-            reviewButton.isHidden = false
+            revertButton.isHidden = isLiveStreaming
             statsLabel.isHidden = false
 
             revertButton.imagePosition = .noImage
@@ -222,19 +241,6 @@ public final class AgentEditedFilesCardView: AgentFlippedView {
                 attributes: [
                     .font: NSFont.systemFont(ofSize: 11.5, weight: .medium),
                     .foregroundColor: NSColor.systemRed.withAlphaComponent(0.9)
-                ]
-            )
-
-            reviewButton.imagePosition = .noImage
-            reviewButton.image = nil
-            reviewButton.contentTintColor = fgColor
-            reviewButton.defaultBackgroundColor = NSColor.white.withAlphaComponent(0.06)
-            reviewButton.hoverBackgroundColor = NSColor.white.withAlphaComponent(0.15)
-            reviewButton.attributedTitle = NSAttributedString(
-                string: "Review",
-                attributes: [
-                    .font: NSFont.systemFont(ofSize: 11.5, weight: .medium),
-                    .foregroundColor: fgColor.withAlphaComponent(0.95)
                 ]
             )
 
@@ -259,6 +265,20 @@ public final class AgentEditedFilesCardView: AgentFlippedView {
             }
             statsLabel.attributedStringValue = statsAttr
         }
+
+        reviewButton.isHidden = false
+        reviewButton.imagePosition = .noImage
+        reviewButton.image = nil
+        reviewButton.contentTintColor = fgColor
+        reviewButton.defaultBackgroundColor = NSColor.white.withAlphaComponent(0.06)
+        reviewButton.hoverBackgroundColor = NSColor.white.withAlphaComponent(0.15)
+        reviewButton.attributedTitle = NSAttributedString(
+            string: "Review",
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 11.5, weight: .medium),
+                .foregroundColor: fgColor.withAlphaComponent(0.95)
+            ]
+        )
 
         while fileRowViews.count < summary.files.count {
             let row = AgentEditedFileRowView()
@@ -292,23 +312,30 @@ public final class AgentEditedFilesCardView: AgentFlippedView {
 
         var rightX = width - padding
 
-        if !summary.isReverted {
-            if summary.totalAdditions > 0 || summary.totalDeletions > 0 {
-                let statsSize = statsLabel.sizeThatFits(NSSize(width: 120, height: 20))
-                let statsWidth = statsSize.width
-                statsLabel.frame = NSRect(x: width - padding - statsWidth, y: currentY + 1, width: statsWidth, height: 20)
-                rightX -= (statsWidth + 10)
-            }
+        if !statsLabel.isHidden && (summary.totalAdditions > 0 || summary.totalDeletions > 0) {
+            let statsSize = statsLabel.sizeThatFits(NSSize(width: 120, height: 20))
+            let statsWidth = statsSize.width
+            statsLabel.frame = NSRect(x: width - padding - statsWidth, y: currentY + 1, width: statsWidth, height: 20)
+            rightX -= (statsWidth + 10)
+        }
 
+        if !reviewButton.isHidden {
             let reviewWidth: CGFloat = 58
             rightX -= reviewWidth
             reviewButton.frame = NSRect(x: rightX, y: currentY, width: reviewWidth, height: 22)
-            rightX -= 6
+        }
 
-            let revertWidth: CGFloat = 52
-            rightX -= revertWidth
-            revertButton.frame = NSRect(x: rightX, y: currentY, width: revertWidth, height: 22)
-        } else {
+        if !summary.isReverted {
+            if !revertButton.isHidden {
+                rightX -= 6
+                let revertWidth: CGFloat = 52
+                rightX -= revertWidth
+                revertButton.frame = NSRect(x: rightX, y: currentY, width: revertWidth, height: 22)
+            }
+        } else if !restoreButton.isHidden {
+            if !reviewButton.isHidden {
+                rightX -= 6
+            }
             let restoreWidth: CGFloat = 52
             rightX -= restoreWidth
             restoreButton.frame = NSRect(x: rightX, y: currentY, width: restoreWidth, height: 22)

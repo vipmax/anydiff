@@ -498,7 +498,6 @@ public final class ACPClient: ACPTransportDelegate, @unchecked Sendable {
             let fileURL = URL(fileURLWithPath: fullPath)
             try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             try params.content.write(toFile: fullPath, atomically: true, encoding: .utf8)
-            delegate?.client(self, didExecuteTool: "fs/write_text_file", path: params.path, details: nil)
             delegate?.client(self, didExecuteFSWrite: params.path, oldContent: oldContent, newContent: newContent)
             sendRawResponse(id: id, result: ACPFSWriteTextFileResult(success: true))
         } catch {

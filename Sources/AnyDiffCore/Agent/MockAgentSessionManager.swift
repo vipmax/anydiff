@@ -667,8 +667,15 @@ public final class MockAgentSessionManager: AgentSessionManager, @unchecked Send
         if let last = messages.last, last.isStreaming {
             if let idx = messages.firstIndex(where: { $0.id == last.id }) {
                 messages[idx].isStreaming = false
+                if messages[idx].editedFilesSummary == nil,
+                   let live = liveEditedSummary,
+                   !live.files.isEmpty,
+                   !messages[idx].toolCalls.isEmpty {
+                    messages[idx].editedFilesSummary = live
+                }
             }
         }
+        liveEditedSummary = nil
     }
 
     public override func clearSession() {

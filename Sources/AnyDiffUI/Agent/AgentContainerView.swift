@@ -457,9 +457,13 @@ private struct AgentHeaderWorktreeView: View {
                     return result
                 }.value
                 guard !Task.isCancelled else { return }
-                for await _ in FolderWatcher.events(for: urls, latency: 0.3) {
+                for await events in FolderWatcher.events(for: urls, latency: 0.3) {
                     if Task.isCancelled { break }
+                    guard events.contains(where: { !FolderWatcher.shouldIgnore(path: $0.path) }) else { continue }
                     externalWatchRevision &+= 1
+                    if agentManager.isBusyOrStreaming {
+                        agentManager.notifyFileSystemChanged()
+                    }
                 }
             }
             .task(id: statsRefreshKey) {
