@@ -719,7 +719,10 @@ public final class AgentToolGroupView: AgentFlippedView {
     }
 
     public func applyLayout(width: CGFloat, animated: Bool) {
-        let headerFrame = NSRect(x: 0, y: 0, width: max(1, width), height: headerHeight)
+        let maxHeaderWidth = max(1, width)
+        let preferredHeaderWidth = ceil(headerButton.fittingSize.width)
+        let headerWidth = min(maxHeaderWidth, max(1, preferredHeaderWidth))
+        let headerFrame = NSRect(x: 0, y: 0, width: headerWidth, height: headerHeight)
         if animated {
             headerButton.animator().frame = headerFrame
         } else {

@@ -20,6 +20,7 @@ public struct AgentAvatarItemConfig: Codable, Equatable {
     public var zoom: CGFloat
     public var offsetX: CGFloat
     public var offsetY: CGFloat
+    public var flipHorizontally: Bool
     public var avatarSize: CGFloat
     public var showCircle: Bool
 
@@ -28,6 +29,7 @@ public struct AgentAvatarItemConfig: Codable, Equatable {
         zoom: CGFloat = 1.0,
         offsetX: CGFloat = 0,
         offsetY: CGFloat = 0,
+        flipHorizontally: Bool = false,
         avatarSize: CGFloat = 24,
         showCircle: Bool = false
     ) {
@@ -35,23 +37,41 @@ public struct AgentAvatarItemConfig: Codable, Equatable {
         self.zoom = zoom
         self.offsetX = offsetX
         self.offsetY = offsetY
+        self.flipHorizontally = flipHorizontally
         self.avatarSize = avatarSize
         self.showCircle = showCircle
     }
+
+    enum CodingKeys: String, CodingKey {
+        case useCustom, zoom, offsetX, offsetY, flipHorizontally, avatarSize, showCircle
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        useCustom = try container.decodeIfPresent(Bool.self, forKey: .useCustom) ?? false
+        zoom = try container.decodeIfPresent(CGFloat.self, forKey: .zoom) ?? 1.0
+        offsetX = try container.decodeIfPresent(CGFloat.self, forKey: .offsetX) ?? 0
+        offsetY = try container.decodeIfPresent(CGFloat.self, forKey: .offsetY) ?? 0
+        flipHorizontally = try container.decodeIfPresent(Bool.self, forKey: .flipHorizontally) ?? false
+        avatarSize = try container.decodeIfPresent(CGFloat.self, forKey: .avatarSize) ?? 24
+        showCircle = try container.decodeIfPresent(Bool.self, forKey: .showCircle) ?? false
+    }
 }
 
-/// Configuration model for custom avatar positioning, zoom, and avatar circle sizes for user and agents.
+/// Configuration model for custom avatar positioning, zoom, flip, and avatar circle sizes for user and agents.
 public struct AvatarSettings: Codable, Equatable {
     public var useCustom: Bool
     public var zoom: CGFloat
     public var offsetX: CGFloat
     public var offsetY: CGFloat
+    public var flipHorizontally: Bool
     public var userAvatarSize: CGFloat
 
     public var useCustomAgent: Bool
     public var agentZoom: CGFloat
     public var agentOffsetX: CGFloat
     public var agentOffsetY: CGFloat
+    public var agentFlipHorizontally: Bool
     public var agentAvatarSize: CGFloat
     public var showAgentCircle: Bool
 
@@ -63,11 +83,13 @@ public struct AvatarSettings: Codable, Equatable {
         zoom: CGFloat = 1.0,
         offsetX: CGFloat = 0,
         offsetY: CGFloat = 0,
+        flipHorizontally: Bool = false,
         userAvatarSize: CGFloat = 24,
         useCustomAgent: Bool = false,
         agentZoom: CGFloat = 1.0,
         agentOffsetX: CGFloat = 0,
         agentOffsetY: CGFloat = 0,
+        agentFlipHorizontally: Bool = false,
         agentAvatarSize: CGFloat = 24,
         showAgentCircle: Bool = false,
         agentConfigs: [String: AgentAvatarItemConfig] = [:]
@@ -76,19 +98,21 @@ public struct AvatarSettings: Codable, Equatable {
         self.zoom = zoom
         self.offsetX = offsetX
         self.offsetY = offsetY
+        self.flipHorizontally = flipHorizontally
         self.userAvatarSize = userAvatarSize
         self.useCustomAgent = useCustomAgent
         self.agentZoom = agentZoom
         self.agentOffsetX = agentOffsetX
         self.agentOffsetY = agentOffsetY
+        self.agentFlipHorizontally = agentFlipHorizontally
         self.agentAvatarSize = agentAvatarSize
         self.showAgentCircle = showAgentCircle
         self.agentConfigs = agentConfigs
     }
 
     enum CodingKeys: String, CodingKey {
-        case useCustom, zoom, offsetX, offsetY, userAvatarSize
-        case useCustomAgent, agentZoom, agentOffsetX, agentOffsetY, agentAvatarSize, showAgentCircle
+        case useCustom, zoom, offsetX, offsetY, flipHorizontally, userAvatarSize
+        case useCustomAgent, agentZoom, agentOffsetX, agentOffsetY, agentFlipHorizontally, agentAvatarSize, showAgentCircle
         case agentConfigs
     }
 
@@ -98,11 +122,13 @@ public struct AvatarSettings: Codable, Equatable {
         zoom = try container.decodeIfPresent(CGFloat.self, forKey: .zoom) ?? 1.0
         offsetX = try container.decodeIfPresent(CGFloat.self, forKey: .offsetX) ?? 0
         offsetY = try container.decodeIfPresent(CGFloat.self, forKey: .offsetY) ?? 0
+        flipHorizontally = try container.decodeIfPresent(Bool.self, forKey: .flipHorizontally) ?? false
         userAvatarSize = try container.decodeIfPresent(CGFloat.self, forKey: .userAvatarSize) ?? 24
         useCustomAgent = try container.decodeIfPresent(Bool.self, forKey: .useCustomAgent) ?? false
         agentZoom = try container.decodeIfPresent(CGFloat.self, forKey: .agentZoom) ?? 1.0
         agentOffsetX = try container.decodeIfPresent(CGFloat.self, forKey: .agentOffsetX) ?? 0
         agentOffsetY = try container.decodeIfPresent(CGFloat.self, forKey: .agentOffsetY) ?? 0
+        agentFlipHorizontally = try container.decodeIfPresent(Bool.self, forKey: .agentFlipHorizontally) ?? false
         agentAvatarSize = try container.decodeIfPresent(CGFloat.self, forKey: .agentAvatarSize) ?? 24
         showAgentCircle = try container.decodeIfPresent(Bool.self, forKey: .showAgentCircle) ?? false
         agentConfigs = try container.decodeIfPresent([String: AgentAvatarItemConfig].self, forKey: .agentConfigs) ?? [:]
@@ -119,6 +145,7 @@ public struct AvatarSettings: Codable, Equatable {
             zoom: 1.0,
             offsetX: 0,
             offsetY: 0,
+            flipHorizontally: false,
             avatarSize: agentAvatarSize,
             showCircle: showAgentCircle
         )
@@ -401,6 +428,10 @@ public enum AgentAvatarProvider {
     public static func resetToSystemAvatar() {
         var settings = loadSettings()
         settings.useCustom = false
+        settings.zoom = 1.0
+        settings.offsetX = 0
+        settings.offsetY = 0
+        settings.flipHorizontally = false
         saveSettings(settings)
 
         try? FileManager.default.removeItem(at: renderedAvatarURL)
@@ -528,6 +559,7 @@ public enum AgentAvatarProvider {
         from image: NSImage,
         zoom: CGFloat,
         offset: CGSize,
+        flipHorizontally: Bool = false,
         viewportDiameter: CGFloat = 160,
         targetSize: CGFloat = 192
     ) -> NSImage {
@@ -554,6 +586,12 @@ public enum AgentAvatarProvider {
         let destX = (targetSize - zoomedWidth) / 2 + scaledOffsetX
         let destY = (targetSize - zoomedHeight) / 2 - scaledOffsetY
         let destRect = NSRect(x: destX, y: destY, width: zoomedWidth, height: zoomedHeight)
+
+        if flipHorizontally, let context {
+            context.translateBy(x: destRect.midX, y: 0)
+            context.scaleBy(x: -1, y: 1)
+            context.translateBy(x: -destRect.midX, y: 0)
+        }
 
         image.draw(
             in: destRect,

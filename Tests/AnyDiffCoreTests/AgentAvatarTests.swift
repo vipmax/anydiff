@@ -8,8 +8,10 @@ final class AgentAvatarTests: XCTestCase {
         let settings = AvatarSettings()
         XCTAssertFalse(settings.useCustom)
         XCTAssertEqual(settings.zoom, 1.0)
+        XCTAssertFalse(settings.flipHorizontally)
         XCTAssertEqual(settings.userAvatarSize, 24)
         XCTAssertFalse(settings.useCustomAgent)
+        XCTAssertFalse(settings.agentFlipHorizontally)
         XCTAssertEqual(settings.agentAvatarSize, 24)
         XCTAssertTrue(settings.agentConfigs.isEmpty)
     }
@@ -24,6 +26,7 @@ final class AgentAvatarTests: XCTestCase {
         let unconfigured = settings.config(for: "gemini")
         XCTAssertFalse(unconfigured.useCustom)
         XCTAssertEqual(unconfigured.zoom, 1.0)
+        XCTAssertFalse(unconfigured.flipHorizontally)
         XCTAssertEqual(unconfigured.avatarSize, 28)
         XCTAssertTrue(unconfigured.showCircle)
 
@@ -33,6 +36,7 @@ final class AgentAvatarTests: XCTestCase {
             zoom: 2.0,
             offsetX: 10,
             offsetY: -5,
+            flipHorizontally: true,
             avatarSize: 32,
             showCircle: false
         )
@@ -42,12 +46,14 @@ final class AgentAvatarTests: XCTestCase {
         XCTAssertEqual(claudeConfig.zoom, 2.0)
         XCTAssertEqual(claudeConfig.offsetX, 10)
         XCTAssertEqual(claudeConfig.offsetY, -5)
+        XCTAssertTrue(claudeConfig.flipHorizontally)
         XCTAssertEqual(claudeConfig.avatarSize, 32)
         XCTAssertFalse(claudeConfig.showCircle)
 
         // 3. Different profile "claude-work" remains unconfigured and isolated
         let claudeWorkConfig = settings.config(for: "claude-work")
         XCTAssertFalse(claudeWorkConfig.useCustom, "Profiles must be strictly isolated and not inherit custom state")
+        XCTAssertFalse(claudeWorkConfig.flipHorizontally)
         XCTAssertEqual(claudeWorkConfig.avatarSize, 28)
 
         // 4. Set specific profile for "claude-work"
@@ -64,6 +70,7 @@ final class AgentAvatarTests: XCTestCase {
         XCTAssertTrue(specificWorkConfig.useCustom)
         XCTAssertEqual(specificWorkConfig.avatarSize, 20)
         XCTAssertEqual(specificWorkConfig.zoom, 1.2)
+        XCTAssertFalse(specificWorkConfig.flipHorizontally)
         XCTAssertTrue(specificWorkConfig.showCircle)
     }
 
@@ -80,22 +87,131 @@ final class AgentAvatarTests: XCTestCase {
             "agentOffsetX": 0.0,
             "agentOffsetY": 0.0,
             "agentAvatarSize": 30.0,
-            "showAgentCircle": true
+            "showAgentCircle": true,
+            "agentConfigs": {
+                "claude": {
+                    "useCustom": true,
+                    "zoom": 1.5,
+                    "offsetX": 2.0,
+                    "offsetY": -1.0,
+                    "avatarSize": 28.0,
+                    "showCircle": false
+                }
+            }
         }
         """.data(using: .utf8)!
 
         let decoded = try JSONDecoder().decode(AvatarSettings.self, from: legacyJson)
         XCTAssertTrue(decoded.useCustom)
         XCTAssertEqual(decoded.zoom, 1.4)
+        XCTAssertFalse(decoded.flipHorizontally)
         XCTAssertEqual(decoded.userAvatarSize, 26)
         XCTAssertTrue(decoded.useCustomAgent)
+        XCTAssertFalse(decoded.agentFlipHorizontally)
         XCTAssertEqual(decoded.agentAvatarSize, 30)
-        XCTAssertTrue(decoded.agentConfigs.isEmpty)
+        XCTAssertFalse(decoded.config(for: "claude").flipHorizontally)
 
         // Unconfigured agent has isolated default
         let config = decoded.config(for: "antigravity-acp-djvipmax")
         XCTAssertFalse(config.useCustom)
         XCTAssertEqual(config.avatarSize, 30)
+    }
+
+    func testAvatarSettingsFlipHorizontallyRoundTrip() throws {
+        var settings = AvatarSettings(
+            useCustom: true,
+            zoom: 1.5,
+            offsetX: 12,
+            offsetY: -8,
+            flipHorizontally: true,
+            userAvatarSize: 28,
+            useCustomAgent: true,
+            agentZoom: 1.25,
+            agentOffsetX: -10,
+            agentOffsetY: 4,
+            agentFlipHorizontally: true,
+            agentAvatarSize: 28
+        )
+        settings.agentConfigs["antigravity-acp"] = AgentAvatarItemConfig(
+            useCustom: true,
+            zoom: 1.25,
+            offsetX: -10,
+            offsetY: 4,
+            flipHorizontally: true,
+            avatarSize: 28,
+            showCircle: false
+        )
+
+        let data = try JSONEncoder().encode(settings)
+        let decoded = try JSONDecoder().decode(AvatarSettings.self, from: data)
+        XCTAssertTrue(decoded.flipHorizontally)
+        XCTAssertTrue(decoded.agentFlipHorizontally)
+        XCTAssertTrue(decoded.config(for: "antigravity-acp").flipHorizontally)
+    }
+
+    func testRenderCircularAvatarFlipHorizontallyMirrorsPixels() throws {
+        let source = NSImage(size: NSSize(width: 100, height: 100))
+        source.lockFocus()
+        NSColor(srgbRed: 1, green: 0, blue: 0, alpha: 1).setFill()
+        NSBezierPath.fill(NSRect(x: 0, y: 0, width: 50, height: 100))
+        NSColor(srgbRed: 0, green: 0, blue: 1, alpha: 1).setFill()
+        NSBezierPath.fill(NSRect(x: 50, y: 0, width: 50, height: 100))
+        source.unlockFocus()
+
+        func pixelColor(in image: NSImage, nx: CGFloat, ny: CGFloat) throws -> (r: CGFloat, b: CGFloat) {
+            let tiff = try XCTUnwrap(image.tiffRepresentation)
+            let rep = try XCTUnwrap(NSBitmapImageRep(data: tiff))
+            let px = min(rep.pixelsWide - 1, max(0, Int((nx * CGFloat(rep.pixelsWide)).rounded(.down))))
+            let py = min(rep.pixelsHigh - 1, max(0, Int((ny * CGFloat(rep.pixelsHigh)).rounded(.down))))
+            let color = try XCTUnwrap(rep.colorAt(x: px, y: py)?.usingColorSpace(.sRGB))
+            return (color.redComponent, color.blueComponent)
+        }
+
+        let unflipped = AgentAvatarProvider.renderCircularAvatar(
+            from: source,
+            zoom: 1.0,
+            offset: .zero,
+            flipHorizontally: false,
+            viewportDiameter: 160,
+            targetSize: 100
+        )
+        let unflippedLeft = try pixelColor(in: unflipped, nx: 0.25, ny: 0.5)
+        let unflippedRight = try pixelColor(in: unflipped, nx: 0.75, ny: 0.5)
+        XCTAssertGreaterThan(unflippedLeft.r, unflippedLeft.b)
+        XCTAssertGreaterThan(unflippedRight.b, unflippedRight.r)
+
+        let flipped = AgentAvatarProvider.renderCircularAvatar(
+            from: source,
+            zoom: 1.0,
+            offset: .zero,
+            flipHorizontally: true,
+            viewportDiameter: 160,
+            targetSize: 100
+        )
+        let flippedLeft = try pixelColor(in: flipped, nx: 0.25, ny: 0.5)
+        let flippedRight = try pixelColor(in: flipped, nx: 0.75, ny: 0.5)
+        XCTAssertGreaterThan(flippedLeft.b, flippedLeft.r, "Left side must become blue when flipped horizontally")
+        XCTAssertGreaterThan(flippedRight.r, flippedRight.b, "Right side must become red when flipped horizontally")
+
+        // Verify offset invariance: shifting right (+60 in viewport) moves mirrored left-half (blue) into center
+        let wideSource = NSImage(size: NSSize(width: 200, height: 100))
+        wideSource.lockFocus()
+        NSColor(srgbRed: 1, green: 0, blue: 0, alpha: 1).setFill()
+        NSBezierPath.fill(NSRect(x: 0, y: 0, width: 100, height: 100))
+        NSColor(srgbRed: 0, green: 0, blue: 1, alpha: 1).setFill()
+        NSBezierPath.fill(NSRect(x: 100, y: 0, width: 100, height: 100))
+        wideSource.unlockFocus()
+
+        let flippedShiftedRight = AgentAvatarProvider.renderCircularAvatar(
+            from: wideSource,
+            zoom: 1.0,
+            offset: CGSize(width: 60, height: 0),
+            flipHorizontally: true,
+            viewportDiameter: 160,
+            targetSize: 100
+        )
+        let centerColor = try pixelColor(in: flippedShiftedRight, nx: 0.5, ny: 0.5)
+        XCTAssertGreaterThan(centerColor.b, centerColor.r, "Shifting flipped image right must bring the mirrored left side (originally right/blue) to center")
     }
 
     func testSanitizedFileKey() {
@@ -387,5 +503,185 @@ final class AgentAvatarTests: XCTestCase {
         let expectedInlineAgentAvatarTop = 10 + expectedInlineInputHeight + 16
         let actualInlineAgentAvatarTop = inlineAssistantCell.convert(inlineAssistantCell.roleIconView.frame, to: docView).minY
         XCTAssertEqual(actualInlineAgentAvatarTop, expectedInlineAgentAvatarTop, accuracy: 0.5)
+    }
+
+    func testAvatarZoomDeltaScalesSmoothlyForTrackpadAndIgnoresMomentum() throws {
+        // Precise trackpad scroll: 1pt scroll must produce a tiny smooth increment (~0.0035), not 0.05
+        let gentleDown = try XCTUnwrap(
+            AgentAvatarEditorView.zoomDelta(forScrollingDeltaY: 1.0, hasPreciseDeltas: true, isMomentum: false)
+        )
+        XCTAssertEqual(gentleDown, 0.0035, accuracy: 0.0001)
+
+        let gentleUp = try XCTUnwrap(
+            AgentAvatarEditorView.zoomDelta(forScrollingDeltaY: -2.0, hasPreciseDeltas: true, isMomentum: false)
+        )
+        XCTAssertEqual(gentleUp, -0.007, accuracy: 0.0001)
+
+        // Fast trackpad flick is capped so zoom never jumps wildly in a single frame
+        let fastFlick = try XCTUnwrap(
+            AgentAvatarEditorView.zoomDelta(forScrollingDeltaY: 200.0, hasPreciseDeltas: true, isMomentum: false)
+        )
+        XCTAssertEqual(fastFlick, 0.15, accuracy: 0.0001)
+
+        // Momentum (inertia) after lifting fingers must be ignored
+        XCTAssertNil(
+            AgentAvatarEditorView.zoomDelta(forScrollingDeltaY: 5.0, hasPreciseDeltas: true, isMomentum: true)
+        )
+
+        // Sub-threshold noise is ignored
+        XCTAssertNil(
+            AgentAvatarEditorView.zoomDelta(forScrollingDeltaY: 0.02, hasPreciseDeltas: true, isMomentum: false)
+        )
+
+        // Discrete mouse wheel keeps 0.05 per detent
+        let mouseClick = try XCTUnwrap(
+            AgentAvatarEditorView.zoomDelta(forScrollingDeltaY: 1.0, hasPreciseDeltas: false, isMomentum: false)
+        )
+        XCTAssertEqual(mouseClick, 0.05, accuracy: 0.0001)
+    }
+
+    @MainActor
+    func testPopoverEscapeHandlingConditions() {
+        final class MockPopoverWindow: NSWindow {
+            var mockVisible: Bool = true
+            override var isVisible: Bool { mockVisible }
+        }
+
+        let parentWindow = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        parentWindow.isReleasedWhenClosed = false
+
+        let hostWindow = MockPopoverWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 320, height: 470),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        hostWindow.isReleasedWhenClosed = false
+
+        let otherWindow = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 200, height: 200),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        otherWindow.isReleasedWhenClosed = false
+
+        parentWindow.addChildWindow(hostWindow, ordered: .above)
+        defer {
+            parentWindow.removeChildWindow(hostWindow)
+        }
+
+        // Plain Esc targeted at host window closes popover
+        XCTAssertTrue(
+            AgentAvatarEditorView.shouldHandleEscapeEvent(
+                keyCode: 53,
+                isARepeat: false,
+                modifierFlags: [],
+                hostWindow: hostWindow,
+                eventWindow: hostWindow,
+                hasModalWindow: false,
+                isEventTracking: false
+            )
+        )
+
+        // Esc targeted at parent window while popover is visible also closes popover
+        XCTAssertTrue(
+            AgentAvatarEditorView.shouldHandleEscapeEvent(
+                keyCode: 53,
+                isARepeat: false,
+                modifierFlags: [],
+                hostWindow: hostWindow,
+                eventWindow: parentWindow,
+                hasModalWindow: false,
+                isEventTracking: false
+            )
+        )
+
+        // Hidden host window, non-Esc key, modifier+Esc, repeat, modal (NSOpenPanel), eventTracking (NSMenu), or unrelated window must be ignored
+        hostWindow.mockVisible = false
+        XCTAssertFalse(
+            AgentAvatarEditorView.shouldHandleEscapeEvent(
+                keyCode: 53,
+                isARepeat: false,
+                modifierFlags: [],
+                hostWindow: hostWindow,
+                eventWindow: hostWindow,
+                hasModalWindow: false,
+                isEventTracking: false
+            )
+        )
+        hostWindow.mockVisible = true
+
+        XCTAssertFalse(
+            AgentAvatarEditorView.shouldHandleEscapeEvent(
+                keyCode: 36,
+                isARepeat: false,
+                modifierFlags: [],
+                hostWindow: hostWindow,
+                eventWindow: hostWindow,
+                hasModalWindow: false,
+                isEventTracking: false
+            )
+        )
+        XCTAssertFalse(
+            AgentAvatarEditorView.shouldHandleEscapeEvent(
+                keyCode: 53,
+                isARepeat: false,
+                modifierFlags: [.command],
+                hostWindow: hostWindow,
+                eventWindow: hostWindow,
+                hasModalWindow: false,
+                isEventTracking: false
+            )
+        )
+        XCTAssertFalse(
+            AgentAvatarEditorView.shouldHandleEscapeEvent(
+                keyCode: 53,
+                isARepeat: true,
+                modifierFlags: [],
+                hostWindow: hostWindow,
+                eventWindow: hostWindow,
+                hasModalWindow: false,
+                isEventTracking: false
+            )
+        )
+        XCTAssertFalse(
+            AgentAvatarEditorView.shouldHandleEscapeEvent(
+                keyCode: 53,
+                isARepeat: false,
+                modifierFlags: [],
+                hostWindow: hostWindow,
+                eventWindow: hostWindow,
+                hasModalWindow: true,
+                isEventTracking: false
+            )
+        )
+        XCTAssertFalse(
+            AgentAvatarEditorView.shouldHandleEscapeEvent(
+                keyCode: 53,
+                isARepeat: false,
+                modifierFlags: [],
+                hostWindow: hostWindow,
+                eventWindow: hostWindow,
+                hasModalWindow: false,
+                isEventTracking: true
+            )
+        )
+        XCTAssertFalse(
+            AgentAvatarEditorView.shouldHandleEscapeEvent(
+                keyCode: 53,
+                isARepeat: false,
+                modifierFlags: [],
+                hostWindow: hostWindow,
+                eventWindow: otherWindow,
+                hasModalWindow: false,
+                isEventTracking: false
+            )
+        )
     }
 }

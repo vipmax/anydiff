@@ -321,4 +321,208 @@ final class ACPAgentSessionManagerEdgeCaseTests: XCTestCase {
         XCTAssertEqual(liveSummary.totalAdditions, 1)
         XCTAssertEqual(liveSummary.totalDeletions, 1)
     }
+
+    func testFSWriteArrivingBeforeToolCallNotificationRebindsWithoutDuplicating() {
+        let cpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("anydiff_edge_cp1_\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: cpDir) }
+        let manager = ACPAgentSessionManager()
+        manager.checkpointStore = AgentCheckpointStore(customDirectory: cpDir)
+        let client = ACPClient()
+
+        manager.sendPrompt("Fix image copy", workingDirectory: NSTemporaryDirectory())
+
+        manager.client(
+            client,
+            didExecuteFSWrite: "/repo/AgentZoomableImageView.swift",
+            oldContent: "old",
+            newContent: "new"
+        )
+
+        manager.client(client, didReceiveUpdate: ACPSessionUpdateContent(
+            type: "tool_call",
+            kind: "edit",
+            title: "Editing AgentZoomableImageView.swift",
+            toolCallId: "call_8624246229449817513",
+            toolName: "edit",
+            toolInput: [
+                "path": AnyCodableSendable("/repo/AgentZoomableImageView.swift"),
+                "old_content": AnyCodableSendable("old"),
+                "new_content": AnyCodableSendable("new")
+            ],
+            status: "in_progress",
+            locations: [ACPToolCallLocation(path: "/repo/AgentZoomableImageView.swift", line: nil)]
+        ), sessionId: "sess-1")
+
+        manager.client(client, didReceiveUpdate: ACPSessionUpdateContent(
+            type: "tool_call_update",
+            toolCallId: "call_8624246229449817513",
+            status: "completed"
+        ), sessionId: "sess-1")
+
+        let exp = expectation(description: "Out-of-order fs/write_text_file and tool_call produce a single Edit card")
+        DispatchQueue.main.async {
+            let assistant = manager.messages[1]
+            let calls = assistant.toolCalls
+            XCTAssertEqual(calls.count, 1)
+            XCTAssertEqual(calls[0].id, "call_8624246229449817513")
+            XCTAssertEqual(calls[0].toolName, "fs/write_text_file")
+            XCTAssertEqual(calls[0].shortToolName, "Edit")
+            XCTAssertEqual(calls[0].status, .completed)
+            XCTAssertEqual(calls[0].oldContent, "old")
+            XCTAssertEqual(calls[0].newContent, "new")
+            XCTAssertEqual(assistant.orderedParts, [.toolCall("call_8624246229449817513")])
+            exp.fulfill()
+        }
+        wait(for: [exp], timeout: 1.0)
+    }
+
+    func testConsecutiveFSWritesArrivingBeforeToolCallsRebindSeparatelyWithoutDuplicatingOrMerging() {
+        let cpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("anydiff_edge_cp1_\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: cpDir) }
+        let manager = ACPAgentSessionManager()
+        manager.checkpointStore = AgentCheckpointStore(customDirectory: cpDir)
+        let client = ACPClient()
+
+        manager.sendPrompt("Edit twice", workingDirectory: NSTemporaryDirectory())
+
+        manager.client(client, didExecuteFSWrite: "/repo/README.md", oldContent: "v1", newContent: "v2")
+        manager.client(client, didReceiveUpdate: ACPSessionUpdateContent(
+            type: "tool_call",
+            kind: "edit",
+            toolCallId: "call_1",
+            toolName: "edit",
+            toolInput: [
+                "path": AnyCodableSendable("/repo/README.md"),
+                "old_content": AnyCodableSendable("v1"),
+                "new_content": AnyCodableSendable("v2")
+            ],
+            status: "in_progress"
+        ), sessionId: "sess-1")
+        manager.client(client, didReceiveUpdate: ACPSessionUpdateContent(
+            type: "tool_call_update",
+            toolCallId: "call_1",
+            status: "completed"
+        ), sessionId: "sess-1")
+
+        manager.client(client, didExecuteFSWrite: "/repo/README.md", oldContent: "v2", newContent: "v3")
+        manager.client(client, didReceiveUpdate: ACPSessionUpdateContent(
+            type: "tool_call",
+            kind: "edit",
+            toolCallId: "call_2",
+            toolName: "edit",
+            toolInput: [
+                "path": AnyCodableSendable("/repo/README.md"),
+                "old_content": AnyCodableSendable("v2"),
+                "new_content": AnyCodableSendable("v3")
+            ],
+            status: "in_progress"
+        ), sessionId: "sess-1")
+        manager.client(client, didReceiveUpdate: ACPSessionUpdateContent(
+            type: "tool_call_update",
+            toolCallId: "call_2",
+            status: "completed"
+        ), sessionId: "sess-1")
+
+        let exp = expectation(description: "Consecutive out-of-order writes produce two distinct Edit items")
+        DispatchQueue.main.async {
+            let assistant = manager.messages[1]
+            let calls = assistant.toolCalls
+            XCTAssertEqual(calls.count, 2)
+            XCTAssertEqual(calls.map(\.id), ["call_1", "call_2"])
+            XCTAssertEqual(calls[0].oldContent, "v1")
+            XCTAssertEqual(calls[0].newContent, "v2")
+            XCTAssertEqual(calls[1].oldContent, "v2")
+            XCTAssertEqual(calls[1].newContent, "v3")
+            XCTAssertEqual(assistant.orderedParts, [.toolCall("call_1"), .toolCall("call_2")])
+            exp.fulfill()
+        }
+        wait(for: [exp], timeout: 1.0)
+    }
+
+    func testFSReadArrivingBeforeToolCallNotificationRebindsWithoutDuplicating() {
+        let cpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("anydiff_edge_cp1_\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: cpDir) }
+        let manager = ACPAgentSessionManager()
+        manager.checkpointStore = AgentCheckpointStore(customDirectory: cpDir)
+        let client = ACPClient()
+
+        manager.sendPrompt("Inspect App.swift", workingDirectory: NSTemporaryDirectory())
+
+        manager.client(client, didExecuteTool: "fs/read_text_file", path: "/repo/App.swift", details: "Read 50 chars")
+
+        manager.client(client, didReceiveUpdate: ACPSessionUpdateContent(
+            type: "tool_call",
+            kind: "read",
+            toolCallId: "read_call_1",
+            toolName: "read",
+            toolInput: [
+                "path": AnyCodableSendable("/repo/App.swift"),
+                "StartLine": AnyCodableSendable(10),
+                "EndLine": AnyCodableSendable(25)
+            ],
+            status: "in_progress",
+            locations: [ACPToolCallLocation(path: "/repo/App.swift", line: 10)]
+        ), sessionId: "sess-1")
+
+        manager.client(client, didReceiveUpdate: ACPSessionUpdateContent(
+            type: "tool_call_update",
+            toolCallId: "read_call_1",
+            status: "completed"
+        ), sessionId: "sess-1")
+
+        let exp = expectation(description: "Out-of-order fs/read_text_file and tool_call produce a single Read card")
+        DispatchQueue.main.async {
+            let assistant = manager.messages[1]
+            let calls = assistant.toolCalls
+            XCTAssertEqual(calls.count, 1)
+            XCTAssertEqual(calls[0].id, "read_call_1")
+            XCTAssertEqual(calls[0].shortToolName, "Read")
+            XCTAssertEqual(calls[0].status, .completed)
+            XCTAssertEqual(calls[0].startLine, 10)
+            XCTAssertEqual(calls[0].endLine, 25)
+            XCTAssertEqual(assistant.orderedParts, [.toolCall("read_call_1")])
+            exp.fulfill()
+        }
+        wait(for: [exp], timeout: 1.0)
+    }
+
+    func testFSWriteForNewFileWithNilOldContentRebindsWhenToolCallSendsEmptyOldContent() {
+        let cpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("anydiff_edge_cp1_\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: cpDir) }
+        let manager = ACPAgentSessionManager()
+        manager.checkpointStore = AgentCheckpointStore(customDirectory: cpDir)
+        let client = ACPClient()
+
+        manager.sendPrompt("Create NewFile.swift", workingDirectory: NSTemporaryDirectory())
+
+        manager.client(client, didExecuteFSWrite: "/repo/NewFile.swift", oldContent: nil, newContent: "print(1)\n")
+        manager.client(client, didReceiveUpdate: ACPSessionUpdateContent(
+            type: "tool_call",
+            kind: "edit",
+            toolCallId: "call_new",
+            toolName: "edit",
+            toolInput: [
+                "path": AnyCodableSendable("/repo/NewFile.swift"),
+                "old_content": AnyCodableSendable(""),
+                "new_content": AnyCodableSendable("print(1)\n")
+            ],
+            status: "in_progress"
+        ), sessionId: "sess-1")
+
+        let exp = expectation(description: "New file synthetic write rebinds when tool_call sends empty old_content")
+        DispatchQueue.main.async {
+            let assistant = manager.messages[1]
+            let calls = assistant.toolCalls
+            XCTAssertEqual(calls.count, 1)
+            XCTAssertEqual(calls[0].id, "call_new")
+            XCTAssertEqual(calls[0].newContent, "print(1)\n")
+            XCTAssertEqual(assistant.orderedParts, [.toolCall("call_new")])
+            exp.fulfill()
+        }
+        wait(for: [exp], timeout: 1.0)
+    }
 }

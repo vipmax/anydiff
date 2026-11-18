@@ -448,18 +448,18 @@ public final class AgentNativeZoomableImageView: NSView {
     }
 
     public func copyImageToPasteboard() {
-        guard let image = renderedImage() else { return }
+        guard let image = renderedImage(),
+              let pngData = ImageAttachmentHelpers.convertToPNGData(image: image) else { return }
 
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        pasteboard.writeObjects([image])
+        pasteboard.declareTypes([.png], owner: nil)
+        pasteboard.setData(pngData, forType: .png)
     }
 
     private func renderedImageData() -> Data? {
-        guard let image = renderedImage(),
-              let tiffData = image.tiffRepresentation,
-              let bitmap = NSBitmapImageRep(data: tiffData) else { return nil }
-        return bitmap.representation(using: .png, properties: [:])
+        guard let image = renderedImage() else { return nil }
+        return ImageAttachmentHelpers.convertToPNGData(image: image)
     }
 
     private func imageFrameInView() -> CGRect {

@@ -25,7 +25,7 @@ public struct AgentPanelView: View {
     public var externalFocusRequest: Int = 0
     @State private var internalFocusTrigger: Int = 0
     @State private var scrollToBottomRequest: Int = 0
-    @State private var inputContentHeight: CGFloat = max(AgentMessageCell.userAvatarSize + 8, 38)
+    @State private var inputContentHeight: CGFloat = AgentInputView.minimumTotalHeight(forUserAvatarSize: AgentMessageCell.userAvatarSize)
     @State private var inputTotalHeight: CGFloat = 0
     @State private var hoveredQuickAction: String?
     @State private var lastKnownStatus: AgentConnectionStatus = .disconnected
@@ -588,7 +588,7 @@ public struct AgentPanelView: View {
                     agentManager.pendingNewWorktree = false
                     agentManager.pendingNewWorktreeBaseBranch = nil
                     agentManager.workingDirectory = newWorktreePath
-                    let minH = max(AgentMessageCell.userAvatarSize + 8, 38)
+                    let minH = AgentInputView.minimumTotalHeight(forUserAvatarSize: AgentMessageCell.userAvatarSize)
                     inputContentHeight = minH
                     inputTotalHeight = minH
                     scrollToBottomRequest &+= 1
@@ -608,7 +608,7 @@ public struct AgentPanelView: View {
         }
 
         // Synchronously reset input heights to 1-line height before triggering scroll / updates
-        let minH = max(AgentMessageCell.userAvatarSize + 8, 38)
+        let minH = AgentInputView.minimumTotalHeight(forUserAvatarSize: AgentMessageCell.userAvatarSize)
         inputContentHeight = minH
         inputTotalHeight = minH
         // A new prompt starts a new turn, so resume following the latest
@@ -1054,7 +1054,9 @@ public final class AgentPanelEscapeHostView: NSView {
         guard let window = self.window ?? event.window,
               event.window == nil || event.window === window,
               window.attachedSheet == nil,
-              !isModalPresented else {
+              !isModalPresented,
+              !hasVisibleChildPopover(in: window) else {
+            lastEscapeUptime = nil
             return event
         }
 
@@ -1111,6 +1113,15 @@ public final class AgentPanelEscapeHostView: NSView {
 
         lastEscapeUptime = now
         return nil
+    }
+
+    private func hasVisibleChildPopover(in window: NSWindow) -> Bool {
+        if AgentAvatarProvider.activePopover?.isShown == true {
+            return true
+        }
+        return window.childWindows?.contains(where: { child in
+            child.isVisible && String(describing: type(of: child)).contains("Popover")
+        }) == true
     }
 
     public func isResponderInsidePanel(_ responder: NSResponder?, in window: NSWindow) -> Bool {

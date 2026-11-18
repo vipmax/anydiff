@@ -1140,7 +1140,7 @@ public final class AgentChatDocumentView: NSView {
         }
 
         if let inputView = inputHostingView, !orderedCells.isEmpty {
-            let minInputHeight = max(AgentMessageCell.userAvatarSize + 8, 38)
+            let minInputHeight = AgentInputView.minimumTotalHeight(forUserAvatarSize: AgentMessageCell.userAvatarSize)
             let resolvedInputHeight = max(minInputHeight, lastInputHeight > 0 ? ceil(lastInputHeight) : minInputHeight)
             let inputFrame = NSRect(x: 0, y: currentY, width: contentWidth, height: resolvedInputHeight)
             if inputView.frame != inputFrame {
@@ -1152,7 +1152,7 @@ public final class AgentChatDocumentView: NSView {
             if inputView.isHidden {
                 inputView.isHidden = false
             }
-            currentY += resolvedInputHeight + 20
+            currentY += resolvedInputHeight + 12
         } else {
             inputHostingView?.removeFromSuperview()
         }

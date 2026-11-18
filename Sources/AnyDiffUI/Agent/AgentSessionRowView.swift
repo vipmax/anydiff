@@ -227,14 +227,27 @@ public struct AgentSessionRowView: View {
                 .layoutPriority(1)
             }
 
-            Text(statusText)
-                .font(.system(size: 9.5, weight: session.hasUnreadUpdates ? .medium : .regular))
-                .foregroundColor(session.hasUnreadUpdates ? accentColor : (isActive ? Color(theme.foreground).opacity(0.75) : .secondary))
-                .lineLimit(1)
-                .truncationMode(.tail)
+            if isShowingAnimatedWorkingStatus {
+                AnimatedWorkingStatusView()
+                    .font(.system(size: 9.5, weight: .regular))
+                    .foregroundColor(isActive ? Color(theme.foreground).opacity(0.75) : .secondary)
+                    .lineLimit(1)
+            } else {
+                Text(statusText)
+                    .font(.system(size: 9.5, weight: session.hasUnreadUpdates ? .medium : .regular))
+                    .foregroundColor(session.hasUnreadUpdates ? accentColor : (isActive ? Color(theme.foreground).opacity(0.75) : .secondary))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
 
             Spacer(minLength: 0)
         }
+    }
+
+    private var isShowingAnimatedWorkingStatus: Bool {
+        session.manager.pendingPermission == nil
+            && !session.hasUnreadUpdates
+            && session.manager.status == .busy
     }
 
     private func copySessionId(shortId: String) {
@@ -516,7 +529,7 @@ public struct AgentSessionRowView: View {
         }
         switch session.manager.status {
         case .busy:
-            return "Thinking in background…"
+            return "Working …"
         case .connecting:
             return "Connecting…"
         case .error(let msg):
@@ -530,6 +543,26 @@ public struct AgentSessionRowView: View {
             let promptText = userCount == 1 ? "1 prompt" : "\(userCount) prompts"
             let msgText = count == 1 ? "1 message" : "\(count) messages"
             return "\(msgText) (\(promptText))"
+        }
+    }
+}
+
+private struct AnimatedWorkingStatusView: View {
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
+            let time = context.date.timeIntervalSinceReferenceDate
+            let period = 1.35
+
+            HStack(spacing: 0) {
+                Text("Working ")
+                ForEach(0..<3, id: \.self) { index in
+                    let phase = (time * (2.0 * .pi / period)) - Double(index) * 0.85
+                    let wave = max(0.0, sin(phase))
+                    Text(".")
+                        .opacity(0.28 + 0.72 * wave)
+                        .offset(y: -1.2 * wave)
+                }
+            }
         }
     }
 }

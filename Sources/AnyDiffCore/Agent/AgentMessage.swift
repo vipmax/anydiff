@@ -364,6 +364,35 @@ public struct AgentMessage: Identifiable, Sendable, Equatable {
         return true
     }
 
+    public mutating func rebindToolCall(oldId: String, newId: String, _ update: (inout ToolCallItem) -> Void) -> Bool {
+        guard let index = toolCalls.firstIndex(where: { $0.id == oldId }) else { return false }
+        var updated = toolCalls[index]
+        update(&updated)
+        toolCalls[index] = ToolCallItem(
+            id: newId,
+            toolName: updated.toolName,
+            path: updated.path,
+            locations: updated.locations,
+            title: updated.title,
+            descriptionText: updated.descriptionText,
+            startLine: updated.startLine,
+            endLine: updated.endLine,
+            oldContent: updated.oldContent,
+            newContent: updated.newContent,
+            command: updated.command,
+            output: updated.output,
+            summary: updated.summary,
+            status: updated.status,
+            timestamp: updated.timestamp
+        )
+        for pIdx in orderedParts.indices {
+            if case .toolCall(let id) = orderedParts[pIdx], id == oldId {
+                orderedParts[pIdx] = .toolCall(newId)
+            }
+        }
+        return true
+    }
+
     public mutating func updateLastRunningToolCall(_ update: (inout ToolCallItem) -> Void) -> Bool {
         guard let index = toolCalls.lastIndex(where: { $0.status == .running }) else { return false }
         update(&toolCalls[index])

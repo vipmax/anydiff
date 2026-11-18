@@ -87,26 +87,10 @@ public struct AgentSettingsPopoverView: View {
                     }
                 }
                 .padding(.horizontal, 2)
+                .padding(.bottom, 2)
             }
-
-            Divider()
-                .padding(.horizontal, 4)
-                .padding(.vertical, 2)
-
-            // Footer
-            HStack {
-                Text("Toggle Panel: Cmd+Opt+A")
-                    .font(.system(size: 9.5))
-                    .foregroundColor(.secondary)
-                Spacer()
-                Text("AnyDiff Agent")
-                    .font(.system(size: 9.5, weight: .semibold))
-                    .foregroundColor(.secondary.opacity(0.7))
-            }
-            .padding(.horizontal, 6)
-            .padding(.bottom, 3)
         }
         .padding(6)
-        .frame(width: 340)
+        .frame(width: 440)
     }
 }

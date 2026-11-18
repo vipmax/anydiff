@@ -362,15 +362,18 @@ public enum AgentGitChangesDetector {
             }
         }
 
-        // 2. Untracked files created or modified during THIS turn
+        // 2. Untracked files created, modified, or deleted during THIS turn
         var preTurnBlobsForSummary: [String: String] = [:]
         var cachedUntrackedDiffs: [String: Data] = [:]
         if snapshot.isGitRepository,
            let untrackedOutput = runGit(arguments: ["-C", workingDirectory, "ls-files", "--others", "--exclude-standard"]) {
             let existingTrackedPaths = Set(items.map(\.path))
+            var currentUntrackedPaths: Set<String> = []
             for path in untrackedOutput.components(separatedBy: "\n") {
                 let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !trimmed.isEmpty, !existingTrackedPaths.contains(trimmed) else { continue }
+                guard !trimmed.isEmpty else { continue }
+                currentUntrackedPaths.insert(trimmed)
+                guard !existingTrackedPaths.contains(trimmed) else { continue }
 
                 let fullPath = URL(fileURLWithPath: workingDirectory).appendingPathComponent(trimmed).path
                 let currentMtime = (try? FileManager.default.attributesOfItem(atPath: fullPath))?[.modificationDate] as? Date
@@ -403,6 +406,26 @@ public enum AgentGitChangesDetector {
                     items.append(AgentEditedFileItem(path: trimmed, additions: adds, deletions: dels))
                 }
             }
+
+            // 2b. Pre-existing untracked files deleted during THIS turn
+            for path in snapshot.untrackedFiles.sorted() {
+                guard !existingTrackedPaths.contains(path),
+                      !currentUntrackedPaths.contains(path) else { continue }
+                let fullPath = URL(fileURLWithPath: workingDirectory).appendingPathComponent(path).path
+                guard !FileManager.default.fileExists(atPath: fullPath) else { continue }
+
+                deletedList.append(path)
+                var dels = 0
+                if let oldBlobSha = snapshot.untrackedBlobHashes[path] {
+                    preTurnBlobsForSummary[path] = oldBlobSha
+                    if let blobData = runGitData(arguments: ["-C", workingDirectory, "cat-file", "blob", oldBlobSha], allowEmpty: true) {
+                        let deletedDiff = makeDeletedFileDiff(path: path, blobData: blobData)
+                        dels = deletedDiff.deletions
+                        cachedUntrackedDiffs[path] = deletedDiff.patchData
+                    }
+                }
+                items.append(AgentEditedFileItem(path: path, additions: 0, deletions: dels))
+            }
         }
 
         guard !items.isEmpty else { return (nil, nil) }
@@ -428,6 +451,7 @@ public enum AgentGitChangesDetector {
                 if let cached = cachedUntrackedDiffs[item.path] {
                     diffChunks.append(cached)
                 } else if let oldBlobSha = snapshot.untrackedBlobHashes[item.path],
+                          !deletedList.contains(item.path),
                           let fileDiffData = runGitData(arguments: ["-C", workingDirectory, "diff", "-U3", oldBlobSha, "--", item.path]) {
                     diffChunks.append(fileDiffData)
                 }
@@ -482,6 +506,30 @@ public enum AgentGitChangesDetector {
 
     private static let diffGitMarker = Data("\ndiff --git ".utf8)
 
+    private static func makeDeletedFileDiff(path: String, blobData: Data) -> (deletions: Int, patchData: Data) {
+        var patch = "diff --git a/\(path) b/\(path)\ndeleted file mode 100644\n"
+        if blobData.isEmpty {
+            patch += "--- a/\(path)\n+++ /dev/null\n"
+            return (0, Data(patch.utf8))
+        }
+        if blobData.contains(0) || String(data: blobData, encoding: .utf8) == nil {
+            patch += "Binary files a/\(path) and /dev/null differ\n"
+            return (0, Data(patch.utf8))
+        }
+        let text = String(decoding: blobData, as: UTF8.self)
+        let hasTrailingNewline = text.hasSuffix("\n")
+        let body = hasTrailingNewline ? String(text.dropLast()) : text
+        let lines = body.components(separatedBy: "\n")
+        patch += "--- a/\(path)\n+++ /dev/null\n@@ -1,\(lines.count) +0,0 @@\n"
+        for line in lines {
+            patch += "-\(line)\n"
+        }
+        if !hasTrailingNewline {
+            patch += "\\ No newline at end of file\n"
+        }
+        return (lines.count, Data(patch.utf8))
+    }
+
     private static func splitNumstatAndPatch(_ data: Data) -> (adds: Int, dels: Int, patchData: Data)? {
         guard let markerRange = data.range(of: diffGitMarker) else { return nil }
         let headerData = data[data.startIndex..<markerRange.lowerBound]
@@ -519,7 +567,7 @@ public enum AgentGitChangesDetector {
         }
     }
 
-    private static func runGitData(arguments: [String]) -> Data? {
+    private static func runGitData(arguments: [String], allowEmpty: Bool = false) -> Data? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         var fullArgs = ["-c", "user.name=AnyDiff", "-c", "user.email=anydiff@local"]
@@ -533,7 +581,7 @@ public enum AgentGitChangesDetector {
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
             let allowedStatuses: Set<Int32> = arguments.contains("--no-index") ? [0, 1] : [0]
-            guard allowedStatuses.contains(process.terminationStatus), !data.isEmpty else { return nil }
+            guard allowedStatuses.contains(process.terminationStatus), (allowEmpty || !data.isEmpty) else { return nil }
             return data
         } catch {
             return nil

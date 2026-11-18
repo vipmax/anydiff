@@ -169,6 +169,44 @@ final class AgentRollbackTests: XCTestCase {
         XCTAssertEqual(restoredContent, "Delete me\n")
     }
 
+    func testRevertAndRestoreDeletedUntrackedFile() throws {
+        let repo = try createTempGitRepo()
+        defer { try? FileManager.default.removeItem(at: repo) }
+
+        let untrackedURL = repo.appendingPathComponent("nested/temp_untracked.txt")
+        try FileManager.default.createDirectory(at: untrackedURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "Line A\nLine B\n".write(to: untrackedURL, atomically: true, encoding: .utf8)
+
+        let snapshot = AgentGitChangesDetector.capturePreTurnSnapshot(workingDirectory: repo.path)
+
+        // Agent deletes the pre-existing untracked file and its empty directory
+        try FileManager.default.removeItem(at: untrackedURL)
+        try FileManager.default.removeItem(at: untrackedURL.deletingLastPathComponent())
+
+        let (summary, rawDiffData) = AgentGitChangesDetector.computeTurnSummary(workingDirectory: repo.path, snapshot: snapshot)
+        guard var mutSummary = summary else {
+            XCTFail("Expected summary for deleted untracked file")
+            return
+        }
+
+        XCTAssertEqual(mutSummary.deletedFiles, ["nested/temp_untracked.txt"])
+        XCTAssertEqual(mutSummary.files.first?.additions, 0)
+        XCTAssertEqual(mutSummary.files.first?.deletions, 2)
+
+        let parsedDiffs = rawDiffData.map { GitDiffParser.shared.parse(data: $0) } ?? []
+        XCTAssertEqual(parsedDiffs.count, 1)
+        XCTAssertEqual(parsedDiffs.first?.status, .deleted)
+        XCTAssertEqual(parsedDiffs.first?.newPath, "nested/temp_untracked.txt")
+
+        // Undo restores the deleted untracked file
+        XCTAssertTrue(AgentTurnRollbackService.revertTurn(workingDirectory: repo.path, summary: &mutSummary))
+        XCTAssertEqual(try String(contentsOf: untrackedURL, encoding: .utf8), "Line A\nLine B\n")
+
+        // Redo deletes it again
+        XCTAssertTrue(AgentTurnRollbackService.restoreTurn(workingDirectory: repo.path, summary: mutSummary))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: untrackedURL.path))
+    }
+
     func testRevertTurnWithMixedOperations() throws {
         let repo = try createTempGitRepo()
         defer { try? FileManager.default.removeItem(at: repo) }

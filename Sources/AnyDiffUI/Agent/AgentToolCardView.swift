@@ -37,7 +37,10 @@ public final class AgentSimpleToolCallView: AgentFlippedView {
             .paragraphStyle: paragraphStyle
         ]))
 
-        if let detail = item.descriptionText ?? item.summary, !detail.isEmpty {
+        let normalizedTitle = item.displayTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let detail = item.summary,
+           !detail.isEmpty,
+           detail.trimmingCharacters(in: .whitespacesAndNewlines) != normalizedTitle {
             result.append(NSAttributedString(string: "\n\(detail)", attributes: [
                 .font: detailFont,
                 .foregroundColor: detailColor,
@@ -322,7 +325,6 @@ public final class AgentToolCardView: AgentFlippedView {
         if let cmd = item.command, !cmd.isEmpty { return true }
         if let out = item.output, !out.isEmpty { return true }
         if let sum = item.summary, !sum.isEmpty { return true }
-        if let desc = item.descriptionText, !desc.isEmpty { return true }
         return false
     }
 
@@ -603,14 +605,16 @@ public final class AgentToolCardView: AgentFlippedView {
     }
 
     private func updateDescriptionLabel(for item: ToolCallItem, theme: Theme) {
-        let explicitDescription = item.descriptionText?.isEmpty == false ? item.descriptionText : nil
+        let normalizedTitle = item.displayTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         let fallbackOutput: String?
-        if explicitDescription == nil, !hasExpandableContent(for: item) {
+        if !hasExpandableContent(for: item) {
             let isFileEdit = item.shortToolName == "Edit" || item.shortToolName == "Create"
             let rawFallback = item.summary ?? item.output
             if isFileEdit && item.status != .failed {
                 fallbackOutput = nil
             } else if let text = rawFallback, Self.isNoisyByteCountSummary(text) {
+                fallbackOutput = nil
+            } else if let text = rawFallback, text.trimmingCharacters(in: .whitespacesAndNewlines) == normalizedTitle {
                 fallbackOutput = nil
             } else {
                 fallbackOutput = rawFallback
@@ -619,16 +623,10 @@ public final class AgentToolCardView: AgentFlippedView {
             fallbackOutput = nil
         }
 
-        let descText = explicitDescription ?? fallbackOutput
-        if let desc = descText, !desc.isEmpty {
-            let isExplicit = explicitDescription != nil
+        if let desc = fallbackOutput, !desc.isEmpty {
             descriptionLabel.stringValue = desc
-            descriptionLabel.font = isExplicit
-                ? NSFont.systemFont(ofSize: isCompactMode ? 10.5 : 11)
-                : NSFont.monospacedSystemFont(ofSize: isCompactMode ? 10 : 10.5, weight: .regular)
-            descriptionLabel.textColor = isExplicit
-                ? (NSColor(cgColor: theme.foreground.cgColor)?.withAlphaComponent(0.85) ?? .textColor)
-                : (NSColor(cgColor: theme.gutterForeground.cgColor) ?? .secondaryLabelColor)
+            descriptionLabel.font = NSFont.monospacedSystemFont(ofSize: isCompactMode ? 10 : 10.5, weight: .regular)
+            descriptionLabel.textColor = NSColor(cgColor: theme.gutterForeground.cgColor) ?? .secondaryLabelColor
             if descriptionLabel.superview == nil {
                 addSubview(descriptionLabel)
             }
@@ -898,9 +896,6 @@ public final class AgentToolCardView: AgentFlippedView {
         if lines.isEmpty, item.shortToolName != "Edit" && item.shortToolName != "Create" {
             if let summary = item.summary, !summary.isEmpty {
                 lines = summary.components(separatedBy: "\n")
-            }
-            if lines.isEmpty, let description = item.descriptionText, !description.isEmpty {
-                lines = description.components(separatedBy: "\n")
             }
         }
         return (lines.isEmpty ? [""] : lines, nil)

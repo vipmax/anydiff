@@ -1297,6 +1297,19 @@ public struct AgentInputView: View {
     private static let inputFirstLineHeight: CGFloat = ceil(
         NSLayoutManager().defaultLineHeight(for: NSFont.systemFont(ofSize: 13, weight: .regular))
     )
+    private static let quoteSuggestionButtonHeight: CGFloat = 24
+    private static let quoteSuggestionTopPadding: CGFloat = 2
+    private static let reservedQuoteSlotHeight: CGFloat = 6 + quoteSuggestionTopPadding + quoteSuggestionButtonHeight
+
+    public static func minimumTotalHeight(forUserAvatarSize avatarSize: CGFloat) -> CGFloat {
+        let firstCenter = inputFirstLineHeight / 2
+        let avatarCenter = avatarSize / 2
+        let contentTop = max(0, avatarCenter - firstCenter)
+        let avatarTop = max(0, firstCenter - avatarCenter)
+        let contentHeight = contentTop + 18 + reservedQuoteSlotHeight
+        let avatarHeight = avatarTop + avatarSize
+        return max(max(avatarSize + 8, 38), 8 + max(avatarHeight, contentHeight))
+    }
 
     private var inputVerticalOffsets: (avatarTop: CGFloat, contentTop: CGFloat) {
         let firstCenter: CGFloat = blocks.first?.isQuote == true ? 20 : Self.inputFirstLineHeight / 2
@@ -1445,7 +1458,6 @@ public struct AgentInputView: View {
 
     public var body: some View {
         expandedView
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .background(
                 GeometryReader { geo in
                     Color.clear.preference(key: AgentInputTotalHeightPreferenceKey.self, value: geo.size.height)
@@ -1454,6 +1466,7 @@ public struct AgentInputView: View {
             .onPreferenceChange(AgentInputTotalHeightPreferenceKey.self) { newHeight in
                 if newHeight > 0 { onTotalHeightChange?(newHeight) }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .onDrop(of: [UTType.image, UTType.fileURL, UTType.png, UTType.jpeg, UTType.tiff, UTType.webP, UTType.heic, UTType.url, UTType.data, UTType.item], isTargeted: $isInputDropTargeted) { providers in
                 ImageAttachmentHelpers.extractImages(from: providers) { droppedImages in
                     guard !droppedImages.isEmpty else { return }
@@ -1612,69 +1625,7 @@ public struct AgentInputView: View {
                         .frame(maxWidth: .infinity)
                     }
 
-                    if let quote = quoteStore.currentQuote,
-                       !isAlreadyQuoted(quote) {
-                        HStack(spacing: 6) {
-                            HStack(spacing: 0) {
-                                Button(action: {
-                                    addQuote(quote)
-                                }) {
-                                    Image(systemName: "quote.opening")
-                                        .font(.system(size: 11.5, weight: .semibold))
-                                        .foregroundColor(accentColor)
-                                        .frame(width: 24, height: 24)
-                                        .background(
-                                            accentColor.opacity(isQuoteButtonHovered ? 0.20 : 0.08)
-                                        )
-                                }
-                                .buttonStyle(.plain)
-                                .onHover { hovering in
-                                    withAnimation(.easeOut(duration: 0.12)) {
-                                        isQuoteButtonHovered = hovering
-                                    }
-                                }
-                                .overlay(AgentInputPointingHandCursorView())
-                                .help(quoteSuggestionHelpText(quote: quote))
-                                .accessibilityLabel("Quote selection (\(quote.label))")
-
-                                Rectangle()
-                                    .fill(accentColor.opacity(0.18))
-                                    .frame(width: 1, height: 14)
-
-                                Button(action: {
-                                    withAnimation(.easeOut(duration: 0.12)) {
-                                        quoteStore.clearQuote(scopedToId: quote.id)
-                                    }
-                                }) {
-                                    Image(systemName: "xmark")
-                                        .font(.system(size: 8.5, weight: .bold))
-                                        .foregroundColor(accentColor.opacity(isQuoteDismissHovered ? 1.0 : 0.7))
-                                        .frame(width: 20, height: 24)
-                                        .background(
-                                            accentColor.opacity(isQuoteDismissHovered ? 0.20 : 0.08)
-                                        )
-                                }
-                                .buttonStyle(.plain)
-                                .onHover { hovering in
-                                    withAnimation(.easeOut(duration: 0.12)) {
-                                        isQuoteDismissHovered = hovering
-                                    }
-                                }
-                                .overlay(AgentInputPointingHandCursorView())
-                                .help("Dismiss quote")
-                                .accessibilityLabel("Dismiss quote")
-                            }
-                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                    .stroke(accentColor.opacity(isQuoteButtonHovered || isQuoteDismissHovered ? 0.30 : 0.15), lineWidth: 1)
-                            )
-
-                            Spacer()
-                        }
-                        .padding(.top, 2)
-                        .transition(.scale(scale: 0.85).combined(with: .opacity))
-                    }
+                    quoteSuggestionSlot
                 }
                 .padding(.top, offsets.contentTop)
                 .frame(maxWidth: AgentMessageCell.maxContentWidth, alignment: .leading)
@@ -1696,6 +1647,75 @@ public struct AgentInputView: View {
                 recalculateTotalHeight()
             }
         }
+    }
+
+    @ViewBuilder
+    private var quoteSuggestionSlot: some View {
+        HStack(spacing: 6) {
+            if let quote = quoteStore.currentQuote,
+               !isAlreadyQuoted(quote) {
+                HStack(spacing: 0) {
+                    Button(action: {
+                        addQuote(quote)
+                    }) {
+                        Image(systemName: "quote.opening")
+                            .font(.system(size: 11.5, weight: .semibold))
+                            .foregroundColor(accentColor)
+                            .frame(width: 24, height: Self.quoteSuggestionButtonHeight)
+                            .background(
+                                accentColor.opacity(isQuoteButtonHovered ? 0.20 : 0.08)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .onHover { hovering in
+                        withAnimation(.easeOut(duration: 0.12)) {
+                            isQuoteButtonHovered = hovering
+                        }
+                    }
+                    .overlay(AgentInputPointingHandCursorView())
+                    .help(quoteSuggestionHelpText(quote: quote))
+                    .accessibilityLabel("Quote selection (\(quote.label))")
+
+                    Rectangle()
+                        .fill(accentColor.opacity(0.18))
+                        .frame(width: 1, height: 14)
+
+                    Button(action: {
+                        withAnimation(.easeOut(duration: 0.12)) {
+                            quoteStore.clearQuote(scopedToId: quote.id)
+                        }
+                    }) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 8.5, weight: .bold))
+                            .foregroundColor(accentColor.opacity(isQuoteDismissHovered ? 1.0 : 0.7))
+                            .frame(width: 20, height: Self.quoteSuggestionButtonHeight)
+                            .background(
+                                accentColor.opacity(isQuoteDismissHovered ? 0.20 : 0.08)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .onHover { hovering in
+                        withAnimation(.easeOut(duration: 0.12)) {
+                            isQuoteDismissHovered = hovering
+                        }
+                    }
+                    .overlay(AgentInputPointingHandCursorView())
+                    .help("Dismiss quote")
+                    .accessibilityLabel("Dismiss quote")
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(accentColor.opacity(isQuoteButtonHovered || isQuoteDismissHovered ? 0.30 : 0.15), lineWidth: 1)
+                )
+                .transition(.scale(scale: 0.85).combined(with: .opacity))
+            }
+
+            Spacer(minLength: 0)
+        }
+        .frame(height: Self.quoteSuggestionButtonHeight, alignment: .leading)
+        .padding(.top, Self.quoteSuggestionTopPadding)
+        .animation(.easeOut(duration: 0.14), value: quoteStore.currentQuote?.id)
     }
 
     private func quoteBadgeView(id: String, quote: SelectionQuote) -> some View {
@@ -1944,7 +1964,7 @@ public struct AgentInputView: View {
     }
 
     private var estimatedBlocksHeight: CGFloat {
-        var total: CGFloat = 4
+        var total: CGFloat = 0
         for (i, block) in blocks.enumerated() {
             if i > 0 { total += 6 }
             switch block {
@@ -1959,8 +1979,8 @@ public struct AgentInputView: View {
 
     private func recalculateTotalHeight() {
         let offsets = inputVerticalOffsets
-        let minH = max(userAvatarSize + 8, 38)
-        let contentHeight = offsets.contentTop + estimatedBlocksHeight
+        let minH = Self.minimumTotalHeight(forUserAvatarSize: userAvatarSize)
+        let contentHeight = offsets.contentTop + estimatedBlocksHeight + Self.reservedQuoteSlotHeight
         let avatarHeight = offsets.avatarTop + userAvatarSize
         let total = 8 + max(avatarHeight, contentHeight)
         self.calculatedHeight = max(minH, total)

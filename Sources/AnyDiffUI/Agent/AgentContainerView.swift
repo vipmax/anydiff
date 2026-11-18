@@ -94,9 +94,9 @@ public struct AgentContainerView: View {
                     }
                 }
             ) {
-                headerWorktreeTitle
+                headerLeadingContent
             } actions: {
-                headerActions
+                EmptyView()
             }
 
             Group {
@@ -160,118 +160,126 @@ public struct AgentContainerView: View {
     }
 
     @ViewBuilder
-    private var headerWorktreeTitle: some View {
+    private var headerLeadingContent: some View {
         if !isShowingStartScreen, let currentSession = activeSession {
-            AgentHeaderWorktreeView(
-                agentManager: currentSession.manager,
-                theme: theme,
-                fallbackWorkingDirectory: workingDirectory,
-                worktrees: worktrees,
-                reloadToken: reloadToken,
-                onSelectWorktree: onSelectWorktree
-            )
+            HStack(alignment: .center, spacing: 2) {
+                headerActions(for: currentSession)
+                    .layoutPriority(1)
+
+                headerWorktreeTitle(for: currentSession)
+            }
         }
     }
 
     @ViewBuilder
-    private var headerActions: some View {
+    private func headerWorktreeTitle(for currentSession: AgentSessionItem) -> some View {
+        AgentHeaderWorktreeView(
+            agentManager: currentSession.manager,
+            theme: theme,
+            fallbackWorkingDirectory: workingDirectory,
+            worktrees: worktrees,
+            reloadToken: reloadToken,
+            onSelectWorktree: onSelectWorktree
+        )
+    }
+
+    @ViewBuilder
+    private func headerActions(for currentSession: AgentSessionItem) -> some View {
         HStack(alignment: .center, spacing: 2) {
-            if !isShowingStartScreen, let currentSession = activeSession {
-                Button(action: { isSessionsPresented.toggle() }) {
-                    Text(currentSession.preset.name)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(isSessionsHovered || isSessionsPresented
-                            ? Color(nsColor: .labelColor)
-                            : Color(nsColor: .labelColor).opacity(0.92))
-                        .lineLimit(1)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 3)
-                        .frame(minHeight: 20)
-                        .background(Color.clear, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(accentColor.opacity(
-                                    isSessionsHovered || isSessionsPresented ? 0.08 : 0
-                                ))
-                        )
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    coordinator.setStartScreen(true, for: slot)
                 }
-                .buttonStyle(.plain)
-                .help("Sessions")
-                .popover(isPresented: $isSessionsPresented, arrowEdge: .bottom) {
-                    AgentSettingsPopoverView(
-                        coordinator: coordinator,
-                        theme: theme,
-                        workingDirectory: sessionWorkingDirectory(for: currentSession),
-                        activeSessionId: currentSession.id,
-                        worktrees: worktrees,
-                        onClose: { isSessionsPresented = false },
-                        onSelectSession: { id in
-                            coordinator.selectSession(id: id, for: slot)
-                        },
-                        onNewSession: {
-                            coordinator.setStartScreen(true, for: slot)
-                        }
+            }) {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 11, weight: .medium))
+                    .frame(width: 16, height: 16)
+                    .foregroundColor(Color(nsColor: .secondaryLabelColor))
+            }
+            .buttonStyle(AgentToolbarActionButtonStyle(accentColor: accentColor))
+            .help("Choose Agent / All Agents (Cmd+Esc)")
+
+            Button(action: { isSessionsPresented.toggle() }) {
+                Text(currentSession.preset.name)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(isSessionsHovered || isSessionsPresented
+                        ? Color(nsColor: .labelColor)
+                        : Color(nsColor: .labelColor).opacity(0.92))
+                    .lineLimit(1)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .frame(minHeight: 20)
+                    .background(Color.clear, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(accentColor.opacity(
+                                isSessionsHovered || isSessionsPresented ? 0.08 : 0
+                            ))
                     )
-                }
-                .onHover { isSessionsHovered = $0 }
-
-                AgentHeaderControlsView(
-                    agentManager: currentSession.manager,
+            }
+            .buttonStyle(.plain)
+            .help("Sessions")
+            .popover(isPresented: $isSessionsPresented, arrowEdge: .bottom) {
+                AgentSettingsPopoverView(
+                    coordinator: coordinator,
                     theme: theme,
-                    accentColor: accentColor,
                     workingDirectory: sessionWorkingDirectory(for: currentSession),
-                    onSend: {
-                        NotificationCenter.default.post(
-                            name: Notification.Name("anyDiffAgentSubmitPrompt"),
-                            object: nil
-                        )
-                    }
-                )
-
-                Button(action: {
-                    currentSession.isNotificationsEnabled.toggle()
-                }) {
-                    Image(systemName: currentSession.isNotificationsEnabled ? "bell.fill" : "bell.slash")
-                        .font(.system(size: 12, weight: .medium))
-                        .frame(width: 16, height: 16)
-                        .foregroundColor(currentSession.isNotificationsEnabled
-                            ? accentColor
-                            : Color(nsColor: .secondaryLabelColor).opacity(0.85))
-                }
-                .buttonStyle(AgentToolbarActionButtonStyle(
-                    accentColor: accentColor,
-                    isActive: currentSession.isNotificationsEnabled
-                ))
-                .help(currentSession.isNotificationsEnabled
-                    ? "Sound notifications enabled (Click to mute)"
-                    : "Sound notifications disabled (Click to enable)")
-
-                Button(action: {
-                    withAnimation(.easeInOut(duration: 0.15)) {
-                        _ = coordinator.createNewSession(workingDirectory: workingDirectory, for: slot)
-                    }
-                }) {
-                    Image(systemName: "plus")
-                        .font(.system(size: 12, weight: .medium))
-                        .frame(width: 16, height: 16)
-                        .foregroundColor(Color(nsColor: .secondaryLabelColor))
-                }
-                .buttonStyle(AgentToolbarActionButtonStyle(accentColor: accentColor))
-                .help("New Agent Session (Cmd+N)")
-
-                Button(action: {
-                    withAnimation(.easeInOut(duration: 0.18)) {
+                    activeSessionId: currentSession.id,
+                    worktrees: worktrees,
+                    onClose: { isSessionsPresented = false },
+                    onSelectSession: { id in
+                        coordinator.selectSession(id: id, for: slot)
+                    },
+                    onNewSession: {
                         coordinator.setStartScreen(true, for: slot)
                     }
-                }) {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 12, weight: .medium))
-                        .frame(width: 16, height: 16)
-                        .foregroundColor(Color(nsColor: .secondaryLabelColor))
-                }
-                .buttonStyle(AgentToolbarActionButtonStyle(accentColor: accentColor))
-                .help("Choose Agent / All Agents (Cmd+Esc)")
+                )
             }
+            .onHover { isSessionsHovered = $0 }
+
+            AgentHeaderControlsView(
+                agentManager: currentSession.manager,
+                theme: theme,
+                accentColor: accentColor,
+                workingDirectory: sessionWorkingDirectory(for: currentSession),
+                onSend: {
+                    NotificationCenter.default.post(
+                        name: Notification.Name("anyDiffAgentSubmitPrompt"),
+                        object: nil
+                    )
+                }
+            )
+
+            Button(action: {
+                currentSession.isNotificationsEnabled.toggle()
+            }) {
+                Image(systemName: currentSession.isNotificationsEnabled ? "bell.fill" : "bell.slash")
+                    .font(.system(size: 12, weight: .medium))
+                    .frame(width: 16, height: 16)
+                    .foregroundColor(currentSession.isNotificationsEnabled
+                        ? accentColor
+                        : Color(nsColor: .secondaryLabelColor).opacity(0.85))
+            }
+            .buttonStyle(AgentToolbarActionButtonStyle(
+                accentColor: accentColor,
+                isActive: currentSession.isNotificationsEnabled
+            ))
+            .help(currentSession.isNotificationsEnabled
+                ? "Sound notifications enabled (Click to mute)"
+                : "Sound notifications disabled (Click to enable)")
+
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    _ = coordinator.createNewSession(workingDirectory: workingDirectory, for: slot)
+                }
+            }) {
+                Image(systemName: "plus")
+                    .font(.system(size: 12, weight: .medium))
+                    .frame(width: 16, height: 16)
+                    .foregroundColor(Color(nsColor: .secondaryLabelColor))
+            }
+            .buttonStyle(AgentToolbarActionButtonStyle(accentColor: accentColor))
+            .help("New Agent Session (Cmd+N)")
         }
     }
 }
@@ -441,7 +449,7 @@ private struct AgentHeaderWorktreeView: View {
                 }
             }
             .help(worktreeHelpText)
-            .frame(minWidth: 0, maxWidth: .infinity, alignment: .trailing)
+            .frame(minWidth: 0, alignment: .leading)
             .padding(.leading, 4)
             .onChange(of: sessionWorkingDirectory) { _ in
                 diffStats = .zero

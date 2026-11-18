@@ -31,6 +31,7 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
     private var promptTask: Task<Void, Never>?
     private var pendingPrompt: (text: String, images: [AgentImageAttachment], workingDirectory: String, userMessageId: UUID)?
     private var authTask: Task<Void, Error>?
+    private var syntheticExecutedToolIds: Set<String> = []
     private static let linkDetector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
 
     public init(client: ACPClient = ACPClient()) {
@@ -435,6 +436,7 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
         authTask = nil
         pendingPrompt = nil
         pendingPermission = nil
+        syntheticExecutedToolIds.removeAll()
         liveEditedSummary = nil
         preTurnSnapshot = nil
         activeTurnWorkingDirectory = nil
@@ -469,6 +471,7 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
         authTask = nil
         pendingPrompt = nil
         pendingPermission = nil
+        syntheticExecutedToolIds.removeAll()
         liveEditedSummary = nil
         preTurnSnapshot = nil
         activeTurnWorkingDirectory = nil
@@ -704,6 +707,7 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
             messages[idx].isStreaming = false
             messages[idx].completeRunningToolCalls()
         }
+        syntheticExecutedToolIds.removeAll()
         currentStreamMessageId = nil
     }
 
@@ -915,6 +919,43 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
                         if isCompleted { item.status = .completed }
                         if isFailed { item.status = .failed }
                     }
+                } else if let toolId = update.toolCallId,
+                          let syntheticId = self.matchingSyntheticExecutedToolId(
+                              in: self.messages[targetIdx].toolCalls,
+                              incomingToolName: toolName,
+                              path: path,
+                              oldContent: oldContent,
+                              newContent: newContent
+                          ) {
+                    // Rebind an already-executed fs/write_text_file or fs/read_text_file item
+                    // whose RPC request arrived before the matching ACP tool_call notification.
+                    self.syntheticExecutedToolIds.remove(syntheticId)
+                    _ = self.messages[targetIdx].rebindToolCall(oldId: syntheticId, newId: toolId) { item in
+                        if toolName != "tool" && !(item.toolName == "fs/write_text_file" && ToolCallItem.isEditToolName(toolName)) {
+                            item.toolName = toolName
+                        }
+                        if let locs = update.locations, !locs.isEmpty {
+                            item.locations = locs
+                        }
+                        if let path {
+                            self.applyPath(path, to: &item)
+                        }
+                        if let desc { item.descriptionText = desc }
+                        if let sLine { item.startLine = sLine }
+                        if let eLine { item.endLine = eLine }
+                        if item.oldContent == nil, let oldContent { item.oldContent = oldContent }
+                        if item.newContent == nil, let newContent { item.newContent = newContent }
+                        if let cmd { item.command = cmd }
+                        if let res = update.toolResult ?? update.contentText, !res.isEmpty {
+                            if item.output == nil || item.output?.isEmpty == true {
+                                item.output = res
+                            } else if item.output != res {
+                                item.output? += res
+                            }
+                            item.summary = item.output
+                        }
+                        if isFailed { item.status = .failed }
+                    }
                 } else {
                     let item = ToolCallItem(
                         id: update.toolCallId ?? UUID().uuidString,
@@ -1047,7 +1088,10 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
                         item.status = .completed
                     }
                 } else {
+                    let syntheticId = UUID().uuidString
+                    self.syntheticExecutedToolIds.insert(syntheticId)
                     let item = ToolCallItem(
+                        id: syntheticId,
                         toolName: toolName,
                         path: path,
                         title: path.map { ($0 as NSString).lastPathComponent },
@@ -1092,7 +1136,10 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
                         item.status = .completed
                     }
                 } else {
+                    let syntheticId = UUID().uuidString
+                    self.syntheticExecutedToolIds.insert(syntheticId)
                     let item = ToolCallItem(
+                        id: syntheticId,
                         toolName: "fs/write_text_file",
                         path: path,
                         title: filename,
@@ -1105,6 +1152,35 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
             }
             self.updateLiveGitDiffState()
         }
+    }
+
+    private func matchingSyntheticExecutedToolId(
+        in toolCalls: [ToolCallItem],
+        incomingToolName: String,
+        path: String?,
+        oldContent: String?,
+        newContent: String?
+    ) -> String? {
+        guard let path, !syntheticExecutedToolIds.isEmpty else { return nil }
+        return toolCalls.first(where: { item in
+            guard syntheticExecutedToolIds.contains(item.id),
+                  let itemPath = item.path,
+                  Self.pathsMatch(itemPath, path, workingDirectory: currentWorkingDirectory) else {
+                return false
+            }
+            if item.toolName == "fs/write_text_file" {
+                guard ToolCallItem.isEditToolName(incomingToolName) else { return false }
+                if let newContent, item.newContent != newContent {
+                    return false
+                }
+                if let oldContent, (item.oldContent ?? "") != oldContent {
+                    return false
+                }
+                return true
+            }
+            return Self.isCompatibleToolCategory(existing: item, executedToolName: item.toolName)
+                && ToolCallItem.shortToolName(for: item.toolName) == ToolCallItem.shortToolName(for: incomingToolName)
+        })?.id
     }
 
     private func applyPath(_ newPath: String, to item: inout ToolCallItem) {

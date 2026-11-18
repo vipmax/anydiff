@@ -507,6 +507,11 @@ public enum ImageAttachmentHelpers {
               let bitmapImage = NSBitmapImageRep(data: tiffRepresentation) else {
             return nil
         }
+        if let cg = bitmapImage.cgImage,
+           let srgbCG = resizeCGImage(cg, width: max(1, cg.width), height: max(1, cg.height)),
+           let data = NSBitmapImageRep(cgImage: srgbCG).representation(using: .png, properties: [:]) {
+            return data
+        }
         return bitmapImage.representation(using: .png, properties: [:])
     }
 

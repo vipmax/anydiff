@@ -71,7 +71,7 @@ public enum AgentTurnRollbackService {
             }
         }
 
-        // 4. Restore modified untracked files from preTurnUntrackedBlobs
+        // 4. Restore modified or deleted untracked files from preTurnUntrackedBlobs
         if let blobs = summary.preTurnUntrackedBlobs {
             for (relativePath, blobSha) in blobs {
                 if toRestore.contains(relativePath) {
@@ -80,13 +80,20 @@ public enum AgentTurnRollbackService {
                        let currentContent = try? String(contentsOf: fullURL, encoding: .utf8) {
                         savedCreated[relativePath] = currentContent
                     }
-                    if let restoredData = runGitData(arguments: ["-C", resolvedWorkingDir, "cat-file", "blob", blobSha]) {
+                    if let restoredData = runGitData(arguments: ["-C", resolvedWorkingDir, "cat-file", "blob", blobSha], allowEmpty: true) {
                         do {
-                            try restoredData.write(to: fullURL)
+                            try FileManager.default.createDirectory(
+                                at: fullURL.deletingLastPathComponent(),
+                                withIntermediateDirectories: true
+                            )
+                            try restoredData.write(to: fullURL, options: .atomic)
                             toRestore.remove(relativePath)
                         } catch {
                             allSucceeded = false
                         }
+                    } else {
+                        allSucceeded = false
+                        toRestore.remove(relativePath)
                     }
                 }
             }
@@ -127,17 +134,19 @@ public enum AgentTurnRollbackService {
         }
 
         let resolvedWorkingDir = URL(fileURLWithPath: workingDirectory).resolvingSymlinksInPath().path
+        var didRestoreAnything = false
 
-        // 1. Restore created files from saved content
-        if let savedFiles = summary.savedCreatedFiles {
+        // 1. Restore created / modified untracked files from saved content
+        if let savedFiles = summary.savedCreatedFiles, !savedFiles.isEmpty {
             for (relativePath, content) in savedFiles {
                 let fileURL = URL(fileURLWithPath: resolvedWorkingDir).appendingPathComponent(relativePath)
                 try? FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try? content.write(to: fileURL, atomically: true, encoding: .utf8)
             }
+            didRestoreAnything = true
         }
 
-        // 2. Checkout modified files from postTurnCommitHash
+        // 2. Checkout modified tracked files from postTurnCommitHash
         if let postHash = summary.postTurnCommitHash, !postHash.isEmpty {
             let untrackedModified = Set(summary.preTurnUntrackedBlobs?.keys ?? [:].keys)
             let modifiedFiles = summary.modifiedFiles.filter { !summary.createdFiles.contains($0) && !untrackedModified.contains($0) }
@@ -146,20 +155,32 @@ public enum AgentTurnRollbackService {
                 args.append(contentsOf: modifiedFiles)
                 _ = runGit(arguments: args)
             }
+            didRestoreAnything = true
+        }
+
+        // 3. Re-delete files deleted during the turn (tracked or pre-existing untracked)
+        if !summary.deletedFiles.isEmpty {
+            let rootURL = URL(fileURLWithPath: resolvedWorkingDir)
             for del in summary.deletedFiles {
-                let fullPath = URL(fileURLWithPath: resolvedWorkingDir).appendingPathComponent(del).path
-                try? FileManager.default.removeItem(atPath: fullPath)
+                let fileURL = rootURL.appendingPathComponent(del)
+                if FileManager.default.fileExists(atPath: fileURL.path) {
+                    try? FileManager.default.removeItem(at: fileURL)
+                    removeEmptyParentDirectories(for: fileURL, upTo: rootURL)
+                }
             }
+            didRestoreAnything = true
+        }
+
+        if didRestoreAnything {
             return true
         }
 
-        // 3. Fallback: apply rawDiffData if neither postHash nor savedCreatedFiles were present
-        if (summary.savedCreatedFiles == nil || summary.savedCreatedFiles!.isEmpty),
-           let rawDiff = summary.rawDiffData, !rawDiff.isEmpty {
+        // 4. Fallback: apply rawDiffData if neither postHash, savedCreatedFiles, nor deletedFiles were present
+        if let rawDiff = summary.rawDiffData, !rawDiff.isEmpty {
             return applyDiffData(rawDiff, workingDirectory: resolvedWorkingDir)
         }
 
-        return (summary.savedCreatedFiles != nil && !summary.savedCreatedFiles!.isEmpty)
+        return false
     }
 
     /// Restores the entire working tree (tracked, staged, and untracked files) to the exact state

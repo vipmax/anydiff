@@ -12,8 +12,8 @@ public enum AvatarEditorTab: String, CaseIterable, Identifiable {
 }
 
 /// Refined avatar settings popover with segmented tabs:
-/// - User: custom user avatar with live circle crop, zoom, pan, file selection.
-/// - Agent: custom agent avatar with live circle crop, zoom, pan, file selection, per agent & profile.
+/// - User: custom user avatar with live circle crop, zoom, pan, flip, file selection.
+/// - Agent: custom agent avatar with live circle crop, zoom, pan, flip, file selection, per agent & profile.
 /// - Sizes: interactive side-by-side preview of user & agent avatars with size sliders & badge toggle.
 public struct AgentAvatarEditorView: View {
     public var onDismiss: () -> Void
@@ -30,6 +30,7 @@ public struct AgentAvatarEditorView: View {
     @State private var userZoom: CGFloat = 1.0
     @State private var userOffset: CGSize = .zero
     @State private var userLastDragOffset: CGSize = .zero
+    @State private var userFlipHorizontally: Bool = false
     @State private var isUserCustomActive: Bool = false
     @State private var isUserDropTargeted: Bool = false
     @State private var userImageVersion: UUID = UUID()
@@ -39,6 +40,7 @@ public struct AgentAvatarEditorView: View {
     @State private var agentZoom: CGFloat = 1.0
     @State private var agentOffset: CGSize = .zero
     @State private var agentLastDragOffset: CGSize = .zero
+    @State private var agentFlipHorizontally: Bool = false
     @State private var isAgentCustomActive: Bool = false
     @State private var isAgentDropTargeted: Bool = false
     @State private var agentImageVersion: UUID = UUID()
@@ -101,6 +103,11 @@ public struct AgentAvatarEditorView: View {
         }
         .padding(14)
         .frame(width: 320)
+        .background(
+            PopoverEscapeKeyMonitor {
+                onDismiss()
+            }
+        )
         .onAppear {
             loadInitialState()
         }
@@ -114,6 +121,7 @@ public struct AgentAvatarEditorView: View {
                 image: userSourceImage,
                 zoom: userZoom,
                 offset: userOffset,
+                flipHorizontally: userFlipHorizontally,
                 isDropTargeted: isUserDropTargeted,
                 emptyLabel: "Drop User Photo Here",
                 onZoomChange: { delta in
@@ -178,7 +186,7 @@ public struct AgentAvatarEditorView: View {
             .padding(.horizontal, 4)
 
             // Action Buttons
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 Button {
                     pickImage(isAgent: false)
                 } label: {
@@ -186,11 +194,31 @@ public struct AgentAvatarEditorView: View {
                         Image(systemName: "photo")
                         Text("Choose Image...")
                     }
+                    .lineLimit(1)
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+                .fixedSize(horizontal: true, vertical: false)
 
-                Spacer()
+                Button {
+                    toggleUserFlip()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: userFlipHorizontally
+                              ? "arrow.left.and.right.righttriangle.left.righttriangle.right.fill"
+                              : "arrow.left.and.right.righttriangle.left.righttriangle.right")
+                        Text("Flip")
+                    }
+                    .lineLimit(1)
+                    .foregroundColor(userFlipHorizontally ? .accentColor : .primary)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .fixedSize(horizontal: true, vertical: false)
+                .disabled(userSourceImage == nil)
+                .help("Flip avatar horizontally")
+
+                Spacer(minLength: 4)
 
                 if isUserCustomActive {
                     Button {
@@ -200,9 +228,11 @@ public struct AgentAvatarEditorView: View {
                             Image(systemName: "arrow.counterclockwise")
                             Text("Reset to macOS")
                         }
+                        .lineLimit(1)
                     }
                     .buttonStyle(.borderless)
                     .controlSize(.small)
+                    .fixedSize(horizontal: true, vertical: false)
                     .foregroundColor(.secondary)
                 }
             }
@@ -241,6 +271,7 @@ public struct AgentAvatarEditorView: View {
                 image: agentSourceImage,
                 zoom: agentZoom,
                 offset: agentOffset,
+                flipHorizontally: agentFlipHorizontally,
                 isDropTargeted: isAgentDropTargeted,
                 emptyLabel: "Drop \(currentAgentDisplayName) Photo",
                 onZoomChange: { delta in
@@ -308,7 +339,7 @@ public struct AgentAvatarEditorView: View {
             .padding(.horizontal, 4)
 
             // Action Buttons
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 Button {
                     pickImage(isAgent: true)
                 } label: {
@@ -316,11 +347,31 @@ public struct AgentAvatarEditorView: View {
                         Image(systemName: "photo")
                         Text("Choose Image...")
                     }
+                    .lineLimit(1)
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+                .fixedSize(horizontal: true, vertical: false)
 
-                Spacer()
+                Button {
+                    toggleAgentFlip()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: agentFlipHorizontally
+                              ? "arrow.left.and.right.righttriangle.left.righttriangle.right.fill"
+                              : "arrow.left.and.right.righttriangle.left.righttriangle.right")
+                        Text("Flip")
+                    }
+                    .lineLimit(1)
+                    .foregroundColor(agentFlipHorizontally ? .accentColor : .primary)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .fixedSize(horizontal: true, vertical: false)
+                .disabled(agentSourceImage == nil)
+                .help("Flip avatar horizontally")
+
+                Spacer(minLength: 4)
 
                 if isAgentCustomActive {
                     Button {
@@ -330,9 +381,11 @@ public struct AgentAvatarEditorView: View {
                             Image(systemName: "arrow.counterclockwise")
                             Text("Reset to Icon")
                         }
+                        .lineLimit(1)
                     }
                     .buttonStyle(.borderless)
                     .controlSize(.small)
+                    .fixedSize(horizontal: true, vertical: false)
                     .foregroundColor(.secondary)
                 }
             }
@@ -397,6 +450,7 @@ public struct AgentAvatarEditorView: View {
                             Image(nsImage: rawAgent)
                                 .resizable()
                                 .scaledToFill()
+                                .scaleEffect(x: agentFlipHorizontally ? -1 : 1, y: 1)
                                 .frame(width: agentAvatarSize, height: agentAvatarSize)
                                 .clipShape(Circle())
                         } else {
@@ -493,6 +547,7 @@ public struct AgentAvatarEditorView: View {
         image: NSImage?,
         zoom: CGFloat,
         offset: CGSize,
+        flipHorizontally: Bool = false,
         isDropTargeted: Bool,
         emptyLabel: String,
         onZoomChange: @escaping (CGFloat) -> Void,
@@ -516,6 +571,7 @@ public struct AgentAvatarEditorView: View {
                     .resizable()
                     .aspectRatio(contentMode: .fill)
                     .frame(width: zoomedWidth, height: zoomedHeight)
+                    .scaleEffect(x: flipHorizontally ? -1 : 1, y: 1)
                     .offset(x: offset.width, y: offset.height)
                     .frame(width: 200, height: 200)
                     .clipped()
@@ -526,6 +582,7 @@ public struct AgentAvatarEditorView: View {
                     .resizable()
                     .aspectRatio(contentMode: .fill)
                     .frame(width: zoomedWidth, height: zoomedHeight)
+                    .scaleEffect(x: flipHorizontally ? -1 : 1, y: 1)
                     .offset(x: offset.width, y: offset.height)
                     .frame(width: circleDiameter, height: circleDiameter)
                     .clipShape(Circle())
@@ -628,11 +685,13 @@ public struct AgentAvatarEditorView: View {
             )
             userOffset = clamped
             userLastDragOffset = clamped
+            userFlipHorizontally = settings.useCustom ? settings.flipHorizontally : false
         } else {
             userSourceImage = AgentAvatarProvider.userAvatarImage
             userZoom = 1.0
             userOffset = .zero
             userLastDragOffset = .zero
+            userFlipHorizontally = false
         }
 
         // Load active agent state
@@ -656,16 +715,19 @@ public struct AgentAvatarEditorView: View {
             )
             agentOffset = clamped
             agentLastDragOffset = clamped
+            agentFlipHorizontally = config.flipHorizontally
         } else if let customAgent = AgentAvatarProvider.customAgentAvatarImage(for: agentId) {
             agentSourceImage = customAgent
             agentZoom = 1.0
             agentOffset = .zero
             agentLastDragOffset = .zero
+            agentFlipHorizontally = false
         } else {
             agentSourceImage = nil
             agentZoom = 1.0
             agentOffset = .zero
             agentLastDragOffset = .zero
+            agentFlipHorizontally = false
         }
         agentImageVersion = UUID()
     }
@@ -708,12 +770,29 @@ public struct AgentAvatarEditorView: View {
         updateAgentZoom(to: agentZoom + delta)
     }
 
+    private func toggleUserFlip() {
+        guard userSourceImage != nil else { return }
+        userFlipHorizontally.toggle()
+        userOffset.width = -userOffset.width
+        userLastDragOffset.width = userOffset.width
+        isUserCustomActive = true
+    }
+
+    private func toggleAgentFlip() {
+        guard agentSourceImage != nil else { return }
+        agentFlipHorizontally.toggle()
+        agentOffset.width = -agentOffset.width
+        agentLastDragOffset.width = agentOffset.width
+        isAgentCustomActive = true
+    }
+
     private func loadNewImage(_ image: NSImage, isAgent: Bool) {
         if isAgent {
             agentSourceImage = image
             agentZoom = 1.0
             agentOffset = .zero
             agentLastDragOffset = .zero
+            agentFlipHorizontally = false
             isAgentCustomActive = true
             agentImageVersion = UUID()
         } else {
@@ -721,6 +800,7 @@ public struct AgentAvatarEditorView: View {
             userZoom = 1.0
             userOffset = .zero
             userLastDragOffset = .zero
+            userFlipHorizontally = false
             isUserCustomActive = true
             userImageVersion = UUID()
         }
@@ -827,6 +907,7 @@ public struct AgentAvatarEditorView: View {
     private func resetUserToSystem() {
         AgentAvatarProvider.resetToSystemAvatar()
         isUserCustomActive = false
+        userFlipHorizontally = false
         userImageVersion = UUID()
         loadInitialState()
     }
@@ -835,6 +916,7 @@ public struct AgentAvatarEditorView: View {
         AgentAvatarProvider.resetToDefaultAgent(for: selectedAgentId)
         isAgentCustomActive = false
         agentSourceImage = nil
+        agentFlipHorizontally = false
         agentImageVersion = UUID()
         loadAgentState(for: selectedAgentId)
     }
@@ -846,6 +928,7 @@ public struct AgentAvatarEditorView: View {
                 from: uImg,
                 zoom: userZoom,
                 offset: userOffset,
+                flipHorizontally: userFlipHorizontally,
                 viewportDiameter: circleDiameter,
                 targetSize: 192
             )
@@ -857,6 +940,7 @@ public struct AgentAvatarEditorView: View {
                 from: aImg,
                 zoom: agentZoom,
                 offset: agentOffset,
+                flipHorizontally: agentFlipHorizontally,
                 viewportDiameter: circleDiameter,
                 targetSize: 192
             )
@@ -867,6 +951,7 @@ public struct AgentAvatarEditorView: View {
         settings.zoom = userZoom
         settings.offsetX = userOffset.width
         settings.offsetY = userOffset.height
+        settings.flipHorizontally = userFlipHorizontally
         settings.userAvatarSize = userAvatarSize
         settings.agentAvatarSize = userAvatarSize
         settings.showAgentCircle = showAgentCircle
@@ -876,6 +961,7 @@ public struct AgentAvatarEditorView: View {
             zoom: agentZoom,
             offsetX: agentOffset.width,
             offsetY: agentOffset.height,
+            flipHorizontally: agentFlipHorizontally,
             avatarSize: userAvatarSize,
             showCircle: showAgentCircle
         )
@@ -894,6 +980,121 @@ public struct AgentAvatarEditorView: View {
         )
 
         onDismiss()
+    }
+
+    // MARK: - Testable Input Helpers
+
+    static func zoomDelta(
+        forScrollingDeltaY scrollingDeltaY: CGFloat,
+        hasPreciseDeltas: Bool,
+        isMomentum: Bool
+    ) -> CGFloat? {
+        guard !isMomentum else { return nil }
+        let threshold: CGFloat = hasPreciseDeltas ? 0.05 : 0.01
+        guard abs(scrollingDeltaY) > threshold else { return nil }
+        if hasPreciseDeltas {
+            let scaled = scrollingDeltaY * 0.0035
+            return min(0.15, max(-0.15, scaled))
+        } else {
+            let scaled = scrollingDeltaY * 0.05
+            return min(0.25, max(-0.25, scaled))
+        }
+    }
+
+    static func shouldHandleEscapeEvent(
+        keyCode: UInt16,
+        isARepeat: Bool,
+        modifierFlags: NSEvent.ModifierFlags,
+        hostWindow: NSWindow?,
+        eventWindow: NSWindow?,
+        hasModalWindow: Bool,
+        isEventTracking: Bool
+    ) -> Bool {
+        guard keyCode == 53, !isARepeat else { return false }
+        guard modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty else { return false }
+        guard !hasModalWindow, !isEventTracking else { return false }
+        guard let hostWindow, hostWindow.isVisible, hostWindow.attachedSheet == nil else { return false }
+        if let eventWindow, eventWindow !== hostWindow, eventWindow !== hostWindow.parent {
+            return false
+        }
+        return true
+    }
+}
+
+// MARK: - Escape Key Monitor NSViewRepresentable
+
+private struct PopoverEscapeKeyMonitor: NSViewRepresentable {
+    var onEscape: () -> Void
+
+    func makeNSView(context: Context) -> MonitorNSView {
+        let view = MonitorNSView()
+        view.onEscape = onEscape
+        return view
+    }
+
+    func updateNSView(_ nsView: MonitorNSView, context: Context) {
+        nsView.onEscape = onEscape
+    }
+
+    static func dismantleNSView(_ nsView: MonitorNSView, coordinator: ()) {
+        nsView.removeMonitor()
+    }
+
+    final class MonitorNSView: NSView {
+        var onEscape: (() -> Void)?
+        private var keyMonitor: Any?
+
+        deinit {
+            removeMonitor()
+        }
+
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            nil
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let window {
+                installMonitorIfNeeded()
+                DispatchQueue.main.async { [weak window] in
+                    guard let window, window.isVisible, NSApp.modalWindow == nil else { return }
+                    window.makeKey()
+                }
+            } else {
+                removeMonitor()
+            }
+        }
+
+        override func cancelOperation(_ sender: Any?) {
+            onEscape?()
+        }
+
+        private func installMonitorIfNeeded() {
+            guard keyMonitor == nil else { return }
+            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                guard let self else { return event }
+                guard AgentAvatarEditorView.shouldHandleEscapeEvent(
+                    keyCode: event.keyCode,
+                    isARepeat: event.isARepeat,
+                    modifierFlags: event.modifierFlags,
+                    hostWindow: self.window,
+                    eventWindow: event.window,
+                    hasModalWindow: NSApp.modalWindow != nil,
+                    isEventTracking: RunLoop.current.currentMode == .eventTracking
+                ) else {
+                    return event
+                }
+                self.onEscape?()
+                return nil
+            }
+        }
+
+        func removeMonitor() {
+            if let keyMonitor {
+                NSEvent.removeMonitor(keyMonitor)
+                self.keyMonitor = nil
+            }
+        }
     }
 }
 
@@ -916,10 +1117,12 @@ private struct ZoomGestureView: NSViewRepresentable {
         var onZoomDelta: ((CGFloat) -> Void)?
 
         override func scrollWheel(with event: NSEvent) {
-            let delta = event.scrollingDeltaY
-            if abs(delta) > 0.05 {
-                let multiplier: CGFloat = delta > 0 ? 0.05 : -0.05
-                onZoomDelta?(multiplier)
+            if let delta = AgentAvatarEditorView.zoomDelta(
+                forScrollingDeltaY: event.scrollingDeltaY,
+                hasPreciseDeltas: event.hasPreciseScrollingDeltas,
+                isMomentum: !event.momentumPhase.isEmpty
+            ) {
+                onZoomDelta?(delta)
             }
         }
 
