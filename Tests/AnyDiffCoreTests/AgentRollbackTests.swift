@@ -274,4 +274,49 @@ final class AgentRollbackTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: createdURL, encoding: .utf8), "New text\n")
         XCTAssertEqual(try String(contentsOf: existingURL, encoding: .utf8), "Updated text\n")
     }
+
+    func testRestoreCheckpointAcrossMultipleTurns() throws {
+        let repo = try createTempGitRepo()
+        defer { try? FileManager.default.removeItem(at: repo) }
+
+        let untrackedURL = repo.appendingPathComponent("pre_untracked.txt")
+        try "Initial untracked\n".write(to: untrackedURL, atomically: true, encoding: .utf8)
+
+        let checkpoint = AgentGitChangesDetector.capturePreTurnSnapshot(workingDirectory: repo.path)
+        XCTAssertTrue(checkpoint.isGitRepository)
+
+        // Multiple turns of modifications, deletions, and new files
+        try "Turn 1 & 2\n".write(to: repo.appendingPathComponent("hello.txt"), atomically: true, encoding: .utf8)
+        try FileManager.default.removeItem(at: repo.appendingPathComponent("to_delete.txt"))
+        try "Modified untracked\n".write(to: untrackedURL, atomically: true, encoding: .utf8)
+        try Self.runGit(in: repo, arguments: ["add", "pre_untracked.txt"])
+        let createdURL = repo.appendingPathComponent("deep/dir/new.txt")
+        try FileManager.default.createDirectory(at: createdURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "Created later\n".write(to: createdURL, atomically: true, encoding: .utf8)
+
+        XCTAssertTrue(AgentTurnRollbackService.restoreCheckpoint(workingDirectory: repo.path, snapshot: checkpoint))
+
+        XCTAssertEqual(try String(contentsOf: repo.appendingPathComponent("hello.txt"), encoding: .utf8), "Line 1\nLine 2\n")
+        XCTAssertEqual(try String(contentsOf: repo.appendingPathComponent("to_delete.txt"), encoding: .utf8), "Delete me\n")
+        XCTAssertEqual(try String(contentsOf: untrackedURL, encoding: .utf8), "Initial untracked\n")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: createdURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: repo.appendingPathComponent("deep").path))
+    }
+
+    func testRestoreCheckpointWithMissingBaseRefDoesNotDeleteUntrackedFiles() throws {
+        let repo = try createTempGitRepo()
+        defer { try? FileManager.default.removeItem(at: repo) }
+
+        let untrackedURL = repo.appendingPathComponent("keep_me.txt")
+        try "Important work\n".write(to: untrackedURL, atomically: true, encoding: .utf8)
+
+        let prunedSnapshot = PreTurnGitSnapshot(
+            baseCommitHash: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+            isGitRepository: true
+        )
+
+        XCTAssertFalse(AgentTurnRollbackService.restoreCheckpoint(workingDirectory: repo.path, snapshot: prunedSnapshot))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: untrackedURL.path))
+        XCTAssertEqual(try String(contentsOf: untrackedURL, encoding: .utf8), "Important work\n")
+    }
 }

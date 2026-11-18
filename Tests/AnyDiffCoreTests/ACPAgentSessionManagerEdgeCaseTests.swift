@@ -3,7 +3,11 @@ import XCTest
 
 final class ACPAgentSessionManagerEdgeCaseTests: XCTestCase {
     func testFSWriteToolNamePreservedAcrossWriteToFileUpdateAndKeepsShortDiffStats() {
+        let cpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("anydiff_edge_cp1_\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: cpDir) }
         let manager = ACPAgentSessionManager()
+        manager.checkpointStore = AgentCheckpointStore(customDirectory: cpDir)
         let client = ACPClient()
 
         manager.sendPrompt("Update file", workingDirectory: NSTemporaryDirectory())
@@ -44,7 +48,11 @@ final class ACPAgentSessionManagerEdgeCaseTests: XCTestCase {
     }
 
     func testRelativePathDoesNotMatchNestedPathWhenWorkingDirectoryEmpty() {
+        let cpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("anydiff_edge_cp1_\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: cpDir) }
         let manager = ACPAgentSessionManager()
+        manager.checkpointStore = AgentCheckpointStore(customDirectory: cpDir)
         let client = ACPClient()
 
         manager.sendPrompt("Update README", workingDirectory: NSTemporaryDirectory())
@@ -83,7 +91,11 @@ final class ACPAgentSessionManagerEdgeCaseTests: XCTestCase {
     }
 
     func testToolCallUpdateResetsLineRangeWhenPathChanges() {
+        let cpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("anydiff_edge_cp1_\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: cpDir) }
         let manager = ACPAgentSessionManager()
+        manager.checkpointStore = AgentCheckpointStore(customDirectory: cpDir)
         let client = ACPClient()
 
         manager.sendPrompt("Inspect files", workingDirectory: NSTemporaryDirectory())
@@ -150,7 +162,11 @@ final class ACPAgentSessionManagerEdgeCaseTests: XCTestCase {
 
         let snapshot = await AgentGitChangesDetector.capturePreTurnSnapshotAsync(workingDirectory: repoDir.path)
 
+        let cpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("anydiff_edge_cp1_\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: cpDir) }
         let manager = ACPAgentSessionManager()
+        manager.checkpointStore = AgentCheckpointStore(customDirectory: cpDir)
         let assistantId = UUID()
         manager.currentSessionId = "sess-cancel-1"
         manager.currentWorkingDirectory = repoDir.path
@@ -198,7 +214,11 @@ final class ACPAgentSessionManagerEdgeCaseTests: XCTestCase {
 
     @MainActor
     func testCancelPreservesLiveEditedSummaryImmediatelyOnMessage() async throws {
+        let cpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("anydiff_edge_cp1_\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: cpDir) }
         let manager = ACPAgentSessionManager()
+        manager.checkpointStore = AgentCheckpointStore(customDirectory: cpDir)
         let assistantId = UUID()
         let liveSummary = AgentEditedFilesSummary(files: [
             AgentEditedFileItem(path: "Sources/Foo.swift", additions: 3, deletions: 1)
@@ -262,7 +282,11 @@ final class ACPAgentSessionManagerEdgeCaseTests: XCTestCase {
 
         let snapshot = await AgentGitChangesDetector.capturePreTurnSnapshotAsync(workingDirectory: repoDir.path)
 
+        let cpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("anydiff_edge_cp1_\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: cpDir) }
         let manager = ACPAgentSessionManager()
+        manager.checkpointStore = AgentCheckpointStore(customDirectory: cpDir)
         let assistantId = UUID()
         manager.currentSessionId = "sess-watch-1"
         manager.currentWorkingDirectory = repoDir.path

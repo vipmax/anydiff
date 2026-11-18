@@ -31,6 +31,8 @@ public final class AgentMessageCell: NSView {
             (editedFilesCardView as? AgentEditedFilesCardView)?.onRestore = onRestore
         }
     }
+    public var onRestoreCheckpoint: ((UUID) -> Void)?
+    public var onUndoRestoreCheckpoint: ((UUID) -> Void)?
     public private(set) var message: AgentMessage
     var theme: Theme
     var accentColor: Color
@@ -1881,6 +1883,64 @@ public final class AgentMessageCell: NSView {
             thoughtTextView.isHidden = true
             thoughtTextView.removeFromSuperview()
         }
+    }
+    var canRestoreCheckpoint: Bool {
+        message.role == .user &&
+        !message.isQueued &&
+        message.checkpointSnapshot?.isGitRepository == true &&
+        onRestoreCheckpoint != nil
+    }
+
+    var canUndoRestoreCheckpoint: Bool {
+        message.role == .user &&
+        !message.isQueued &&
+        message.undoRestoreSnapshot?.isGitRepository == true &&
+        onUndoRestoreCheckpoint != nil
+    }
+
+    func makeCheckpointMenuItems() -> [NSMenuItem] {
+        var items: [NSMenuItem] = []
+        if canUndoRestoreCheckpoint {
+            let undoItem = NSMenuItem(
+                title: "Undo Restore",
+                action: #selector(handleContextUndoRestoreCheckpoint(_:)),
+                keyEquivalent: ""
+            )
+            undoItem.target = self
+            undoItem.image = NSImage(systemSymbolName: "arrow.uturn.forward", accessibilityDescription: "Undo Restore")
+            items.append(undoItem)
+        }
+        if canRestoreCheckpoint {
+            let item = NSMenuItem(
+                title: "Restore Checkpoint",
+                action: #selector(handleContextRestoreCheckpoint(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.image = NSImage(systemSymbolName: "clock.arrow.circlepath", accessibilityDescription: "Restore Checkpoint")
+            items.append(item)
+        }
+        return items
+    }
+
+    @objc private func handleContextRestoreCheckpoint(_ sender: Any?) {
+        onRestoreCheckpoint?(message.id)
+    }
+
+    @objc private func handleContextUndoRestoreCheckpoint(_ sender: Any?) {
+        onUndoRestoreCheckpoint?(message.id)
+    }
+
+    public override func menu(for event: NSEvent) -> NSMenu? {
+        let items = makeCheckpointMenuItems()
+        if !items.isEmpty {
+            let menu = NSMenu()
+            for item in items {
+                menu.addItem(item)
+            }
+            return menu
+        }
+        return super.menu(for: event)
     }
 }
 

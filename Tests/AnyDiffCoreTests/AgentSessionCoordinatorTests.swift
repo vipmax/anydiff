@@ -789,5 +789,223 @@ final class AgentSessionCoordinatorTests: XCTestCase {
         )
         XCTAssertNotEqual(sessionA.manager.workingDirectory, sessionB.manager.workingDirectory)
     }
+
+    @MainActor
+    func testUserCheckpointRestorePreservesMessagesAndRestoresWorkspace() async throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("anydiff_checkpoint_test_\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        try cloneTemplateGitRepo(to: tempDir, initialFile: "tracked.txt", content: "committed\n")
+
+        func runGit(_ args: [String]) throws -> String {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+            p.arguments = ["-C", tempDir.path] + args
+            let pipe = Pipe()
+            p.standardOutput = pipe
+            p.standardError = FileHandle.nullDevice
+            try p.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            XCTAssertEqual(p.terminationStatus, 0, "git \(args.joined(separator: " ")) failed")
+            return String(data: data, encoding: .utf8) ?? ""
+        }
+
+        // Baseline commit with .gitignore and a second tracked file
+        try "*.log\n".write(to: tempDir.appendingPathComponent(".gitignore"), atomically: true, encoding: .utf8)
+        try "to delete\n".write(to: tempDir.appendingPathComponent("to_delete.txt"), atomically: true, encoding: .utf8)
+        _ = try runGit(["add", ".gitignore", "to_delete.txt"])
+        _ = try runGit(["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "Add gitignore and to_delete"])
+
+        // Pre-message dirty workspace state at Checkpoint 1:
+        // - tracked.txt modified (unstaged)
+        // - staged.txt newly staged
+        // - to_delete.txt deleted in working tree
+        // - untracked.txt untracked with content
+        // - empty.txt untracked 0-byte file
+        // - ignored.log gitignored file
+        try "dirty-before-msg1\n".write(to: tempDir.appendingPathComponent("tracked.txt"), atomically: true, encoding: .utf8)
+        try "staged-before-msg1\n".write(to: tempDir.appendingPathComponent("staged.txt"), atomically: true, encoding: .utf8)
+        _ = try runGit(["add", "staged.txt"])
+        try FileManager.default.removeItem(at: tempDir.appendingPathComponent("to_delete.txt"))
+        try "untracked-v1\n".write(to: tempDir.appendingPathComponent("untracked.txt"), atomically: true, encoding: .utf8)
+        try Data().write(to: tempDir.appendingPathComponent("empty.txt"))
+        try "keep-ignored\n".write(to: tempDir.appendingPathComponent("ignored.log"), atomically: true, encoding: .utf8)
+
+        let manager = AgentSessionManager()
+        let userMsg1 = AgentMessage(role: .user, content: "First prompt")
+        let assistantMsg1 = AgentMessage(role: .assistant, content: "First reply")
+        manager.messages = [userMsg1, assistantMsg1]
+
+        manager.captureCheckpointSnapshot(forUserMessageId: userMsg1.id, workingDirectory: tempDir.path)
+        for _ in 0..<100 where manager.messages[0].checkpointSnapshot == nil {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertNotNil(manager.messages[0].checkpointSnapshot)
+        XCTAssertEqual(manager.messages[0].checkpointSnapshot?.isGitRepository, true)
+
+        // Turn 1 changes before Checkpoint 2
+        try "turn1-tracked\n".write(to: tempDir.appendingPathComponent("tracked.txt"), atomically: true, encoding: .utf8)
+        try "turn1-untracked\n".write(to: tempDir.appendingPathComponent("untracked.txt"), atomically: true, encoding: .utf8)
+
+        let userMsg2 = AgentMessage(role: .user, content: "Second prompt")
+        let assistantMsg2 = AgentMessage(role: .assistant, content: "Second reply")
+        manager.messages.append(contentsOf: [userMsg2, assistantMsg2])
+
+        manager.captureCheckpointSnapshot(forUserMessageId: userMsg2.id, workingDirectory: tempDir.path)
+        for _ in 0..<100 where manager.messages[2].checkpointSnapshot == nil {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertNotNil(manager.messages[2].checkpointSnapshot)
+
+        // Turn 2 makes heavy modifications across tracked, staged, untracked, and empty files
+        try "turn2-tracked\n".write(to: tempDir.appendingPathComponent("tracked.txt"), atomically: true, encoding: .utf8)
+        try "turn2-untracked\n".write(to: tempDir.appendingPathComponent("untracked.txt"), atomically: true, encoding: .utf8)
+        _ = try runGit(["add", "untracked.txt"])
+        try FileManager.default.removeItem(at: tempDir.appendingPathComponent("empty.txt"))
+        try "newly-staged\n".write(to: tempDir.appendingPathComponent("newly_staged.txt"), atomically: true, encoding: .utf8)
+        _ = try runGit(["add", "newly_staged.txt"])
+        let nestedURL = tempDir.appendingPathComponent("sub/created.txt")
+        try FileManager.default.createDirectory(at: nestedURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "created-in-turn2\n".write(to: nestedURL, atomically: true, encoding: .utf8)
+
+        // Restore Checkpoint 1
+        let restored1 = manager.restoreCheckpoint(messageId: userMsg1.id, workingDirectory: tempDir.path)
+        XCTAssertTrue(restored1)
+
+        // Messages must NOT be deleted or modified
+        XCTAssertEqual(manager.messages.map(\.id), [userMsg1.id, assistantMsg1.id, userMsg2.id, assistantMsg2.id])
+        XCTAssertEqual(manager.messages.map(\.content), ["First prompt", "First reply", "Second prompt", "Second reply"])
+
+        // Files must match Checkpoint 1 exactly
+        XCTAssertEqual(try String(contentsOf: tempDir.appendingPathComponent("tracked.txt"), encoding: .utf8), "dirty-before-msg1\n")
+        XCTAssertEqual(try String(contentsOf: tempDir.appendingPathComponent("staged.txt"), encoding: .utf8), "staged-before-msg1\n")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tempDir.appendingPathComponent("to_delete.txt").path))
+        XCTAssertEqual(try String(contentsOf: tempDir.appendingPathComponent("untracked.txt"), encoding: .utf8), "untracked-v1\n")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tempDir.appendingPathComponent("empty.txt").path))
+        XCTAssertEqual(try Data(contentsOf: tempDir.appendingPathComponent("empty.txt")), Data())
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tempDir.appendingPathComponent("newly_staged.txt").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: nestedURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tempDir.appendingPathComponent("sub").path))
+        XCTAssertEqual(try String(contentsOf: tempDir.appendingPathComponent("ignored.log"), encoding: .utf8), "keep-ignored\n")
+
+        // Staged state must be preserved (`staged.txt` staged, `tracked.txt` unstaged, `untracked.txt` untracked)
+        let status = try runGit(["status", "--porcelain"])
+        XCTAssertTrue(status.contains("A  staged.txt"))
+        XCTAssertTrue(status.contains(" M tracked.txt"))
+        XCTAssertTrue(status.contains("?? untracked.txt"))
+
+        // Jumping forward to Checkpoint 2 should also work because messages & snapshots were preserved
+        let restored2 = manager.restoreCheckpoint(messageId: userMsg2.id, workingDirectory: tempDir.path)
+        XCTAssertTrue(restored2)
+        XCTAssertEqual(try String(contentsOf: tempDir.appendingPathComponent("tracked.txt"), encoding: .utf8), "turn1-tracked\n")
+        XCTAssertEqual(try String(contentsOf: tempDir.appendingPathComponent("untracked.txt"), encoding: .utf8), "turn1-untracked\n")
+    }
+
+    @MainActor
+    func testCheckpointStorePersistsAndRestoresAcrossSessionLoadReplay() throws {
+        let storeDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("anydiff_cp_store_\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: storeDir) }
+
+        let store = AgentCheckpointStore(customDirectory: storeDir)
+        let snap1 = PreTurnGitSnapshot(baseCommitHash: "aaa111", isGitRepository: true)
+        let snap2 = PreTurnGitSnapshot(baseCommitHash: "bbb222", isGitRepository: true)
+        let editedSummary = AgentEditedFilesSummary(
+            files: [AgentEditedFileItem(path: "AGENTS.md", additions: 2, deletions: 0)],
+            baseCommitHash: "aaa111",
+            rawDiffData: Data("diff --git a/AGENTS.md b/AGENTS.md\n".utf8),
+            modifiedFiles: ["AGENTS.md"]
+        )
+
+        let originalMessages: [AgentMessage] = [
+            AgentMessage(role: .user, content: "первый промпт \(AgentImageAttachment.inlineTextMarker)", checkpointSnapshot: snap1),
+            AgentMessage(role: .assistant, content: "ответ 1", editedFilesSummary: editedSummary),
+            AgentMessage(role: .user, content: "спасибо", checkpointSnapshot: snap2),
+            AgentMessage(role: .assistant, content: "Пожалуйста!")
+        ]
+
+        let sessionId = "sess/with:special-chars_123"
+        store.save(messages: originalMessages, forSessionId: sessionId)
+        store.flushSync()
+
+        let persistedFiles = try FileManager.default.contentsOfDirectory(at: storeDir, includingPropertiesForKeys: nil)
+        XCTAssertEqual(persistedFiles.count, 1)
+        let persistedJSON = try String(contentsOf: persistedFiles[0], encoding: .utf8)
+        XCTAssertFalse(persistedJSON.contains("первый промпт"))
+        XCTAssertFalse(persistedJSON.contains("спасибо"))
+        XCTAssertTrue(persistedJSON.contains("contentHash"))
+
+        // Simulate replayed session history on a fresh ACPAgentSessionManager via user_message_chunk
+        let manager = ACPAgentSessionManager()
+        manager.checkpointStore = store
+        let client = ACPClient()
+
+        manager.client(client, didReceiveUpdate: ACPSessionUpdateContent(type: "user_message_chunk", delta: "первый "), sessionId: sessionId)
+        manager.client(client, didReceiveUpdate: ACPSessionUpdateContent(type: "user_message_chunk", delta: "промпт"), sessionId: sessionId)
+        manager.client(client, didReceiveUpdate: ACPSessionUpdateContent(type: "agent_message_chunk", delta: "ответ 1"), sessionId: sessionId)
+        manager.client(client, didReceiveUpdate: ACPSessionUpdateContent(type: "user_message_chunk", delta: "спасибо"), sessionId: sessionId)
+        manager.client(client, didReceiveUpdate: ACPSessionUpdateContent(type: "agent_message_chunk", delta: "Пожалуйста!"), sessionId: sessionId)
+
+        let exp = expectation(description: "Checkpoints restored onto replayed user messages")
+        DispatchQueue.main.async {
+            XCTAssertEqual(manager.messages.count, 4)
+            XCTAssertEqual(manager.messages[0].checkpointSnapshot, snap1)
+            XCTAssertNil(manager.messages[1].checkpointSnapshot)
+            XCTAssertEqual(manager.messages[1].editedFilesSummary, editedSummary)
+            XCTAssertEqual(manager.messages[2].checkpointSnapshot, snap2)
+            XCTAssertNil(manager.messages[3].checkpointSnapshot)
+            XCTAssertNil(manager.messages[3].editedFilesSummary)
+            exp.fulfill()
+        }
+        wait(for: [exp], timeout: 2.0)
+    }
+
+    @MainActor
+    func testRestoreLastUserMessageSupportsUndoRestore() async throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("anydiff_undo_restore_test_\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        try cloneTemplateGitRepo(to: tempDir, initialFile: "app.swift", content: "v1\n")
+
+        let manager = AgentSessionManager()
+        let lastUser = AgentMessage(role: .user, content: "Edit app.swift and create helper.swift")
+        let lastAssistant = AgentMessage(role: .assistant, content: "Done")
+        manager.messages = [lastUser, lastAssistant]
+
+        manager.captureCheckpointSnapshot(forUserMessageId: lastUser.id, workingDirectory: tempDir.path)
+        for _ in 0..<100 where manager.messages[0].checkpointSnapshot == nil {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertNotNil(manager.messages[0].checkpointSnapshot)
+
+        // Changes produced after the last user message
+        let appURL = tempDir.appendingPathComponent("app.swift")
+        let helperURL = tempDir.appendingPathComponent("helper.swift")
+        try "v2-by-agent\n".write(to: appURL, atomically: true, encoding: .utf8)
+        try "helper-content\n".write(to: helperURL, atomically: true, encoding: .utf8)
+
+        // Restore checkpoint on the last user message
+        XCTAssertTrue(manager.restoreCheckpoint(messageId: lastUser.id, workingDirectory: tempDir.path))
+        XCTAssertEqual(try String(contentsOf: appURL, encoding: .utf8), "v1\n")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: helperURL.path))
+        XCTAssertNotNil(manager.messages[0].undoRestoreSnapshot)
+
+        // Calling restoreCheckpoint again must NOT clobber undoRestoreSnapshot
+        XCTAssertTrue(manager.restoreCheckpoint(messageId: lastUser.id, workingDirectory: tempDir.path))
+        XCTAssertNotNil(manager.messages[0].undoRestoreSnapshot)
+
+        // Undo Restore brings back post-turn edits and newly created files
+        XCTAssertTrue(manager.undoRestoreCheckpoint(messageId: lastUser.id, workingDirectory: tempDir.path))
+        XCTAssertEqual(try String(contentsOf: appURL, encoding: .utf8), "v2-by-agent\n")
+        XCTAssertEqual(try String(contentsOf: helperURL, encoding: .utf8), "helper-content\n")
+        XCTAssertNil(manager.messages[0].undoRestoreSnapshot)
+
+        // Can toggle back to Restore Checkpoint again
+        XCTAssertTrue(manager.restoreCheckpoint(messageId: lastUser.id, workingDirectory: tempDir.path))
+        XCTAssertEqual(try String(contentsOf: appURL, encoding: .utf8), "v1\n")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: helperURL.path))
+        XCTAssertNotNil(manager.messages[0].undoRestoreSnapshot)
+    }
 }
 

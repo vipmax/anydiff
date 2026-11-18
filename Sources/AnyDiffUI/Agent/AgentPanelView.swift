@@ -327,6 +327,16 @@ public struct AgentPanelView: View {
                     onRestore: { summary in
                         agentManager.restoreTurn(summary: summary, workingDirectory: workingDirectory)
                     },
+                    onRestoreCheckpoint: { messageId in
+                        if agentManager.restoreCheckpoint(messageId: messageId, workingDirectory: workingDirectory) {
+                            HapticFeedback.perform(.levelChange)
+                        }
+                    },
+                    onUndoRestoreCheckpoint: { messageId in
+                        if agentManager.undoRestoreCheckpoint(messageId: messageId, workingDirectory: workingDirectory) {
+                            HapticFeedback.perform(.levelChange)
+                        }
+                    },
                     onPreviewImages: { imgs, idx in
                         if let onPreviewImages = onPreviewImages {
                             onPreviewImages(imgs, idx, false)

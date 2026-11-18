@@ -415,6 +415,7 @@ open class AgentSessionManager: ObservableObject, @unchecked Sendable {
         if success {
             summary.isReverted = true
             messages[index].editedFilesSummary = summary
+            persistSessionMetadataIfNeeded()
             NotificationCenter.default.post(name: Notification.Name("anyDiffReloadDiff"), object: nil)
             objectWillChange.send()
         }
@@ -433,6 +434,7 @@ open class AgentSessionManager: ObservableObject, @unchecked Sendable {
             for i in messages.indices where messages[i].editedFilesSummary?.filePaths == summary.filePaths {
                 messages[i].editedFilesSummary = mutSummary
             }
+            persistSessionMetadataIfNeeded()
             NotificationCenter.default.post(name: Notification.Name("anyDiffReloadDiff"), object: nil)
             objectWillChange.send()
         }
@@ -450,6 +452,7 @@ open class AgentSessionManager: ObservableObject, @unchecked Sendable {
         if success {
             summary.isReverted = false
             messages[index].editedFilesSummary = summary
+            persistSessionMetadataIfNeeded()
             NotificationCenter.default.post(name: Notification.Name("anyDiffReloadDiff"), object: nil)
             objectWillChange.send()
         }
@@ -466,9 +469,77 @@ open class AgentSessionManager: ObservableObject, @unchecked Sendable {
             for i in messages.indices where messages[i].editedFilesSummary?.filePaths == summary.filePaths {
                 messages[i].editedFilesSummary?.isReverted = false
             }
+            persistSessionMetadataIfNeeded()
             NotificationCenter.default.post(name: Notification.Name("anyDiffReloadDiff"), object: nil)
             objectWillChange.send()
         }
         return success
+    }
+
+    // MARK: - User Message Checkpoints
+
+    open func persistSessionMetadataIfNeeded() {}
+
+    open func captureCheckpointSnapshot(forUserMessageId messageId: UUID, workingDirectory: String) {
+        guard !workingDirectory.isEmpty else { return }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let snapshot = await AgentGitChangesDetector.capturePreTurnSnapshotAsync(workingDirectory: workingDirectory)
+            self.attachCheckpointSnapshot(snapshot, toUserMessageId: messageId)
+        }
+    }
+
+    open func attachCheckpointSnapshot(_ snapshot: PreTurnGitSnapshot, toUserMessageId messageId: UUID) {
+        guard snapshot.isGitRepository,
+              let index = messages.firstIndex(where: { $0.id == messageId && $0.role == .user }),
+              messages[index].checkpointSnapshot == nil else {
+            return
+        }
+        messages[index].checkpointSnapshot = snapshot
+    }
+
+    @discardableResult
+    open func restoreCheckpoint(messageId: UUID, workingDirectory: String) -> Bool {
+        guard let index = messages.firstIndex(where: { $0.id == messageId && $0.role == .user && !$0.isQueued }),
+              let snapshot = messages[index].checkpointSnapshot,
+              snapshot.isGitRepository else {
+            return false
+        }
+        let preRestoreSnapshot: PreTurnGitSnapshot?
+        if messages[index].undoRestoreSnapshot == nil {
+            let captured = AgentGitChangesDetector.capturePreTurnSnapshot(workingDirectory: workingDirectory)
+            preRestoreSnapshot = captured.isGitRepository ? captured : nil
+        } else {
+            preRestoreSnapshot = messages[index].undoRestoreSnapshot
+        }
+        let success = AgentTurnRollbackService.restoreCheckpoint(workingDirectory: workingDirectory, snapshot: snapshot)
+        if success {
+            messages[index].undoRestoreSnapshot = preRestoreSnapshot
+            NotificationCenter.default.post(name: Notification.Name("anyDiffReloadDiff"), object: nil)
+            objectWillChange.send()
+        }
+        return success
+    }
+
+    @discardableResult
+    open func undoRestoreCheckpoint(messageId: UUID, workingDirectory: String) -> Bool {
+        guard let index = messages.firstIndex(where: { $0.id == messageId && $0.role == .user && !$0.isQueued }),
+              let undoSnapshot = messages[index].undoRestoreSnapshot,
+              undoSnapshot.isGitRepository else {
+            return false
+        }
+        let success = AgentTurnRollbackService.restoreCheckpoint(workingDirectory: workingDirectory, snapshot: undoSnapshot)
+        if success {
+            messages[index].undoRestoreSnapshot = nil
+            NotificationCenter.default.post(name: Notification.Name("anyDiffReloadDiff"), object: nil)
+            objectWillChange.send()
+        }
+        return success
+    }
+
+    public func clearUndoRestoreSnapshots() {
+        for index in messages.indices where messages[index].undoRestoreSnapshot != nil {
+            messages[index].undoRestoreSnapshot = nil
+        }
     }
 }

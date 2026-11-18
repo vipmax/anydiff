@@ -19,6 +19,7 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
         }
     }
 
+    public var checkpointStore: AgentCheckpointStore = .shared
     private let client: ACPClient
     var currentWorkingDirectory: String = ""
     var currentStreamMessageId: UUID? = nil
@@ -28,7 +29,7 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
     private var activeInitializationId: UUID?
     private var inFlightStartClient: (id: UUID, task: Task<Void, Error>)?
     private var promptTask: Task<Void, Never>?
-    private var pendingPrompt: (text: String, images: [AgentImageAttachment], workingDirectory: String)?
+    private var pendingPrompt: (text: String, images: [AgentImageAttachment], workingDirectory: String, userMessageId: UUID)?
     private var authTask: Task<Void, Error>?
     private static let linkDetector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
 
@@ -83,6 +84,7 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
             return
         }
 
+        clearUndoRestoreSnapshots()
         let userMsg = AgentMessage(role: .user, content: displayText, images: images)
         messages.append(userMsg)
 
@@ -91,12 +93,24 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
         let assistantMsg = AgentMessage(id: assistantMsgId, role: .assistant, content: "", isStreaming: true)
         messages.append(assistantMsg)
 
-        pendingPrompt = (text: promptText, images: images, workingDirectory: workingDirectory)
+        pendingPrompt = (text: promptText, images: images, workingDirectory: workingDirectory, userMessageId: userMsg.id)
         if isReadyForPrompt, currentSessionId != nil, Self.pathsMatch(currentWorkingDirectory, workingDirectory), client.isConnected {
             startPendingPromptIfPossible()
         } else {
+            captureCheckpointSnapshot(forUserMessageId: userMsg.id, workingDirectory: workingDirectory)
             prepareAgent(workingDirectory: workingDirectory)
         }
+    }
+
+    public override func persistSessionMetadataIfNeeded() {
+        if let sessionId = currentSessionId, !sessionId.isEmpty {
+            checkpointStore.save(messages: messages, forSessionId: sessionId)
+        }
+    }
+
+    public override func attachCheckpointSnapshot(_ snapshot: PreTurnGitSnapshot, toUserMessageId messageId: UUID) {
+        super.attachCheckpointSnapshot(snapshot, toUserMessageId: messageId)
+        persistSessionMetadataIfNeeded()
     }
 
     public var targetLoadSessionId: String? = nil
@@ -244,6 +258,7 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
             guard !Task.isCancelled else { return }
             self.preTurnSnapshot = snapshot
             self.activeTurnWorkingDirectory = workingDir
+            self.attachCheckpointSnapshot(snapshot, toUserMessageId: pending.userMessageId)
             do {
                 try await self.client.sendPrompt(sessionId: sessionId, text: pending.text, images: pending.images)
                 self.liveGitDiffTask?.cancel()
@@ -260,6 +275,7 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
                    let targetIdx = self.targetAssistantMessageIndex(for: self.currentStreamMessageId),
                    !self.messages[targetIdx].toolCalls.isEmpty {
                     self.messages[targetIdx].editedFilesSummary = summary
+                    self.persistSessionMetadataIfNeeded()
                 }
                 self.liveEditedSummary = nil
                 self.preTurnSnapshot = nil
@@ -583,6 +599,7 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
 
         if let targetId = targetLoadSessionId {
             let previousMessages = self.messages
+            checkpointStore.save(messages: previousMessages, forSessionId: targetId)
             self.messages.removeAll()
             do {
                 let loadResult = try await client.loadSession(sessionId: targetId, cwd: workingDirectory)
@@ -600,6 +617,7 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
             for i in self.messages.indices {
                 self.messages[i].completeRunningToolCalls()
             }
+            checkpointStore.restore(into: &self.messages, forSessionId: sessId)
         } else {
             let sessionResult = try await client.createSessionFull(cwd: workingDirectory)
             sessId = sessionResult.sessionId
@@ -619,6 +637,7 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
         self.statusMessage = "Connected to \(resolvedTitle)"
         self.currentSessionId = sessId
         self.lastSessionId = sessId
+        checkpointStore.save(messages: self.messages, forSessionId: sessId)
         if !finalOpts.isEmpty {
             self.applyConfigOptions(finalOpts)
         }
@@ -656,6 +675,7 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
            let seedSummary,
            !seedSummary.files.isEmpty {
             messages[targetIdx].editedFilesSummary = seedSummary
+            persistSessionMetadataIfNeeded()
         }
 
         guard let snapshot, !workingDirectory.isEmpty else { return }
@@ -674,6 +694,7 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
                 return
             }
             self.messages[idx].editedFilesSummary = summary
+            self.persistSessionMetadataIfNeeded()
         }
     }
 
@@ -719,10 +740,16 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
                     return
                 }
                 if !chunk.isEmpty {
+                    let didAppendReplayUserMessage: Bool
                     if let lastIdx = self.messages.indices.last, self.messages[lastIdx].role == .user {
                         self.messages[lastIdx].appendText(chunk)
+                        didAppendReplayUserMessage = false
                     } else {
                         self.messages.append(AgentMessage(role: .user, content: chunk, isStreaming: false))
+                        didAppendReplayUserMessage = true
+                    }
+                    if didAppendReplayUserMessage {
+                        self.checkpointStore.restore(into: &self.messages, forSessionId: sessionId)
                     }
                 }
                 return
@@ -756,6 +783,7 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
 
             // 2. Assistant messages or streaming updates
             let targetIdx: Int
+            var didAppendReplayAssistantMessage = false
             if let streamId = self.currentStreamMessageId,
                let idx = self.messages.firstIndex(where: { $0.id == streamId }) {
                 targetIdx = idx
@@ -774,6 +802,7 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
                     let msg = AgentMessage(role: .assistant, content: "", isStreaming: false)
                     self.messages.append(msg)
                     targetIdx = self.messages.count - 1
+                    didAppendReplayAssistantMessage = true
                 }
             }
 
@@ -938,6 +967,9 @@ public final class ACPAgentSessionManager: AgentSessionManager, ACPClientDelegat
                 if !chunk.isEmpty {
                     self.messages[targetIdx].appendText(chunk)
                 }
+            }
+            if didAppendReplayAssistantMessage && self.messages[targetIdx].editedFilesSummary == nil {
+                self.checkpointStore.restore(into: &self.messages, forSessionId: sessionId)
             }
         }
     }

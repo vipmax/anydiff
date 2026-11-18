@@ -122,7 +122,7 @@ public struct AgentEditedFilesSummary: Codable, Sendable, Equatable {
     }
 }
 
-public struct PreTurnGitSnapshot: Sendable {
+public struct PreTurnGitSnapshot: Sendable, Equatable, Codable {
     public let baseCommitHash: String?
     public let untrackedFiles: Set<String>
     public let untrackedModTimes: [String: TimeInterval]
@@ -161,42 +161,20 @@ public enum AgentGitChangesDetector {
             return PreTurnGitSnapshot(baseCommitHash: nil, isGitRepository: false)
         }
 
-        var headOid: String? = nil
-        var hasTrackedDirty = false
-        var untracked = Set<String>()
-        var untrackedList: [String] = []
+        let parsedStatus = parsePorcelainV2Status(statusData)
+        let headOid = parsedStatus.headOid
+        let hasTrackedDirty = parsedStatus.hasTrackedDirty
+        let untrackedList = parsedStatus.untrackedFiles
+        let untracked = Set(untrackedList)
         var modTimes: [String: TimeInterval] = [:]
+        modTimes.reserveCapacity(untrackedList.count)
         var blobHashes: [String: String] = [:]
 
-        let statusRecords = statusData.split(separator: 0, omittingEmptySubsequences: true)
-        var recordIdx = 0
-        while recordIdx < statusRecords.count {
-            let recordBytes = statusRecords[recordIdx]
-            recordIdx += 1
-            guard let record = String(data: recordBytes, encoding: .utf8) else { continue }
-            if record.hasPrefix("# branch.oid ") {
-                let oid = String(record.dropFirst("# branch.oid ".count))
-                if !oid.isEmpty, oid != "(initial)" {
-                    headOid = oid
-                }
-            } else if record.hasPrefix("2 ") {
-                hasTrackedDirty = true
-                // Rename/copy v2 -z records are followed by an extra NUL-terminated origPath token.
-                if recordIdx < statusRecords.count {
-                    recordIdx += 1
-                }
-            } else if record.hasPrefix("1 ") || record.hasPrefix("u ") {
-                hasTrackedDirty = true
-            } else if record.hasPrefix("? ") {
-                let trimmed = String(record.dropFirst(2))
-                guard !trimmed.isEmpty else { continue }
-                untracked.insert(trimmed)
-                untrackedList.append(trimmed)
-                let fullPath = URL(fileURLWithPath: workingDirectory).appendingPathComponent(trimmed).path
-                if let attrs = try? FileManager.default.attributesOfItem(atPath: fullPath),
-                   let modDate = attrs[.modificationDate] as? Date {
-                    modTimes[trimmed] = modDate.timeIntervalSince1970
-                }
+        for trimmed in untrackedList {
+            let fullPath = URL(fileURLWithPath: workingDirectory).appendingPathComponent(trimmed).path
+            if let attrs = try? FileManager.default.attributesOfItem(atPath: fullPath),
+               let modDate = attrs[.modificationDate] as? Date {
+                modTimes[trimmed] = modDate.timeIntervalSince1970
             }
         }
 
@@ -234,6 +212,48 @@ public enum AgentGitChangesDetector {
             untrackedBlobHashes: blobHashes,
             isGitRepository: true
         )
+    }
+
+    /// Enumerates all current non-ignored untracked file paths relative to `workingDirectory`.
+    public static func listUntrackedFiles(workingDirectory: String) -> [String]? {
+        guard let statusData = runGitData(arguments: ["-C", workingDirectory, "status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all"]) else {
+            return nil
+        }
+        return parsePorcelainV2Status(statusData).untrackedFiles
+    }
+
+    private static func parsePorcelainV2Status(_ statusData: Data) -> (headOid: String?, hasTrackedDirty: Bool, untrackedFiles: [String]) {
+        var headOid: String? = nil
+        var hasTrackedDirty = false
+        var untrackedList: [String] = []
+
+        let statusRecords = statusData.split(separator: 0, omittingEmptySubsequences: true)
+        var recordIdx = 0
+        while recordIdx < statusRecords.count {
+            let recordBytes = statusRecords[recordIdx]
+            recordIdx += 1
+            guard let record = String(data: recordBytes, encoding: .utf8) else { continue }
+            if record.hasPrefix("# branch.oid ") {
+                let oid = String(record.dropFirst("# branch.oid ".count))
+                if !oid.isEmpty, oid != "(initial)" {
+                    headOid = oid
+                }
+            } else if record.hasPrefix("2 ") {
+                hasTrackedDirty = true
+                // Rename/copy v2 -z records are followed by an extra NUL-terminated origPath token.
+                if recordIdx < statusRecords.count {
+                    recordIdx += 1
+                }
+            } else if record.hasPrefix("1 ") || record.hasPrefix("u ") {
+                hasTrackedDirty = true
+            } else if record.hasPrefix("? ") {
+                let trimmed = String(record.dropFirst(2))
+                if !trimmed.isEmpty {
+                    untrackedList.append(trimmed)
+                }
+            }
+        }
+        return (headOid: headOid, hasTrackedDirty: hasTrackedDirty, untrackedFiles: untrackedList)
     }
 
     /// Asynchronously captures a fast shadow snapshot on a detached background task so the main thread is never blocked.

@@ -654,6 +654,12 @@ public final class AgentSelectableTextView: NSTextView, NSTextStorageDelegate {
         ImageAttachmentHelpers.copyToPasteboard(cell.message.images[idx])
     }
 
+    @objc private func handleContextCopyText() {
+        guard !string.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(string, forType: .string)
+    }
+
     public override func mouseUp(with event: NSEvent) {
         super.mouseUp(with: event)
         checkAndPublishQuote(for: selectedRange())
@@ -716,19 +722,54 @@ public final class AgentSelectableTextView: NSTextView, NSTextStorageDelegate {
             let copyItem = NSMenuItem(title: "Copy Image", action: #selector(handleContextCopyImage), keyEquivalent: "")
             copyItem.target = self
             menu.addItem(copyItem)
+            let items = parentCell.makeCheckpointMenuItems()
+            if !items.isEmpty {
+                menu.addItem(NSMenuItem.separator())
+                for item in items {
+                    menu.addItem(item)
+                }
+            }
             return menu
         }
-        let menu = super.menu(for: event) ?? NSMenu()
-        let range = selectedRange()
-        if range.location != NSNotFound, range.length > 0 {
-            checkAndPublishQuote(for: range)
-            if SelectionQuoteStore.shared.currentQuote != nil {
-                let quoteItem = NSMenuItem(title: "Quote Selection", action: #selector(contextMenuQuoteSelection(_:)), keyEquivalent: "")
-                quoteItem.target = self
-                quoteItem.image = NSImage(systemSymbolName: "quote.opening", accessibilityDescription: "Quote Selection")
-                menu.insertItem(quoteItem, at: 0)
-                menu.insertItem(NSMenuItem.separator(), at: 1)
+        let priorRange = selectedRange()
+        guard priorRange.location != NSNotFound, priorRange.length > 0 else {
+            let menu = NSMenu()
+            for item in parentCell?.makeCheckpointMenuItems() ?? [] {
+                menu.addItem(item)
             }
+            if !string.isEmpty {
+                if !menu.items.isEmpty {
+                    menu.addItem(NSMenuItem.separator())
+                }
+                let copyItem = NSMenuItem(title: "Copy", action: #selector(handleContextCopyText), keyEquivalent: "")
+                copyItem.target = self
+                menu.addItem(copyItem)
+                let selectAllItem = NSMenuItem(title: "Select All", action: #selector(selectAll(_:)), keyEquivalent: "")
+                selectAllItem.target = self
+                menu.addItem(selectAllItem)
+            }
+            return menu.items.isEmpty ? nil : menu
+        }
+
+        let menu = super.menu(for: event) ?? NSMenu()
+        var insertIndex = 0
+        var addedTopItem = false
+        checkAndPublishQuote(for: priorRange)
+        if SelectionQuoteStore.shared.currentQuote != nil {
+            let quoteItem = NSMenuItem(title: "Quote Selection", action: #selector(contextMenuQuoteSelection(_:)), keyEquivalent: "")
+            quoteItem.target = self
+            quoteItem.image = NSImage(systemSymbolName: "quote.opening", accessibilityDescription: "Quote Selection")
+            menu.insertItem(quoteItem, at: insertIndex)
+            insertIndex += 1
+            addedTopItem = true
+        }
+        for item in parentCell?.makeCheckpointMenuItems() ?? [] {
+            menu.insertItem(item, at: insertIndex)
+            insertIndex += 1
+            addedTopItem = true
+        }
+        if addedTopItem, menu.items.count > insertIndex {
+            menu.insertItem(NSMenuItem.separator(), at: insertIndex)
         }
         return menu
     }

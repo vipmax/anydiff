@@ -269,8 +269,10 @@ public final class MockAgentSessionManager: AgentSessionManager, @unchecked Send
             return
         }
 
+        clearUndoRestoreSnapshots()
         let userMsg = AgentMessage(role: .user, content: displayText, images: images)
         messages.append(userMsg)
+        captureCheckpointSnapshot(forUserMessageId: userMsg.id, workingDirectory: workingDirectory)
 
         let assistantMsgId = UUID()
         let assistantMsg = AgentMessage(id: assistantMsgId, role: .assistant, content: "", isStreaming: true)

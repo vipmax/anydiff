@@ -16,6 +16,8 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
     public var onReview: ((AgentEditedFilesSummary) -> Void)?
     public var onRevert: ((AgentEditedFilesSummary) -> Void)?
     public var onRestore: ((AgentEditedFilesSummary) -> Void)?
+    public var onRestoreCheckpoint: ((UUID) -> Void)?
+    public var onUndoRestoreCheckpoint: ((UUID) -> Void)?
     public var onPreviewImages: (([AgentImageAttachment], Int) -> Void)?
     public var onOpenURL: ((URL) -> Void)?
     public var onDeleteQueuedMessage: ((UUID) -> Void)?
@@ -38,6 +40,8 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
         onReview: ((AgentEditedFilesSummary) -> Void)? = nil,
         onRevert: ((AgentEditedFilesSummary) -> Void)? = nil,
         onRestore: ((AgentEditedFilesSummary) -> Void)? = nil,
+        onRestoreCheckpoint: ((UUID) -> Void)? = nil,
+        onUndoRestoreCheckpoint: ((UUID) -> Void)? = nil,
         onPreviewImages: (([AgentImageAttachment], Int) -> Void)? = nil,
         onOpenURL: ((URL) -> Void)? = nil,
         onDeleteQueuedMessage: ((UUID) -> Void)? = nil,
@@ -59,6 +63,8 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
         self.onReview = onReview
         self.onRevert = onRevert
         self.onRestore = onRestore
+        self.onRestoreCheckpoint = onRestoreCheckpoint
+        self.onUndoRestoreCheckpoint = onUndoRestoreCheckpoint
         self.onPreviewImages = onPreviewImages
         self.onOpenURL = onOpenURL
         self.onDeleteQueuedMessage = onDeleteQueuedMessage
@@ -153,6 +159,8 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
         scrollView.onReview = onReview
         scrollView.onRevert = onRevert
         scrollView.onRestore = onRestore
+        scrollView.onRestoreCheckpoint = onRestoreCheckpoint
+        scrollView.onUndoRestoreCheckpoint = onUndoRestoreCheckpoint
         scrollView.onPreviewImages = onPreviewImages
         scrollView.onOpenURL = onOpenURL
         scrollView.onDeleteQueuedMessage = onDeleteQueuedMessage
@@ -196,6 +204,8 @@ public struct AgentChatScrollRepresentable: NSViewRepresentable {
         scrollView.onReview = onReview
         scrollView.onRevert = onRevert
         scrollView.onRestore = onRestore
+        scrollView.onRestoreCheckpoint = onRestoreCheckpoint
+        scrollView.onUndoRestoreCheckpoint = onUndoRestoreCheckpoint
         scrollView.onPreviewImages = onPreviewImages
         scrollView.onOpenURL = onOpenURL
         scrollView.onDeleteQueuedMessage = onDeleteQueuedMessage
@@ -288,6 +298,16 @@ public final class AgentChatScrollView: NSScrollView {
     public var onRestore: ((AgentEditedFilesSummary) -> Void)? {
         didSet {
             documentViewCustom.onRestore = onRestore
+        }
+    }
+    public var onRestoreCheckpoint: ((UUID) -> Void)? {
+        didSet {
+            documentViewCustom.onRestoreCheckpoint = onRestoreCheckpoint
+        }
+    }
+    public var onUndoRestoreCheckpoint: ((UUID) -> Void)? {
+        didSet {
+            documentViewCustom.onUndoRestoreCheckpoint = onUndoRestoreCheckpoint
         }
     }
     public var onPreviewImages: (([AgentImageAttachment], Int) -> Void)? {
@@ -794,6 +814,8 @@ public final class AgentChatDocumentView: NSView {
     public var onReview: ((AgentEditedFilesSummary) -> Void)?
     public var onRevert: ((AgentEditedFilesSummary) -> Void)?
     public var onRestore: ((AgentEditedFilesSummary) -> Void)?
+    public var onRestoreCheckpoint: ((UUID) -> Void)?
+    public var onUndoRestoreCheckpoint: ((UUID) -> Void)?
     public var onPreviewImages: (([AgentImageAttachment], Int) -> Void)?
     public var onOpenURL: ((URL) -> Void)? = nil
     public var onDeleteQueuedMessage: ((UUID) -> Void)?
@@ -1005,6 +1027,8 @@ public final class AgentChatDocumentView: NSView {
                 cell.onReview = onReview
                 cell.onRevert = onRevert
                 cell.onRestore = onRestore
+                cell.onRestoreCheckpoint = onRestoreCheckpoint
+                cell.onUndoRestoreCheckpoint = onUndoRestoreCheckpoint
                 cell.onPreviewImages = { [weak self] imgs, idx in
                     self?.onPreviewImages?(imgs, idx)
                 }
@@ -1040,6 +1064,8 @@ public final class AgentChatDocumentView: NSView {
                 cell.onReview = onReview
                 cell.onRevert = onRevert
                 cell.onRestore = onRestore
+                cell.onRestoreCheckpoint = onRestoreCheckpoint
+                cell.onUndoRestoreCheckpoint = onUndoRestoreCheckpoint
                 cell.onPreviewImages = { [weak self] imgs, idx in
                     self?.onPreviewImages?(imgs, idx)
                 }

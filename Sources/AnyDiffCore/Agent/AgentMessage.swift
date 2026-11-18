@@ -251,6 +251,8 @@ public struct AgentMessage: Identifiable, Sendable, Equatable {
     public var toolCalls: [ToolCallItem]
     public private(set) var orderedParts: [AgentMessagePart]
     public var editedFilesSummary: AgentEditedFilesSummary?
+    public var checkpointSnapshot: PreTurnGitSnapshot?
+    public var undoRestoreSnapshot: PreTurnGitSnapshot?
     public var isStreaming: Bool
     public var isQueued: Bool
     public var queuePosition: Int?
@@ -266,6 +268,8 @@ public struct AgentMessage: Identifiable, Sendable, Equatable {
         toolCalls: [ToolCallItem] = [],
         orderedParts: [AgentMessagePart]? = nil,
         editedFilesSummary: AgentEditedFilesSummary? = nil,
+        checkpointSnapshot: PreTurnGitSnapshot? = nil,
+        undoRestoreSnapshot: PreTurnGitSnapshot? = nil,
         isStreaming: Bool = false,
         isQueued: Bool = false,
         queuePosition: Int? = nil,
@@ -280,6 +284,8 @@ public struct AgentMessage: Identifiable, Sendable, Equatable {
         self.toolCalls = toolCalls
         self.orderedParts = orderedParts ?? Self.defaultParts(thought: thought, content: content, toolCalls: toolCalls)
         self.editedFilesSummary = editedFilesSummary
+        self.checkpointSnapshot = checkpointSnapshot
+        self.undoRestoreSnapshot = undoRestoreSnapshot
         self.isStreaming = isStreaming
         self.isQueued = isQueued
         self.queuePosition = queuePosition

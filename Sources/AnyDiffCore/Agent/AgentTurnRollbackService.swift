@@ -162,6 +162,113 @@ public enum AgentTurnRollbackService {
         return (summary.savedCreatedFiles != nil && !summary.savedCreatedFiles!.isEmpty)
     }
 
+    /// Restores the entire working tree (tracked, staged, and untracked files) to the exact state
+    /// captured in `snapshot`, without modifying `HEAD` commit history or chat messages.
+    @discardableResult
+    public static func restoreCheckpoint(
+        workingDirectory: String,
+        snapshot: PreTurnGitSnapshot
+    ) -> Bool {
+        guard snapshot.isGitRepository,
+              !workingDirectory.isEmpty,
+              FileManager.default.fileExists(atPath: workingDirectory),
+              let baseRef = snapshot.baseCommitHash,
+              !baseRef.isEmpty else {
+            return false
+        }
+
+        let resolvedWorkingDir = URL(fileURLWithPath: workingDirectory).resolvingSymlinksInPath().path
+        let rootURL = URL(fileURLWithPath: resolvedWorkingDir)
+
+        // Verify the snapshot's base tree (or unborn HEAD) is still valid before deleting any files.
+        let hasBaseTree = runGit(arguments: ["-C", resolvedWorkingDir, "rev-parse", "--verify", "-q", "\(baseRef)^{tree}"]) != nil
+        guard hasBaseTree || baseRef == "HEAD" else {
+            return false
+        }
+
+        var allSucceeded = true
+
+        // 1. Delete newly created non-ignored untracked files before restoring tracked trees
+        //    to avoid file-vs-directory collisions.
+        if !removeUntrackedFilesNotIn(
+            snapshot.untrackedFiles,
+            workingDirectory: resolvedWorkingDir,
+            rootURL: rootURL
+        ) {
+            allSucceeded = false
+        }
+
+        // 2. Restore tracked working tree and index to `baseRef`.
+        if hasBaseTree {
+            if runGit(arguments: ["-C", resolvedWorkingDir, "read-tree", "--reset", "-u", baseRef]) == nil {
+                allSucceeded = false
+            } else if runGit(arguments: ["-C", resolvedWorkingDir, "rev-parse", "--verify", "-q", "\(baseRef)^2^{tree}"]) != nil {
+                // `git stash create` stores the pre-turn index as parent #2; restore it without touching worktree.
+                if runGit(arguments: ["-C", resolvedWorkingDir, "read-tree", "--reset", "\(baseRef)^2"]) == nil {
+                    allSucceeded = false
+                }
+            }
+        } else {
+            // Unborn HEAD (no commits yet): clear any staged entries, then remove newly unstaged files.
+            if runGit(arguments: ["-C", resolvedWorkingDir, "read-tree", "--empty"]) == nil {
+                allSucceeded = false
+            }
+            if !removeUntrackedFilesNotIn(
+                snapshot.untrackedFiles,
+                workingDirectory: resolvedWorkingDir,
+                rootURL: rootURL
+            ) {
+                allSucceeded = false
+            }
+        }
+
+        // 3. Restore untracked files captured at checkpoint time.
+        for (relativePath, blobSha) in snapshot.untrackedBlobHashes {
+            guard let restoredData = runGitData(
+                arguments: ["-C", resolvedWorkingDir, "cat-file", "blob", blobSha],
+                allowEmpty: true
+            ) else {
+                allSucceeded = false
+                continue
+            }
+            let fullURL = rootURL.appendingPathComponent(relativePath)
+            do {
+                try FileManager.default.createDirectory(
+                    at: fullURL.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try restoredData.write(to: fullURL, options: .atomic)
+            } catch {
+                allSucceeded = false
+            }
+        }
+
+        return allSucceeded
+    }
+
+    private static func removeUntrackedFilesNotIn(
+        _ preservedUntracked: Set<String>,
+        workingDirectory: String,
+        rootURL: URL
+    ) -> Bool {
+        guard let currentUntracked = AgentGitChangesDetector.listUntrackedFiles(workingDirectory: workingDirectory) else {
+            return false
+        }
+        var allSucceeded = true
+        for relativePath in currentUntracked where !preservedUntracked.contains(relativePath) {
+            let fileURL = rootURL.appendingPathComponent(relativePath)
+            if FileManager.default.fileExists(atPath: fileURL.path) {
+                do {
+                    try FileManager.default.removeItem(at: fileURL)
+                    removeEmptyParentDirectories(for: fileURL, upTo: rootURL)
+                } catch {
+                    allSucceeded = false
+                }
+            }
+        }
+        return allSucceeded
+    }
+
     private static func applyDiffData(_ data: Data, workingDirectory: String) -> Bool {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
@@ -200,7 +307,7 @@ public enum AgentTurnRollbackService {
         }
     }
 
-    private static func runGitData(arguments: [String]) -> Data? {
+    private static func runGitData(arguments: [String], allowEmpty: Bool = false) -> Data? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         var fullArgs = ["-c", "user.name=AnyDiff", "-c", "user.email=anydiff@local"]
@@ -213,7 +320,7 @@ public enum AgentTurnRollbackService {
             try process.run()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
-            guard process.terminationStatus == 0, !data.isEmpty else { return nil }
+            guard process.terminationStatus == 0, (allowEmpty || !data.isEmpty) else { return nil }
             return data
         } catch {
             return nil
